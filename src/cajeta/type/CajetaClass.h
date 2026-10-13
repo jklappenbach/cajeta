@@ -98,6 +98,7 @@ namespace cajeta {
         // Forward-reference placeholder for a name known to the archive but not yet
         // declared; visitClassDeclaration fills it. One left set after parsing is a leak.
         bool placeholderFlag = false;
+        bool synthesizedMockFlag = false;
         // Set once generatePrototype ran; the deferred-prototype sweep's fixed-point marker.
         bool prototypeBuilt = false;
         // A still-placeholder interface was skipped; the codegen fixed point retries it.
@@ -225,6 +226,10 @@ namespace cajeta {
         void setIsAnnotation(bool v) { annotationFlag = v; }
         bool isPlaceholder() const { return placeholderFlag; }
         void setPlaceholder(bool v) { placeholderFlag = v; }
+        // True for a Mock<Name> @GenerateMock synthesized: a source declaration of
+        // the same name is CAJETA_ERROR_MOCK_NAME_TAKEN, not a silent second class.
+        bool isSynthesizedMock() const { return synthesizedMockFlag; }
+        void setSynthesizedMock(bool v) { synthesizedMockFlag = v; }
 
         bool isPrototypeBuilt() const { return prototypeBuilt; }
 

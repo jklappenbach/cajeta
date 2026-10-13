@@ -16,6 +16,7 @@
 //
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
+#include "cajeta/error/Exception.h"
 
 #include <cstdint>
 #include <map>
@@ -93,3 +94,170 @@ TEST(MockSynthesisTests, generateMockForwardsStubsAndSubstitutesForTarget) {
            "4 engine consulted for all three calls; 8 mock substitutes "
            "for the target type";
 }
+
+// mock-codegen M5 (primavera-web 0.2.6.1): interface targets, the inherited
+// method walk, final and static filtering, owned returns, and a name taken.
+namespace {
+
+// The stand-in engine again, with handleOwned: the owned answer a `#R`
+// method needs, which `handle`'s borrowed answer cannot give.
+const char* kEngineOwned =
+    "package dev.cajeta.unit;\n"
+    "import cajeta.lang.Int32;\n"
+    "import test.Rec;\n"
+    "public class MockEngine {\n"
+    "    public int32 calls;\n"
+    "    public MockEngine() { this.calls = 0; }\n"
+    "    public Object handle(String name, #Object[] a) {\n"
+    "        this.calls = this.calls + 1;\n"
+    "        if (name.equals(\"count\") || name.equals(\"fetch\") || name.equals(\"width\")) { return Int32.of(42); }\n"
+    "        if (name.equals(\"label\")) { return \"stubbed\"; }\n"
+    "        return Int32.of(0);\n"
+    "    }\n"
+    "    public #Object handleOwned(String name, #Object[] a) {\n"
+    "        this.calls = this.calls + 1;\n"
+    "        if (name.equals(\"find\")) { return heap Rec(9); }\n"
+    "        return null;\n"
+    "    }\n"
+    "}\n";
+
+const char* kRec =
+    "package test;\n"
+    "public class Rec {\n"
+    "    public static int32 gone = 0;\n"
+    "    public int32 v;\n"
+    "    public Rec(int32 v) { this.v = v; }\n"
+    "    public ~Rec() { Rec.gone = Rec.gone + 1; }\n"
+    "}\n";
+
+int32_t runMock(const std::map<std::string, std::string>& sources) {
+    auto jit = CajetaJit::compile(sources, "test.D");
+    if (!jit) return -1;
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    if (!fn) return -2;
+    return fn();
+}
+
+} // namespace
+
+// `@GenerateMock` on an interface: `MockDirectory implements Directory`,
+// forwarding each method, an owned `#Rec` return through handleOwned.
+TEST(MockSynthesisTests, interfaceTargetImplementsAndForwards) {
+    const char* target =
+        "package test;\n"
+        "@GenerateMock\n"
+        "public interface Directory {\n"
+        "    String label();\n"
+        "    int32 count(int32 k);\n"
+        "    void ping();\n"
+        "    #Rec find(String id);\n"
+        "}\n";
+    const char* driver =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32 score = 0;\n"
+        "        MockDirectory m = heap MockDirectory();\n"
+        "        Directory d = m;\n"
+        "        if (d.label().equals(\"stubbed\")) { score = score + 1; }\n"
+        "        if (d.count(3) == 42) { score = score + 2; }\n"
+        "        d.ping();\n"
+        "        {\n"
+        "            Rec r #= d.find(\"x\");\n"
+        "            if (r.v == 9) { score = score + 4; }\n"
+        "        }\n"
+        "        if (Rec.gone == 1) { score = score + 8; }\n"
+        "        if (m.engine.calls == 4) { score = score + 16; }\n"
+        "        return score;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runMock({{"dev.cajeta.unit.MockEngine", kEngineOwned}, {"test.Rec", kRec},
+                       {"test.Directory", target}, {"test.D", driver}}), 31)
+        << "1 reference, 2 primitive, 4 owned return, 8 freed once by the caller, 16 all four forwarded";
+}
+
+// A class target's inherited methods are forwarded too; a final method is not
+// overridden, so it keeps its real body.
+TEST(MockSynthesisTests, inheritedMethodsForwardAndFinalKeepsItsBody) {
+    const char* target =
+        "package test;\n"
+        "public class Base {\n"
+        "    public Base() { }\n"
+        "    public int32 fetch(int32 k) { return 7; }\n"
+        "}\n"
+        "@GenerateMock\n"
+        "public class Gateway extends Base {\n"
+        "    public Gateway() { }\n"
+        "    public String label() { return \"real\"; }\n"
+        "    public final int32 width() { return 3; }\n"
+        "    public static int32 unit() { return 5; }\n"
+        "}\n";
+    const char* driver =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32 score = 0;\n"
+        "        MockGateway m = heap MockGateway();\n"
+        "        if (m.fetch(1) == 42) { score = score + 1; }\n"
+        "        if (m.label().equals(\"stubbed\")) { score = score + 2; }\n"
+        "        if (m.width() == 3) { score = score + 4; }\n"
+        "        if (Gateway.unit() == 5) { score = score + 8; }\n"
+        "        if (m.engine.calls == 2) { score = score + 16; }\n"
+        "        return score;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runMock({{"dev.cajeta.unit.MockEngine", kEngineOwned}, {"test.Rec", kRec},
+                       {"test.Gateway", target}, {"test.D", driver}}), 31)
+        << "1 inherited forwarded, 2 own forwarded, 4 final kept, 8 static untouched, 16 two forwards";
+}
+
+// An interface that extends another: the mock implements both levels.
+TEST(MockSynthesisTests, interfaceTargetForwardsItsParentInterfaceMethods) {
+    const char* target =
+        "package test;\n"
+        "public interface Narrow { String label(); }\n"
+        "@GenerateMock\n"
+        "public interface Wide extends Narrow { int32 width(); }\n";
+    const char* driver =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32 score = 0;\n"
+        "        MockWide m = heap MockWide();\n"
+        "        Wide w = m;\n"
+        "        Narrow n = m;\n"
+        "        if (w.width() == 42) { score = score + 1; }\n"
+        "        if (n.label().equals(\"stubbed\")) { score = score + 2; }\n"
+        "        if (w.label().equals(\"stubbed\")) { score = score + 4; }\n"
+        "        return score;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runMock({{"dev.cajeta.unit.MockEngine", kEngineOwned}, {"test.Rec", kRec},
+                       {"test.Wide", target}, {"test.D", driver}}), 7);
+}
+
+// A declared class already named Mock<Name> is reported, not silently refilled.
+TEST(MockSynthesisTests, aDeclaredClassNamedLikeTheMockIsAnError) {
+    const char* target =
+        "package test;\n"
+        "@GenerateMock\n"
+        "public class Gateway {\n"
+        "    public Gateway() { }\n"
+        "    public String label() { return \"real\"; }\n"
+        "}\n"
+        "public class MockGateway {\n"
+        "    public MockGateway() { }\n"
+        "}\n";
+    const char* driver =
+        "package test;\n"
+        "public final class D { public static int32 run() { return 0; } }\n";
+    try {
+        CajetaJit::compile(std::map<std::string, std::string>{
+            {"dev.cajeta.unit.MockEngine", kEngineOwned}, {"test.Rec", kRec},
+            {"test.Gateway", target}, {"test.D", driver}}, "test.D");
+        FAIL() << "expected CAJETA_ERROR_MOCK_NAME_TAKEN";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MOCK_NAME_TAKEN") << e.getMessage();
+    }
+}
+

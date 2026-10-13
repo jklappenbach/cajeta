@@ -284,23 +284,26 @@ namespace cajeta {
                                 /*markEnum=*/false,
                                 /*markValueType=*/classHasValueTypeAnnotation(ctx));
             captureTemplateMeta(ctx);
-            // @GenerateMock synthesizes a sibling Mock<Name> with no source
-            // declaration of its own; archive that name so a forward reference
-            // resolves to a placeholder synthesizeMock later fills.
-            if (classHasGenerateMockAnnotation(ctx)) {
-                std::string mockShort =
-                    std::string("Mock") + ctx->identifier()->getText();
-                std::string canonical;
-                if (!package.empty()) canonical = package;
-                for (auto& e : enclosingStack) {
-                    if (!canonical.empty()) canonical += ".";
-                    canonical += e;
-                }
-                if (!canonical.empty()) canonical += ".";
-                canonical += mockShort;
-                CajetaType::registerArchive(canonical, mockShort);
+            if (hasGenerateMockAnnotation(ctx)) {
+                registerMockName(ctx->identifier()->getText());
             }
             return defaultResult();
+        }
+
+        // @GenerateMock synthesizes a sibling Mock<Name> with no source
+        // declaration of its own; archive that name so a forward reference
+        // resolves to a placeholder synthesizeMock later fills.
+        void registerMockName(const std::string& target) {
+            std::string mockShort = std::string("Mock") + target;
+            std::string canonical;
+            if (!package.empty()) canonical = package;
+            for (auto& e : enclosingStack) {
+                if (!canonical.empty()) canonical += ".";
+                canonical += e;
+            }
+            if (!canonical.empty()) canonical += ".";
+            canonical += mockShort;
+            CajetaType::registerArchive(canonical, mockShort);
         }
 
         std::any visitInterfaceDeclaration(
@@ -311,6 +314,9 @@ namespace cajeta {
                                 /*markEnum=*/false, /*markValueType=*/false,
                                 /*markInterface=*/true);
             captureTemplateMeta(ctx);
+            if (hasGenerateMockAnnotation(ctx)) {
+                registerMockName(ctx->identifier()->getText());
+            }
             return defaultResult();
         }
 
@@ -381,10 +387,9 @@ namespace cajeta {
             return false;
         }
 
-        // True if the class declaration is annotated @GenerateMock (same shape and
-        // location as @ValueType, on the enclosing typeDeclaration).
-        static bool classHasGenerateMockAnnotation(
-                CajetaParser::ClassDeclarationContext* ctx) {
+        // True if the class or interface declaration is annotated @GenerateMock (same
+        // shape and location as @ValueType, on the enclosing typeDeclaration).
+        static bool hasGenerateMockAnnotation(antlr4::ParserRuleContext* ctx) {
             auto* td = dynamic_cast<CajetaParser::TypeDeclarationContext*>(
                 ctx->parent);
             if (!td) return false;

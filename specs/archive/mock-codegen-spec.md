@@ -155,8 +155,17 @@ aborts with `unresolved type` first. Fix (mirrors how source forward refs work):
       (`((Int64) engine.lastArgOf(...)).value()`) — binding it to an owned local
       frees the engine-owned arg (the cajeta-unit ownership footgun, not an M4
       bug).
-- [ ] **M5** — interface targets (`implements`); inherited-method walk; final/static
-      filtering; method-name collisions.
+- [x] **M5** — interface targets (`implements`); inherited-method walk; final/static
+      filtering; method-name collisions. Done 2026-10-13 for primavera-web 0.2.6:
+      an interface target is prescanned and implemented, with its parents'
+      methods (`getFlattenedInterfaceMethods`); a class target's whole chain is
+      walked most-derived first, `final`, `static`, `private` and
+      `cajeta.lang.Object`'s own methods left alone; a `#R` method answers
+      through `MockEngine.handleOwned` (cajeta-unit bbc4b4f), since `handle`'s
+      answer is a borrow; a declared type named `Mock<Name>` is
+      CAJETA_ERROR_MOCK_NAME_TAKEN in either order. The mock also registers as
+      a `@TestComponent`, so the test profile injects it in place of the
+      production component implementing the same interface.
 - [x] **M6** — field-level `@Mock Gateway gw;` (`CajetaClass::synthesizeMockFields`,
       run before the ctor synthesizers): for each `@Mock` field, rewrite its type
       to `Mock<T>` (creating the placeholder if the target hasn't been processed)

@@ -790,6 +790,13 @@ namespace cajeta {
                 }
                 if (it != canon.end()) {
                     auto existing = std::dynamic_pointer_cast<CajetaClass>(it->second);
+                    if (existing && existing->isSynthesizedMock()) {
+                        throw Exception(
+                            "the program declares '" + qName->toCanonical()
+                            + "', the name @GenerateMock gave the mock it generated. "
+                            "Rename the declared type, or drop @GenerateMock.",
+                            "CAJETA_ERROR_MOCK_NAME_TAKEN");
+                    }
                     if (existing && existing->isPlaceholder()) {
                         existing->fillFromDeclaration(
                             pModule, qName, qExtended, qImplemented);
@@ -1504,6 +1511,13 @@ namespace cajeta {
                         throw Exception(
                             "@ValueType cannot be applied to an interface",
                             "CAJETA_ERROR_VALUE_TYPE");
+                    }
+                    // @GenerateMock is the one interface annotation a later pass reads:
+                    // synthesizeMock finds it on the structure.
+                    if (inst && inst->getName()
+                            && inst->getName()->getTypeName() == "GenerateMock"
+                            && !interface->findAnnotation("GenerateMock")) {
+                        interface->addAnnotationInstance(inst);
                     }
                 }
             }

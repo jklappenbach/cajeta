@@ -1464,6 +1464,7 @@ namespace cajeta {
             }
             CajetaModule::getStructureToModule()[canonical] = module;
             prototypeBuilt = true;
+            synthesizeMock();
             return;
         }
 
@@ -1607,24 +1608,35 @@ namespace cajeta {
         auto mockQName = QualifiedName::getOrInsert(
             mockTypeName, qName->getPackageName());
 
+        // A class target is extended, an interface target implemented.
+        std::list<QualifiedNamePtr> mockExtends;
+        std::list<QualifiedNamePtr> mockImplements;
+        if (isInterface()) mockImplements.push_back(qName);
+        else mockExtends.push_back(qName);
+
         CajetaClassPtr mock;
         auto& canonicalMap = CajetaType::getCanonicalMap();
         auto it = canonicalMap.find(mockQName->toCanonical());
         if (it != canonicalMap.end()) {
             mock = std::dynamic_pointer_cast<CajetaClass>(it->second);
         }
+        // A class the program declares under the mock's name is not ours to fill.
+        if (mock && !mock->isPlaceholder() && !mock->isSynthesizedMock()) {
+            throw Exception(
+                "@GenerateMock on '" + qName->toCanonical() + "' generates '"
+                + mockQName->toCanonical() + "', but the program declares a type "
+                "by that name. Rename the declared type, or drop @GenerateMock.",
+                "CAJETA_ERROR_MOCK_NAME_TAKEN");
+        }
         if (!mock) {
-            std::list<QualifiedNamePtr> mockExtends{ qName };
-            std::list<QualifiedNamePtr> mockImplements;
             mock = std::make_shared<CajetaClass>(
                 module, mockQName, mockExtends, mockImplements);
             canonicalMap[mockQName->toCanonical()] =
                 std::static_pointer_cast<CajetaType>(mock);
         }
 
-        std::list<QualifiedNamePtr> mockExtends{ qName };
-        std::list<QualifiedNamePtr> mockImplements;
         mock->fillFromDeclaration(module, mockQName, mockExtends, mockImplements);
+        mock->setSynthesizedMock(true);
 
         fillMockClassBody(
             mock, std::static_pointer_cast<CajetaClass>(shared_from_this()),
@@ -1634,6 +1646,15 @@ namespace cajeta {
 
         module->getStructures()[mockQName->toCanonical()] = mock;
         CajetaModule::getStructureToModule()[mockQName->toCanonical()] = module;
+
+        // The mock is a @TestComponent: under the test profile it masks the
+        // production components implementing the same interfaces, and outside it
+        // the graph drops it.
+        auto desc = std::make_shared<CajetaModule::ComponentDescriptor>();
+        desc->klass = mock;
+        desc->isTestComponent = true;
+        desc->scopeName = "Singleton";
+        CajetaModule::registerComponent(desc);
     }
 
     // Field-level @Mock: retype each annotated field to Mock<T> and add an init

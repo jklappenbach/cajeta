@@ -7,7 +7,9 @@
 #include "../error/Exception.h"
 #include "CajetaParser.h"
 
+#include <functional>
 #include <list>
+#include <vector>
 #include <map>
 #include <set>
 #include <string>
@@ -45,9 +47,37 @@ namespace cajeta {
         return t->getQName()->toCanonical();
     }
 
+    // The methods a mock overrides: an interface's own and inherited ones, or a
+    // class's down its whole chain, most-derived first. A signature seen once is
+    // settled, so a final override hides the base method it overrides.
+    static vector<MethodPtr> overridableMethods(const CajetaClassPtr& target) {
+        if (target->isInterface()) {
+            return target->getFlattenedInterfaceMethods();
+        }
+        vector<MethodPtr> out;
+        std::set<string> seen;
+        std::set<CajetaClass*> visited;
+        std::function<void(const CajetaClassPtr&)> walk = [&](const CajetaClassPtr& c) {
+            if (!c || !visited.insert(c.get()).second) return;
+            // Object's own methods (clone, equals, toString) are not the seam.
+            if (c->getQName() && c->getQName()->toCanonical() == "cajeta.lang.Object") return;
+            for (auto& m : c->getMethodList()) {
+                if (!m || m->isConstructor() || m->isStatic()) continue;
+                if (!seen.insert(CajetaClass::interfaceSlotKey(m)).second) continue;
+                if (m->getModifiers().count(FINAL) || m->getModifiers().count(PRIVATE)) continue;
+                out.push_back(m);
+            }
+            for (auto& sup : c->getSuperClasses()) walk(sup);
+        };
+        walk(target);
+        return out;
+    }
+
     // The mock body: a MockEngine field + ctor, then a forwarding override per
     // overridable method, each boxing its args into an Object[] for engine.handle
     // and returning the answer INLINE (an owned local would free the stub's value).
+    // A `#R` method takes its answer from handleOwned, which hands over a value the
+    // engine no longer holds.
     static string synthesizeMockBody(const CajetaClassPtr& mock,
                                      const CajetaClassPtr& target) {
         string mockName = mock->getQName()->getTypeName();
@@ -56,7 +86,7 @@ namespace cajeta {
         body += "    public " + mockName
               + "() { this.engine = heap dev.cajeta.unit.MockEngine(); }\n";
 
-        for (auto& m : target->getMethodList()) {
+        for (auto& m : overridableMethods(target)) {
             if (!m || m->isConstructor() || m->isStatic()) continue;
             const string& mname = m->getName();
             if (mname.rfind("operator", 0) == 0) continue;   // operators: skip
@@ -95,11 +125,16 @@ namespace cajeta {
             }
             if (skip) continue;
 
-            string retDecl = isVoid ? "void" : retCanon;
+            bool owned = !isVoid && retBox.empty() && m->isReturnsOwnership();
+            string retDecl = isVoid ? "void" : (owned ? "#" + retCanon : retCanon);
             string handleCall = "this.engine.handle(\"" + mname + "\", #a)";
             body += "    public " + retDecl + " " + mname + "(" + paramDecl + ") {\n";
             body += "        Object[] a = [" + argList + "];\n";
-            if (isVoid) {
+            if (owned) {
+                body += "        " + retCanon + " v #= (" + retCanon
+                      + ") this.engine.handleOwned(\"" + mname + "\", #a);\n";
+                body += "        return #v;\n";
+            } else if (isVoid) {
                 body += "        " + handleCall + ";\n";
             } else if (!retBox.empty()) {
                 body += "        return ((" + retBox + ") "
