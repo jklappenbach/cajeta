@@ -231,6 +231,9 @@ set +m
 # opt out with REUSE=0. Serial single-suite/-test runs (the debug path, exec'd
 # earlier) stay fully isolated — reuse never changes what a dev is debugging.
 # Exported so every shard child process inherits it.
+# The stdlib dylib's machine code is kept across processes under
+# .cajeta/cache/prime/obj (keyed by the stdlib bitcode digest and the host
+# target); CAJETA_PRIME_CACHE=0 disables it, CAJETA_PRIME_CACHE_DIR relocates it.
 if [ "${REUSE:-1}" != "0" ]; then export CAJETA_STDLIB_REUSE=1; else unset CAJETA_STDLIB_REUSE; fi
 
 # Determine the worker count = the number of concurrent test processes. An

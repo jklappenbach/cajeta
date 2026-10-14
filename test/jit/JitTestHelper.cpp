@@ -19,6 +19,7 @@
 
 #include "cajeta/ownership/FieldStoreCensus.h"
 #include "cajeta/buildtool/IrCache.h"
+#include "cajeta/buildtool/Lockfile.h"   // sha256Hex — the shared stdlib object key
 #include "cajeta/buildtool/PrimeCache.h"
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/xpu/core/XpuKernelGate.h"
@@ -48,14 +49,18 @@
 #include "llvm/Transforms/Utils/Cloning.h"   // CloneModule — the shared stdlib dylib
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <functional>
+#include "llvm/ExecutionEngine/ObjectCache.h"
 #include "llvm/ExecutionEngine/Orc/AbsoluteSymbols.h"
+#include "llvm/ExecutionEngine/Orc/CompileUtils.h"
 #include "llvm/ExecutionEngine/Orc/Debugging/DebuggerSupport.h"
+#include "llvm/Object/ObjectFile.h"
 #include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Linker/Linker.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Process.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -276,6 +281,114 @@ bool stdlibReusable(const CajetaJit::Options& o) {
 // the codegen passes at prime, llvm-level pristineness snapshots
 // (verifyPristine), transient struct-name release, the prime-cache lookup
 // seam, and the shared stdlib dylib fork.
+// The prime cache's root directory: CAJETA_PRIME_CACHE_DIR, else
+// <CAJETA_SOURCE_ROOT>/.cajeta/cache/prime; empty when CAJETA_PRIME_CACHE=0
+// or neither variable is set.
+std::string primeCacheRoot() {
+    const char* toggle = std::getenv("CAJETA_PRIME_CACHE");
+    if (toggle && std::string(toggle) == "0") return {};
+    if (const char* dir = std::getenv("CAJETA_PRIME_CACHE_DIR")) return dir;
+    if (const char* src = std::getenv("CAJETA_SOURCE_ROOT"))
+        return std::string(src) + "/.cajeta/cache/prime";
+    return {};
+}
+
+// Machine code for the shared stdlib module, kept across processes under
+// <root>/obj/<target>/<bitcode digest>.o (compile-cache plan Unit 4). Only the
+// module named `kPrefix + digest` is stored or served; a stored object that no
+// longer parses is deleted and recompiled.
+class StdlibObjectCache : public llvm::ObjectCache {
+public:
+    static constexpr const char* kPrefix = "cajeta-prime:";
+    static constexpr size_t kKeep = 4;
+
+    explicit StdlibObjectCache(std::filesystem::path root) : root_(std::move(root)) {}
+
+    // Pins the pool to one target: triple, cpu and feature string.
+    void setTarget(const std::string& targetKey) {
+        pool_ = root_ / "obj" / cajeta::buildtool::sha256Hex(targetKey).substr(0, 16);
+    }
+
+    void notifyObjectCompiled(const llvm::Module* m, llvm::MemoryBufferRef obj) override {
+        std::filesystem::path target = pathFor(m);
+        if (target.empty()) return;
+        ++compiled_;
+        std::error_code ec;
+        std::filesystem::create_directories(pool_, ec);
+        if (ec) return;
+        std::filesystem::path tmp = target;
+        tmp += "." + std::to_string(llvm::sys::Process::getProcessId()) + ".tmp";
+        {
+            std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+            out.write(obj.getBufferStart(), (std::streamsize) obj.getBufferSize());
+            if (!out.good()) return;
+        }
+        std::filesystem::rename(tmp, target, ec);
+        if (ec) std::filesystem::remove(tmp, ec);
+        evict(target);
+    }
+
+    std::unique_ptr<llvm::MemoryBuffer> getObject(const llvm::Module* m) override {
+        std::filesystem::path target = pathFor(m);
+        if (target.empty()) return nullptr;
+        auto buf = llvm::MemoryBuffer::getFile(target.string());
+        if (!buf) return nullptr;
+        if (!wellFormed((*buf)->getMemBufferRef())) {
+            std::error_code ec;
+            std::filesystem::remove(target, ec);
+            return nullptr;
+        }
+        ++served_;
+        return std::move(*buf);
+    }
+
+    size_t served() const { return served_; }
+    size_t compiled() const { return compiled_; }
+
+private:
+    std::filesystem::path pathFor(const llvm::Module* m) const {
+        llvm::StringRef id = m->getModuleIdentifier();
+        if (pool_.empty() || !id.starts_with(kPrefix)) return {};
+        return pool_ / (id.drop_front(std::strlen(kPrefix)).str() + ".o");
+    }
+
+    // Every section's contents must lie within the file.
+    static bool wellFormed(llvm::MemoryBufferRef buf) {
+        auto obj = llvm::object::ObjectFile::createObjectFile(buf);
+        if (!obj) {
+            cajeta::jittest::consumeError(obj.takeError());
+            return false;
+        }
+        for (const llvm::object::SectionRef& sec : (*obj)->sections()) {
+            auto contents = sec.getContents();
+            if (!contents) {
+                cajeta::jittest::consumeError(contents.takeError());
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Keeps the newest kKeep objects in the pool, `keep` among them.
+    void evict(const std::filesystem::path& keep) const {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        std::vector<std::pair<fs::file_time_type, fs::path>> objects;
+        for (auto& e : fs::directory_iterator(pool_, ec)) {
+            if (!e.is_regular_file() || e.path().extension() != ".o" || e.path() == keep) continue;
+            objects.emplace_back(e.last_write_time(ec), e.path());
+        }
+        std::sort(objects.begin(), objects.end(),
+                  [](const auto& a, const auto& b) { return a.first > b.first; });
+        for (size_t i = kKeep - 1; i < objects.size(); ++i) fs::remove(objects[i].second, ec);
+    }
+
+    std::filesystem::path root_;
+    std::filesystem::path pool_;
+    size_t served_ = 0;
+    size_t compiled_ = 0;
+};
+
 struct StdlibReuseCache {
     cajeta::CajetaModulePtr stdlibModule;   // = StdlibReuseCore's, cached for the llvm-level probes
     std::set<std::string> baselineStructNames;   // stdlib llvm StructType names at prime
@@ -310,15 +423,8 @@ struct StdlibReuseCache {
         // CAJETA_PRIME_CACHE_DIR.
         primeCacheHitPath.reset();
         {
-            const char* toggle = std::getenv("CAJETA_PRIME_CACHE");
-            bool enabled = !(toggle && std::string(toggle) == "0");
-            std::string root;
-            if (const char* dir = std::getenv("CAJETA_PRIME_CACHE_DIR")) {
-                root = dir;
-            } else if (const char* src = std::getenv("CAJETA_SOURCE_ROOT")) {
-                root = std::string(src) + "/.cajeta/cache/prime";
-            }
-            if (enabled && !root.empty()) {
+            std::string root = primeCacheRoot();
+            if (!root.empty()) {
                 primeCacheKey = cajeta::Compiler::stdlibPrimeCacheKey();
                 cajeta::buildtool::IrCache cache(root);
                 if (auto hit = cajeta::buildtool::primeValidatedLookup(
@@ -478,6 +584,7 @@ struct StdlibReuseCache {
     // every reusing compile's user dylib links ONE stdlib (addToLinkOrder)
     // instead of cloning and re-JITing it. Built on the first reusing compile.
     // See SharedStdlibDylibSpikeTests for the proven model.
+    std::unique_ptr<StdlibObjectCache> objectCache;   // outlives sharedJit
     std::unique_ptr<llvm::orc::LLJIT> sharedJit;
     llvm::orc::JITDylib* sharedStdlibJD = nullptr;
     bool sharedJitReady = false;
@@ -732,9 +839,26 @@ struct StdlibReuseCache {
     void ensureSharedStdlibDylib() {
         if (sharedJitReady) return;
         ensurePrimed();
-        auto jitOrErr = cajeta::test::makeCoffSafeJit();
+        auto materializeStart = std::chrono::steady_clock::now();
+        auto builder = cajeta::test::coffSafeJitBuilder();
+        std::string cacheRoot = primeCacheRoot();
+        if (!cacheRoot.empty()) {
+            objectCache = std::make_unique<StdlibObjectCache>(cacheRoot);
+            StdlibObjectCache* cache = objectCache.get();
+            builder.setCompileFunctionCreator(
+                [cache](llvm::orc::JITTargetMachineBuilder jtmb)
+                    -> llvm::Expected<std::unique_ptr<llvm::orc::IRCompileLayer::IRCompiler>> {
+                    cache->setTarget(jtmb.getTargetTriple().str() + "|" + jtmb.getCPU() + "|"
+                                     + jtmb.getFeatures().getString() + "|" LLVM_VERSION_STRING);
+                    auto tm = jtmb.createTargetMachine();
+                    if (!tm) return tm.takeError();
+                    return std::make_unique<llvm::orc::TMOwningSimpleCompiler>(std::move(*tm), cache);
+                });
+        }
+        auto jitOrErr = builder.create();
         if (!jitOrErr) throw std::runtime_error("shared LLJIT create failed");
         sharedJit = std::move(*jitOrErr);
+        cajeta::jit::installObjectDump(*sharedJit);
         if (std::getenv("CAJETA_JIT_GDB")) {
             if (auto err = llvm::orc::enableDebuggerSupport(*sharedJit)) {
                 llvm::errs() << "[jit-gdb] enableDebuggerSupport failed: "
@@ -761,8 +885,10 @@ struct StdlibReuseCache {
         auto staticNames = collectStatics(*clone, sharedJit->getDataLayout());
         llvm::SmallVector<char, 0> bc;
         { llvm::raw_svector_ostream os(bc); llvm::WriteBitcodeToFile(*clone, os); }
+        std::string digest = cajeta::buildtool::sha256Hex(std::string(bc.data(), bc.size()));
+        if (digest.rfind("sha256:", 0) == 0) digest.erase(0, 7);
         auto memBuf = llvm::MemoryBuffer::getMemBufferCopy(
-            llvm::StringRef(bc.data(), bc.size()), "cajeta_shared_stdlib");
+            llvm::StringRef(bc.data(), bc.size()), StdlibObjectCache::kPrefix + digest);
         auto tsCtx = std::make_unique<llvm::LLVMContext>();
         llvm::orc::ThreadSafeContext tsContext(std::move(tsCtx));
 #if LLVM_VERSION_MAJOR >= 21
@@ -776,6 +902,7 @@ struct StdlibReuseCache {
             throw std::runtime_error("shared stdlib bitcode reparse failed: "
                 + cajeta::jittest::toString(parsed.takeError()));
         cajeta::optimizeModule(**parsed, nullptr, cajeta::OptLevel::O0);
+        (*parsed)->setModuleIdentifier(StdlibObjectCache::kPrefix + digest);
         llvm::orc::ThreadSafeModule tsm(std::move(*parsed), std::move(tsContext));
         if (auto err = sharedJit->addIRModule(*sharedStdlibJD, std::move(tsm)))
             throw std::runtime_error("shared stdlib addIRModule failed: "
@@ -783,6 +910,13 @@ struct StdlibReuseCache {
         if (auto err = sharedJit->initialize(*sharedStdlibJD))
             throw std::runtime_error("shared stdlib initialize failed: "
                 + cajeta::jittest::toString(std::move(err)));
+        if (std::getenv("CAJETA_PRIME_TIMING")) {
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - materializeStart).count();
+            std::fprintf(stderr, "[shared-stdlib] object %s digest=%.12s materialize=%lldms\n",
+                         !objectCache ? "UNCACHED" : objectCache->served() ? "HIT" : "MISS",
+                         digest.c_str(), (long long) ms);
+        }
         for (const std::string& name : clinitNames) {
             if (auto fn = resolveStdlib<void (*)()>(name.c_str())) stdlibClinits.push_back(fn);
         }
@@ -857,6 +991,16 @@ void sweepTempRoots() { TempRootRegistry::instance().sweep(); }
 
 size_t CajetaJit::sharedStdlibMaterializations() {
     return StdlibReuseCache::instance().sharedMaterializations;
+}
+
+size_t CajetaJit::sharedStdlibObjectsServed() {
+    auto& cache = StdlibReuseCache::instance().objectCache;
+    return cache ? cache->served() : 0;
+}
+
+size_t CajetaJit::sharedStdlibObjectsCompiled() {
+    auto& cache = StdlibReuseCache::instance().objectCache;
+    return cache ? cache->compiled() : 0;
 }
 
 CajetaJit::~CajetaJit() {
@@ -1140,6 +1284,7 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     for (;;) {
         if (reuseStdlib) {
             stdlibCache.ensurePrimed();
+            stdlibCache.ensureSharedStdlibDylib();
             stdlibCache.restoreBaseline();
             cajeta::Compiler::setSharedContext(
                 cajeta::StdlibReuseCore::instance().context());

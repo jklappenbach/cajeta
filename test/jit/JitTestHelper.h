@@ -190,6 +190,11 @@ public:
     // How many times this process has materialized the shared stdlib.
     static size_t sharedStdlibMaterializations();
 
+    // How many shared stdlib objects this process linked from the prime
+    // cache, and how many it compiled and stored there.
+    static size_t sharedStdlibObjectsServed();
+    static size_t sharedStdlibObjectsCompiled();
+
 private:
     CajetaJit();
 
