@@ -6,6 +6,7 @@
 // against its own repo-local XDG_CACHE_HOME.
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"
+#include "../PortableEnv.h"
 #include "cajeta/xpu/XpuTarget.h"
 #include <cstdlib>
 #include <filesystem>

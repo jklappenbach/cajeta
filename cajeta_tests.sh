@@ -220,9 +220,10 @@ fi
 # $exit_file and reports the offending shard cleanly.
 set +m
 
-# Stdlib reuse (parallel sweep only): prime the stdlib ONCE per suite-process and
-# share it across that process's tests, instead of re-parsing+re-codegen'ing the
-# ~14s stdlib for every test. This is the dominant speed lever for a full sweep
+# Stdlib reuse (parallel sweep only): prime the stdlib ONCE per suite-process,
+# JIT it once into a shared stdlib dylib, and share both across that process's
+# tests, instead of re-parsing, re-codegen'ing and re-JITing the stdlib for
+# every test. This is the dominant speed lever for a full sweep
 # (many-hours -> ~1.3h) and — because each process finishes far sooner — it also
 # LOWERS sustained memory pressure vs the non-reuse path. Correct as of the
 # per-thread reuse gate (concurrent-compile) + wildcard-array-element fix; the

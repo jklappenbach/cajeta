@@ -4,6 +4,7 @@
 // power) are absent. Skips without a HIP device.
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"
+#include "../PortableEnv.h"
 #include "XpuDeviceTestUtil.h"
 #include "cajeta/xpu/XpuTarget.h"
 #include <cstdlib>

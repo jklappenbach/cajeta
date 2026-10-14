@@ -9,6 +9,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -44,10 +45,13 @@
 
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
-#include "llvm/Transforms/Utils/Cloning.h"   // CloneModule — stdlib-reuse merge
+#include "llvm/Transforms/Utils/Cloning.h"   // CloneModule — the shared stdlib dylib
+#include "llvm/Transforms/Utils/ModuleUtils.h"
+#include <functional>
 #include "llvm/ExecutionEngine/Orc/AbsoluteSymbols.h"
 #include "llvm/ExecutionEngine/Orc/Debugging/DebuggerSupport.h"
 #include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Linker/Linker.h"
@@ -343,6 +347,14 @@ struct StdlibReuseCache {
         auto _ptAfterFrontEnd = std::chrono::steady_clock::now();
         core.ensureCodegenLayer([](cajeta::Compiler& prime) {
             runCodegenPasses(prime.getModules());        // (b) IR-gen: codegen bodies + static inits
+            // Every concrete class's vtable gets its drop slot now: the shared
+            // stdlib dylib materializes these vtables once, and a slot a later
+            // program would have patched in the IR stays null in the JIT.
+            for (auto& [canon, type] : cajeta::CajetaType::getCanonicalMap()) {
+                auto klass = std::dynamic_pointer_cast<cajeta::CajetaClass>(type);
+                if (klass && !klass->isTemplate() && !klass->isPlaceholder())
+                    klass->patchVirtualTableDropFn();
+            }
         });
         auto _ptAfterIrGen = std::chrono::steady_clock::now();
         stdlibModule = core.getStdlibModule();
@@ -461,26 +473,232 @@ struct StdlibReuseCache {
         cajeta::StdlibReuseCore::instance().restoreBaseline();
     }
 
-    // ===================== U7b (fork B): shared stdlib JITDylib ============
+    // ===================== U7 shared stdlib JITDylib =======================
     // Persistent LLJIT hosting the materialized stdlib in its OWN JITDylib, so
-    // per-compile user dylibs link against ONE stdlib (addToLinkOrder) instead
-    // of each cloning + re-JITing it. Built lazily on first use of the shared-
-    // dylib path (CAJETA_JIT_SHARED_DYLIB); the default execution path never
-    // touches any of this. See SharedStdlibDylibSpikeTests for the proven model.
+    // every reusing compile's user dylib links ONE stdlib (addToLinkOrder)
+    // instead of cloning and re-JITing it. Built on the first reusing compile.
+    // See SharedStdlibDylibSpikeTests for the proven model.
     std::unique_ptr<llvm::orc::LLJIT> sharedJit;
     llvm::orc::JITDylib* sharedStdlibJD = nullptr;
     bool sharedJitReady = false;
+    size_t sharedMaterializations = 0;
+    // The stdlib's static initializers, in ctor order, and the runtime's
+    // execution-epoch entry points, all resolved in the shared stdlib dylib.
+    std::vector<void (*)()> stdlibClinits;
+    int32_t (*epochPush)() = nullptr;
+    void (*epochPopTo)(int32_t) = nullptr;
+    // Every stdlib static field's address and its bytes right after the
+    // stdlib's own initialization, restored before each execution.
+    std::vector<std::pair<void*, std::string>> stdlibStatics;
 
-    // Bind host process + native TLS-engine symbols onto `jd` so JIT'd stdlib /
-    // user code resolves libc, the statically-linked runtime, and the net TLS
-    // entry points. Mirrors the per-test path's generator + TLS block, applied
-    // ONCE to the shared jit's main dylib.
-    void installSharedHostSymbols(llvm::orc::JITDylib& jd) {
+    // Starts one program's execution against the shared stdlib: pushes a
+    // runtime epoch, restores every stdlib static field and re-runs the
+    // static initializers, so the program sees the statics a fresh process
+    // would. Returns the epoch depth.
+    int32_t beginExecution() {
+        int32_t depth = epochPush ? epochPush() : 0;
+        for (auto& [addr, bytes] : stdlibStatics) std::memcpy(addr, bytes.data(), bytes.size());
+        for (auto fn : stdlibClinits) fn();
+        return depth;
+    }
+
+    // The stdlib's static field globals: `<class>.<field>`, external, mutable.
+    static std::vector<std::pair<std::string, uint64_t>> collectStatics(
+            llvm::Module& m, const llvm::DataLayout& dl) {
+        std::vector<std::pair<std::string, uint64_t>> out;
+        for (auto& g : m.globals()) {
+            if (!g.hasInitializer() || !g.hasExternalLinkage() || g.isConstant()
+                    || g.isThreadLocal()) continue;
+            llvm::StringRef name = g.getName();
+            if (name.starts_with("llvm.") || name.starts_with("__cajeta")
+                    || !name.contains('.') || name.contains('#')) continue;
+            out.emplace_back(name.str(), dl.getTypeAllocSize(g.getValueType()));
+        }
+        return out;
+    }
+
+    // Ends that execution: every registration its constructors made is dropped.
+    void endExecution(int32_t depth) {
+        if (epochPopTo && depth > 0) epochPopTo(depth);
+    }
+
+    // Names of every definition the shared stdlib dylib holds, including its ctors.
+    std::set<std::string> materializedDefs;
+
+    static bool definesValue(const llvm::GlobalValue* gv) {
+        if (auto* f = llvm::dyn_cast<llvm::Function>(gv)) return !f->isDeclaration();
+        if (auto* g = llvm::dyn_cast<llvm::GlobalVariable>(gv)) return g->hasInitializer();
+        return false;
+    }
+
+    static std::vector<std::pair<llvm::Function*, unsigned>> ctorsOf(llvm::Module& m) {
+        std::vector<std::pair<llvm::Function*, unsigned>> out;
+        auto* ctors = m.getGlobalVariable("llvm.global_ctors");
+        if (!ctors || !ctors->hasInitializer()) return out;
+        auto* list = llvm::dyn_cast<llvm::ConstantArray>(ctors->getInitializer());
+        if (!list) return out;
+        for (unsigned i = 0; i < list->getNumOperands(); ++i) {
+            auto* entry = llvm::dyn_cast<llvm::ConstantStruct>(list->getOperand(i));
+            if (!entry || entry->getNumOperands() < 2) continue;
+            auto* fn = llvm::dyn_cast<llvm::Function>(entry->getOperand(1)->stripPointerCasts());
+            auto* prio = llvm::dyn_cast<llvm::ConstantInt>(entry->getOperand(0));
+            if (fn) out.emplace_back(fn, prio ? (unsigned) prio->getZExtValue() : 65535u);
+        }
+        return out;
+    }
+
+    void noteDefinitions(llvm::Module& m) {
+        for (auto& f : m) if (!f.isDeclaration()) materializedDefs.insert(f.getName().str());
+        for (auto& g : m.globals()) if (g.hasInitializer()) materializedDefs.insert(g.getName().str());
+    }
+
+    // Adds a module holding the stdlib definitions created since the last
+    // materialization (lazy classes, instantiations, drop thunks, statics a
+    // program was first to reference) to the shared stdlib dylib, with the
+    // local values they reach copied alongside, and runs its constructors.
+    void materializeStdlibDelta() {
+        if (!sharedJitReady) return;
+        llvm::Module& src = *stdlibModule->getLlvmModule();
+        std::set<const llvm::GlobalValue*> keep;
+        std::vector<const llvm::GlobalValue*> work;
+        auto consider = [&](const llvm::GlobalValue* gv) {
+            if (!gv || !definesValue(gv) || keep.count(gv)) return;
+            keep.insert(gv);
+            work.push_back(gv);
+        };
+        for (auto& f : src)
+            if (!f.hasLocalLinkage() && !materializedDefs.count(f.getName().str())) consider(&f);
+        for (auto& g : src.globals())
+            if (!g.hasLocalLinkage() && !g.getName().starts_with("llvm.")
+                    && !materializedDefs.count(g.getName().str())) consider(&g);
+        std::vector<std::pair<llvm::Function*, unsigned>> newCtors;
+        for (auto& [fn, prio] : ctorsOf(src))
+            if (!materializedDefs.count(fn->getName().str())) {
+                consider(fn);
+                newCtors.emplace_back(fn, prio);
+            }
+        if (work.empty()) return;
+        std::function<void(const llvm::Value*)> scan = [&](const llvm::Value* v) {
+            if (auto* gv = llvm::dyn_cast<llvm::GlobalValue>(v)) {
+                if (gv->hasLocalLinkage()) consider(gv);
+                return;
+            }
+            if (auto* c = llvm::dyn_cast<llvm::Constant>(v))
+                for (unsigned i = 0; i < c->getNumOperands(); ++i) scan(c->getOperand(i));
+        };
+        while (!work.empty()) {
+            const llvm::GlobalValue* gv = work.back();
+            work.pop_back();
+            if (auto* f = llvm::dyn_cast<llvm::Function>(gv)) {
+                for (auto& bb : *f)
+                    for (auto& inst : bb)
+                        for (unsigned i = 0; i < inst.getNumOperands(); ++i)
+                            scan(inst.getOperand(i));
+            } else if (auto* g = llvm::dyn_cast<llvm::GlobalVariable>(gv)) {
+                scan(g->getInitializer());
+            }
+        }
+        llvm::ValueToValueMapTy vm;
+        auto delta = llvm::CloneModule(src, vm,
+            [&](const llvm::GlobalValue* gv) { return keep.count(gv) > 0; });
+        for (const char* name : {"llvm.global_ctors", "llvm.global_dtors", "llvm.used",
+                                 "llvm.compiler.used"})
+            if (auto* g = delta->getGlobalVariable(name)) g->eraseFromParent();
+        for (auto& [fn, prio] : newCtors)
+            if (auto* cloned = llvm::dyn_cast_or_null<llvm::Function>(vm.lookup(fn)))
+                llvm::appendToGlobalCtors(*delta, cloned, (int) prio);
+        std::vector<std::string> clinitNames = exportClinits(*delta);
+        auto staticNames = collectStatics(*delta, sharedJit->getDataLayout());
+        size_t defs = keep.size();
+        for (const llvm::GlobalValue* gv : keep) materializedDefs.insert(gv->getName().str());
+
+        llvm::SmallVector<char, 0> bc;
+        { llvm::raw_svector_ostream os(bc); llvm::WriteBitcodeToFile(*delta, os); }
+        auto memBuf = llvm::MemoryBuffer::getMemBufferCopy(
+            llvm::StringRef(bc.data(), bc.size()), "cajeta_shared_stdlib_delta");
+        llvm::orc::ThreadSafeContext tsContext(std::make_unique<llvm::LLVMContext>());
+#if LLVM_VERSION_MAJOR >= 21
+        auto parsed = tsContext.withContextDo([&](llvm::LLVMContext* ctx) {
+            return llvm::parseBitcodeFile(memBuf->getMemBufferRef(), *ctx); });
+#else
+        auto parsed = llvm::parseBitcodeFile(memBuf->getMemBufferRef(),
+                                             *tsContext.getContext());
+#endif
+        if (!parsed)
+            throw std::runtime_error("shared stdlib delta reparse failed: "
+                + cajeta::jittest::toString(parsed.takeError()));
+        cajeta::optimizeModule(**parsed, nullptr, cajeta::OptLevel::O0);
+        llvm::orc::ThreadSafeModule tsm(std::move(*parsed), std::move(tsContext));
+        if (auto err = sharedJit->addIRModule(*sharedStdlibJD, std::move(tsm)))
+            throw std::runtime_error("shared stdlib delta addIRModule failed: "
+                + cajeta::jittest::toString(std::move(err)));
+        if (auto err = sharedJit->initialize(*sharedStdlibJD))
+            throw std::runtime_error("shared stdlib delta initialize failed: "
+                + cajeta::jittest::toString(std::move(err)));
+        for (const std::string& name : clinitNames)
+            if (auto fn = resolveStdlib<void (*)()>(name.c_str())) stdlibClinits.push_back(fn);
+        for (auto& [name, size] : staticNames)
+            if (auto* addr = resolveStdlib<void*>(name.c_str()))
+                stdlibStatics.emplace_back(addr, std::string((const char*) addr, size));
+        if (std::getenv("CAJETA_PRIME_TIMING"))
+            std::fprintf(stderr, "[shared-stdlib] delta: %zu definitions, %zu ctors, %zu static fields\n",
+                         defs, newCtors.size(), staticNames.size());
+    }
+
+    template <typename Fn>
+    Fn resolveStdlib(const char* name) {
+        auto sym = sharedJit->lookup(*sharedStdlibJD, name);
+        if (!sym) {
+            cajeta::jittest::consumeError(sym.takeError());
+            return nullptr;
+        }
+        return reinterpret_cast<Fn>(sym->getValue());
+    }
+
+    // Exposes the clone's `__cajeta_clinit_*` ctors to lookup and returns their
+    // names in ctor order; they are private in the compiler's module.
+    static std::vector<std::string> exportClinits(llvm::Module& m) {
+        std::vector<std::string> names;
+        auto* ctors = m.getGlobalVariable("llvm.global_ctors");
+        if (!ctors || !ctors->hasInitializer()) return names;
+        auto* list = llvm::dyn_cast<llvm::ConstantArray>(ctors->getInitializer());
+        if (!list) return names;
+        for (unsigned i = 0; i < list->getNumOperands(); ++i) {
+            auto* entry = llvm::dyn_cast<llvm::ConstantStruct>(list->getOperand(i));
+            if (!entry || entry->getNumOperands() < 2) continue;
+            auto* fn = llvm::dyn_cast<llvm::Function>(
+                entry->getOperand(1)->stripPointerCasts());
+            if (!fn || !fn->getName().starts_with("__cajeta_clinit_")) continue;
+            fn->setLinkage(llvm::GlobalValue::ExternalLinkage);
+            names.push_back(fn->getName().str());
+        }
+        return names;
+    }
+
+    // Bind host process symbols, the MinGW CRT entry points and the native
+    // TLS-engine symbols onto `jd` so JIT'd stdlib and user code resolves
+    // libc, the statically-linked runtime and the net TLS entry points.
+    void installHostSymbols(llvm::orc::LLJIT& jit, llvm::orc::JITDylib& jd) {
         auto gen = llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
-            sharedJit->getDataLayout().getGlobalPrefix());
-        if (!gen) throw std::runtime_error("shared LLJIT process generator failed");
+            jit.getDataLayout().getGlobalPrefix());
+        if (!gen) throw std::runtime_error("LLJIT process-symbol generator failed");
         jd.addGenerator(std::move(*gen));
-        auto& ES = sharedJit->getExecutionSession();
+        auto& ES = jit.getExecutionSession();
+#ifdef _WIN32
+        {
+            size_t winSymCount = 0;
+            const CajetaJitWinSym* winSyms = cajeta_jit_win_symbols(&winSymCount);
+            llvm::orc::SymbolMap winSymMap;
+            for (size_t i = 0; i < winSymCount; ++i) {
+                winSymMap[ES.intern(winSyms[i].name)] =
+                    llvm::orc::ExecutorSymbolDef(
+                        llvm::orc::ExecutorAddr::fromPtr(winSyms[i].addr),
+                        llvm::JITSymbolFlags::Exported);
+            }
+            cajeta::jittest::cantFail(
+                jd.define(llvm::orc::absoluteSymbols(std::move(winSymMap))));
+        }
+#endif
         llvm::orc::SymbolMap tlsSyms;
         auto bind = [&](const char* name, void* addr) {
             tlsSyms[ES.intern(name)] = llvm::orc::ExecutorSymbolDef(
@@ -517,8 +735,16 @@ struct StdlibReuseCache {
         auto jitOrErr = cajeta::test::makeCoffSafeJit();
         if (!jitOrErr) throw std::runtime_error("shared LLJIT create failed");
         sharedJit = std::move(*jitOrErr);
+        if (std::getenv("CAJETA_JIT_GDB")) {
+            if (auto err = llvm::orc::enableDebuggerSupport(*sharedJit)) {
+                llvm::errs() << "[jit-gdb] enableDebuggerSupport failed: "
+                             << cajeta::jittest::toString(std::move(err)) << "\n";
+            } else {
+                llvm::errs() << "[jit-gdb] GDB JIT symbolization enabled\n";
+            }
+        }
         auto& mainJD = sharedJit->getMainJITDylib();
-        installSharedHostSymbols(mainJD);
+        installHostSymbols(*sharedJit, mainJD);
 
         auto jdOrErr = sharedJit->createJITDylib("CajetaStdlib");
         if (!jdOrErr) throw std::runtime_error("shared StdlibJD create failed");
@@ -529,7 +755,10 @@ struct StdlibReuseCache {
         // fresh long-lived context (O0 alwaysinline like the per-test path),
         // add to the stdlib dylib, run its global ctors once.
         llvm::Module* srcMod = stdlibModule->getLlvmModule();
+        noteDefinitions(*srcMod);
         auto clone = llvm::CloneModule(*srcMod);
+        std::vector<std::string> clinitNames = exportClinits(*clone);
+        auto staticNames = collectStatics(*clone, sharedJit->getDataLayout());
         llvm::SmallVector<char, 0> bc;
         { llvm::raw_svector_ostream os(bc); llvm::WriteBitcodeToFile(*clone, os); }
         auto memBuf = llvm::MemoryBuffer::getMemBufferCopy(
@@ -554,7 +783,22 @@ struct StdlibReuseCache {
         if (auto err = sharedJit->initialize(*sharedStdlibJD))
             throw std::runtime_error("shared stdlib initialize failed: "
                 + cajeta::jittest::toString(std::move(err)));
+        for (const std::string& name : clinitNames) {
+            if (auto fn = resolveStdlib<void (*)()>(name.c_str())) stdlibClinits.push_back(fn);
+        }
+        for (auto& [name, size] : staticNames) {
+            if (auto* addr = resolveStdlib<void*>(name.c_str()))
+                stdlibStatics.emplace_back(addr, std::string((const char*) addr, size));
+        }
+        if (std::getenv("CAJETA_PRIME_TIMING"))
+            std::fprintf(stderr, "[shared-stdlib] %zu clinits, %zu static fields\n",
+                         stdlibClinits.size(), stdlibStatics.size());
+        epochPush = resolveStdlib<int32_t (*)()>("__cajeta_rt_epoch_push");
+        epochPopTo = resolveStdlib<void (*)(int32_t)>("__cajeta_rt_epoch_pop_to");
+        if (!epochPush || !epochPopTo)
+            throw std::runtime_error("shared stdlib lacks the runtime epoch entry points");
         sharedJitReady = true;
+        ++sharedMaterializations;
     }
 };
 
@@ -611,6 +855,10 @@ private:
 
 void sweepTempRoots() { TempRootRegistry::instance().sweep(); }
 
+size_t CajetaJit::sharedStdlibMaterializations() {
+    return StdlibReuseCache::instance().sharedMaterializations;
+}
+
 CajetaJit::~CajetaJit() {
     // Each JIT module's runtime statics include the carrier-thread flag and
     // pthread handle. A fresh module starts a fresh carrier on its FIRST
@@ -622,17 +870,18 @@ CajetaJit::~CajetaJit() {
     // module's own symbol (looked up here, while the module is still live)
     // joins the carrier cleanly before the LLJIT destructor frees the IR.
     if (jit || sharedJit) {
-        auto sym = sharedJit ? sharedJit->lookup(*userDylib, "__cajeta_task_shutdown")
-                             : jit->lookup("__cajeta_task_shutdown");
+        auto sym = resolve("__cajeta_task_shutdown");
         if (sym) {
-            auto fn = reinterpret_cast<void(*)()>(sym->getValue());
+            auto fn = reinterpret_cast<void(*)()>(sym->getAddress().getValue());
             if (fn) fn();
         } else {
             cajeta::jittest::consumeError(sym.takeError());
         }
     }
-    // Shared-dylib mode: remove this test's user dylib so JDs don't accumulate
-    // across the suite. The borrowed sharedJit + shared stdlib dylib persist.
+    // Shared-dylib mode: drop what this test's ctors registered, then remove
+    // its user dylib so JDs don't accumulate across the suite. The borrowed
+    // sharedJit + shared stdlib dylib persist.
+    if (sharedJit) StdlibReuseCache::instance().endExecution(epochDepth);
     if (sharedJit && userDylib) {
         if (auto err = sharedJit->getExecutionSession().removeJITDylib(*userDylib))
             cajeta::jittest::consumeError(std::move(err));
@@ -749,17 +998,10 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     // stdlib (skips the ~14s re-parse/re-codegen). Otherwise force a fresh,
     // fully-isolated Compiler — the original path — so flag-sensitive stdlib
     // codegen stays correct.
-    // Gated OFF by default. The reuse path collapses the ~14s/test stdlib
-    // parse+codegen to a one-time prime and is correct for tests that don't
-    // instantiate stdlib templates over USER types. Cross-test memory safety
-    // for that case (a stdlib-template instantiation referencing a freed user
-    // type, accumulated in the shared module) is NOT yet solved — it needs
-    // either redirecting stdlib-template instantiation ownership to the user
-    // module (a production codegen change) or per-test module reset with
-    // cajeta-object rebinding. Until then the default path is the original
-    // fully-isolated compile. Opt in with CAJETA_STDLIB_REUSE=1.
-    static const bool kReuseEnabled = std::getenv("CAJETA_STDLIB_REUSE") != nullptr;
-    bool reuseStdlib = kReuseEnabled && stdlibReusable(opts);
+    // CAJETA_STDLIB_REUSE is read per compile: the harness exports it for the
+    // sweep, a bare run leaves it unset, and a test may set it for itself.
+    bool reuseStdlib = std::getenv("CAJETA_STDLIB_REUSE") != nullptr
+                    && stdlibReusable(opts);
     // The reuse cache (one shared LLVMContext + a process-global captured
     // baseline mutated by restoreBaseline) is single-threaded by construction;
     // concurrent compiles racing on it corrupt the heap (ConcurrentCompileTests
@@ -1106,25 +1348,10 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
             throw std::runtime_error("JIT module-merge failed");
         }
     }
-    // U7b/c (fork B): shared-dylib mode resolves stdlib from a persistent shared
-    // CajetaStdlib JITDylib (no per-test clone). Gated behind CAJETA_JIT_SHARED_
-    // DYLIB; requires reuse (the cache holds the shared dylib). Default OFF — the
-    // clone-merge path below stays the proven default.
-    const bool useSharedDylib =
-        reuseStdlib && std::getenv("CAJETA_JIT_SHARED_DYLIB") != nullptr;
-    // Reuse mode: the persistent stdlib isn't in this Compiler's module list
-    // (it's process-global, built once), so CLONE its IR — including any
-    // template instantiations this test triggered into it — and link the
-    // self-contained clone into `primary`. Cloning (not moving) leaves the
-    // cached module available for the next test. Skipped under shared-dylib mode,
-    // where stdlib symbols resolve cross-dylib from CajetaStdlib instead.
-    if (reuseStdlib && !useSharedDylib) {
-        auto stdlibClone = llvm::CloneModule(*stdlibCache.stdlibModule->getLlvmModule());
-        if (llvm::Linker::linkModules(*primary->getLlvmModule(),
-                                       std::move(stdlibClone))) {
-            throw std::runtime_error("JIT stdlib-clone merge failed");
-        }
-    }
+    // Under reuse the stdlib is not in this Compiler's module list: user code
+    // resolves it cross-dylib from the persistent CajetaStdlib JITDylib (U7).
+    const bool useSharedDylib = reuseStdlib;
+    if (useSharedDylib) stdlibCache.materializeStdlibDelta();
     mark("linkModules merge");
 
     // CajetaXPU host launch: build each @Kernel's cubin and emit a global
@@ -1261,6 +1488,14 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     if (opts.captureIr) {
         llvm::raw_string_ostream irStream(jitState->moduleIr);
         (*parsed)->print(irStream, nullptr);
+        // Under reuse the stdlib is not in this module, so append its IR as
+        // the shared dylib materialized it: the capture keeps reading as the
+        // whole program after the same O0 inlining.
+        if (useSharedDylib) {
+            auto stdlibClone = llvm::CloneModule(*stdlibCache.stdlibModule->getLlvmModule());
+            cajeta::optimizeModule(*stdlibClone, nullptr, cajeta::OptLevel::O0);
+            stdlibClone->print(irStream, nullptr);
+        }
         irStream.flush();
     }
     llvm::orc::ThreadSafeModule tsModule(std::move(*parsed), std::move(tsContext));
@@ -1326,79 +1561,8 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     }
     mark("LLJIT create + addIRModule");
 
-    // Make host process symbols (printf, malloc, etc.) resolvable from JIT'd code.
-    auto& mainDylib = jitState->jit->getMainJITDylib();
-    auto generator = llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
-        jitState->jit->getDataLayout().getGlobalPrefix());
-    if (!generator) {
-        throw std::runtime_error("LLJIT process-symbol generator failed");
-    }
-    mainDylib.addGenerator(std::move(*generator));
-
-#ifdef _WIN32
-    // The generator above dlsym's the current process, but MinGW's CRT /
-    // libgcc functions are statically linked into this test binary and not
-    // in its PE export table, so it can't find them — the embedded runtime
-    // bitcode's calls to write/open/__mingw_fprintf/stat64i32/... then fail
-    // to materialize, cascading to every runtime-dependent symbol. Bind them
-    // explicitly to the addresses JitWinSymbols.c took (in a TU compiled with
-    // the same MinGW headers as the runtime, so each address is the exact
-    // entry point the bitcode references).
-    {
-        size_t winSymCount = 0;
-        const CajetaJitWinSym* winSyms = cajeta_jit_win_symbols(&winSymCount);
-        auto& execSession = jitState->jit->getExecutionSession();
-        llvm::orc::SymbolMap winSymMap;
-        for (size_t i = 0; i < winSymCount; ++i) {
-            winSymMap[execSession.intern(winSyms[i].name)] =
-                llvm::orc::ExecutorSymbolDef(
-                    llvm::orc::ExecutorAddr::fromPtr(winSyms[i].addr),
-                    llvm::JITSymbolFlags::Exported);
-        }
-        cajeta::jittest::cantFail(
-            mainDylib.define(llvm::orc::absoluteSymbols(std::move(winSymMap))));
-    }
-#endif
-
-    // Bind the cajeta.io.net TLS engine symbols (native-only, see the extern block
-    // at the top). Done on every platform: on MinGW the process generator can't
-    // find exe-local symbols; elsewhere absoluteSymbols simply wins over the
-    // (redundant) generator entry. The engine functions are self-contained — the
-    // SSL_*/BIO_* calls inside them are already resolved by native linking, so
-    // the JIT only needs these entry points.
-    {
-        auto& execSession = jitState->jit->getExecutionSession();
-        llvm::orc::SymbolMap tlsSyms;
-        auto bind = [&](const char* name, void* addr) {
-            tlsSyms[execSession.intern(name)] = llvm::orc::ExecutorSymbolDef(
-                llvm::orc::ExecutorAddr::fromPtr(addr),
-                llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable);
-        };
-        bind("__cajeta_tls_ctx_new", (void*) &__cajeta_tls_ctx_new);
-        bind("__cajeta_tls_ctx_use_cert_key_pem", (void*) &__cajeta_tls_ctx_use_cert_key_pem);
-        bind("__cajeta_tls_ctx_free", (void*) &__cajeta_tls_ctx_free);
-        bind("__cajeta_tls_ctx_set_verify", (void*) &__cajeta_tls_ctx_set_verify);
-        bind("__cajeta_tls_ctx_add_trust_pem", (void*) &__cajeta_tls_ctx_add_trust_pem);
-        bind("__cajeta_tls_ctx_use_system_trust", (void*) &__cajeta_tls_ctx_use_system_trust);
-        bind("__cajeta_tls_conn_new", (void*) &__cajeta_tls_conn_new);
-        bind("__cajeta_tls_set_verify_host", (void*) &__cajeta_tls_set_verify_host);
-        bind("__cajeta_tls_verify_result", (void*) &__cajeta_tls_verify_result);
-        bind("__cajeta_tls_set_sni", (void*) &__cajeta_tls_set_sni);
-        bind("__cajeta_tls_set_alpn", (void*) &__cajeta_tls_set_alpn);
-        bind("__cajeta_tls_get_alpn", (void*) &__cajeta_tls_get_alpn);
-        bind("__cajeta_tls_ctx_set_alpn_select", (void*) &__cajeta_tls_ctx_set_alpn_select);
-        bind("__cajeta_tls_feed_ciphertext", (void*) &__cajeta_tls_feed_ciphertext);
-        bind("__cajeta_tls_pull_ciphertext", (void*) &__cajeta_tls_pull_ciphertext);
-        bind("__cajeta_tls_pending_ciphertext", (void*) &__cajeta_tls_pending_ciphertext);
-        bind("__cajeta_tls_handshake_step", (void*) &__cajeta_tls_handshake_step);
-        bind("__cajeta_tls_write_plaintext", (void*) &__cajeta_tls_write_plaintext);
-        bind("__cajeta_tls_read_plaintext", (void*) &__cajeta_tls_read_plaintext);
-        bind("__cajeta_tls_shutdown", (void*) &__cajeta_tls_shutdown);
-        bind("__cajeta_tls_free", (void*) &__cajeta_tls_free);
-        cajeta::jittest::cantFail(
-            mainDylib.define(llvm::orc::absoluteSymbols(std::move(tlsSyms))));
-    }
-    }  // end non-shared host-symbol setup
+    stdlibCache.installHostSymbols(*jitState->jit, jitState->jit->getMainJITDylib());
+    }  // end fresh-LLJIT setup
 
     // The active JIT + dylib for the rest of the flow. Shared mode targets this
     // test's user dylib (links the shared stdlib); default mode targets the
@@ -1419,6 +1583,7 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     // CajetaClass::generateStaticInitializers) needs this initialize
     // call to execute its initializer. (Shared mode: stdlib ctors already ran
     // once at StdlibJD init; this runs only THIS user dylib's ctors.)
+    if (useSharedDylib) jitState->epochDepth = stdlibCache.beginExecution();
     if (auto err = activeJit->initialize(activeDylib)) {
         throw std::runtime_error("LLJIT initialize failed: "
             + cajeta::jittest::toString(std::move(err)));
@@ -1436,8 +1601,8 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     // deterministic starting point regardless of what the previous
     // test left behind.
     int desiredPoison = opts.poisonFreeEnabled ? 1 : 0;
-    if (auto sym = activeJit->lookup(activeDylib, "__cajeta_set_poison_free")) {
-        auto setFn = reinterpret_cast<void(*)(int)>(sym->getValue());
+    if (auto sym = jitState->resolve("__cajeta_set_poison_free")) {
+        auto setFn = reinterpret_cast<void(*)(int)>(sym->getAddress().getValue());
         if (setFn) setFn(desiredPoison);
     } else {
         cajeta::jittest::consumeError(sym.takeError());
@@ -1445,8 +1610,8 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     ::__cajeta_set_poison_free(desiredPoison);
 
     int desiredValidate = opts.dropChainValidateEnabled ? 1 : 0;
-    if (auto sym = activeJit->lookup(activeDylib, "__cajeta_set_drop_chain_validate")) {
-        auto setFn = reinterpret_cast<void(*)(int)>(sym->getValue());
+    if (auto sym = jitState->resolve("__cajeta_set_drop_chain_validate")) {
+        auto setFn = reinterpret_cast<void(*)(int)>(sym->getAddress().getValue());
         if (setFn) setFn(desiredValidate);
     } else {
         cajeta::jittest::consumeError(sym.takeError());
@@ -1474,26 +1639,39 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     return jitState;
 }
 
+llvm::Expected<llvm::orc::ExecutorSymbolDef> CajetaJit::resolve(const std::string& name) {
+    if (!sharedJit) {
+        auto addr = jit->lookup(name);
+        if (!addr) return addr.takeError();
+        return llvm::orc::ExecutorSymbolDef(*addr, llvm::JITSymbolFlags());
+    }
+    llvm::orc::JITDylibSearchOrder order{
+        { userDylib, llvm::orc::JITDylibLookupFlags::MatchAllSymbols },
+        { StdlibReuseCache::instance().sharedStdlibJD,
+          llvm::orc::JITDylibLookupFlags::MatchExportedSymbolsOnly },
+        { &sharedJit->getMainJITDylib(),
+          llvm::orc::JITDylibLookupFlags::MatchExportedSymbolsOnly } };
+    return sharedJit->getExecutionSession().lookup(order, sharedJit->mangleAndIntern(name));
+}
+
 void* CajetaJit::lookupAddress(const std::string& shortName) {
     auto it = nameMap.find(shortName);
     if (it == nameMap.end()) return nullptr;
-    auto sym = sharedJit ? sharedJit->lookup(*userDylib, it->second)
-                         : jit->lookup(it->second);
+    auto sym = resolve(it->second);
     if (!sym) {
         cajeta::jittest::consumeError(sym.takeError());
         return nullptr;
     }
-    return reinterpret_cast<void*>(sym->getValue());
+    return reinterpret_cast<void*>(sym->getAddress().getValue());
 }
 
 void* CajetaJit::lookupRawSymbol(const std::string& exactName) {
-    auto sym = sharedJit ? sharedJit->lookup(*userDylib, exactName)
-                         : jit->lookup(exactName);
+    auto sym = resolve(exactName);
     if (!sym) {
         cajeta::jittest::consumeError(sym.takeError());
         return nullptr;
     }
-    return reinterpret_cast<void*>(sym->getValue());
+    return reinterpret_cast<void*>(sym->getAddress().getValue());
 }
 
 } // namespace cajeta_test

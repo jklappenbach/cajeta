@@ -9,6 +9,7 @@
 // repo-local directory.
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"
+#include "../PortableEnv.h"
 #include "cajeta/xpu/XpuTarget.h"
 #include <cstdlib>
 #include <filesystem>

@@ -73,7 +73,8 @@ const char* READ_AND_DROP =
     "            A.churn();\n"
     "            seen = k.call(0);\n"
     "        }\n"
-    "        return after * 10000 + seen * 10 + Cfg.gone;\n";
+    "        int32 seenDigits = ((seen % 100) + 100) % 100;\n"
+    "        return after * 10000 + seenDigits * 10 + Cfg.gone;\n";
 
 } // namespace
 

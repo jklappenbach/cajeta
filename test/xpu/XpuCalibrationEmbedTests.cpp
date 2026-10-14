@@ -4,6 +4,7 @@
 // against its own empty repo-local XDG_CACHE_HOME so nothing comes from the cache.
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"
+#include "../PortableEnv.h"
 #include "cajeta/xpu/XpuTarget.h"
 #include <cstdlib>
 #include <filesystem>

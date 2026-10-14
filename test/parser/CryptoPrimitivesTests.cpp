@@ -289,9 +289,12 @@ TEST(SecureRandomTests, fillsThroughTheNativeEntropyPath) {
     CajetaJit::Options opts;
     opts.captureIr = true;
     auto jit = CajetaJit::compile(src, "test.D", opts);
-    std::string body = functionBody(jit->getModuleIr(), "cajeta.hash.SecureRandom::fill");
+    std::string body = functionBody(jit->getModuleIr(), "cajeta.hash.SecureRandom::fill(");
+    std::string stub = functionBody(jit->getModuleIr(), "cajeta.hash.SecureRandom::fillNative(");
     ASSERT_FALSE(body.empty());
-    EXPECT_NE(body.find("@__cajeta_secure_random_fill"), std::string::npos);
+    ASSERT_FALSE(stub.empty());
+    EXPECT_NE(body.find("SecureRandom::fillNative"), std::string::npos);
+    EXPECT_NE(stub.find("@__cajeta_secure_random_fill"), std::string::npos);
     EXPECT_EQ(body.find("cajeta.math"), std::string::npos);
 }
 

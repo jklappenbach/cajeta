@@ -183,18 +183,32 @@ public:
     // intrinsic shape is unchanged across the operator-mechanism work.
     const std::string& getModuleIr() const { return moduleIr; }
 
+    // True when this compile linked the process-wide stdlib JITDylib instead
+    // of building its own LLJIT: every reusing compile does.
+    bool usesSharedStdlib() const { return sharedJit != nullptr; }
+
+    // How many times this process has materialized the shared stdlib.
+    static size_t sharedStdlibMaterializations();
+
 private:
     CajetaJit();
 
     void* lookupAddress(const std::string& shortName);
 
+    // Resolves `name` where this compile's code resolves it: its own dylib,
+    // then the shared stdlib, then the host. An explicit ORC lookup searches
+    // one dylib only, so under reuse a stdlib or runtime symbol is found here
+    // and nowhere else.
+    llvm::Expected<llvm::orc::ExecutorSymbolDef> resolve(const std::string& name);
+
     std::unique_ptr<llvm::orc::LLJIT> jit;
-    // Shared-dylib mode (U7b/c, CAJETA_JIT_SHARED_DYLIB): `jit` is null and the
-    // LLJIT is BORROWED from the process-wide StdlibReuseCache. This test's code
+    // Under stdlib reuse `jit` is null and the LLJIT is BORROWED from the
+    // process-wide StdlibReuseCache (compiler-threadsafe U7). This test's code
     // lives in `userDylib` (links the shared CajetaStdlib JITDylib); it's removed
     // on destruction so dylibs don't accumulate. Lookups target `userDylib`.
     llvm::orc::LLJIT* sharedJit = nullptr;
     llvm::orc::JITDylib* userDylib = nullptr;
+    int32_t epochDepth = 0;
     std::string moduleIr;
     // Mapping short method name -> full mangled name in the JIT'd module. Built
     // once at compile time so per-test lookups don't have to rescan.
