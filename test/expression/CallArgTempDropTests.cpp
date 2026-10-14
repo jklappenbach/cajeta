@@ -148,3 +148,80 @@ TEST(CallArgTempDropTests, loopedConcatTempsBounded) {
         "    i = i + 1;\n"
         "}"), 0);
 }
+
+namespace {
+
+// A callee that throws with the borrowed argument folded into its message.
+// The caller-side temp drop is emitted AFTER the call, so a throw skipped
+// it: 2 live objects per refused call (the register-user sample's live-count
+// check, 2026-10-14, through cajeta-cloud's MemIdentityState.badToken).
+const char* kThrower =
+    "import cajeta.error.RecoverableException;\n"
+    "public class Thrower {\n"
+    "    public Thrower() { return; }\n"
+    "    public static void boom(String s) {\n"
+    "        throw heap RecoverableException(\"boom: \" + s);\n"
+    "    }\n"
+    "    public void raise(String s) {\n"
+    "        throw heap RecoverableException(\"boom: \" + s);\n"
+    "    }\n"
+    "}\n";
+
+} // namespace
+
+// A concat temp handed to a static borrow formal is reclaimed when the
+// callee throws and the caller catches.
+TEST(CallArgTempDropTests, concatTempToThrowingStaticBorrowFormalReclaimed) {
+    EXPECT_EQ(liveDelta(kThrower,
+        "String x = \"expiry\";\n"
+        "try {\n"
+        "    Thrower.boom(\"token failed the \" + x + \" check\");\n"
+        "} catch (RecoverableException e) {\n"
+        "    int32 caught = 1;\n"
+        "}"), 0);
+}
+
+// The instance-method twin, in a loop: the delta must not grow with the
+// number of throws.
+TEST(CallArgTempDropTests, concatTempToThrowingInstanceBorrowFormalBounded) {
+    EXPECT_EQ(liveDelta(kThrower,
+        "Thrower t = stack Thrower();\n"
+        "String x = \"expiry\";\n"
+        "int32 i = 0;\n"
+        "while (i < 5) {\n"
+        "    try {\n"
+        "        t.raise(\"token failed the \" + x + \" check\");\n"
+        "    } catch (RecoverableException e) {\n"
+        "        i = i + 1;\n"
+        "    }\n"
+        "}"), 0);
+}
+
+// `equals` on a String receiver is null-safe: a null receiver skips the call
+// and no guard is pushed on that path, so the temp is reclaimed directly
+// there; a live receiver reclaims it through the guard. Both paths balance.
+TEST(CallArgTempDropTests, concatTempToNullSafeEqualsReclaimedOnBothPaths) {
+    EXPECT_EQ(liveDelta(kRoot,
+        "String x = \"h\";\n"
+        "String n = null;\n"
+        "String m = \"h!\";\n"
+        "if (n.equals(x + \"!\")) { return 98L; }\n"
+        "if (!m.equals(x + \"!\")) { return 97L; }"), 0);
+}
+
+// The same two paths with a RUNTIME-titled temp: a plain-return wrapper over
+// a `#String` producer carries its title in the return flag, so the direct
+// drop on the null path is a branch, which the join's phi must follow (the
+// FilterSelectTests shape that failed JIT verification on 2026-10-14).
+TEST(CallArgTempDropTests, runtimeTempToNullSafeEqualsReclaimedOnBothPaths) {
+    EXPECT_EQ(liveDelta(std::string(kRoot) +
+        "public final class P {\n"
+        "    public static #String fresh(String s) { return \"\" + s + \"!\"; }\n"
+        "    public static String viaPlain(String s) { return P.fresh(s); }\n"
+        "}\n",
+        "String x = \"h\";\n"
+        "String n = null;\n"
+        "String m = \"h!\";\n"
+        "if (n.equals(P.viaPlain(x))) { return 98L; }\n"
+        "if (!m.equals(P.viaPlain(x))) { return 97L; }"), 0);
+}

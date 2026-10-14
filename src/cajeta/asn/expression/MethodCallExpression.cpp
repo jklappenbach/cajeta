@@ -359,6 +359,100 @@ namespace cajeta {
         return v;
     }
 
+    // Element-ownership 3.4.3 across a throw. A fresh owned String temp that a
+    // borrow formal consumes (`d.ignore(x + "!")`, a `#String` call result) was
+    // dropped by a call emitted AFTER the method call, so a callee that threw
+    // skipped it: 2 live objects per refused token through cajeta-cloud's
+    // MemIdentityState.badToken (2026-10-14). The temp now rides the drop chain
+    // around the call like an owner local: pushed just before, popped and
+    // dropped just after, and unwound by __cajeta_throw between the two.
+    struct ArgTempGuard {
+        llvm::Value* tempV = nullptr;
+        llvm::Value* flag = nullptr;   ///< null: owned statically; else the runtime title flag
+        llvm::Value* entry = nullptr;  ///< the chain entry blob, null when no push was emitted
+    };
+
+    // The pre-fix reclamation, kept for a path the call never reaches (the
+    // null-safe receiver skip) and for a module without the push helpers.
+    static void dropArgTempDirect(CajetaModulePtr module, const ArgTempGuard& g) {
+        llvm::Function* strDropFn = module->getRuntimeFunction("__cajeta_string_drop");
+        if (!strDropFn || !g.tempV) return;
+        auto* builder = module->getBuilder();
+        if (!g.flag) {
+            builder->CreateCall(strDropFn, {g.tempV});
+            return;
+        }
+        if (auto* cf = llvm::dyn_cast<llvm::ConstantInt>(g.flag)) {
+            if (!cf->isZero()) builder->CreateCall(strDropFn, {g.tempV});
+            return;
+        }
+        auto& ctx = *module->getLlvmContext();
+        llvm::Function* fn = builder->GetInsertBlock()->getParent();
+        auto* dropBB = llvm::BasicBlock::Create(ctx, "arg_temp_drop", fn);
+        auto* contBB = llvm::BasicBlock::Create(ctx, "arg_temp_cont", fn);
+        builder->CreateCondBr(
+            builder->CreateICmpNE(g.flag,
+                llvm::ConstantInt::get(g.flag->getType(), 0), "arg_temp_owned"),
+            dropBB, contBB);
+        builder->SetInsertPoint(dropBB);
+        builder->CreateCall(strDropFn, {g.tempV});
+        builder->CreateBr(contBB);
+        builder->SetInsertPoint(contBB);
+    }
+
+    // Push one chain entry per guarded temp, in order, armed from the temp's
+    // title flag. A guard whose push could not be emitted keeps a null entry
+    // and is dropped directly at pop time.
+    static void pushArgTempGuards(CajetaModulePtr module,
+                                  std::vector<ArgTempGuard>& guards, int line) {
+        llvm::Function* strDropFn = module->getRuntimeFunction("__cajeta_string_drop");
+        if (!strDropFn) return;
+        auto* builder = module->getBuilder();
+        auto& ctx = *module->getLlvmContext();
+        bool debug = module->getFlags().sourceTags;
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+        for (auto& g : guards) {
+            if (!g.tempV) continue;
+            llvm::Value* flag = g.flag;
+            if (auto* cf = llvm::dyn_cast_or_null<llvm::ConstantInt>(flag)) {
+                if (cf->isZero()) { g.tempV = nullptr; continue; }  // a borrow: nothing to drop
+                flag = nullptr;
+            }
+            bool fuse = flag != nullptr;
+            llvm::Function* pushFn = module->getRuntimeFunction(debug
+                ? (fuse ? "__cajeta_drop_push_flag_debug" : "__cajeta_drop_push_debug")
+                : (fuse ? "__cajeta_drop_push_flag" : "__cajeta_drop_push"));
+            if (!pushFn) continue;
+            if (fuse && flag->getType()->isIntegerTy() && flag->getType() != i64Ty) {
+                flag = builder->CreateIntCast(flag, i64Ty, /*isSigned=*/false);
+            }
+            // The chain threads through the blob, so it lives in the entry block.
+            g.entry = module->createEntryAlloca(
+                llvm::ArrayType::get(i8Ty, debug ? 40 : 32), "arg.temp.entry");
+            std::vector<llvm::Value*> args{g.entry, g.tempV, strDropFn};
+            if (debug) {
+                args.push_back(module->getOrCreateSourceFileConstant(module->getSourcePath()));
+                args.push_back(llvm::ConstantInt::get(i32Ty, (uint64_t) line));
+            }
+            if (fuse) args.push_back(flag);
+            builder->CreateCall(pushFn, args);
+        }
+    }
+
+    // Pop the guards in reverse push order; pop_run drops an armed entry.
+    static void popArgTempGuards(CajetaModulePtr module,
+                                 const std::vector<ArgTempGuard>& guards) {
+        llvm::Function* popFn = module->getRuntimeFunction("__cajeta_drop_pop_run");
+        auto* builder = module->getBuilder();
+        for (auto it = guards.rbegin(); it != guards.rend(); ++it) {
+            if (!it->tempV) continue;
+            if (it->entry && popFn) builder->CreateCall(popFn, {it->entry});
+            else dropArgTempDirect(module, *it);
+        }
+    }
+
     bool MethodCallExpression::freshOwnedStringTemp(const AbstractSyntaxNodePtr& e) {
         auto isLangString = [](CajetaTypePtr t) -> bool {
             auto cls = dynamic_pointer_cast<CajetaClass>(t);
@@ -9060,6 +9154,62 @@ namespace cajeta {
         } else {
             transferWordVal = builder->getInt64((uint64_t) moveMask);
         }
+        // The callee the temp reclamation below reasons about, resolved before
+        // the call so the String temps it consumes can be guarded around it.
+        MethodPtr tempTarget;
+        llvm::Function* strDropFn = module->getRuntimeFunction("__cajeta_string_drop");
+        {
+            bool callFloatingT = true;
+            for (auto& e : entries) {
+                if (e.label.empty()) { callFloatingT = false; break; }
+            }
+            tempTarget = targetClass
+                ? targetClass->resolveMethod(methodCallName, entries,
+                      /*isConstructor=*/false, callFloatingT,
+                      /*explicitMethodTypeArgs=*/explicitMethodTypeArgs)
+                : nullptr;
+        }
+        // Guards: the receiver's fresh String temp first, then each fresh
+        // String temp that a borrow formal consumes. These drop at the pop
+        // after the call, or during the unwind of a throw out of it.
+        std::vector<ArgTempGuard> tempGuards;
+        std::vector<char> guardedArg(parameters.size(), 0);
+        bool guardedReceiver = false;
+        if (tempTarget && strDropFn && entries.size() == parameters.size()) {
+            auto fpl = tempTarget->getParameterList();
+            bool isStaticT = tempTarget->getModifiers().find(STATIC)
+                != tempTarget->getModifiers().end();
+            bool hasThisT = !fpl.empty() && fpl.front()->getName() == "this";
+            int offT = (isStaticT || !hasThisT) ? 0 : 1;
+            if (offT == 1 && fpl.front() && !fpl.front()->isTransferred()
+                    && !children.empty() && thisValue
+                    && thisValue->getType()->isPointerTy()
+                    && freshOwnedStringTemp(children[0])) {
+                tempGuards.push_back(ArgTempGuard{thisValue, nullptr, nullptr});
+                guardedReceiver = true;
+            }
+            for (size_t ai = 0; ai < parameters.size(); ++ai) {
+                size_t fi = ai + (size_t) offT;
+                if (fi >= fpl.size()) break;
+                if (!fpl[fi] || fpl[fi]->isTransferred()) continue;
+                if (parameters[ai].callerTransferred) continue;
+                llvm::Value* tempV = entries[ai].value;
+                if (!tempV || ai >= argTitles.size()) continue;
+                const auto& at = argTitles[ai];
+                if (!at.shape.has(ownership::TitleShape::kString)
+                        || at.shape.family == ownership::TitleFamily::Literal
+                        || !tempV->getType()->isPointerTy()) {
+                    continue;
+                }
+                guardedArg[ai] = 1;
+                if (at.shape.answer == ownership::TitleAnswer::Owned) {
+                    tempGuards.push_back(ArgTempGuard{tempV, nullptr, nullptr});
+                } else if (at.shape.answer == ownership::TitleAnswer::Runtime && at.flag) {
+                    tempGuards.push_back(ArgTempGuard{tempV, at.flag, nullptr});
+                }
+            }
+        }
+        pushArgTempGuards(module, tempGuards, getSourceLine());
         llvm::Value* callResult = targetClass->invokeMethod(methodCallName, entries,
             /*isConstructor=*/false, thisValue, /*callerModule=*/module,
             /*forceDirectCall=*/(isSuperCall || targetIsFinalClass),
@@ -9068,6 +9218,7 @@ namespace cajeta {
             /*transferWord=*/transferWordVal,
             /*errorIfUnresolved=*/true,
             getSourceLine(), getSourceColumn() + 1);
+        popArgTempGuards(module, tempGuards);
 
         if (nullSafeStringMethod) {
             // Close all three null-safety blocks unconditionally: invokeMethod may return
@@ -9083,28 +9234,23 @@ namespace cajeta {
             llvm::BasicBlock* callTerm = builder->GetInsertBlock();
             builder->CreateBr(nullSafeJoinBB);
             builder->SetInsertPoint(nullSafeNullBB);
+            // The call was skipped, so no guard was pushed on this path; the
+            // temps were still materialized and are reclaimed here.
+            for (const auto& g : tempGuards) dropArgTempDirect(module, g);
+            // A runtime-flagged temp's direct drop opens blocks, so the join's
+            // predecessor is whatever block the null path ends in.
+            llvm::BasicBlock* nullTerm = builder->GetInsertBlock();
             builder->CreateBr(nullSafeJoinBB);
             builder->SetInsertPoint(nullSafeJoinBB);
             llvm::PHINode* phi = builder->CreatePHI(nullSafeReturnTy, 2,
                 "str.nullsafe.result");
             phi->addIncoming(
                 normalizedCall ? normalizedCall : nullSafeDefault, callTerm);
-            phi->addIncoming(nullSafeDefault, nullSafeNullBB);
+            phi->addIncoming(nullSafeDefault, nullTerm);
             callResult = phi;
         }
 
         {
-            bool callFloatingT = true;
-            for (auto& e : entries) {
-                if (e.label.empty()) { callFloatingT = false; break; }
-            }
-            MethodPtr tempTarget = targetClass
-                ? targetClass->resolveMethod(methodCallName, entries,
-                      /*isConstructor=*/false, callFloatingT,
-                      /*explicitMethodTypeArgs=*/explicitMethodTypeArgs)
-                : nullptr;
-            llvm::Function* strDropFn = module->getRuntimeFunction(
-                "__cajeta_string_drop");
             if (tempTarget && strDropFn
                     && entries.size() == parameters.size()) {
                 resolvedReturnsOwnership = tempTarget->isReturnsOwnership();
@@ -9125,35 +9271,8 @@ namespace cajeta {
                     if (parameters[ai].callerTransferred) continue;
                     llvm::Value* tempV = entries[ai].value;
                     if (!tempV) continue;
-                    if (ai < argTitles.size()
-                            && argTitles[ai].shape.has(ownership::TitleShape::kString)
-                            && argTitles[ai].shape.family != ownership::TitleFamily::Literal
-                            && tempV->getType()->isPointerTy()) {
-                        const auto& at = argTitles[ai];
-                        if (at.shape.answer == ownership::TitleAnswer::Owned) {
-                            builder->CreateCall(strDropFn, {tempV});
-                        } else if (at.shape.answer == ownership::TitleAnswer::Runtime
-                                && at.flag) {
-                            if (auto* cf = llvm::dyn_cast<llvm::ConstantInt>(at.flag)) {
-                                if (!cf->isZero()) builder->CreateCall(strDropFn, {tempV});
-                            } else {
-                                auto& tctx = *module->getLlvmContext();
-                                llvm::Function* tfn = builder->GetInsertBlock()->getParent();
-                                auto* dropBB = llvm::BasicBlock::Create(tctx, "arg_temp_drop", tfn);
-                                auto* contBB = llvm::BasicBlock::Create(tctx, "arg_temp_cont", tfn);
-                                builder->CreateCondBr(
-                                    builder->CreateICmpNE(at.flag,
-                                        llvm::ConstantInt::get(at.flag->getType(), 0),
-                                        "arg_temp_owned"),
-                                    dropBB, contBB);
-                                builder->SetInsertPoint(dropBB);
-                                builder->CreateCall(strDropFn, {tempV});
-                                builder->CreateBr(contBB);
-                                builder->SetInsertPoint(contBB);
-                            }
-                        }
-                        continue;
-                    }
+                    // A fresh String temp was reclaimed by its guard around the call.
+                    if (guardedArg[ai]) continue;
                     if (auto vCls = freshSharedValueTempClass(
                             parameters[ai].expression)) {
                         llvm::Value* slot = tempV;
@@ -9172,8 +9291,8 @@ namespace cajeta {
                         && !fpl.front()->isTransferred()
                         && !children.empty() && thisValue
                         && thisValue->getType()->isPointerTy()) {
-                    if (freshOwnedStringTemp(children[0])) {
-                        builder->CreateCall(strDropFn, {thisValue});
+                    if (guardedReceiver) {
+                        // Reclaimed by its guard around the call.
                     } else if (auto rCls = freshSharedValueTempClass(
                             children[0])) {
                         llvm::Function* relFn =
