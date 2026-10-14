@@ -1002,6 +1002,15 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     // sweep, a bare run leaves it unset, and a test may set it for itself.
     bool reuseStdlib = std::getenv("CAJETA_STDLIB_REUSE") != nullptr
                     && stdlibReusable(opts);
+#ifdef _WIN32
+    // The shared stdlib dylib (U7) is unproven on COFF: the v0.42.0 Windows
+    // dry-run crashed 114 of 901 release tests, exit 139 right after the
+    // JITLink object layer came up, where v0.41.0's per-test stdlib under the
+    // same CAJETA_STDLIB_REUSE passed 882 of 882. Until that path is debugged
+    // on Windows, every compile there takes the fresh, fully isolated path
+    // (2026-10-14).
+    reuseStdlib = false;
+#endif
     // The reuse cache (one shared LLVMContext + a process-global captured
     // baseline mutated by restoreBaseline) is single-threaded by construction;
     // concurrent compiles racing on it corrupt the heap (ConcurrentCompileTests
