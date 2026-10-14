@@ -1,0 +1,99 @@
+package cajeta.xpu;
+
+import cajeta.io.file.File;
+import cajeta.io.file.Path;
+import cajeta.lang.String;
+
+/**
+ * The calibration store used when none is installed (xpu-tile-scheduling
+ * §12.4b): records embedded in the artifact at build first, then the
+ * platform's user cache directory, probed once for writability. It never
+ * writes under `/tmp` or the artifact store (`.olla`); with nothing writable
+ * it reports read-only and the scheduler runs from memory.
+ */
+public final class DefaultCalibrationStore implements CalibrationStore {
+    String root;
+    int32 state;
+
+    public DefaultCalibrationStore() {
+        this.root = "";
+        this.state = 0;
+    }
+
+    /** The cache directory records go to, or "" when there is none. */
+    public #String directory() {
+        this.probe();
+        return "" + this.root;
+    }
+
+    public #int8[] load(String slot) {
+        int8[] sb #= slot.toBytes();
+        int8[] embedded #= DefaultCalibrationStore.nativeEmbedded(sb, (int64) sb.count());
+        if (embedded != null) {
+            return embedded;
+        }
+        this.probe();
+        if (this.root.byteLength() == 0) {
+            return null;
+        }
+        String p #= this.root + "/" + slot;
+        Path pp #= Path.of(p);
+        if (!pp.exists()) {
+            return null;
+        }
+        return File.readAllBytes(p);
+    }
+
+    public boolean store(String slot, int8[] bytes) {
+        if (!this.writable()) {
+            return false;
+        }
+        String p #= this.root + "/" + slot;
+        File.writeAllBytes(p, bytes, (int64) bytes.count());
+        Path pp #= Path.of(p);
+        return pp.exists();
+    }
+
+    public boolean writable() {
+        this.probe();
+        return this.state == 1;
+    }
+
+    /** Whether `dir` is a place this store refuses to write: `/tmp` or the artifact store. */
+    public static boolean refused(String dir) {
+        return dir.byteLength() == 0 || dir.equals("/tmp") || dir.startsWith("/tmp/")
+            || dir.contains("/.olla/") || dir.contains("\\.olla\\");
+    }
+
+    void probe() {
+        if (this.state != 0) {
+            return;
+        }
+        this.state = 2;
+        int8[] rb #= DefaultCalibrationStore.nativeCacheRoot();
+        if (rb == null) {
+            return;
+        }
+        String dir #= CalibrationKey.text(rb);
+        if (DefaultCalibrationStore.refused(dir)) {
+            return;
+        }
+        this.root #= dir;
+        Path dp #= Path.of(dir);
+        dp.mkdirs();
+        String probe #= dir + "/.writable";
+        int8[] one = heap int8[1];
+        one[0] = 49;
+        File.writeAllBytes(probe, one, 1L);
+        Path pp #= Path.of(probe);
+        if (pp.exists()) {
+            this.state = 1;
+        }
+    }
+
+    @Native("__cajeta_xpu_calibration_cache_root")
+    private static #int8[] nativeCacheRoot();
+
+    @Native("__cajeta_xpu_calibration_embedded")
+    private static #int8[] nativeEmbedded(int8[] slot, int64 len);
+}

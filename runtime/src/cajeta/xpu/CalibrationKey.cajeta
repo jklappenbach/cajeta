@@ -1,0 +1,86 @@
+package cajeta.xpu;
+
+import cajeta.hash.XXHash3;
+import cajeta.lang.String;
+
+/**
+ * What a calibration record is valid for (xpu-tile-scheduling §12.4b): the
+ * manifest hash it measured (or `device` for device-wide facts), the device,
+ * the driver, the compiler and the power mode. A record read under any other
+ * key is ignored.
+ */
+public final class CalibrationKey {
+    public String subject;
+    public String device;
+    public String driver;
+    public String compiler;
+    public String powerMode;
+
+    public CalibrationKey(#String subject, #String device, #String driver, #String compiler, #String powerMode) {
+        this.subject #= subject;
+        this.device #= device;
+        this.driver #= driver;
+        this.compiler #= compiler;
+        this.powerMode #= powerMode;
+    }
+
+    /** The key of this process's device, driver, compiler and power mode for `subject`. */
+    public static #CalibrationKey live(String subject) {
+        String backend #= Device.activeBackend();
+        String arch #= CalibrationKey.text(CalibrationKey.nativeArch());
+        String uuid #= Device.uuid();
+        String device #= backend + "/" + arch + "/" + uuid;
+        String driver #= "" + Device.driverVersion();
+        String compiler #= CalibrationKey.text(CalibrationKey.nativeCompilerVersion());
+        String power #= CalibrationKey.text(CalibrationKey.nativePowerMode());
+        return heap CalibrationKey("" + subject, #device, #driver, #compiler, #power);
+    }
+
+    /** The key's fields, one per line, as a record header carries them. */
+    public #String text() {
+        return this.subject + "\n" + this.device + "\n" + this.driver + "\n" + this.compiler + "\n"
+            + this.powerMode;
+    }
+
+    /** The store slot: a name safe on every filesystem, derived from the whole key. */
+    public #String slot() {
+        String t #= this.text();
+        int8[] b #= t.toBytes();
+        return "cal-" + CalibrationKey.hex64(XXHash3.hash(b, (int64) b.count()));
+    }
+
+    /** `v` as sixteen lowercase hex digits. */
+    public static #String hex64(int64 v) {
+        int8[] out = heap int8[16];
+        int32 i = 0;
+        while (i < 16) {
+            int64 nib = (v >> (int64) (60 - 4 * i)) & 15L;
+            out[i] = (int8) (nib < 10L ? 48L + nib : 87L + nib);
+            i = i + 1;
+        }
+        return heap String(#out, 16);
+    }
+
+    static #String text(int8[] b) {
+        if (b == null) {
+            return "" + "";
+        }
+        int32 n = (int32) b.count();
+        int8[] copy = heap int8[n];
+        int32 i = 0;
+        while (i < n) {
+            copy[i] = b[i];
+            i = i + 1;
+        }
+        return heap String(#copy, n);
+    }
+
+    @Native("__cajeta_xpu_device_arch")
+    private static #int8[] nativeArch();
+
+    @Native("__cajeta_xpu_compiler_version")
+    private static #int8[] nativeCompilerVersion();
+
+    @Native("__cajeta_xpu_power_mode")
+    private static #int8[] nativePowerMode();
+}

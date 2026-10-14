@@ -49,6 +49,9 @@ public final class Scheduler {
 
     public static boolean bypassed() { return Scheduler.nativeBypassed() != 0; }
 
+    /** Replace the default calibration store (§12.4a); false once a record has been read or written. */
+    public static boolean calibrationStore(#CalibrationStore module) { return Calibration.install(#module); }
+
     /** A copy of the most recent scheduled launch, or null before the first. */
     public static #SubmissionRecord last() {
         if (Scheduler.submissionCount() == 0L) { return null; }

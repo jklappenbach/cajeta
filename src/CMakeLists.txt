@@ -833,6 +833,10 @@ endif()
 if(CAJETA_VULKAN_INCLUDE_DIR)
     list(APPEND CAJETA_RT_FLAGS "-I${CAJETA_VULKAN_INCLUDE_DIR}")
 endif()
+# The compiler version the runtime reports, keying calibration records (xpu-tile-scheduling §12.4b).
+file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtgen/cajeta_rt_version.h"
+     CONTENT "#define CAJETA_RT_VERSION \"@CAJETA_VERSION@\"\n" @ONLY)
+list(APPEND CAJETA_RT_FLAGS "-I${CMAKE_CURRENT_BINARY_DIR}/rtgen")
 if(CAJETA_MOLTENVK_LIBRARY)
     # No loader on iOS/tvOS — the runtime binds vkGetInstanceProcAddr directly.
     list(APPEND CAJETA_RT_FLAGS "-DCAJETA_RT_VULKAN_STATIC=1")
@@ -1377,6 +1381,7 @@ endif()
 target_include_directories(${CMAKE_PROJECT_NAME}_lib PUBLIC
         ${PROJECT_SOURCE_DIR}/src
         ${PROJECT_SOURCE_DIR}/runtime/native   # cajeta_xpu_abi.h — the XPU FFI contract
+        ${CMAKE_CURRENT_BINARY_DIR}/rtgen      # cajeta_rt_version.h
         ${LLVM_INCLUDE_DIRS}
         ${ANTLR4_INCLUDE_DIR}
         ${ANTLR_CajetaGrammarLexer_OUTPUT_DIR}

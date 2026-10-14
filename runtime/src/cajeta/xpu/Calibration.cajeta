@@ -1,0 +1,139 @@
+package cajeta.xpu;
+
+import cajeta.collection.HashMap;
+import cajeta.error.Exception;
+import cajeta.lang.String;
+import cajeta.lang.System;
+
+/**
+ * The calibration set's records (xpu-tile-scheduling §12.4): memory is the
+ * source of truth, and records leave it only through the installed
+ * `CalibrationStore`. A module that throws is disabled, reported once, and
+ * the run continues from memory (§12.4d). No call here sits on the launch path.
+ */
+public final class Calibration {
+    private Calibration() { }
+
+    /** The largest payload a module is asked to keep. */
+    public static final int32 MAX_RECORD = 1048576;
+    /** The most records a process asks a module to keep. */
+    public static final int32 MAX_WRITES = 256;
+
+    static CalibrationStore module = null;
+    static boolean used = false;
+    static boolean disabled = false;
+    static int32 writes = 0;
+    static int32 faults = 0;
+    static HashMap<String, int8[]> memory = null;
+
+    /** Replace the default module; false once a record has been read or written. */
+    public static boolean install(#CalibrationStore m) {
+        if (Calibration.used) {
+            return false;
+        }
+        Calibration.module #= m;
+        return true;
+    }
+
+    /** The payload measured or stored for `key`, or null when none is known. */
+    public static #int8[] load(CalibrationKey key) {
+        Calibration.begin();
+        String slot #= key.slot();
+        if (Calibration.memory.containsKey(slot)) {
+            return Calibration.copy(Calibration.memory.get(slot));
+        }
+        if (Calibration.disabled) {
+            return null;
+        }
+        int8[] raw = null;
+        try {
+            raw #= Calibration.module.load(slot);
+        } catch (Exception e) {
+            Calibration.fault("load");
+            return null;
+        }
+        int8[] payload #= CalibrationRecord.decode(key, raw);
+        if (payload == null) {
+            return null;
+        }
+        Calibration.memory.put(#slot, #Calibration.copy(payload));
+        return payload;
+    }
+
+    /** Hold `payload[0..len)` for `key` in memory; true when the module also kept it. */
+    public static boolean store(CalibrationKey key, int8[] payload, int32 len) {
+        Calibration.begin();
+        String slot #= key.slot();
+        int8[] held = heap int8[len];
+        int32 i = 0;
+        while (i < len) {
+            held[i] = payload[i];
+            i = i + 1;
+        }
+        Calibration.memory.put("" + slot, #held);
+        if (Calibration.disabled || len > Calibration.MAX_RECORD || Calibration.writes >= Calibration.MAX_WRITES) {
+            return false;
+        }
+        int8[] rec #= CalibrationRecord.encode(key, payload, len);
+        Calibration.writes = Calibration.writes + 1;
+        boolean kept = false;
+        try {
+            if (Calibration.module.writable()) {
+                kept = Calibration.module.store(slot, rec);
+            }
+        } catch (Exception e) {
+            Calibration.fault("store");
+            return false;
+        }
+        return kept;
+    }
+
+    /** Whether records outlive this process: a module is enabled and writable. */
+    public static boolean persistent() {
+        Calibration.begin();
+        if (Calibration.disabled) {
+            return false;
+        }
+        boolean w = false;
+        try {
+            w = Calibration.module.writable();
+        } catch (Exception e) {
+            Calibration.fault("writable");
+            return false;
+        }
+        return w;
+    }
+
+    /** How many times the module faulted before it was disabled: 0 or 1. */
+    public static int32 faultCount() {
+        return Calibration.faults;
+    }
+
+    static void begin() {
+        if (!Calibration.used) {
+            Calibration.used = true;
+            if (Calibration.module == null) {
+                Calibration.module = heap DefaultCalibrationStore();
+            }
+            Calibration.memory = heap HashMap<String, int8[]>();
+        }
+    }
+
+    static void fault(String op) {
+        Calibration.disabled = true;
+        Calibration.faults = Calibration.faults + 1;
+        System.stderr.println("cajeta.xpu: calibration store faulted in " + op
+            + "; disabling it. The run continues from memory.");
+    }
+
+    static #int8[] copy(int8[] b) {
+        int32 n = (int32) b.count();
+        int8[] out = heap int8[n];
+        int32 i = 0;
+        while (i < n) {
+            out[i] = b[i];
+            i = i + 1;
+        }
+        return out;
+    }
+}

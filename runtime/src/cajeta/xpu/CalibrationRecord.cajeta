@@ -1,0 +1,104 @@
+package cajeta.xpu;
+
+import cajeta.hash.XXHash3;
+import cajeta.lang.String;
+
+/**
+ * The bytes of one stored calibration record (xpu-tile-scheduling §12.4b):
+ * a header carrying the whole `CalibrationKey`, the payload, and an XXH3
+ * checksum. A record whose key differs from the reader's, or whose bytes do
+ * not check, decodes to null and is ignored.
+ */
+public final class CalibrationRecord {
+    private CalibrationRecord() { }
+
+    static #String magic() {
+        return "" + "cajeta-calibration-1";
+    }
+
+    /** `payload[0..len)` framed under `key`. */
+    public static #int8[] encode(CalibrationKey key, int8[] payload, int32 len) {
+        String kt #= key.text();
+        String head #= CalibrationRecord.magic() + "\n" + kt + "\n" + len + "\n";
+        int8[] hb #= head.toBytes();
+        int32 h = (int32) hb.count();
+        int32 total = h + len + 16;
+        int8[] out = heap int8[total];
+        int32 i = 0;
+        while (i < h) {
+            out[i] = hb[i];
+            i = i + 1;
+        }
+        int32 j = 0;
+        while (j < len) {
+            out[h + j] = payload[j];
+            j = j + 1;
+        }
+        String sum #= CalibrationKey.hex64(XXHash3.hash(out, (int64) (h + len)));
+        int8[] sb #= sum.toBytes();
+        int32 k = 0;
+        while (k < 16) {
+            out[h + len + k] = sb[k];
+            k = k + 1;
+        }
+        return out;
+    }
+
+    /** The payload of `bytes` when it is an intact record for `key`, else null. */
+    public static #int8[] decode(CalibrationKey key, int8[] bytes) {
+        if (bytes == null) {
+            return null;
+        }
+        int32 n = (int32) bytes.count();
+        if (n < 16) {
+            return null;
+        }
+        String sum #= CalibrationKey.hex64(XXHash3.hash(bytes, (int64) (n - 16)));
+        int8[] sb #= sum.toBytes();
+        int32 k = 0;
+        while (k < 16) {
+            if (bytes[n - 16 + k] != sb[k]) {
+                return null;
+            }
+            k = k + 1;
+        }
+        String kt #= key.text();
+        String head #= CalibrationRecord.magic() + "\n" + kt + "\n";
+        int8[] hb #= head.toBytes();
+        int32 h = (int32) hb.count();
+        if (h > n - 16) {
+            return null;
+        }
+        int32 i = 0;
+        while (i < h) {
+            if (bytes[i] != hb[i]) {
+                return null;
+            }
+            i = i + 1;
+        }
+        int32 p = h;
+        int64 len = 0L;
+        while (p < n - 16 && bytes[p] >= 48 && bytes[p] <= 57) {
+            len = len * 10L + (int64) (bytes[p] - 48);
+            p = p + 1;
+            if (len > (int64) n) {
+                return null;
+            }
+        }
+        if (p >= n - 16 || bytes[p] != 10) {
+            return null;
+        }
+        p = p + 1;
+        if ((int64) p + len + 16L != (int64) n) {
+            return null;
+        }
+        int32 m = (int32) len;
+        int8[] out = heap int8[m];
+        int32 j = 0;
+        while (j < m) {
+            out[j] = bytes[p + j];
+            j = j + 1;
+        }
+        return out;
+    }
+}

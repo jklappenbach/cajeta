@@ -1,0 +1,20 @@
+package cajeta.xpu;
+
+import cajeta.lang.String;
+
+/**
+ * Where calibration records come from at startup and go to when measured
+ * (xpu-tile-scheduling §12.4a). Memory is the scheduler's own state, not a
+ * store. Install a replacement with `Scheduler.calibrationStore` before the
+ * first record is read; the default is `DefaultCalibrationStore`.
+ */
+public interface CalibrationStore {
+    /** The record stored under `slot`, or null when absent. */
+    public #int8[] load(String slot);
+
+    /** Keep `bytes` under `slot`; false when the record was not kept. */
+    public boolean store(String slot, int8[] bytes);
+
+    /** Whether `store` can keep records at all. */
+    public boolean writable();
+}
