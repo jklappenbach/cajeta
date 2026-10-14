@@ -18,6 +18,7 @@ public final class Derived {
     public float64 lo;
     public float64 hi;
     public int64 n;
+    public float64 mean;
 
     public Derived() {
         this.workload = "";
@@ -30,5 +31,6 @@ public final class Derived {
         this.lo = 0.0;
         this.hi = 0.0;
         this.n = 0L;
+        this.mean = 0.0;
     }
 }

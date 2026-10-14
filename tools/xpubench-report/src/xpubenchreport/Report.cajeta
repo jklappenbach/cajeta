@@ -143,6 +143,13 @@ public final class Report {
                         r.date #= Report.str(o, "date");
                         r.arm #= Report.str(o, "arm");
                         r.note #= Report.str(o, "note");
+                        float64 rn = Report.num(o, "rounds");
+                        if (rn > 1.0) {
+                            r.rounds = (int32) rn;
+                            r.roundLo = Report.num(o, "roundLo");
+                            r.roundHi = Report.num(o, "roundHi");
+                            r.roundMean = Report.num(o, "roundMean");
+                        }
                         into.add(#r);
                     }
                 }
@@ -259,6 +266,10 @@ public final class Report {
         m.hi = first.hi;
         m.p95 = first.p95;
         m.n = first.n;
+        m.rounds = first.rounds;
+        m.roundLo = first.roundLo;
+        m.roundHi = first.roundHi;
+        m.roundMean = first.roundMean;
         if (arm.byteLength() == 0) {
             return m;
         }
@@ -304,6 +315,9 @@ public final class Report {
         m.lo = lo;
         m.hi = hi;
         m.n = n;
+        if (nm == 1) {
+            return m;
+        }
         m.rounds = nm;
         m.roundLo = meds[0];
         m.roundHi = meds[nm - 1];
@@ -673,6 +687,7 @@ public final class Report {
     /**
      * xpubench-report spans --csv=<summary.csv> --rows=<profiled-run rows>
      *     --out=<leg rows.jsonl> [--llm --shape=<shape> --wall-ms=<int>]
+     * `--csv=` and `--rows=` take comma lists, one entry per repeated pass, in the same order.
      *
      * Device-span rows from one profiled pass (plan 0.2.4). The pass's own
      * rows give the identity, the `launches` rows (value = iterations, note
@@ -731,11 +746,24 @@ public final class Report {
             System.stderr.println("xpubench-report: no summary in --csv=" + csvPath);
             return 1;
         }
-        ArrayList<Row> rows #= Report.loadFile(rowsPath);
-        if (rows.count() == 0) {
+        ArrayList<ArrayList<Row>> passRows = heap ArrayList<ArrayList<Row>>();
+        int32 rs = 0;
+        int32 ri = 0;
+        while (ri <= rowsPath.byteLength()) {
+            if (ri == rowsPath.byteLength() || rowsPath.byteAt(ri) == 44) {
+                if (ri > rs) {
+                    String onePath #= rowsPath.substring(rs, ri);
+                    passRows.add(#Report.loadFile(onePath));
+                }
+                rs = ri + 1;
+            }
+            ri = ri + 1;
+        }
+        if (passRows.count() == 0 || passRows.get(0).count() == 0) {
             System.stderr.println("xpubench-report: no rows in " + rowsPath);
             return 1;
         }
+        ArrayList<Row> rows = passRows.get(0);
         Row id = rows.get(0);
         if (armOverride.byteLength() > 0) {
             id.arm #= "" + armOverride;
@@ -756,18 +784,23 @@ public final class Report {
             while (i < rows.count()) {
                 Row r = rows.get(i);
                 if (r.kpi.equals("launches") && !r.unit.equals("pending")) {
-                    float64 wall = 0.0;
-                    int32 j = 0;
-                    while (j < rows.count()) {
-                        Row w = rows.get(j);
-                        if (w.kpi.equals("wall_per_iteration") && w.workload.equals(r.workload)
-                            && w.shape.equals(r.shape) && !w.unit.equals("pending")) {
-                            wall = w.median;
+                    float64[] walls = heap float64[passes.count()];
+                    int32 p = 0;
+                    while (p < passes.count()) {
+                        ArrayList<Row> pr = passRows.get(p < passRows.count() ? p : passRows.count() - 1);
+                        int32 j = 0;
+                        while (j < pr.count()) {
+                            Row w = pr.get(j);
+                            if (w.kpi.equals("wall_per_iteration") && w.workload.equals(r.workload)
+                                && w.shape.equals(r.shape) && !w.unit.equals("pending")) {
+                                walls[p] = w.median;
+                            }
+                            j = j + 1;
                         }
-                        j = j + 1;
+                        p = p + 1;
                     }
                     ArrayList<Derived> d #= Spans.deriveRepeated(passes, r.workload, r.shape, r.note,
-                                                                 (int64) r.median, wall);
+                                                                 (int64) r.median, walls);
                     all.appendAll(d);
                 }
                 i = i + 1;
@@ -805,6 +838,12 @@ public final class Report {
         w.key("max");       w.writeNumber(hi);
         w.key("p95");       w.writeNumber(0.0);
         w.key("n");         w.writeNumber(n);
+        if (!d.pending && d.n > 1L) {
+            w.key("rounds");    w.writeNumber(d.n);
+            w.key("roundLo");   w.writeNumber(d.lo);
+            w.key("roundHi");   w.writeNumber(d.hi);
+            w.key("roundMean"); w.writeNumber(d.mean);
+        }
         w.key("device");    w.writeString(id.device);
         w.key("backend");   w.writeString(id.backend);
         w.key("driver");    w.writeString(id.driver);

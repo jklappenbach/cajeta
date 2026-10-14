@@ -788,6 +788,20 @@ const char* kArmTrialDriver =
     "    public static int32 rateDropped() {\n"
     "        return DriveAT.armTrial(\"achieved_bandwidth\", \"GB/s\", 100.0, 101.0, 90.0, 91.0, 5);\n"
     "    }\n"
+    // 0.2.11: one span row per arm carrying its five passes as rounds (cpu saxpy 1M of 0.3.4)
+    "    static #String spanRow(String arm, float64 med, float64 lo, float64 hi, float64 mean) {\n"
+    "        return \"{\\\"workload\\\":\\\"kernel.saxpy\\\",\\\"shape\\\":\\\"1048576\\\",\\\"kpi\\\":\\\"device_span\\\",\"\n"
+    "            + \"\\\"unit\\\":\\\"us\\\",\\\"median\\\":\" + med + \",\\\"min\\\":\" + lo + \",\\\"max\\\":\" + hi\n"
+    "            + \",\\\"p95\\\":0,\\\"n\\\":5,\\\"rounds\\\":5,\\\"roundLo\\\":\" + lo + \",\\\"roundHi\\\":\" + hi\n"
+    "            + \",\\\"roundMean\\\":\" + mean + \",\\\"device\\\":\\\"d\\\",\\\"backend\\\":\\\"cpu\\\",\\\"driver\\\":\\\"v\\\",\"\n"
+    "            + \"\\\"compiler\\\":\\\"c\\\",\\\"powerMode\\\":\\\"auto\\\",\\\"date\\\":\\\"2026-10-13\\\",\\\"arm\\\":\\\"\" + arm\n"
+    "            + \"\\\",\\\"note\\\":\\\"\\\"}\\n\";\n"
+    "    }\n"
+    "    public static int32 passesAsRounds() {\n"
+    "        String j = DriveAT.spanRow(\"bypass\", 54.07, 52.97, 55.68, 54.36)\n"
+    "            + DriveAT.spanRow(\"scheduled\", 55.79, 54.92, 64.14, 57.69);\n"
+    "        return DriveAT.trial(j);\n"
+    "    }\n"
     // 0.2.9: after reads 12.0 against [9.5, 10.5]; the gate's idle GPU level, then the block's
     "    static int32 gpuRegressed(float64 idle, float64 block, boolean gate) {\n"
     "        String j = DriveAT.row(\"bypass\", \"kernel.saxpy\", \"s\", \"duration_isolated\", \"us\", 10.0, 9.5, 10.5, 5)\n"
@@ -834,15 +848,38 @@ const char* kRepeatDriver =
     "        String b #= DriveR.csv(30000);\n"
     "        passes.add(#Spans.parse(a));\n"
     "        passes.add(#Spans.parse(b));\n"
+    "        float64[] walls = heap float64[2];\n"
     "        ArrayList<Derived> d #= Spans.deriveRepeated(passes, \"kernel.saxpy\", \"1048576\", \"saxpy\",\n"
-    "                                                     (int64) 1800, 0.0);\n"
+    "                                                     (int64) 1800, walls);\n"
     "        if (d.count() != 1) { return 1; }\n"
     "        Derived r = d.get(0);\n"
     "        if (!r.kpi.equals(\"device_span\")) { return 2; }\n"
     "        if (r.value != 25.0) { return 3; }\n"
     "        if (r.lo != 20.0 || r.hi != 30.0) { return 4; }\n"
     "        if (r.n != 2L) { return 5; }\n"
+    "        if (r.mean != 25.0) { return 6; }\n"
     "        return 0;\n"
+    "    }\n"
+    // 0.2.11: a 90 us device time over walls of 100 and 200 us: queue empty 10% and 55%
+    "    public static int32 wallPerPass() {\n"
+    "        ArrayList<Spans> passes = heap ArrayList<Spans>();\n"
+    "        String a #= DriveR.csv(90000);\n"
+    "        String b #= DriveR.csv(90000);\n"
+    "        passes.add(#Spans.parse(a));\n"
+    "        passes.add(#Spans.parse(b));\n"
+    "        float64[] walls = heap float64[2];\n"
+    "        walls[0] = 100.0; walls[1] = 200.0;\n"
+    "        ArrayList<Derived> d #= Spans.deriveRepeated(passes, \"cg\", \"s\", \"saxpy\", (int64) 1800, walls);\n"
+    "        int32 i = 0;\n"
+    "        while (i < d.count()) {\n"
+    "            Derived r = d.get(i);\n"
+    "            i = i + 1;\n"
+    "            if (r.kpi.equals(\"queue_empty_time\")) {\n"
+    "                if (r.lo != 10.0 || r.hi != 55.0) { return 2; }\n"
+    "                return 0;\n"
+    "            }\n"
+    "        }\n"
+    "        return 1;\n"
     "    }\n"
     "}\n";
 
@@ -914,6 +951,7 @@ TEST(XpuBenchHarness, anArmTrialJudgesTheArmEffect) {
     EXPECT_EQ(call("rateDropped"), 1001) << "a rate is worse downward";
     EXPECT_EQ(call("twoRoundsInsideBand"), 1) << "two rounds separate by chance one time in six: the band must agree";
     EXPECT_EQ(call("fourRoundsInsideBand"), 1001) << "four separated rounds decide alone, past a wide block band";
+    EXPECT_EQ(call("passesAsRounds"), 1) << "five overlapping profiled passes per arm are rounds, not one band (0.2.11)";
 }
 
 // 0.2.9 — the GPU witness is judged above the desktop's idle level.
@@ -936,6 +974,9 @@ TEST(XpuBenchHarness, repeatedProfiledPassesBandTheSpan) {
     auto f = jit->lookup<int (*)()>("repeated");
     ASSERT_NE(f, nullptr);
     EXPECT_EQ(f(), 0);
+    auto w = jit->lookup<int (*)()>("wallPerPass");
+    ASSERT_NE(w, nullptr);
+    EXPECT_EQ(w(), 0) << "each pass divides by its own wall (0.2.11)";
 }
 
 // 0.1.5 — the witness's parsers and threshold.

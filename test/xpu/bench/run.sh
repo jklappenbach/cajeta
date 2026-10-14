@@ -125,7 +125,7 @@ profile_pass() {
             "$CAJETA" profile summary "$base.pftrace" --csv > "$base.csv" 2>/dev/null \
                 || { echo "[xpubench] no device track in pass $tag" >&2; continue; }
             csvs[$arm]="${csvs[$arm]:+${csvs[$arm]},}$base.csv"
-            jsonl[$arm]="$base.jsonl"
+            jsonl[$arm]="${jsonl[$arm]:+${jsonl[$arm]},}$base.jsonl"
         done
     done
     for arm in "${arms[@]}"; do

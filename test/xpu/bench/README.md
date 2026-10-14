@@ -160,7 +160,9 @@ agree, since two rounds per arm separate by chance one time in six. `trial`
 exits 1 on any `worse`, 3 when the only failures are `contended`.
 `spans` appends device-span rows derived from a comma list of summaries,
 one per repeated profiled pass: the median of the passes, banded by their
-[min, max] (`run.sh` calls it once per workload per arm).
+[min, max] (`run.sh` calls it once per workload per arm). `--rows=` takes the
+passes' own rows in the same order, so each pass's `queue_empty_time` divides
+by its own wall, and the row carries the passes as rounds for the arm verdict.
 
 A leg can be split across invocations to fit a tool's timeout:
 `run.sh cpu --workloads=kernels`, then `KEEP_ROWS=1 DATE=<the first

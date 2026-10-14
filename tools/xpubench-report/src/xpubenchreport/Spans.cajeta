@@ -368,13 +368,15 @@ public final class Spans {
      * One row per KPI over repeated profiled passes of one workload/shape
      * (xpu-tile-scheduling 0.1.4): the median of the passes with their
      * [min, max] and n, so a device span is banded rather than one sample.
+     * `walls[i]` is pass i's own host wall per iteration (0 for none).
      */
     public static #ArrayList<Derived> deriveRepeated(ArrayList<Spans> passes, String workload,
                                                      String shape, String names, int64 iterations,
-                                                     float64 wallUs) {
+                                                     float64[] walls) {
         ArrayList<ArrayList<Derived>> per = heap ArrayList<ArrayList<Derived>>();
         int32 i = 0;
         while (i < passes.count()) {
+            float64 wallUs = i < (int32) walls.count() ? walls[i] : 0.0;
             ArrayList<Derived> d #= Spans.derive(passes.get(i), workload, shape, names, iterations, wallUs);
             per.add(#d);
             i = i + 1;
@@ -428,6 +430,13 @@ public final class Spans {
             m.lo = vals[0];
             m.hi = vals[nv - 1];
             m.n = (int64) nv;
+            float64 sum = 0.0;
+            int32 s = 0;
+            while (s < nv) {
+                sum = sum + vals[s];
+                s = s + 1;
+            }
+            m.mean = sum / (float64) nv;
             out.add(#m);
         }
         return out;
