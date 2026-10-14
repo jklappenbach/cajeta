@@ -25,6 +25,7 @@ public final class Rows {
     public String date;
     public String arm;
     public int32 written;
+    public boolean discard;
 
     public Rows(#String path) {
         this.path #= path;
@@ -36,6 +37,7 @@ public final class Rows {
         this.date = "";
         this.arm = "baseline";
         this.written = 0;
+        this.discard = false;
     }
 
     /**
@@ -47,6 +49,9 @@ public final class Rows {
     public void row(String workload, String shape, String kpi, String unit,
                     float64 median, float64 lo, float64 hi, float64 p95,
                     int32 n, String note) {
+        if (this.discard) {
+            return;
+        }
         JsonWriter w = heap JsonWriter();
         w.beginObject();
         w.key("workload");  w.writeString(workload);

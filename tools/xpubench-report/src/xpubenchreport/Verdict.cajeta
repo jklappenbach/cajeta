@@ -38,6 +38,25 @@ public final class Verdict {
         return Verdict.WORSE;
     }
 
+    /** Rounds per arm at which the rounds verdict stands alone; fewer need the band rule to agree. */
+    public static final int32 ROUNDS_ALONE = 4;
+
+    /** The arm-trial verdict over round medians (scheduling 0.2.8): worse only when every
+     *  after round lies past every before round and the mean gap exceeds the wider round spread. */
+    public static int32 ofRounds(boolean lowerIsBetter, float64 bLo, float64 bHi, float64 bMean,
+                                 float64 aLo, float64 aHi, float64 aMean) {
+        boolean past = lowerIsBetter ? aLo > bHi : aHi < bLo;
+        float64 gap = aMean > bMean ? aMean - bMean : bMean - aMean;
+        float64 spread = bHi - bLo;
+        if (aHi - aLo > spread) {
+            spread = aHi - aLo;
+        }
+        if (past && gap > spread) {
+            return Verdict.WORSE;
+        }
+        return Verdict.KEEP;
+    }
+
     public static String name(int32 v) {
         if (v == Verdict.KEEP) {
             return "keep";

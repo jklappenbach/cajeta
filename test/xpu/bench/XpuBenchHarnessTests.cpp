@@ -56,7 +56,7 @@ const char* kDriverSource =
     "import cajeta.collection.ArrayList;\n"
     "import cajeta.lang.String;\n"
     "public class Drive {\n"
-    // ABBA over 2 arms x 3 rounds must read 0 1 1 0 0 1 (encoded base-10).
+    // ABBA over 2 arms x 3 rounds must read 0 1 1 0 1 0 (encoded base-10).
     "    public static int32 abba() {\n"
     "        int32[] o #= Stats.abbaOrder(2, 3);\n"
     "        int32 code = 0;\n"
@@ -141,13 +141,13 @@ std::unique_ptr<CajetaJit> compileHarness() {
 
 } // namespace
 
-// 0.1.2 — A/B/B/A: the reflected order, balanced across arms.
+// 0.1.2, 0.2.8 — A/B/B/A with rounds reflected in Thue-Morse order, balanced across arms.
 TEST(XpuBenchHarness, armOrderIsAbba) {
     auto jit = compileHarness();
     ASSERT_NE(jit, nullptr);
     auto abba = jit->lookup<int (*)()>("abba");
     ASSERT_NE(abba, nullptr);
-    EXPECT_EQ(abba(), 11001) << "expected 0 1 1 0 0 1 for two arms over three rounds";
+    EXPECT_EQ(abba(), 11010) << "expected 0 1 1 0 1 0 for two arms over three rounds (Thue-Morse rounds)";
     auto balanced = jit->lookup<int (*)()>("abbaBalanced");
     ASSERT_NE(balanced, nullptr);
     EXPECT_EQ(balanced(), 0);
@@ -619,11 +619,14 @@ const char* kArmDriver =
     "        if (s.count() != 3 || !s[1].equals(\"-u\") || !s[2].equals(\"CAJETA_XPU_SCHEDULER\")) { return 2; }\n"
     "        return 0;\n"
     "    }\n"
-    "    public static int32 twoArmsTwoRounds() {\n"
+    "    public static int32 twoArmsFourRounds() {\n"
     "        if (Stats.armRounds(1) != 1) { return 1; }\n"
-    "        if (Stats.armRounds(2) != 2) { return 2; }\n"
+    "        if (Stats.armRounds(2) != 4) { return 2; }\n"
     "        int32[] o #= Stats.abbaOrder(2, Stats.armRounds(2));\n"
-    "        return o[0] * 1000 + o[1] * 100 + o[2] * 10 + o[3];\n"
+    "        int32 code = 0;\n"
+    "        int32 i = 0;\n"
+    "        while (i < (int32) o.count()) { code = code * 10 + o[i]; i = i + 1; }\n"
+    "        return code;\n"
     "    }\n"
     "    public static int32 statTicks() {\n"
     "        int64[] t #= Gate.statTicks(\"cpu  100 0 50 1000 10 0 5 0 0 0\");\n"
@@ -725,6 +728,86 @@ const char* kArmTrialDriver =
     "        String j #= DriveAT.regressed(2.0);\n"
     "        return DriveAT.trial(j);\n"
     "    }\n"
+    // 0.2.8: rounds of one KPI, bypass then scheduled values in slot order B S S B (B S S B ...).
+    "    static #String rounds(String kpi, String unit, float64[] bv, float64[] sv, int32 n) {\n"
+    "        String j = \"\";\n"
+    "        int32 i = 0;\n"
+    "        while (i < (int32) bv.count()) {\n"
+    "            j = j + DriveAT.row(\"bypass\", \"seam\", \"50us\", kpi, unit, bv[i], bv[i] - 0.01, bv[i] + 0.01, n);\n"
+    "            j = j + DriveAT.row(\"scheduled\", \"seam\", \"50us\", kpi, unit, sv[i], sv[i] - 0.01, sv[i] + 0.01, n);\n"
+    "            i = i + 1;\n"
+    "        }\n"
+    "        return j;\n"
+    "    }\n"
+    "    static int32 armTrial(String kpi, String unit, float64 b0, float64 b1, float64 s0, float64 s1, int32 n) {\n"
+    "        float64[] bv = heap float64[2];\n"
+    "        float64[] sv = heap float64[2];\n"
+    "        bv[0] = b0; bv[1] = b1; sv[0] = s0; sv[1] = s1;\n"
+    "        String j #= DriveAT.rounds(kpi, unit, bv, sv, n);\n"
+    "        return DriveAT.trial(j);\n"
+    "    }\n"
+    // the 0.3.4 cpu seam 50us launch_call: B1 is the outlier, B2 sits with the scheduled rounds
+    "    public static int32 firstBlockStep() {\n"
+    "        return DriveAT.armTrial(\"launch_call\", \"us\", 45.345999, 50.835999, 50.835999, 51.036, 5);\n"
+    "    }\n"
+    // the 0.3.4 cpu seam 5us kernel_time: one sample per round, one scheduled outlier
+    "    public static int32 oneOutlierRound() {\n"
+    "        return DriveAT.armTrial(\"kernel_time\", \"us\", 6.25, 6.429999, 6.549999, 9.769999, 1);\n"
+    "    }\n"
+    "    public static int32 fourRoundsPast() {\n"
+    "        float64[] bv = heap float64[4];\n"
+    "        float64[] sv = heap float64[4];\n"
+    "        bv[0] = 100.0; bv[1] = 101.0; bv[2] = 100.5; bv[3] = 101.5;\n"
+    "        sv[0] = 106.0; sv[1] = 106.5; sv[2] = 105.5; sv[3] = 107.0;\n"
+    "        String j #= DriveAT.rounds(\"launch_call\", \"us\", bv, sv, 5);\n"
+    "        return DriveAT.trial(j);\n"
+    "    }\n"
+    // the 0.3.4 cpu reduceSum 1M: two rounds separate, inside a wide block band
+    "    public static int32 twoRoundsInsideBand() {\n"
+    "        String j #= DriveAT.row(\"bypass\", \"seam\", \"50us\", \"launch_call\", \"us\", 240.63, 220.12, 283.52, 5)\n"
+    "            + DriveAT.row(\"scheduled\", \"seam\", \"50us\", \"launch_call\", \"us\", 264.11, 236.44, 295.45, 5)\n"
+    "            + DriveAT.row(\"scheduled\", \"seam\", \"50us\", \"launch_call\", \"us\", 267.69, 262.06, 293.8, 5)\n"
+    "            + DriveAT.row(\"bypass\", \"seam\", \"50us\", \"launch_call\", \"us\", 249.62, 236.58, 263.69, 5);\n"
+    "        return DriveAT.trial(j);\n"
+    "    }\n"
+    // four rounds a step apart inside a wide block band: the rounds alone decide
+    "    public static int32 fourRoundsInsideBand() {\n"
+    "        String j = \"\";\n"
+    "        int32 i = 0;\n"
+    "        while (i < 4) {\n"
+    "            float64 d = (float64) i * 0.001;\n"
+    "            j = j + DriveAT.row(\"bypass\", \"cg\", \"s\", \"host_cost_per_node\", \"us\", 0.855 + d, 0.849, 1.035, 5)\n"
+    "                + DriveAT.row(\"scheduled\", \"cg\", \"s\", \"host_cost_per_node\", \"us\", 0.904 + d, 0.894, 0.975, 5);\n"
+    "            i = i + 1;\n"
+    "        }\n"
+    "        return DriveAT.trial(j);\n"
+    "    }\n"
+    "    public static int32 orderedInsideSpread() {\n"
+    "        return DriveAT.armTrial(\"launch_call\", \"us\", 100.0, 110.0, 111.0, 112.0, 5);\n"
+    "    }\n"
+    "    public static int32 rateDropped() {\n"
+    "        return DriveAT.armTrial(\"achieved_bandwidth\", \"GB/s\", 100.0, 101.0, 90.0, 91.0, 5);\n"
+    "    }\n"
+    // 0.2.9: after reads 12.0 against [9.5, 10.5]; the gate's idle GPU level, then the block's
+    "    static int32 gpuRegressed(float64 idle, float64 block, boolean gate) {\n"
+    "        String j = DriveAT.row(\"bypass\", \"kernel.saxpy\", \"s\", \"duration_isolated\", \"us\", 10.0, 9.5, 10.5, 5)\n"
+    "            + DriveAT.row(\"scheduled\", \"kernel.saxpy\", \"s\", \"duration_isolated\", \"us\", 12.0, 11.9, 12.1, 5)\n"
+    "            + DriveAT.row(\"scheduled\", \"witness\", \"kernels\", \"foreign_gpu_pct\", \"witness\", block, block, block, 1);\n"
+    "        if (gate) {\n"
+    "            j = j + DriveAT.row(\"bypass\", \"witness\", \"gate\", \"foreign_gpu_pct\", \"witness\", idle, idle, idle, 1)\n"
+    "                + DriveAT.row(\"scheduled\", \"witness\", \"gate\", \"foreign_gpu_pct\", \"witness\", idle, idle, idle, 1);\n"
+    "        }\n"
+    "        return DriveAT.trial(j);\n"
+    "    }\n"
+    "    public static int32 desktopLevelBlock() {\n"
+    "        return DriveAT.gpuRegressed(9.0, 10.0, true);\n"
+    "    }\n"
+    "    public static int32 loadAboveDesktop() {\n"
+    "        return DriveAT.gpuRegressed(9.0, 20.0, true);\n"
+    "    }\n"
+    "    public static int32 noGateLevel() {\n"
+    "        return DriveAT.gpuRegressed(0.0, 10.0, false);\n"
+    "    }\n"
     // queue_empty_time is device idle: less is better, though its unit is a percentage
     "    public static int32 queueEmptyLowerIsBetter() {\n"
     "        String j #= DriveAT.row(\"bypass\", \"cg\", \"s\", \"queue_empty_time\", \"%\", 15.0, 15.0, 15.0, 1);\n"
@@ -788,7 +871,7 @@ TEST(XpuBenchHarness, anArmTogglesTheSchedulerAndTheChild) {
     };
     EXPECT_EQ(call("toggles"), 0);
     EXPECT_EQ(call("childEnv"), 0);
-    EXPECT_EQ(call("twoArmsTwoRounds"), 110) << "two arms, two rounds: 0 1 1 0";
+    EXPECT_EQ(call("twoArmsFourRounds"), 1101001) << "two arms, four rounds: 0 1 1 0 1 0 0 1";
 }
 
 // 0.1.3 — an arm's rounds merge into one banded row, and the merge decides.
@@ -814,6 +897,36 @@ TEST(XpuBenchHarness, aWorseUnderForeignLoadReadsContended) {
     EXPECT_EQ(call("contendedWorse"), 10001) << "40% foreign CPU in the after block";
     EXPECT_EQ(call("quietWorse"), 1001) << "a quiet box keeps the worse verdict";
     EXPECT_EQ(call("queueEmptyLowerIsBetter"), 0) << "a busier device must not read as a regression";
+}
+
+// 0.2.8 — an arm trial judges the arm effect against the round-to-round spread.
+TEST(XpuBenchHarness, anArmTrialJudgesTheArmEffect) {
+    auto jit = compileReport("DriveAT", kArmTrialDriver);
+    ASSERT_NE(jit, nullptr);
+    auto call = [&](const char* name) {
+        auto f = jit->lookup<int (*)()>(name);
+        return f ? f() : -1;
+    };
+    EXPECT_EQ(call("firstBlockStep"), 1) << "B 45.3, 50.8 and S 50.8, 51.0: a first-block step, not the arm";
+    EXPECT_EQ(call("oneOutlierRound"), 1) << "one-sample rounds are judged by rounds, and one outlier keeps";
+    EXPECT_EQ(call("fourRoundsPast"), 1001) << "every scheduled round 5% past every bypass round";
+    EXPECT_EQ(call("orderedInsideSpread"), 1) << "ordered, but the gap is inside the bypass spread";
+    EXPECT_EQ(call("rateDropped"), 1001) << "a rate is worse downward";
+    EXPECT_EQ(call("twoRoundsInsideBand"), 1) << "two rounds separate by chance one time in six: the band must agree";
+    EXPECT_EQ(call("fourRoundsInsideBand"), 1001) << "four separated rounds decide alone, past a wide block band";
+}
+
+// 0.2.9 — the GPU witness is judged above the desktop's idle level.
+TEST(XpuBenchHarness, theGpuWitnessIsJudgedAboveTheIdleLevel) {
+    auto jit = compileReport("DriveAT", kArmTrialDriver);
+    ASSERT_NE(jit, nullptr);
+    auto call = [&](const char* name) {
+        auto f = jit->lookup<int (*)()>(name);
+        return f ? f() : -1;
+    };
+    EXPECT_EQ(call("desktopLevelBlock"), 1001) << "a 10% block over a 9% desktop is not contention";
+    EXPECT_EQ(call("loadAboveDesktop"), 10001) << "a 20% block over a 9% desktop is";
+    EXPECT_EQ(call("noGateLevel"), 10001) << "rows without a gate level judge against zero";
 }
 
 // 0.1.4 — repeated profiled passes give a banded device span.

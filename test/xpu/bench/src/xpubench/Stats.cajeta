@@ -81,20 +81,19 @@ public final class Stats {
         return m;
     }
 
-    /** Rounds for `arms` arms: two for an A/B trial, so the order is A B B A. */
+    /** Rounds for `arms` arms: four for an A/B trial, so the order is A B B A B A A B. */
     public static int32 armRounds(int32 arms) {
         if (arms > 1) {
-            return 2;
+            return 4;
         }
         return 1;
     }
 
     /**
-     * The arm order for `rounds` rounds over `arms` arms: A B B A A B B A ...
-     * (the reflected pattern), so a background load that decays over the
-     * run is spread evenly across arms instead of landing on whichever arm
-     * was always first. Returns the arm index for each slot; `rounds * arms`
-     * entries.
+     * The arm order for `rounds` rounds over `arms` arms: round r runs
+     * reversed when r has an odd number of set bits (Thue-Morse), so two arms
+     * read A B B A B A A B and a linear or quadratic drift lands on every arm
+     * equally. Returns the arm index for each slot; `rounds * arms` entries.
      */
     public static #int32[] abbaOrder(int32 arms, int32 rounds) {
         int32 total = arms * rounds;
@@ -102,7 +101,13 @@ public final class Stats {
         int32 slot = 0;
         int32 r = 0;
         while (r < rounds) {
-            boolean forward = (r % 2) == 0;
+            int32 bits = 0;
+            int32 v = r;
+            while (v > 0) {
+                bits = bits + v % 2;
+                v = v / 2;
+            }
+            boolean forward = (bits % 2) == 0;
             int32 k = 0;
             while (k < arms) {
                 int32 idx = forward ? k : (arms - 1 - k);

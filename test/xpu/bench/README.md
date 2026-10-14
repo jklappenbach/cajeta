@@ -110,10 +110,16 @@ Two facts about the set, both measured on 2026-09-06:
 - **Witness rows.** Each workload block writes `witness` rows for its arm
   round: `foreign_cpu_pct`, `foreign_gpu_pct`, and `scheduled_launches` (the
   launches the scheduler saw, 0 under the bypass arm). `trial` never pairs
-  them as KPIs. A KPI outside its band whose block had a witness over the
-  threshold on either side reads `contended`, not `worse`.
-- **Arms.** `--arms=a,b` runs arms in A/B/B/A order, two rounds for two or
-  more arms. `Workloads.applyArm` switches the process (`bypass` takes the
+  them as KPIs. The gate also writes its own window as `witness` rows of
+  shape `gate`: the foreign load on the idle box, the desktop's own GPU
+  rendering included (about 9% on proton's Hyprland desktop). A KPI that
+  reads worse in a block whose witness was over the CPU threshold, or over
+  the gate's GPU level plus the GPU threshold, on either side reads
+  `contended`, not `worse`.
+- **Arms.** `--arms=a,b` runs one discarded warm-up block, then four rounds
+  for two or more arms, each round reversed when its index has an odd
+  number of set bits: A B B A B A A B for two arms, so a linear or
+  quadratic drift lands on every arm equally. `Workloads.applyArm` switches the process (`bypass` takes the
   raw launch ABI through `Scheduler.bypass`, `scheduled` the seam, any other
   arm leaves it as it started) and the llm child, which runs under
   `env CAJETA_XPU_SCHEDULER=bypass` or `env -u CAJETA_XPU_SCHEDULER`.
@@ -121,7 +127,7 @@ Two facts about the set, both measured on 2026-09-06:
   power mode, date, and arm.
 
 `XpuBenchHarnessTests.cpp` compiles the harness's own `Stats`, `Gate` and
-`Arm` sources and checks the A/B/B/A order, the band arithmetic, the gate
+`Arm` sources and checks the arm order, the band arithmetic, the gate
 in both directions (it refuses beside a live process named like a bench,
 and does not refuse on a clean table or because of its own pid), the arm
 switch, and the witness parsers.
@@ -145,7 +151,12 @@ so a pair of single-sample rows is banded by the two runs' spread and a
 drifting five-block KPI widens to that drift; a KPI absent from the rerun
 keeps its own band. With `--before-arm=` and `--after-arm=` both files may
 be the same interleaved leg: each arm's rounds merge into one row per key
-(the median of the round medians, the union band, the summed n). `trial`
+(the median of the round medians, the union band, the summed n). Where
+both arms have two or more rounds, the verdict judges the arm effect: a KPI
+reads `worse` only when every after round lies past every before round and
+the gap between the arms' mean rounds exceeds the wider round spread. With
+four rounds per arm that rule decides alone. With fewer the band rule must
+agree, since two rounds per arm separate by chance one time in six. `trial`
 exits 1 on any `worse`, 3 when the only failures are `contended`.
 `spans` appends device-span rows derived from a comma list of summaries,
 one per repeated profiled pass: the median of the passes, banded by their

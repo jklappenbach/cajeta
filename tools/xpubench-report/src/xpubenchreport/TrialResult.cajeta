@@ -12,6 +12,8 @@ public final class TrialResult {
     public int32 paired;
     /** KPIs outside their band while a witness saw foreign load over its threshold: unreadable, rerun. */
     public int32 contended;
+    /** KPIs judged by their arm rounds rather than one arm's band (scheduling 0.2.8). */
+    public int32 byRounds;
     /** The trial was refused: `--bands` carried the after run's own identity,
      *  so the union would contain every after median and every verdict
      *  would be `keep` by construction. */
@@ -23,6 +25,7 @@ public final class TrialResult {
         this.widened = 0;
         this.paired = 0;
         this.contended = 0;
+        this.byRounds = 0;
         this.refused = false;
     }
 }

@@ -53,6 +53,10 @@ public final class Report {
         public String date;
         public String arm;
         public String note;
+        public int32 rounds;
+        public float64 roundLo;
+        public float64 roundHi;
+        public float64 roundMean;
 
         public Row() {
             this.workload = "";
@@ -72,6 +76,10 @@ public final class Report {
             this.date = "";
             this.arm = "";
             this.note = "";
+            this.rounds = 1;
+            this.roundLo = 0.0;
+            this.roundHi = 0.0;
+            this.roundMean = 0.0;
         }
 
         public #String identity() {
@@ -286,10 +294,20 @@ public final class Report {
         if (nm % 2 == 0) {
             med = (meds[nm / 2 - 1] + meds[nm / 2]) / 2.0;
         }
+        float64 sum = 0.0;
+        int32 q = 0;
+        while (q < nm) {
+            sum = sum + meds[q];
+            q = q + 1;
+        }
         m.median = med;
         m.lo = lo;
         m.hi = hi;
         m.n = n;
+        m.rounds = nm;
+        m.roundLo = meds[0];
+        m.roundHi = meds[nm - 1];
+        m.roundMean = sum / (float64) nm;
         return m;
     }
 
@@ -320,12 +338,18 @@ public final class Report {
         return w;
     }
 
-    /** True when either side's witness for `block` was over a threshold. */
+    /** The foreign GPU the gate saw on the idle box (scheduling 0.2.9), 0 when unrecorded. */
+    static float64 idleGpu(ArrayList<Row> rows) {
+        float64 g = Report.witness(rows, "gate", "foreign_gpu_pct");
+        return g > 0.0 ? g : 0.0;
+    }
+
+    /** True when either side's witness for `block` was over a threshold, GPU above its idle level. */
     static boolean contendedBlock(ArrayList<Row> b, ArrayList<Row> af, String block) {
         return Report.witness(b, block, "foreign_cpu_pct") > Report.contendedCpuPct
             || Report.witness(af, block, "foreign_cpu_pct") > Report.contendedCpuPct
-            || Report.witness(b, block, "foreign_gpu_pct") > Report.contendedGpuPct
-            || Report.witness(af, block, "foreign_gpu_pct") > Report.contendedGpuPct;
+            || Report.witness(b, block, "foreign_gpu_pct") > Report.idleGpu(b) + Report.contendedGpuPct
+            || Report.witness(af, block, "foreign_gpu_pct") > Report.idleGpu(af) + Report.contendedGpuPct;
     }
 
     /** Lower is better for durations, misses, slowdowns and device idle; higher for rates. */
@@ -582,6 +606,16 @@ public final class Report {
                 }
                 res.paired = res.paired + 1;
                 int32 v = Verdict.of(Report.lowerIsBetter(rb), lo0, hi0, n0, ra.median);
+                if (rb.rounds > 1 && ra.rounds > 1) {
+                    int32 vr = Verdict.ofRounds(Report.lowerIsBetter(rb), rb.roundLo, rb.roundHi, rb.roundMean,
+                                                ra.roundLo, ra.roundHi, ra.roundMean);
+                    if (rb.rounds >= Verdict.ROUNDS_ALONE && ra.rounds >= Verdict.ROUNDS_ALONE) {
+                        v = vr;
+                    } else if (v == Verdict.WORSE && vr != Verdict.WORSE) {
+                        v = Verdict.KEEP;
+                    }
+                    res.byRounds = res.byRounds + 1;
+                }
                 String verdict = Verdict.name(v);
                 String block #= Report.blockOf(rb.workload);
                 if (v == Verdict.WORSE && Report.contendedBlock(b, af, block)) {
@@ -616,10 +650,15 @@ public final class Report {
         if (res.widened > 0) {
             bandsNote = "; " + res.widened + " KPI(s) banded by the union of two runs (--bands)";
         }
+        if (res.byRounds > 0) {
+            bandsNote = bandsNote + "; " + res.byRounds + " KPI(s) judged by arm rounds (worse only when every "
+                + "after round is past every before round by more than the round spread, and with fewer than "
+                + Verdict.ROUNDS_ALONE + " rounds per arm only when the band rule agrees)";
+        }
         if (res.contended > 0) {
-            bandsNote = bandsNote + "; " + res.contended + " KPI(s) outside their band while a witness saw "
-                + "foreign load over " + Report.contendedCpuPct + "% CPU or " + Report.contendedGpuPct
-                + "% GPU: contended, rerun on a quiet box";
+            bandsNote = bandsNote + "; " + res.contended + " KPI(s) worse while a witness saw foreign load "
+                + "over " + Report.contendedCpuPct + "% CPU or " + Report.contendedGpuPct
+                + "% GPU above the gate's idle level: contended, rerun on a quiet box";
         }
         if (res.worse == 0) {
             System.stdout.println("not-worse: every paired KPI with a noise band is inside it or better"

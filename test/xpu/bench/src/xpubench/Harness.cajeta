@@ -255,7 +255,7 @@ public final class Harness {
             + " | compiler: " + rows.compiler + " | power: " + rows.powerMode
             + " | shapes: " + shapes + " | blocks " + Workloads.blocks + " x " + Workloads.perBlock);
 
-        // arms in A/B/B/A order, one round
+        // arms in Thue-Morse A B B A B A A B order after a discarded warm-up block
         ArrayList<String> arms = heap ArrayList<String>();
         int32 st = 0;
         int32 ai = 0;
@@ -269,14 +269,27 @@ public final class Harness {
             }
             ai = ai + 1;
         }
+        float64 idleCpu = Stats.round(box[0], 1);
+        float64 idleGpu = Stats.round(box[1], 1);
+        int32 gi = 0;
+        while (gi < arms.count()) {
+            rows.arm #= arms.get(gi);
+            rows.row("witness", "gate", "foreign_cpu_pct", "witness", idleCpu, idleCpu, idleCpu, 0.0, 1,
+                     "CPU busy outside this process over the gate's window, before any block");
+            rows.row("witness", "gate", "foreign_gpu_pct", "witness", idleGpu, idleGpu, idleGpu, 0.0, 1,
+                     "other processes' DRM engine time over the gate's window: the desktop's idle level");
+            gi = gi + 1;
+        }
         int32[] order #= Stats.abbaOrder(arms.count(), Stats.armRounds(arms.count()));
         float64 soloP99 = 0.0;
-        int32 slot = 0;
+        int32 slot = arms.count() > 1 ? 0 - 1 : 0;
         while (slot < (int32) order.count()) {
-            String arm = arms.get(order[slot]);
+            String arm = arms.get(order[slot < 0 ? 0 : slot]);
             rows.arm #= arm;
+            rows.discard = slot < 0;
             Workloads.applyArm(arm);
-            System.stdout.println("--- arm " + arm + " ---");
+            System.stdout.println(slot < 0 ? "--- warm-up, arm " + arm + ", rows discarded ---"
+                                           : "--- arm " + arm + " ---");
 
             if (Harness.has(workloads, "kernels")) {
                 int64[] w0 #= Gate.snapshot(self);
