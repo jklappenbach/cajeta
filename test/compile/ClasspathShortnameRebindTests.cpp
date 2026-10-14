@@ -202,3 +202,148 @@ TEST(ClasspathShortnameRebind, SignatureBindsDeclaringPackageBothOrders) {
     EXPECT_EQ(f.compileAndRun("decoyFirst", /*decoyFirst=*/true), 6)
         << f.log("decoyFirst");
 }
+
+namespace {
+
+// Two archives that each declare `TimeSource` and `ManualTimeSource` in their
+// own package, as primavera's context package and cajeta-cloud's identity
+// package do. liba's Probe and libb's Meter use their own package's pair
+// through bare names only. `ManualTimeSource` sorts before `TimeSource`, so
+// in each archive the class is read before the interface it names: a forward
+// reference, which the defect needs (a `Clock`/`ManualClock` pair passes).
+struct TimeSourcePair {
+    fs::path root;
+    std::string liba, libb;
+
+    static TimeSourcePair build(const std::string& tag) {
+        TimeSourcePair p{freshTempDir(tag)};
+        writeFile(p.root / "liba/src/liba/TimeSource.cajeta",
+            "package liba;\n"
+            "public interface TimeSource {\n"
+            "    int64 millis();\n"
+            "}\n");
+        writeFile(p.root / "liba/src/liba/ManualTimeSource.cajeta",
+            "package liba;\n"
+            "public class ManualTimeSource implements TimeSource {\n"
+            "    int64 t;\n"
+            "    public ManualTimeSource(int64 start) { this.t = start; return; }\n"
+            "    public int64 millis() { return this.t; }\n"
+            "}\n");
+        writeFile(p.root / "liba/src/liba/Probe.cajeta",
+            "package liba;\n"
+            "public final class Probe {\n"
+            "    public static int64 read() {\n"
+            "        ManualTimeSource m = heap ManualTimeSource(2L);\n"
+            "        TimeSource c = m;\n"
+            "        return c.millis();\n"
+            "    }\n"
+            "}\n");
+        writeFile(p.root / "libb/src/libb/time/TimeSource.cajeta",
+            "package libb.time;\n"
+            "public interface TimeSource {\n"
+            "    int64 seconds();\n"
+            "}\n");
+        writeFile(p.root / "libb/src/libb/time/ManualTimeSource.cajeta",
+            "package libb.time;\n"
+            "public class ManualTimeSource implements TimeSource {\n"
+            "    int64 t;\n"
+            "    public ManualTimeSource(int64 start) { this.t = start; return; }\n"
+            "    public int64 seconds() { return this.t; }\n"
+            "}\n");
+        writeFile(p.root / "libb/src/libb/time/Meter.cajeta",
+            "package libb.time;\n"
+            "public final class Meter {\n"
+            "    TimeSource clock;\n"
+            "    public Meter() { this.clock = heap ManualTimeSource(5L); return; }\n"
+            "    public int64 read() { return this.clock.seconds(); }\n"
+            "}\n");
+        auto out = p.root / "out";
+        fs::create_directories(out);
+        auto lib = [&](const std::string& entry, const std::string& srcDir) {
+            std::string cmd = compilerBinary() + " " + entry + " "
+                + (p.root / srcDir).string() + " " + out.string()
+                + " --emit=cja > " + (p.root / "lib.log").string() + " 2>&1";
+            return exitCodeOf(std::system(cmd.c_str()));
+        };
+        if (lib("liba.Probe", "liba/src") != 0) return p;
+        if (lib("libb.time.Meter", "libb/src") != 0) return p;
+        // An archive is named for the entry class's innermost package.
+        p.liba = (out / "liba.cja").string();
+        p.libb = (out / "time.cja").string();
+        return p;
+    }
+
+    bool ok() const {
+        return !liba.empty() && fs::exists(liba) && fs::exists(libb);
+    }
+
+    // Builds `src` against both archives in the given order, runs it, and
+    // answers its exit code; -1 when it does not compile.
+    int compileAndRun(const std::string& tag, const std::string& src, bool aFirst) const {
+        writeFile(root / ("app-" + tag + "/src/app/Main.cajeta"), src);
+        auto outDir = root / ("app-" + tag + "/out");
+        std::string cp = aFirst ? liba + "," + libb : libb + "," + liba;
+        auto log = root / (tag + ".log");
+        std::string cmd = compilerBinary() + " app.Main::run "
+            + (root / ("app-" + tag + "/src")).string() + " " + outDir.string()
+            + " --emit=exe --classpath=" + cp + " > " + log.string() + " 2>&1";
+        if (exitCodeOf(std::system(cmd.c_str())) != 0) return -1;
+        std::string run = (outDir / "a.out").string() + " > " CAJETA_PORTABLE_DEVNULL " 2>&1";
+        return exitCodeOf(std::system(run.c_str()));
+    }
+
+    std::string log(const std::string& tag) const {
+        return readAll(root / (tag + ".log"));
+    }
+};
+
+} // namespace
+
+// The capture for a class's declared INTERFACE (found 2026-10-13 by the
+// primavera sample, which loads primavera and cajeta-cloud 0.3.0). A bare
+// `implements TimeSource` is recorded as written, and the parent resolvers tried
+// a short-name scan before the declaring package, so whichever archive came
+// second had its class checked against the other's interface:
+//   CAJETA_ERROR_INTERFACE_NOT_IMPLEMENTED: class 'liba.ManualTimeSource'
+//   implements interface 'libb.time.TimeSource' but does not provide ...
+// The consumer names neither pair.
+TEST(ClasspathShortnameRebind, ImplementedInterfaceBindsDeclaringPackageBothOrders) {
+    if (!fs::exists(compilerBinary()))
+        GTEST_SKIP() << "compiler binary unavailable";
+    TimeSourcePair p = TimeSourcePair::build("iface");
+    ASSERT_TRUE(p.ok()) << readAll(p.root / "lib.log");
+    std::string src =
+        "package app;\n"
+        "import liba.Probe;\n"
+        "import libb.time.Meter;\n"
+        "public final class Main {\n"
+        "    public static int32 run() {\n"
+        "        Meter m = heap Meter();\n"
+        "        return (int32) (Probe.read() + m.read());\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(p.compileAndRun("ifaceA", src, /*aFirst=*/true), 7) << p.log("ifaceA");
+    EXPECT_EQ(p.compileAndRun("ifaceB", src, /*aFirst=*/false), 7) << p.log("ifaceB");
+}
+
+// A fully qualified creator binds the class it names. The parse joined the
+// package segments with no dot, so `heap libb.time.ManualTimeSource(5L)` looked up
+// "libbtime.ManualTimeSource", missed, and fell to a short-name rescue that built
+// liba.ManualTimeSource: the program compiled and faulted (exit 139).
+TEST(ClasspathShortnameRebind, QualifiedCreatorBindsTheNamedClass) {
+    if (!fs::exists(compilerBinary()))
+        GTEST_SKIP() << "compiler binary unavailable";
+    TimeSourcePair p = TimeSourcePair::build("creator");
+    ASSERT_TRUE(p.ok()) << readAll(p.root / "lib.log");
+    std::string src =
+        "package app;\n"
+        "public final class Main {\n"
+        "    public static int32 run() {\n"
+        "        liba.TimeSource a = heap liba.ManualTimeSource(2L);\n"
+        "        libb.time.TimeSource b = heap libb.time.ManualTimeSource(5L);\n"
+        "        return (int32) (a.millis() + b.seconds());\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(p.compileAndRun("newA", src, /*aFirst=*/true), 7) << p.log("newA");
+    EXPECT_EQ(p.compileAndRun("newB", src, /*aFirst=*/false), 7) << p.log("newB");
+}

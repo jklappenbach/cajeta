@@ -737,8 +737,15 @@ namespace cajeta {
         void setClassBody(ClassBodyDeclarationPtr classBody);
 
         // Resolve `qExtended` into `superClasses` from the module's structures map: full
-        // canonical first, then short type name (a bare identifier picks the wrong package).
+        // canonical first, then the declaring package for a bare name, then short type
+        // name (a bare identifier alone can pick the wrong package).
         void resolveSuperClasses();
+
+        // A bare declared parent (`implements Clock`) names the declaring package's
+        // type when that package has one, before any short-name scan: two archives
+        // may each hold a `Clock`. Null when the name is qualified or the package
+        // has no such type.
+        CajetaClassPtr ownPackageParent(const QualifiedNamePtr& parent) const;
 
         // Single-pass hierarchy walk filling `virtualMethodList` in slot order; an override
         // replaces its ancestor's slot. Sets Method::virtualTableIndex. Idempotent.

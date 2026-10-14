@@ -320,8 +320,11 @@ namespace cajeta {
             type = CajetaType::ofScoped(typeName, module);
         }
         if (!type) type = CajetaType::of(typeName, package);
-        // Qualified-miss rescue: the qualified-creator parse can mangle a package
-        // (`cajeta.lang.String` arrives as "cajetalang"), so keep it as last tier.
+        // Qualified-miss rescue, the last tier. The qualified-creator parse used
+        // to join package segments with no dot (`cajeta.lang.String` arrived as
+        // "cajetalang"), so a qualified creator always fell through to here and
+        // bound the short name: `heap libb.time.Clock()` built liba.Clock when
+        // both were loaded (2026-10-13). The parse joins with dots now.
         if (!type) type = CajetaType::ofScoped(typeName, module);
         // Templated `new Box<int32>(...)`: route through the template's
         // instantiation cache so the concrete Box<int32> is what we allocate.

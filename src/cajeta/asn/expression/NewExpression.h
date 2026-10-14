@@ -65,6 +65,7 @@ namespace cajeta {
                             typeName = identifierPart->getText();
                             createdTypeToken = identifierPart->getStart();
                         } else {
+                            if (!package.empty()) package.append(".");
                             package.append(identifierPart->getText());
                         }
                     }

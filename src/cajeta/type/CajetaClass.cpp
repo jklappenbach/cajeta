@@ -3933,10 +3933,31 @@ namespace cajeta {
         }
     }
 
+    CajetaClassPtr CajetaClass::ownPackageParent(const QualifiedNamePtr& parent) const {
+        if (!parent || !qName) return nullptr;
+        const std::string& parentPkg = parent->getPackageName();
+        if (!parentPkg.empty() && parentPkg != "code") return nullptr;
+        const std::string& ownPkg = qName->getPackageName();
+        if (ownPkg.empty() || ownPkg == "code") return nullptr;
+        std::string canonical = ownPkg + "." + parent->getTypeName();
+        if (module) {
+            auto& structures = module->getStructures();
+            auto it = structures.find(canonical);
+            if (it != structures.end() && it->second.get() != this) return it->second;
+        }
+        auto cit = canonicalMap.find(canonical);
+        if (cit != canonicalMap.end()) {
+            auto klass = std::dynamic_pointer_cast<CajetaClass>(cit->second);
+            if (klass && klass.get() != this) return klass;
+        }
+        return nullptr;
+    }
+
     // Resolves `extends` names into superClasses: module structures by canonical,
-    // then by short name, then the process-global canonicalMap, which may yield a
-    // placeholder deliberately — tryGeneratePrototype defers on one. A class that is
-    // its own ancestor is CAJETA_ERROR_CYCLIC_INHERITANCE.
+    // then the declaring package's type for a bare name, then by short name, then
+    // the process-global canonicalMap, which may yield a placeholder deliberately —
+    // tryGeneratePrototype defers on one. A class that is its own ancestor is
+    // CAJETA_ERROR_CYCLIC_INHERITANCE.
     void CajetaClass::resolveSuperClasses() {
         superClasses.clear();
         for (auto& qName : qExtended) {
@@ -3944,6 +3965,10 @@ namespace cajeta {
             auto it = structures.find(qName->toCanonical());
             if (it != structures.end()) {
                 superClasses.push_back(it->second);
+                continue;
+            }
+            if (auto own = ownPackageParent(qName)) {
+                superClasses.push_back(own);
                 continue;
             }
             bool found = false;
@@ -4049,6 +4074,8 @@ namespace cajeta {
             auto it = structures.find(qn->toCanonical());
             if (it != structures.end()) {
                 found = it->second;
+            } else if (auto own = ownPackageParent(qn)) {
+                found = own;
             } else {
                 for (auto& entry : structures) {
                     if (entry.second->getQName()->getTypeName() == qn->getTypeName()) {
