@@ -974,6 +974,29 @@ statement), and lost at 200 µs in a bimodal launch call that both arms
 share. Verdict: **keep**. The trial verb's `worse` rows on profiled spans
 are a residual of the instrument (§5).
 
+T-008 reruns T-006 and T-007 on the contention-proof instrument
+(scheduling 0.1.3 to 0.1.5, 0.2.5 to 0.2.11; harness `4f3f4d60`, spans
+re-derived under `2a31fa41`). Each backend ran one leg with both arms in one
+process: a discarded warm-up block, then four rounds in the order bypass,
+scheduled, scheduled, bypass, scheduled, bypass, bypass, scheduled, and five
+profiled passes per arm in alternating order. A KPI reads `worse` only when
+every scheduled round lies past every bypass round by more than the round
+spread. Legs `rows-{hip,cpu}-acc4r-*`, 2026-10-13 20:20 to 20:42, gate
+witness 1.5% foreign CPU and 3.5% foreign GPU, no contended block.
+
+The CPU backend keeps 121 of 121. gfx1151 keeps 125 of 127. The two worse
+rows are the seam's own host cost, every scheduled round past every bypass
+round:
+
+| KPI | Bypass rounds | Scheduled rounds | Cost |
+|---|---|---|---|
+| gfx1151 CG `host_cost_per_node` | 0.857 to 0.864 µs | 0.896 to 0.898 µs | +39 ns (4.5%) |
+| gfx1151 degenerate `host_cost_per_node` | 0.994 to 1.004 µs | 1.029 to 1.042 µs | +32 ns (3.3%) |
+
+`wall_per_iteration` keeps on both, and no device span moves with the arm.
+T-006's union band (0.849 to 1.035 µs) hid this cost. Verdict: **keep**,
+the cost accepted as Unit 1's price (developer, 2026-10-13).
+
 ## 5. Residuals
 
 Changes that measured worse or flat and shipped gated off, with the row that
