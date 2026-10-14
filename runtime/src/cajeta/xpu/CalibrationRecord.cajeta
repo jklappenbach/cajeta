@@ -34,7 +34,7 @@ public final class CalibrationRecord {
             out[h + j] = payload[j];
             j = j + 1;
         }
-        String sum #= CalibrationKey.hex64(XXHash3.hash(out, (int64) (h + len)));
+        String sum #= CalibrationKey.hex64(XXHash3.hashSeeded(out, (int64) (h + len), 0L));
         int8[] sb #= sum.toBytes();
         int32 k = 0;
         while (k < 16) {
@@ -53,7 +53,7 @@ public final class CalibrationRecord {
         if (n < 16) {
             return null;
         }
-        String sum #= CalibrationKey.hex64(XXHash3.hash(bytes, (int64) (n - 16)));
+        String sum #= CalibrationKey.hex64(XXHash3.hashSeeded(bytes, (int64) (n - 16), 0L));
         int8[] sb #= sum.toBytes();
         int32 k = 0;
         while (k < 16) {

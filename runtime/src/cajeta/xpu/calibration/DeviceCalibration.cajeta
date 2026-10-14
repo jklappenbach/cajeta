@@ -1,0 +1,205 @@
+package cajeta.xpu.calibration;
+
+import cajeta.collection.ArrayList;
+import cajeta.lang.Long;
+import cajeta.lang.String;
+import cajeta.xpu.Calibration;
+import cajeta.xpu.CalibrationKey;
+
+/**
+ * The calibration set's device facts (xpu-tile-scheduling §12.1, §12.2,
+ * §12.6): measured once per device, driver, compiler and power mode by
+ * `CalibrationProbes`, then served from memory or the `CalibrationStore`.
+ * A fact this device cannot measure is recorded as absent, never filled
+ * from another device.
+ */
+public final class DeviceCalibration {
+    public static final String MATRIX_PEAK = "matrix_peak_gflops";
+    public static final String VECTOR_PEAK = "vector_peak_gflops";
+    public static final String BANDWIDTH = "bandwidth_gbps";
+    public static final String BANDWIDTH_HOST_LOAD = "bandwidth_host_load_gbps";
+    public static final String RIDGE_VECTOR = "ridge_vector_flop_per_byte";
+    public static final String RIDGE_MATRIX = "ridge_matrix_flop_per_byte";
+    public static final String BYTES_IN_FLIGHT = "bytes_in_flight";
+    public static final String LAUNCH_BETA = "launch_beta_us";
+    public static final String LAUNCH_ALPHA = "launch_alpha_ns_per_item";
+    public static final String EVENT = "event_us";
+    public static final String GRAPH_BUILD = "graph_build_us";
+    public static final String GRAPH_NODE = "graph_node_us";
+    public static final String INTER_QUEUE = "inter_queue_us";
+    public static final String SCHED_DELAY_0 = "sched_delay_resident_0_us";
+    public static final String SCHED_DELAY_1 = "sched_delay_resident_1_us";
+    public static final String SCHED_DELAY_2 = "sched_delay_resident_2_us";
+    public static final String SCHED_DELAY_4 = "sched_delay_resident_4_us";
+    public static final String SCHED_DELAY_8 = "sched_delay_resident_8_us";
+    public static final String YIELD = "yield_us";
+    public static final String PREEMPT = "preempt_us";
+    public static final String POWER_DROOP = "power_droop";
+    public static final String OCCUPANCY_4 = "occupancy_4_ms";
+    public static final String OCCUPANCY_48 = "occupancy_48_ms";
+    public static final String PROBE = "probe_ms";
+
+    ArrayList<String> names;
+    ArrayList<int64> millis;
+
+    public DeviceCalibration() {
+        this.names = heap ArrayList<String>();
+        this.millis = heap ArrayList<int64>();
+    }
+
+    static DeviceCalibration cached = null;
+    static int32 probes = 0;
+
+    /** This device's facts: from memory, else the store, else measured now and stored. */
+    public static DeviceCalibration current() {
+        if (DeviceCalibration.cached != null) {
+            return DeviceCalibration.cached;
+        }
+        CalibrationKey key #= CalibrationKey.live("device");
+        int8[] payload #= Calibration.load(key);
+        if (payload != null) {
+            DeviceCalibration.cached #= DeviceCalibration.parse(payload);
+            return DeviceCalibration.cached;
+        }
+        DeviceCalibration.probes = DeviceCalibration.probes + 1;
+        DeviceCalibration fresh #= CalibrationProbes.measure();
+        String t #= fresh.text();
+        int8[] b #= t.toBytes();
+        Calibration.store(key, b, (int32) b.count());
+        DeviceCalibration.cached #= fresh;
+        return DeviceCalibration.cached;
+    }
+
+    /** How many times this process ran the probes: 0 when the facts came from the store. */
+    public static int32 probeRuns() {
+        return DeviceCalibration.probes;
+    }
+
+    /** Record `name` as measured, `value` in its unit. */
+    public void put(String name, float64 value) {
+        float64 m = value * 1000.0;
+        int64 v = (int64) (m >= 0.0 ? m + 0.5 : m - 0.5);
+        this.set(name, v);
+    }
+
+    /** Record `name` as absent on this device. */
+    public void putAbsent(String name) {
+        this.set(name, Long.MIN_VALUE);
+    }
+
+    /** Whether `name` was measured and present. */
+    public boolean has(String name) {
+        int32 i = this.find(name);
+        return i >= 0 && this.millis.get(i) != Long.MIN_VALUE;
+    }
+
+    /** Whether `name` was recorded as absent. */
+    public boolean absent(String name) {
+        int32 i = this.find(name);
+        return i >= 0 && this.millis.get(i) == Long.MIN_VALUE;
+    }
+
+    /** The value of a present fact in its unit, 0 otherwise. */
+    public float64 value(String name) {
+        int32 i = this.find(name);
+        if (i < 0 || this.millis.get(i) == Long.MIN_VALUE) {
+            return 0.0;
+        }
+        return (float64) this.millis.get(i) / 1000.0;
+    }
+
+    /** One `name=thousandths` or `name=absent` line per fact. */
+    public #String text() {
+        String t = "";
+        int32 i = 0;
+        while (i < this.names.count()) {
+            int64 v = this.millis.get(i);
+            String n = this.names.get(i);
+            if (v == Long.MIN_VALUE) {
+                t = t + n + "=absent\n";
+            } else {
+                t = t + n + "=" + v + "\n";
+            }
+            i = i + 1;
+        }
+        return t;
+    }
+
+    /** The facts of a `text()` payload; unparseable lines are skipped. */
+    public static #DeviceCalibration parse(int8[] b) {
+        DeviceCalibration d = heap DeviceCalibration();
+        int32 n = (int32) b.count();
+        int32 start = 0;
+        int32 i = 0;
+        while (i <= n) {
+            if (i == n || b[i] == 10) {
+                int32 eq = start;
+                while (eq < i && b[eq] != 61) {
+                    eq = eq + 1;
+                }
+                if (eq > start && eq < i) {
+                    String name #= DeviceCalibration.slice(b, start, eq);
+                    String val #= DeviceCalibration.slice(b, eq + 1, i);
+                    if (val.equals("absent")) {
+                        d.set(name, Long.MIN_VALUE);
+                    } else if (DeviceCalibration.integral(val)) {
+                        d.set(name, Long.parseLong(val));
+                    }
+                }
+                start = i + 1;
+            }
+            i = i + 1;
+        }
+        return d;
+    }
+
+    void set(String name, int64 v) {
+        int32 i = this.find(name);
+        if (i >= 0) {
+            this.millis.set(i, v);
+            return;
+        }
+        this.names.add("" + name);
+        this.millis.add(v);
+    }
+
+    int32 find(String name) {
+        int32 i = 0;
+        while (i < this.names.count()) {
+            if (this.names.get(i).equals(name)) {
+                return i;
+            }
+            i = i + 1;
+        }
+        return 0 - 1;
+    }
+
+    static #String slice(int8[] b, int32 from, int32 to) {
+        int32 n = to - from;
+        int8[] c = heap int8[n];
+        int32 i = 0;
+        while (i < n) {
+            c[i] = b[from + i];
+            i = i + 1;
+        }
+        return heap String(#c, n);
+    }
+
+    static boolean integral(String s) {
+        int32 n = s.byteLength();
+        if (n == 0) {
+            return false;
+        }
+        int32 i = s.byteAt(0) == 45 ? 1 : 0;
+        if (i == n) {
+            return false;
+        }
+        while (i < n) {
+            if (s.byteAt(i) < 48 || s.byteAt(i) > 57) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+}

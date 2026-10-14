@@ -796,13 +796,17 @@ namespace cajeta {
 
     // True for the stdlib packages parsed on demand rather than at prime:
     // cajeta.math and its submodules, plus the eager-prelude consumers that would
-    // otherwise drag math in (cajeta.xpu.mesh, nucleo.column / .sparse / .frame).
+    // otherwise drag math in (cajeta.xpu.mesh, nucleo.column / .sparse / .frame), and
+    // cajeta.xpu.calibration, whose probe kernels would otherwise compile into every xpu program.
     static bool isLazyStdlibPackage(const std::string& pkg) {
         // CAJETA_NO_LAZY_STDLIB=1 forces every package eager.
         static const bool noLazy = std::getenv("CAJETA_NO_LAZY_STDLIB") != nullptr;
         if (noLazy) return false;
         if (pkg == "cajeta.math" || pkg.rfind("cajeta.math.", 0) == 0) return true;
         if (pkg == "cajeta.xpu.mesh" || pkg.rfind("cajeta.xpu.mesh.", 0) == 0) {
+            return true;
+        }
+        if (pkg == "cajeta.xpu.calibration") {
             return true;
         }
         if (pkg == "cajeta.nucleo.column"

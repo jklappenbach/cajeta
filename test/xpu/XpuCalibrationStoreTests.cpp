@@ -122,7 +122,7 @@ std::string program(const std::string& body) {
         "import cajeta.xpu.Scheduler;\n"
         "public final class T {\n"
         "    @Kernel\n"
-        "    public static void touch(KernelBuffer<float32> y, uint32 n) {\n"
+        "    public static void storeTestKernel(KernelBuffer<float32> y, uint32 n) {\n"
         "        uint32 i = KernelThread.globalIdX();\n"
         "        if (i < n) { y[i] = 1.0f; }\n"
         "    }\n") + kHelpers + body + "}\n" + kStores;
@@ -350,4 +350,24 @@ TEST(XpuCalibrationStore, neverWritesTmpOrTheArtifactStore) {
     EXPECT_EQ(call(jit.get(), "run"), 0) << "an XDG cache inside the artifact store is refused";
     EXPECT_FALSE(std::filesystem::exists(olla)) << "nothing may be created inside .olla";
     std::filesystem::remove_all(dir);
+}
+
+// 2.1.4 — a slot and a checksum are the same in every process, or no stored record is ever found.
+TEST(XpuCalibrationStore, aSlotAndChecksumAreTheSameInEveryProcess) {
+    auto jit = compile(
+        "    public static int32 run() {\n"
+        "        CalibrationKey k = heap CalibrationKey(\"device\", \"cpu/x/\", \"0\", \"0.41.0\", \"performance/auto\");\n"
+        "        String slot #= k.slot();\n"
+        "        if (!slot.equals(\"cal-c78dfe403a912db5\")) { return 1; }\n"
+        "        int8[] r #= T.framed(k, \"a=1\");\n"
+        "        int32 n = (int32) r.count();\n"
+        "        int8[] tail = heap int8[16];\n"
+        "        int32 i = 0;\n"
+        "        while (i < 16) { tail[i] = r[n - 16 + i]; i = i + 1; }\n"
+        "        String sum = heap String(#tail, 16);\n"
+        "        if (!sum.equals(\"43a167bd898621c9\")) { return 2; }\n"
+        "        return 0;\n"
+        "    }\n");
+    ASSERT_NE(jit, nullptr);
+    EXPECT_EQ(call(jit.get(), "run"), 0) << "the slot and checksum must not depend on the process seed";
 }

@@ -143,3 +143,53 @@ void* __cajeta_xpu_calibration_embedded(void* slotArr, int64_t len) {
     if (!bytes) return NULL;
     return caj_xpu_calib_bytes((const char*) bytes, (size_t) n);
 }
+
+/* Host memory load for the APU bandwidth probe (§12.1): threads streaming memset until stopped. */
+#define CAJ_XPU_HOSTLOAD_MAX 64
+
+static volatile int g_xpu_hostload_run = 0;
+static pthread_t g_xpu_hostload_threads[CAJ_XPU_HOSTLOAD_MAX];
+static int g_xpu_hostload_count = 0;
+static volatile unsigned char g_xpu_hostload_sink = 0;
+
+static void* caj_xpu_hostload_main(void* arg) {
+    size_t n = (size_t) 64 << 20;
+    unsigned char* buf = (unsigned char*) malloc(n);
+    if (!buf) return NULL;
+    int v = (int) (intptr_t) arg;
+    while (g_xpu_hostload_run) {
+        memset(buf, v++ & 255, n);
+        g_xpu_hostload_sink ^= buf[(size_t) v * 4099 % n];
+    }
+    free(buf);
+    return NULL;
+}
+
+/* Starts `threads` host threads streaming memory (0 = half the host CPUs); returns how many started. */
+int32_t __cajeta_xpu_host_load_start(int32_t threads) {
+    if (g_xpu_hostload_count > 0) return g_xpu_hostload_count;
+    if (threads <= 0) {
+#if defined(_SC_NPROCESSORS_ONLN)
+        long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+        threads = cpus > 1 ? (int32_t) (cpus / 2) : 1;
+#else
+        threads = 4;
+#endif
+    }
+    if (threads > CAJ_XPU_HOSTLOAD_MAX) threads = CAJ_XPU_HOSTLOAD_MAX;
+    g_xpu_hostload_run = 1;
+    for (int i = 0; i < threads; i++) {
+        if (pthread_create(&g_xpu_hostload_threads[g_xpu_hostload_count], NULL, caj_xpu_hostload_main,
+                           (void*) (intptr_t) i) == 0) {
+            g_xpu_hostload_count++;
+        }
+    }
+    return g_xpu_hostload_count;
+}
+
+/* Stops the host load threads and joins them. */
+void __cajeta_xpu_host_load_stop(void) {
+    g_xpu_hostload_run = 0;
+    for (int i = 0; i < g_xpu_hostload_count; i++) pthread_join(g_xpu_hostload_threads[i], NULL);
+    g_xpu_hostload_count = 0;
+}

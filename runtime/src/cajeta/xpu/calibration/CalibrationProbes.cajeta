@@ -1,0 +1,640 @@
+package cajeta.xpu.calibration;
+
+import cajeta.collection.ArrayList;
+import cajeta.lang.String;
+import cajeta.time.Clock;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.Device;
+import cajeta.xpu.Event;
+import cajeta.xpu.Group;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Workgroup;
+
+/**
+ * The calibration probes (xpu-tile-scheduling §12.1, §12.6): a synthetic
+ * kernel family measured on the host clock, once per device. Each probe
+ * records its fact, or records it absent where this backend cannot show it.
+ */
+public final class CalibrationProbes {
+    private CalibrationProbes() { }
+
+    // ---- the kernel family ---- //
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void calibrationTouch(KernelBuffer<float32> y, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            y[i] = y[i] + 1.0f;
+        }
+    }
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void calibrationCopy(KernelBuffer<float32> y, KernelBuffer<float32> x, uint32 n, uint32 stride) {
+        uint32 i = KernelThread.globalIdX();
+        while (i < n) {
+            y[i] = x[i];
+            i = i + stride;
+        }
+    }
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void calibrationFma(KernelBuffer<float32> out, KernelBuffer<float32> coef, uint32 iters) {
+        float32 b = coef[0];
+        float32 c = coef[1];
+        float32 a0 = (float32) KernelThread.globalIdX() * 0.0000001f;
+        float32 a1 = a0 + 0.1f;
+        float32 a2 = a0 + 0.2f;
+        float32 a3 = a0 + 0.3f;
+        float32 a4 = a0 + 0.4f;
+        float32 a5 = a0 + 0.5f;
+        float32 a6 = a0 + 0.6f;
+        float32 a7 = a0 + 0.7f;
+        uint32 i = 0;
+        while (i < iters) {
+            a0 = a0 * b + c;
+            a1 = a1 * b + c;
+            a2 = a2 * b + c;
+            a3 = a3 * b + c;
+            a4 = a4 * b + c;
+            a5 = a5 * b + c;
+            a6 = a6 * b + c;
+            a7 = a7 * b + c;
+            i = i + 1;
+        }
+        float32 s = a0 + a1 + a2 + a3 + a4 + a5 + a6 + a7;
+        if (s == 12345.678f) {
+            out[0] = s;
+        }
+    }
+
+    @Kernel
+    @Occupancy(maxThreads = 64)
+    public static void calibrationMma(KernelBuffer<float16> a, KernelBuffer<float32> c, uint32 iters) {
+        CooperativeMatrix<float32,16,16,2> mc;
+        mc.splat(0.0f);
+        CooperativeMatrix<float16,16,16,0> ma;
+        ma.load(a, 0, 0, 16);
+        CooperativeMatrix<float16,16,16,1> mb;
+        mb.load(a, 0, 0, 16);
+        uint32 k = 0;
+        while (k < iters) {
+            Group.mac(mc, ma, mb);
+            k = k + 1;
+        }
+        mc.store(c, Workgroup.x() * 256, 0, 16);
+    }
+
+    @Kernel
+    public static void calibrationSpin(KernelBuffer<float32> out, uint32 iters) {
+        uint32 x = 2463534242;
+        uint32 i = 0;
+        while (i < iters) {
+            x = x ^ (x << 13);
+            x = x ^ (x >> 17);
+            x = x ^ (x << 5);
+            i = i + 1;
+        }
+        if (KernelThread.globalIdX() == 0) {
+            out[0] = (float32) (x & 1023);
+        }
+    }
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void calibrationStep(KernelBuffer<float32> y, KernelBuffer<float32> x, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            y[i] = x[i] * 0.999f + 0.001f;
+        }
+    }
+
+    // ---- the probes ---- //
+
+    /** Measure every fact this backend can show. */
+    public static #DeviceCalibration measure() {
+        int64 t0 = Clock.nanoTime();
+        DeviceCalibration d = heap DeviceCalibration();
+        boolean cpu = Device.activeBackend().equals("cpu");
+        float64 vec = CalibrationProbes.vectorPeak(cpu);
+        d.put(DeviceCalibration.VECTOR_PEAK, vec);
+        float64 mat = 0.0;
+        if (cpu) {
+            d.putAbsent(DeviceCalibration.MATRIX_PEAK);
+        } else {
+            mat = CalibrationProbes.matrixPeak();
+            d.put(DeviceCalibration.MATRIX_PEAK, mat);
+        }
+        float64 bw = CalibrationProbes.bandwidth(cpu, false);
+        d.put(DeviceCalibration.BANDWIDTH, bw);
+        if (!cpu && Device.integrated()) {
+            d.put(DeviceCalibration.BANDWIDTH_HOST_LOAD, CalibrationProbes.bandwidth(cpu, true));
+        } else {
+            d.putAbsent(DeviceCalibration.BANDWIDTH_HOST_LOAD);
+        }
+        if (bw > 0.0) {
+            d.put(DeviceCalibration.RIDGE_VECTOR, vec / bw);
+        } else {
+            d.putAbsent(DeviceCalibration.RIDGE_VECTOR);
+        }
+        if (mat > 0.0 && bw > 0.0) {
+            d.put(DeviceCalibration.RIDGE_MATRIX, mat / bw);
+        } else {
+            d.putAbsent(DeviceCalibration.RIDGE_MATRIX);
+        }
+        if (cpu) {
+            d.putAbsent(DeviceCalibration.BYTES_IN_FLIGHT);
+        } else {
+            float64 bif = CalibrationProbes.bytesInFlight();
+            if (bif > 0.0) {
+                d.put(DeviceCalibration.BYTES_IN_FLIGHT, bif);
+            } else {
+                d.putAbsent(DeviceCalibration.BYTES_IN_FLIGHT);
+            }
+        }
+        CalibrationProbes.launchCost(d);
+        d.put(DeviceCalibration.EVENT, CalibrationProbes.eventCost());
+        CalibrationProbes.graphCost(d);
+        if (cpu) {
+            d.putAbsent(DeviceCalibration.INTER_QUEUE);
+            d.putAbsent(DeviceCalibration.SCHED_DELAY_0);
+            d.putAbsent(DeviceCalibration.SCHED_DELAY_1);
+            d.putAbsent(DeviceCalibration.SCHED_DELAY_2);
+            d.putAbsent(DeviceCalibration.SCHED_DELAY_4);
+            d.putAbsent(DeviceCalibration.SCHED_DELAY_8);
+        } else {
+            d.put(DeviceCalibration.INTER_QUEUE, CalibrationProbes.interQueue());
+            CalibrationProbes.schedulingDelay(d);
+        }
+        d.putAbsent(DeviceCalibration.YIELD);
+        d.putAbsent(DeviceCalibration.PREEMPT);
+        d.putAbsent(DeviceCalibration.POWER_DROOP);
+        d.put(DeviceCalibration.OCCUPANCY_4, CalibrationProbes.occupancy(4));
+        d.put(DeviceCalibration.OCCUPANCY_48, CalibrationProbes.occupancy(48));
+        int64 t1 = Clock.nanoTime();
+        d.put(DeviceCalibration.PROBE, (float64) (t1 - t0) / 1000000.0);
+        return d;
+    }
+
+    /** Threads that fill this device: every multiprocessor at full residency, or 64K when unknown. */
+    static int32 fillThreads(boolean cpu) {
+        if (cpu) {
+            return 16384;
+        }
+        int64 mps = (int64) Device.multiprocessorCount();
+        int64 per = (int64) Device.threadsPerMultiprocessor();
+        if (mps <= 0L || per <= 0L) {
+            return 65536;
+        }
+        return (int32) (mps * per);
+    }
+
+    /** FP32 FMA throughput in GFLOP/s: eight independent chains per thread, about 20 ms, best of three. */
+    static float64 vectorPeak(boolean cpu) {
+        int32 threads = CalibrationProbes.fillThreads(cpu);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>((uint64) 1);
+        KernelBuffer<float32> coef = heap KernelBuffer<float32>((uint64) 2);
+        float32[] h = heap float32[2];
+        h[0] = 0.999999f;
+        h[1] = 0.000001f;
+        coef.upload(h);
+        KernelStream s #= KernelStream.create();
+        int32 g = threads / 256;
+        uint32 iters = 256;
+        calibrationFma.launch(s, grid: [g], block: [256])(out, coef, iters);
+        s.sync();
+        int64 a = Clock.nanoTime();
+        calibrationFma.launch(s, grid: [g], block: [256])(out, coef, iters);
+        s.sync();
+        int64 probe = Clock.nanoTime() - a;
+        if (probe < 1L) {
+            probe = 1L;
+        }
+        int64 scaled = (int64) iters * 20000000L / probe;
+        if (scaled > 1048576L) {
+            scaled = 1048576L;
+        }
+        if (scaled > (int64) iters) {
+            iters = (uint32) scaled;
+        }
+        int64 best = 0L;
+        int32 r = 0;
+        while (r < 3) {
+            int64 b0 = Clock.nanoTime();
+            calibrationFma.launch(s, grid: [g], block: [256])(out, coef, iters);
+            s.sync();
+            int64 dt = Clock.nanoTime() - b0;
+            if (r == 0 || dt < best) {
+                best = dt;
+            }
+            r = r + 1;
+        }
+        s.destroy();
+        float64 flops = (float64) g * 256.0 * (float64) iters * 16.0;
+        return flops / (float64) best;
+    }
+
+    /** f16 matrix-core throughput in GFLOP/s: a register-resident mac loop, one wave per group. */
+    static float64 matrixPeak() {
+        int32 wave = Device.waveSize();
+        if (wave <= 0) {
+            wave = 32;
+        }
+        int64 mps = (int64) Device.multiprocessorCount();
+        int32 groups = mps > 0L ? (int32) (mps * 16L) : 1024;
+        KernelBuffer<float16> a = heap KernelBuffer<float16>((uint64) 256);
+        KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) groups * 256);
+        float16[] h = heap float16[256];
+        a.upload(h);
+        KernelStream s #= KernelStream.create();
+        uint32 iters = 4096;
+        calibrationMma.launch(s, grid: [groups], block: [wave])(a, c, iters);
+        s.sync();
+        int64 best = 0L;
+        int32 r = 0;
+        while (r < 3) {
+            int64 b0 = Clock.nanoTime();
+            calibrationMma.launch(s, grid: [groups], block: [wave])(a, c, iters);
+            s.sync();
+            int64 dt = Clock.nanoTime() - b0;
+            if (r == 0 || dt < best) {
+                best = dt;
+            }
+            r = r + 1;
+        }
+        s.destroy();
+        float64 flops = (float64) groups * (float64) iters * 2.0 * 4096.0;
+        return flops / (float64) best;
+    }
+
+    /** Copy bandwidth in GB/s over 2 x 256 MB (2 x 64 MB on cpu), best of five; `hostLoad` streams host memory meanwhile. */
+    static float64 bandwidth(boolean cpu, boolean hostLoad) {
+        uint32 n = cpu ? 16777216 : 67108864;
+        KernelBuffer<float32> x = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) n);
+        KernelStream s #= KernelStream.create();
+        int32 g = (int32) (n / 256);
+        calibrationCopy.launch(s, grid: [g], block: [256])(y, x, n, n);
+        s.sync();
+        if (hostLoad) {
+            CalibrationProbes.nativeHostLoadStart(0);
+            int64 settle = Clock.nanoTime() + 200000000L;
+            while (Clock.nanoTime() < settle) {
+                calibrationCopy.launch(s, grid: [g], block: [256])(y, x, n, n);
+                s.sync();
+            }
+        }
+        int64 best = 0L;
+        int32 r = 0;
+        while (r < 5) {
+            int64 b0 = Clock.nanoTime();
+            calibrationCopy.launch(s, grid: [g], block: [256])(y, x, n, n);
+            s.sync();
+            int64 dt = Clock.nanoTime() - b0;
+            if (r == 0 || dt < best) {
+                best = dt;
+            }
+            r = r + 1;
+        }
+        if (hostLoad) {
+            CalibrationProbes.nativeHostLoadStop();
+        }
+        s.destroy();
+        return (float64) n * 8.0 / (float64) best;
+    }
+
+    /** Grid-stride copy bandwidth over 2 x 256 MB with `threads` threads, best of two, in GB/s. */
+    static float64 strideBandwidth(KernelStream s, KernelBuffer<float32> y, KernelBuffer<float32> x,
+                                   uint32 n, uint32 threads) {
+        int32 g = (int32) (threads / 256);
+        calibrationCopy.launch(s, grid: [g], block: [256])(y, x, n, threads);
+        s.sync();
+        int64 best = 0L;
+        int32 r = 0;
+        while (r < 2) {
+            int64 b0 = Clock.nanoTime();
+            calibrationCopy.launch(s, grid: [g], block: [256])(y, x, n, threads);
+            s.sync();
+            int64 dt = Clock.nanoTime() - b0;
+            if (r == 0 || dt < best) {
+                best = dt;
+            }
+            r = r + 1;
+        }
+        return (float64) n * 8.0 / (float64) best;
+    }
+
+    /** Bytes moving at once at the saturation knee: the fewest threads within 90% of four times as many, x 8 bytes. */
+    static float64 bytesInFlight() {
+        uint32 n = 67108864;
+        KernelBuffer<float32> x = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) n);
+        KernelStream s #= KernelStream.create();
+        float64[] g = heap float64[15];
+        uint32 threads = 4096;
+        int32 k = 0;
+        float64 found = 0.0;
+        while (k < 15 && threads <= n && found == 0.0) {
+            g[k] = CalibrationProbes.strideBandwidth(s, y, x, n, threads);
+            if (k >= 2 && g[k - 2] >= 0.9 * g[k]) {
+                found = (float64) (threads / 4) * 8.0;
+            }
+            threads = threads * 2;
+            k = k + 1;
+        }
+        s.destroy();
+        return found;
+    }
+
+    /** Pipelined per-launch time of `touch` over `n` items in ns: 20 launches per batch, best of three. */
+    static float64 perLaunch(KernelStream s, KernelBuffer<float32> y, uint32 n) {
+        int32 g = (int32) ((n + 255) / 256);
+        calibrationTouch.launch(s, grid: [g], block: [256])(y, n);
+        s.sync();
+        int64 best = 0L;
+        int32 r = 0;
+        while (r < 3) {
+            int64 b0 = Clock.nanoTime();
+            int32 k = 0;
+            while (k < 20) {
+                calibrationTouch.launch(s, grid: [g], block: [256])(y, n);
+                k = k + 1;
+            }
+            s.sync();
+            int64 dt = Clock.nanoTime() - b0;
+            if (r == 0 || dt < best) {
+                best = dt;
+            }
+            r = r + 1;
+        }
+        return (float64) best / 20.0;
+    }
+
+    /** Launch cost t(n) = beta + alpha n, least squares over four sizes of `touch`. */
+    static void launchCost(DeviceCalibration d) {
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) 4194304);
+        KernelStream s #= KernelStream.create();
+        float64[] xs = heap float64[4];
+        float64[] ts = heap float64[4];
+        xs[0] = 256.0;
+        xs[1] = 65536.0;
+        xs[2] = 1048576.0;
+        xs[3] = 4194304.0;
+        int32 i = 0;
+        while (i < 4) {
+            ts[i] = CalibrationProbes.perLaunch(s, y, (uint32) xs[i]);
+            i = i + 1;
+        }
+        s.destroy();
+        float64 mx = 0.0;
+        float64 mt = 0.0;
+        i = 0;
+        while (i < 4) {
+            mx = mx + xs[i] / 4.0;
+            mt = mt + ts[i] / 4.0;
+            i = i + 1;
+        }
+        float64 sxx = 0.0;
+        float64 sxt = 0.0;
+        i = 0;
+        while (i < 4) {
+            sxx = sxx + (xs[i] - mx) * (xs[i] - mx);
+            sxt = sxt + (xs[i] - mx) * (ts[i] - mt);
+            i = i + 1;
+        }
+        float64 alpha = sxt / sxx;
+        float64 beta = mt - alpha * mx;
+        d.put(DeviceCalibration.LAUNCH_BETA, beta / 1000.0);
+        d.put(DeviceCalibration.LAUNCH_ALPHA, alpha);
+    }
+
+    /** Record plus host wait of one event on an idle stream, in us, averaged over 100. */
+    static float64 eventCost() {
+        KernelStream s #= KernelStream.create();
+        Event e #= Event.create();
+        e.recordOn(s);
+        e.waitHost();
+        int64 b0 = Clock.nanoTime();
+        int32 k = 0;
+        while (k < 100) {
+            e.recordOn(s);
+            e.waitHost();
+            k = k + 1;
+        }
+        int64 dt = Clock.nanoTime() - b0;
+        e.destroy();
+        s.destroy();
+        return (float64) dt / 100000.0;
+    }
+
+    /** One deferred queue of 32 `touch` launches: the round that builds a graph against its replay. */
+    static void graphCost(DeviceCalibration d) {
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) 256);
+        KernelStream s #= KernelStream.create();
+        s.setDeferred(true);
+        int64 base = KernelStream.deferStat(KernelStream.DEFER_GRAPHS_BUILT);
+        float64[] t = heap float64[4];
+        int64[] built = heap int64[4];
+        int32 r = 0;
+        while (r < 4) {
+            int64 b0 = Clock.nanoTime();
+            int32 k = 0;
+            while (k < 32) {
+                calibrationTouch.launch(s, grid: [1], block: [256])(y, 256);
+                k = k + 1;
+            }
+            s.flush();
+            s.sync();
+            t[r] = (float64) (Clock.nanoTime() - b0);
+            built[r] = KernelStream.deferStat(KernelStream.DEFER_GRAPHS_BUILT);
+            r = r + 1;
+        }
+        s.setDeferred(false);
+        s.destroy();
+        int32 at = 0 - 1;
+        r = 0;
+        while (r < 3 && at < 0) {
+            int64 prev = r == 0 ? base : built[r - 1];
+            if (built[r] > prev) {
+                at = r;
+            }
+            r = r + 1;
+        }
+        if (at < 0) {
+            d.putAbsent(DeviceCalibration.GRAPH_BUILD);
+            d.putAbsent(DeviceCalibration.GRAPH_NODE);
+            return;
+        }
+        float64 extra = t[at] - t[at + 1];
+        if (extra < 0.0) {
+            extra = 0.0;
+        }
+        d.put(DeviceCalibration.GRAPH_BUILD, extra / 1000.0);
+        d.put(DeviceCalibration.GRAPH_NODE, extra / 32000.0);
+    }
+
+    /** A cross-stream event chain against the same two launches on one stream, in us. */
+    static float64 interQueue() {
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) 256);
+        KernelStream a #= KernelStream.create();
+        KernelStream b #= KernelStream.create();
+        Event e #= Event.create();
+        calibrationTouch.launch(a, grid: [1], block: [256])(y, 256);
+        a.sync();
+        int64 same = 0L;
+        int64 cross = 0L;
+        int32 k = 0;
+        while (k < 50) {
+            int64 s0 = Clock.nanoTime();
+            calibrationTouch.launch(a, grid: [1], block: [256])(y, 256);
+            calibrationTouch.launch(a, grid: [1], block: [256])(y, 256);
+            a.sync();
+            int64 s1 = Clock.nanoTime();
+            calibrationTouch.launch(a, grid: [1], block: [256])(y, 256);
+            e.recordOn(a);
+            b.waitFor(e);
+            calibrationTouch.launch(b, grid: [1], block: [256])(y, 256);
+            b.sync();
+            int64 s2 = Clock.nanoTime();
+            same = same + (s1 - s0);
+            cross = cross + (s2 - s1);
+            k = k + 1;
+        }
+        e.destroy();
+        a.destroy();
+        b.destroy();
+        float64 delay = (float64) (cross - same) / 50000.0;
+        return delay > 0.0 ? delay : 0.0;
+    }
+
+    /** Launch-to-finish latency of a one-item probe beside 0, 1, 2, 4 and 8 resident 2 ms spin kernels, in us. */
+    static void schedulingDelay(DeviceCalibration d) {
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) 256);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>((uint64) 1);
+        KernelStream p #= KernelStream.create();
+        uint32 cal = 100000;
+        calibrationSpin.launch(p, grid: [1], block: [1])(out, cal);
+        p.sync();
+        int64 c0 = Clock.nanoTime();
+        calibrationSpin.launch(p, grid: [1], block: [1])(out, cal);
+        p.sync();
+        int64 per = Clock.nanoTime() - c0;
+        if (per < 1L) {
+            per = 1L;
+        }
+        int64 want = (int64) cal * 2000000L / per;
+        uint32 iters = want > 2000000000L ? (uint32) 2000000000 : (uint32) want;
+        ArrayList<KernelStream> res = heap ArrayList<KernelStream>();
+        int32 m = 0;
+        while (m < 8) {
+            res.add(#KernelStream.create());
+            m = m + 1;
+        }
+        float64[] rs = heap float64[5];
+        float64[] ls = heap float64[5];
+        rs[0] = 0.0;
+        rs[1] = 1.0;
+        rs[2] = 2.0;
+        rs[3] = 4.0;
+        rs[4] = 8.0;
+        int32 i = 0;
+        while (i < 5) {
+            int32 resident = (int32) rs[i];
+            int64 best = 0L;
+            int32 r = 0;
+            while (r < 3) {
+                int32 j = 0;
+                while (j < resident) {
+                    KernelStream sj = res.get(j);
+                    calibrationSpin.launch(sj, grid: [1], block: [1])(out, iters);
+                    j = j + 1;
+                }
+                int64 b0 = Clock.nanoTime();
+                calibrationTouch.launch(p, grid: [1], block: [256])(y, 1);
+                p.sync();
+                int64 dt = Clock.nanoTime() - b0;
+                j = 0;
+                while (j < resident) {
+                    KernelStream sj = res.get(j);
+                    sj.sync();
+                    j = j + 1;
+                }
+                if (r == 0 || dt < best) {
+                    best = dt;
+                }
+                r = r + 1;
+            }
+            ls[i] = (float64) best / 1000.0;
+            i = i + 1;
+        }
+        m = 0;
+        while (m < 8) {
+            KernelStream sm = res.get(m);
+            sm.destroy();
+            m = m + 1;
+        }
+        p.destroy();
+        d.put(DeviceCalibration.SCHED_DELAY_0, ls[0]);
+        d.put(DeviceCalibration.SCHED_DELAY_1, ls[1]);
+        d.put(DeviceCalibration.SCHED_DELAY_2, ls[2]);
+        d.put(DeviceCalibration.SCHED_DELAY_4, ls[3]);
+        d.put(DeviceCalibration.SCHED_DELAY_8, ls[4]);
+    }
+
+    /** `units` solver-shaped chains of 20 dependent 64K-item steps, each on its own stream, in ms. */
+    static float64 occupancy(int32 units) {
+        uint32 n = 65536;
+        int32 g = (int32) (n / 256);
+        ArrayList<KernelStream> ss = heap ArrayList<KernelStream>();
+        ArrayList<KernelBuffer<float32>> xs = heap ArrayList<KernelBuffer<float32>>();
+        ArrayList<KernelBuffer<float32>> ys = heap ArrayList<KernelBuffer<float32>>();
+        int32 u = 0;
+        while (u < units) {
+            ss.add(#KernelStream.create());
+            xs.add(heap KernelBuffer<float32>((uint64) n));
+            ys.add(heap KernelBuffer<float32>((uint64) n));
+            u = u + 1;
+        }
+        int64 b0 = Clock.nanoTime();
+        int32 k = 0;
+        while (k < 20) {
+            u = 0;
+            while (u < units) {
+                KernelStream su = ss.get(u);
+                KernelBuffer<float32> xu = xs.get(u);
+                KernelBuffer<float32> yu = ys.get(u);
+                if (k % 2 == 0) {
+                    calibrationStep.launch(su, grid: [g], block: [256])(yu, xu, n);
+                } else {
+                    calibrationStep.launch(su, grid: [g], block: [256])(xu, yu, n);
+                }
+                u = u + 1;
+            }
+            k = k + 1;
+        }
+        u = 0;
+        while (u < units) {
+            KernelStream su = ss.get(u);
+            su.sync();
+            u = u + 1;
+        }
+        int64 dt = Clock.nanoTime() - b0;
+        u = 0;
+        while (u < units) {
+            KernelStream su = ss.get(u);
+            su.destroy();
+            u = u + 1;
+        }
+        return (float64) dt / 1000000.0;
+    }
+
+    @Native("__cajeta_xpu_host_load_start")
+    private static int32 nativeHostLoadStart(int32 threads);
+
+    @Native("__cajeta_xpu_host_load_stop")
+    private static void nativeHostLoadStop();
+}

@@ -46,7 +46,7 @@ public final class CalibrationKey {
     public #String slot() {
         String t #= this.text();
         int8[] b #= t.toBytes();
-        return "cal-" + CalibrationKey.hex64(XXHash3.hash(b, (int64) b.count()));
+        return "cal-" + CalibrationKey.hex64(XXHash3.hashSeeded(b, (int64) b.count(), 0L));
     }
 
     /** `v` as sixteen lowercase hex digits. */
