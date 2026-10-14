@@ -93,6 +93,8 @@ public:
         // directly rather than a file, exactly as the flags carry it — the
         // path is never part of what the compiler decides on.
         std::string profilerSelect;
+        // A `cajeta calibrate` snapshot's CONTENTS, embedded as --with-calibration embeds it.
+        std::string withCalibration;
         // XPU device backend(s) to register @Kernels for and bundle in the
         // runtime manifest. Empty defaults to {Nvptx} (the legacy NVIDIA
         // host-launch path). The CPU dispatcher tests set {Cpu} to exercise

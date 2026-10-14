@@ -107,6 +107,10 @@ namespace cajeta {
         // Where the selection came from, deliberately OUT of the cache key.
         std::string     profilerSelectOrigin = "";
 
+        // --with-calibration: a `cajeta calibrate` snapshot's CONTENTS, embedded read-only
+        // (xpu-tile-scheduling §12.4c); contents, so the cache key hashes the records.
+        std::string     withCalibration     = "";
+
         // ----- optimization -----
         OptLevel        opt                 = OptLevel::O0;  // IR opt for --emit=obj/exe
         LtoMode         lto                 = LtoMode::Off;  // cross-module LTO for --emit=exe

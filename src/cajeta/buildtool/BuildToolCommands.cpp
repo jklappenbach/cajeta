@@ -1284,6 +1284,8 @@ namespace cajeta::buildtool {
                     overrides.flavor = value;
                 } else if (match(arg, "profile", value)) {
                     overrides.profile = value;
+                } else if (match(arg, "with-calibration", value)) {
+                    cliParams.values["with-calibration"] = value;
                 } else if (match(arg, "diag-format", value)) {
                     if (!applyDiagFormatArg(value)) {
                         std::cerr << "cajeta " << taskName

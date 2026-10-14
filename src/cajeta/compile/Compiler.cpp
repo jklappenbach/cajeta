@@ -2349,6 +2349,17 @@ namespace cajeta {
             }
         }
         emitXpuKernels(archiveRootPath);
+        if (!flags.withCalibration.empty() && !modules.empty()) {
+            std::vector<cajeta::xpu::CalibrationRecordBlob> records;
+            std::string calError;
+            CajetaModulePtr host;
+            for (auto& m : modules) {
+                if (m != CajetaModule::getStdlibModule()) { host = m; break; }
+            }
+            if (host && cajeta::xpu::parseCalibrationSnapshot(flags.withCalibration, records, calError)) {
+                cajeta::xpu::emitCalibrationRegistration(records, *host->getLlvmModule());
+            }
+        }
 
         // Binary emit needs a C-ABI `main`. Uber archives carry the shim too; plain
         // `cja` libraries do not, so a consumer's own `main` cannot collide.
@@ -3392,6 +3403,8 @@ namespace cajeta {
             llvm::FunctionType* armTy =
                 llvm::FunctionType::get(i32Ty, {}, false);
             b.CreateCall(lmod->getOrInsertFunction("__cajeta_prof_arm", armTy));
+            // `cajeta calibrate`'s replay pass: after every registration ctor, before the entry.
+            b.CreateCall(lmod->getOrInsertFunction("__cajeta_xpu_calib_arm", armTy));
         }
 
         // For `main(String[] args)`, materialize the cajeta String[] from the store.

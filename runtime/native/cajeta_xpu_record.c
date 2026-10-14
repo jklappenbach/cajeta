@@ -308,6 +308,12 @@ static int caj_record_begin_into(struct caj_rec_launch* L, const char* kernelNam
     }
     fprintf(f, "]}\n");
     fclose(f);
+    snprintf(path, sizeof path, "%s/index.tsv", root);
+    FILE* idx = fopen(path, "a");
+    if (idx) {
+        fprintf(idx, "%s\t%s\n", L->dir, kernelName);
+        fclose(idx);
+    }
     return 1;
 }
 

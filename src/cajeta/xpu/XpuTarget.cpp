@@ -14,6 +14,7 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
+#include <sstream>
 
 #include <string>
 
@@ -82,6 +83,71 @@ namespace xpu {
             b.CreateRetVoid();
             llvm::appendToGlobalCtors(hostModule, ctor, /*priority=*/65535);
         }
+    }
+
+    bool parseCalibrationSnapshot(const std::string& text, std::vector<CalibrationRecordBlob>& out,
+                                  std::string& error) {
+        static const std::string magic = "cajeta-calibration-snapshot-1\n";
+        if (text.compare(0, magic.size(), magic) != 0) {
+            error = "not a calibration snapshot (no `cajeta-calibration-snapshot-1` header)";
+            return false;
+        }
+        size_t at = magic.size();
+        while (at < text.size()) {
+            size_t eol = text.find('\n', at);
+            if (eol == std::string::npos) {
+                error = "truncated record header at byte " + std::to_string(at);
+                return false;
+            }
+            std::istringstream head(text.substr(at, eol - at));
+            CalibrationRecordBlob r;
+            size_t len = 0;
+            if (!(head >> r.slot >> len >> r.kernel) || r.slot.rfind("cal-", 0) != 0
+                    || r.slot.size() >= 128) {
+                error = "malformed record header at byte " + std::to_string(at);
+                return false;
+            }
+            at = eol + 1;
+            if (len == 0 || at + len + 1 > text.size() || text[at + len] != '\n') {
+                error = "record " + r.slot + " is shorter than its declared " + std::to_string(len)
+                    + " bytes";
+                return false;
+            }
+            r.bytes = text.substr(at, len);
+            out.push_back(std::move(r));
+            at += len + 1;
+        }
+        return true;
+    }
+
+    void emitCalibrationRegistration(const std::vector<CalibrationRecordBlob>& records,
+                                     llvm::Module& hostModule) {
+        if (records.empty()) return;
+        llvm::LLVMContext& ctx = hostModule.getContext();
+        llvm::Type* voidTy = llvm::Type::getVoidTy(ctx);
+        llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+        llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+        // void __cajeta_xpu_register_calibration_record(const char* slot, const uint8_t* bytes, i64 len)
+        llvm::FunctionCallee regFn = hostModule.getOrInsertFunction(
+            "__cajeta_xpu_register_calibration_record",
+            llvm::FunctionType::get(voidTy, {ptrTy, ptrTy, i64}, false));
+        llvm::Function* ctor = llvm::Function::Create(
+            llvm::FunctionType::get(voidTy, false), llvm::GlobalValue::InternalLinkage,
+            "__cajeta_xpu_calibration_ctor", &hostModule);
+        llvm::IRBuilder<> b(ctx);
+        b.SetInsertPoint(llvm::BasicBlock::Create(ctx, "entry", ctor));
+        for (const CalibrationRecordBlob& r : records) {
+            llvm::Constant* slotInit = llvm::ConstantDataArray::getString(ctx, r.slot, true);
+            auto* slotGv = new llvm::GlobalVariable(hostModule, slotInit->getType(), true,
+                llvm::GlobalValue::PrivateLinkage, slotInit, "xpu.calibration.slot");
+            llvm::Constant* bytesInit = llvm::ConstantDataArray::get(ctx,
+                llvm::ArrayRef<uint8_t>(reinterpret_cast<const uint8_t*>(r.bytes.data()), r.bytes.size()));
+            auto* bytesGv = new llvm::GlobalVariable(hostModule, bytesInit->getType(), true,
+                llvm::GlobalValue::PrivateLinkage, bytesInit, "xpu.calibration.record");
+            b.CreateCall(regFn, {slotGv, bytesGv, llvm::ConstantInt::get(i64, (int64_t) r.bytes.size())});
+        }
+        b.CreateRetVoid();
+        llvm::appendToGlobalCtors(hostModule, ctor, /*priority=*/65535);
     }
 
 } // namespace xpu

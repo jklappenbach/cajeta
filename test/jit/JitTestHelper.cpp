@@ -921,6 +921,7 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         compiler->getMutableFlags().stackTraceCapture = opts.stackTraceCaptureEnabled;
         compiler->getMutableFlags().profiler = opts.profiler;
         compiler->getMutableFlags().profilerSelect = opts.profilerSelect;
+        compiler->getMutableFlags().withCalibration = opts.withCalibration;
         if (opts.session || !opts.sessionHostName.empty()) {
             compiler->setSessionState(opts.session, opts.sessionHostName);
         }
@@ -1172,6 +1173,14 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
                     be, kernels, *primary->getLlvmModule(), arch);
             }
             if (opts.xpuKernelGateErrors) cajeta::xpu::throwIfKernelGateFailed();
+        }
+        if (!opts.withCalibration.empty()) {
+            std::vector<cajeta::xpu::CalibrationRecordBlob> records;
+            std::string calError;
+            if (!cajeta::xpu::parseCalibrationSnapshot(opts.withCalibration, records, calError)) {
+                throw std::runtime_error("withCalibration: " + calError);
+            }
+            cajeta::xpu::emitCalibrationRegistration(records, *primary->getLlvmModule());
         }
     }
 

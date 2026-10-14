@@ -65,5 +65,21 @@ namespace xpu {
     void emitBackendManifest(const std::vector<Backend>& backends,
                              llvm::Module& hostModule);
 
+    // One record of a `cajeta calibrate` snapshot: its store slot, its kernel, and its bytes.
+    struct CalibrationRecordBlob {
+        std::string slot;
+        std::string kernel;
+        std::string bytes;
+    };
+
+    // Parse a calibration snapshot; false with `error` set when it is malformed.
+    bool parseCalibrationSnapshot(const std::string& text, std::vector<CalibrationRecordBlob>& out,
+                                  std::string& error);
+
+    // One global ctor registering every record with __cajeta_xpu_register_calibration_record
+    // (xpu-tile-scheduling §12.4c): read-only data the default CalibrationStore serves first.
+    void emitCalibrationRegistration(const std::vector<CalibrationRecordBlob>& records,
+                                     llvm::Module& hostModule);
+
 } // namespace xpu
 } // namespace cajeta

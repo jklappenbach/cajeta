@@ -11,3 +11,4 @@
 #include "cajeta_xpu_sched.c"
 #include "cajeta_xpu_calib.c"
 #include "cajeta_xpu_record.c"
+#include "cajeta_xpu_calibrate.c"

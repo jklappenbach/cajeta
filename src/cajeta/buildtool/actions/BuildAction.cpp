@@ -235,6 +235,9 @@ namespace cajeta::buildtool {
             if (!profile.empty()) {
                 argv.push_back("--profile=" + profile);
             }
+            if (auto v = params.getString("with-calibration")) {
+                argv.push_back("--with-calibration=" + std::filesystem::absolute(v->str()).string());
+            }
 
             {
                 ResolvedFlavor rf;

@@ -107,6 +107,7 @@ namespace cajeta {
         // The selection's CONTENTS, not the path it was read from: keying on the path
         // returns objects probed to a selection the user edited in place.
         pairs.emplace_back("profiler-select", f.profilerSelect);
+        pairs.emplace_back("with-calibration", f.withCalibration);
 
         pairs.emplace_back("opt",
             f.opt == OptLevel::O0 ? "0"

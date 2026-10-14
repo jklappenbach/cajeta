@@ -32,6 +32,8 @@
 #include "cajeta/dap/DapServer.h"
 #include "cajeta/kernel/KernelMain.h"
 #include "cajeta/buildtool/BuildToolCommands.h"
+#include "cajeta/xpu/XpuTarget.h"
+#include "cajeta/cli/CalibrateCommand.h"
 
 // CAJETA_VERSION and CAJETA_GIT_HASH are stamped at configure time by the
 // top-level CMakeLists.txt. Fall back to a placeholder if a non-CMake build
@@ -345,6 +347,10 @@ int main(int argc, const char* argv[]) {
     if (argc >= 2 && std::string(argv[1]) == "profile") {
         return cajeta::prof::dispatchProfile(argc, argv);
     }
+    // `cajeta calibrate <program>` (xpu-tile-manifest §14.7), above the build-tool probe like `profile`.
+    if (argc >= 2 && std::string(argv[1]) == "calibrate") {
+        return cajeta::dispatchCalibrate(argc, argv);
+    }
     {
         int btExit = 0;
         if (cajeta::buildtool::dispatchBuildTool(argc, argv, &btExit)) {
@@ -586,6 +592,21 @@ int main(int argc, const char* argv[]) {
                 for (const auto& e : selErrors) std::cerr << "cajeta: " << e << "\n";
                 return 1;
             }
+        } else if (match(arg, "with-calibration", value)) {
+            std::ifstream calIn(value, std::ios::binary);
+            if (!calIn) {
+                std::cerr << "cajeta: cannot read --with-calibration snapshot: " << value << "\n";
+                return 1;
+            }
+            std::ostringstream calBuf;
+            calBuf << calIn.rdbuf();
+            std::vector<cajeta::xpu::CalibrationRecordBlob> records;
+            std::string calError;
+            if (!cajeta::xpu::parseCalibrationSnapshot(calBuf.str(), records, calError)) {
+                std::cerr << "cajeta: --with-calibration " << value << ": " << calError << "\n";
+                return 1;
+            }
+            compiler.getMutableFlags().withCalibration = calBuf.str();
         } else if (match(arg, "diag-origins", value)) {
             if (value != "project" && value != "all") {
                 std::cerr << "--diag-origins must be project or all\n";

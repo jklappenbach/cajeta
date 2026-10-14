@@ -45,8 +45,7 @@ static size_t caj_xpu_calib_read_line(const char* file, char* out, size_t cap) {
 }
 
 /* The platform power profile and the GPU's performance level, "profile/level"; "" when unreadable. */
-void* __cajeta_xpu_power_mode(void) {
-    char mode[256];
+static void caj_xpu_calib_power(char* mode, size_t cap) {
     mode[0] = 0;
 #if defined(__linux__)
     char profile[64], level[64];
@@ -57,8 +56,15 @@ void* __cajeta_xpu_power_mode(void) {
         snprintf(file, sizeof file, "/sys/class/drm/card%d/device/power_dpm_force_performance_level", c);
         caj_xpu_calib_read_line(file, level, sizeof level);
     }
-    if (profile[0] || level[0]) snprintf(mode, sizeof mode, "%s/%s", profile, level);
+    if (profile[0] || level[0]) snprintf(mode, cap, "%s/%s", profile, level);
+#else
+    (void) cap;
 #endif
+}
+
+void* __cajeta_xpu_power_mode(void) {
+    char mode[256];
+    caj_xpu_calib_power(mode, sizeof mode);
     return caj_xpu_calib_bytes(mode, strlen(mode));
 }
 
@@ -67,8 +73,8 @@ void* __cajeta_xpu_compiler_version(void) {
     return caj_xpu_calib_bytes(CAJETA_RT_VERSION, strlen(CAJETA_RT_VERSION));
 }
 
-/* The device's architecture: the GPU's arch name, or the host CPU's brand on the cpu backend. */
-void* __cajeta_xpu_device_arch(void) {
+/* The device's architecture, trimmed: the GPU's arch name, or the host CPU's brand on the cpu backend. */
+static void caj_xpu_calib_arch(char* out, size_t cap) {
     char arch[128];
     arch[0] = 0;
     if (cajeta_xpu_active_backend() == CAJ_XPU_CPU) {
@@ -91,7 +97,15 @@ void* __cajeta_xpu_device_arch(void) {
     size_t s = 0;
     while (s < n && arch[s] == ' ') s++;
     while (n > s && arch[n - 1] == ' ') n--;
-    return caj_xpu_calib_bytes(arch + s, n - s);
+    size_t m = n - s < cap - 1 ? n - s : cap - 1;
+    memcpy(out, arch + s, m);
+    out[m] = 0;
+}
+
+void* __cajeta_xpu_device_arch(void) {
+    char arch[128];
+    caj_xpu_calib_arch(arch, sizeof arch);
+    return caj_xpu_calib_bytes(arch, strlen(arch));
 }
 
 #define CAJ_XPU_CALIB_MAX 256
