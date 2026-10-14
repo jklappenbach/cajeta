@@ -53,6 +53,15 @@
 #                KEEP_LOGS=run-logs (gitignored) and uploads it as an
 #                artifact so a failing platform leg can be diagnosed from
 #                the run page without reproducing on that platform.
+#   REUSE=0      every test process compiles the stdlib itself (no shared
+#                stdlib dylib, no prime cache); the serial path always does.
+#   PRIME=0      skip the prime-once step that fills the stdlib object cache
+#                before the shards start (each shard then primes itself).
+#   CAJETA_PRIME_CACHE=0    no stdlib object cache at all; CAJETA_PRIME_CACHE_DIR
+#                relocates it from .cajeta/cache/prime. Warm/cold: the first
+#                sweep after a compiler change is cold (the prime step compiles
+#                and stores one ~10 MB object), every later sweep is warm.
+#                Wipe it with `rm -rf .cajeta/cache/prime`.
 
 set -e
 
@@ -804,6 +813,30 @@ run_suite_batch() {
     fi
     rm -f "$tf"
 }
+
+# Prime once, then fan out (compile-cache 5.2.1). On a cold prime cache every
+# shard would compile the stdlib's machine code itself (~10 s each, all at
+# once); instead one process does it here and stores the object, so every
+# shard that follows links it (~1.4 s). On a warm cache this is one short
+# process reporting the object served. The step is the SharedStdlibPrime test,
+# armed by CAJETA_STDLIB_PRIME. Skipped under REUSE=0 or CAJETA_PRIME_CACHE=0
+# (nothing to cache) and with PRIME=0.
+if [ -z "${CAJETA_TESTS_FILE:-}" ] && [ -n "${CAJETA_STDLIB_REUSE:-}" ] \
+        && [ "${PRIME:-1}" != "0" ] && [ "${CAJETA_PRIME_CACHE:-1}" != "0" ]; then
+    _p0=$SECONDS
+    _pline=$(CAJETA_SOURCE_ROOT="$SCRIPT_DIR" CAJETA_STDLIB_PRIME=1 "$TEST_BIN" \
+        --gtest_filter='SharedStdlibPrime.*' 2>/dev/null | grep -m1 '^\[stdlib-prime\]' || true)
+    case "$_pline" in
+        *" shared "*served=1*)
+            echo ">> Stdlib prime: warm, the stdlib object was served from the cache ($(( SECONDS - _p0 ))s)" ;;
+        *" shared "*compiled=1*)
+            echo ">> Stdlib prime: cold, compiled and stored the stdlib object ($(( SECONDS - _p0 ))s); the shards start warm" ;;
+        *" fresh "*)
+            echo ">> Stdlib prime: this host takes the fresh path, nothing to cache" ;;
+        *)
+            echo ">> WARNING: the stdlib prime step reported nothing; each shard primes itself" >&2 ;;
+    esac
+fi
 
 if [ "$BATCH" = "1" ]; then
     echo ">> Running $num_tests tests across $shards shards (BATCH: $num_suites suites -> $num_chunks chunks of <=$BATCH_MAX, one process each + per-test crash fallback)..."

@@ -20,10 +20,12 @@
 using cajeta_test::CajetaJit;
 namespace fs = std::filesystem;
 
-// Armed by StdlibObjectCacheTests through CAJETA_OBJCACHE_PROBE: compiles a
-// program against the shared stdlib and reports the object cache counters.
-TEST(StdlibObjectCacheProbe, reportsCounters) {
-    if (!std::getenv("CAJETA_OBJCACHE_PROBE")) GTEST_SKIP() << "armed only by StdlibObjectCacheTests";
+// The sweep's prime-once step (cajeta_tests.sh, compile-cache 5.2.1), also
+// driven by StdlibObjectCacheTests: armed by CAJETA_STDLIB_PRIME, it compiles a
+// program against the shared stdlib, which primes and materializes it and
+// fills the object cache, and reports the cache counters on one line.
+TEST(SharedStdlibPrime, primesTheSharedStdlib) {
+    if (!std::getenv("CAJETA_STDLIB_PRIME")) GTEST_SKIP() << "armed only by the sweep and StdlibObjectCacheTests";
     auto jit = CajetaJit::compile(
         "package test;\n"
         "import cajeta.lang.Optional;\n"
@@ -36,9 +38,9 @@ TEST(StdlibObjectCacheProbe, reportsCounters) {
         "        return -1;\n"
         "    }\n"
         "}\n", "test.P");
-    ASSERT_TRUE(jit->usesSharedStdlib());
     int32_t result = jit->lookup<int32_t (*)()>("run")();
-    std::printf("[objcache] served=%zu compiled=%zu result=%d\n",
+    std::printf("[stdlib-prime] %s served=%zu compiled=%zu result=%d\n",
+                jit->usesSharedStdlib() ? "shared" : "fresh",
                 CajetaJit::sharedStdlibObjectsServed(),
                 CajetaJit::sharedStdlibObjectsCompiled(), result);
     std::fflush(stdout);
@@ -56,9 +58,9 @@ struct ProbeReport {
 };
 
 ProbeReport runProbe(const std::string& envPrefix) {
-    std::string cmd = envPrefix + " CAJETA_OBJCACHE_PROBE=1 CAJETA_STDLIB_REUSE=1 '"
+    std::string cmd = envPrefix + " CAJETA_STDLIB_PRIME=1 CAJETA_STDLIB_REUSE=1 '"
         + cajeta_self_exe().string()
-        + "' --gtest_filter='StdlibObjectCacheProbe.*' 2>&1";
+        + "' --gtest_filter='SharedStdlibPrime.*' 2>&1";
     ProbeReport r;
     FILE* p = popen(cmd.c_str(), "r");
     if (!p) { r.output = "<popen failed>"; return r; }
@@ -66,9 +68,9 @@ ProbeReport runProbe(const std::string& envPrefix) {
     size_t n;
     while ((n = fread(buf, 1, sizeof buf, p)) > 0) r.output.append(buf, n);
     pclose(p);
-    size_t at = r.output.find("[objcache] ");
+    size_t at = r.output.find("[stdlib-prime] shared ");
     if (at != std::string::npos)
-        std::sscanf(r.output.c_str() + at, "[objcache] served=%ld compiled=%ld result=%ld",
+        std::sscanf(r.output.c_str() + at, "[stdlib-prime] shared served=%ld compiled=%ld result=%ld",
                     &r.served, &r.compiled, &r.result);
     return r;
 }
