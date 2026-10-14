@@ -63,7 +63,7 @@ at least one of ordering, replay, or delivery fan-out.
 credentials, request signing, and role assumption. That is §9.5's concern in
 each adapter rather than a port of its own. **End-user identity is a row**: the
 accounts an application registers and signs in are a service family, specified
-in `cajeta-cloud-identity-spec.md`.
+in `archive/cajeta-cloud-identity-spec.md`.
 
 Status of each family, and what would trigger specifying it:
 
@@ -75,7 +75,7 @@ Status of each family, and what would trigger specifying it:
 | key-value, SQL, cache | named | an external-source connector for `cajeta-dqe` |
 | secrets | named | first adapter deployed outside a dev environment |
 | managed compute | named — invocation only, see §1.3 | none today |
-| identity | **specified** (`cajeta-cloud-identity-spec.md`) | the primavera user-registration sample |
+| identity | **shipped in 0.3.0** (`archive/cajeta-cloud-identity-spec.md`) | the primavera user-registration sample |
 
 ### 1.3 Data plane, not control plane
 

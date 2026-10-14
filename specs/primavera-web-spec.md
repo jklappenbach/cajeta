@@ -18,7 +18,7 @@ not grow with traffic. That is the model. Everything else in this spec is the
 policy that makes the model usable: typed endpoints, WebSocket on the same
 buffers, codecs and compression chosen by content type through one pluggable
 seam, and a security layer that puts identity behind the `cajeta-cloud`
-identity port (`cajeta-cloud-identity-spec.md`).
+identity port (`archive/cajeta-cloud-identity-spec.md`).
 
 The library is grown from a sample. The sample registers a user, and every
 feature lands because the sample needs it. Nothing lands in the library that
