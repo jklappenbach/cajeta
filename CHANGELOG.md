@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.42.0 (2026-10-14)
+
+- A String temporary passed to a borrow formal (`raise("failed the " + check + " check")`) is reclaimed when the callee throws. It was dropped after the call, which a throw skipped: 2 live objects per throw, hit by cajeta-cloud's `badToken` on every refused token. The temporary now holds a drop-chain entry around the call, so the throw's unwind frees it.
+- Two archives that declare the same short type names in different packages (primavera's and cajeta-cloud's `TimeSource` and `ManualTimeSource`) load together. A class read before its interface used to bind to the other archive's interface (`CAJETA_ERROR_INTERFACE_NOT_IMPLEMENTED`), and `heap a.b.C()` built a same-named class from another package and faulted. Declared parents resolve in their own package first; a qualified creator builds the class it names.
+- `XXHash3.hash` over inputs longer than 240 bytes no longer traps: its long path ran signed `int64` arithmetic, which traps on overflow, so every long hash ended in SIGILL. The scalar steps now run in `uint64`, as XXH3 means them.
+- xpu: every launch is a submission. `k.launch(s, grid:, block:)(args)` reaches the runtime as a default-policy submission; `KernelSubmission` gains `earliestNs`, `latestNs`, `protectedLaunch`, `cuBudget`, `captureId`, `energyJoules`, `poolHandle`, `poolReserve` and `stream`; `SchedulePolicy` adds `Energy`. A submission whose window closed is rejected before dispatch with `XpuLaunchException`. `Scheduler.bypass(true)` or `CAJETA_XPU_SCHEDULER=bypass` takes the raw launch path. `cajeta profile summary` lists instrumentation records under the kernels.
+- xpu: device calibration. `cajeta.xpu.calibration.DeviceCalibration` measures a device's peaks, bandwidth, launch cost and scheduling delay on first contact and keeps them through a `CalibrationStore` (records embedded at build, then the platform cache). `cajeta calibrate <program>` records a program's launches and replays them on this device into a snapshot; `cajeta build --with-calibration=<snapshot>` embeds the snapshot's records. The package is lazy, so programs that do not use it compile no calibration kernels.
+- `@GenerateMock` on an interface: the mock implements it and forwards its own and inherited methods; a class target's whole chain is forwarded; `#R` methods return the engine's owned answer. The generated mock is a `@TestComponent`, injected in place of the production component under the test profile.
+- xpubench: arms interleave in one process in Thue-Morse order, profiled passes are rounds with their own walls, and a contention witness marks KPIs measured beside foreign CPU or GPU load as `contended` rather than `worse`.
+
 ## 0.41.0 (2026-10-13)
 
 - An interface value held as an interface it extends dispatches that interface's methods. It used to call the derived interface's slots (silent wrong code), and with the base in a later file it faulted. Each (class, interface) table now ends with pointers to the class's tables for the interfaces it extends, so archives built by an older compiler must be rebuilt.
