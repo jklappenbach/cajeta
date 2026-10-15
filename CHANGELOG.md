@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.42.1 (2026-10-15)
+
+- A multibinding container (`@Inject ArrayList<T>`, `@Inject HashMap<String, T>`), a `@<Ctor>(staticName)` factory's instance and a constructor reference's instance (`T::heap`) are zero-filled before their constructor runs, like every `heap` instance. They were built on bare malloc bytes, so a constructor's `#=` field store read the field's ownership bit from heap garbage and could drop a garbage pointer; primavera's register-user sample faulted at startup in `ArrayList`'s constructor on v0.42.0. A library whose archive was built by an earlier compiler carries the old code until it is rebuilt.
+- The JIT test harness takes the fresh per-test path on Windows: its shared stdlib dylib crashed 114 of 901 release tests on COFF.
+
 ## 0.42.0 (2026-10-14)
 
 - A String temporary passed to a borrow formal (`raise("failed the " + check + " check")`) is reclaimed when the callee throws. It was dropped after the call, which a throw skipped: 2 live objects per throw, hit by cajeta-cloud's `badToken` on every refused token. The temporary now holds a drop-chain entry around the call, so the throw's unwind frees it.
