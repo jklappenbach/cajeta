@@ -147,3 +147,21 @@ TEST(SharedStdlibDefaultTests, userCodeCatchesAStdlibThrow) {
     ASSERT_TRUE(e->usesSharedStdlib());
     EXPECT_EQ(run(*e), 1);
 }
+
+// The shared stdlib dylib's own imports resolve through its link order, which
+// must be itself and the bridged main dylib and nothing else. LLJIT seeds a new
+// dylib's order with its platform and process-symbols dylibs, and appending
+// main behind them let the stdlib's CRT imports resolve through the process
+// generator first: on COFF that is ucrtbase's malloc and free, a second CRT
+// beside the host's, and every JIT'd free faulted (114 of 901 release tests on
+// the v0.42.0 Windows dry-run, 2026-10-14). The order is two entries and the
+// allocator resolves to the host's own.
+TEST(SharedStdlibDefaultTests, stdlibDylibResolvesTheHostAllocatorThroughMain) {
+    ReuseEnv reuse(true);
+    auto a = CajetaJit::compile(classSource("L", 3), "test.L");
+    ASSERT_TRUE(a->usesSharedStdlib());
+    EXPECT_EQ(CajetaJit::sharedStdlibLinkOrderSize(), 2u);
+    EXPECT_EQ(CajetaJit::sharedStdlibResolves("malloc"), (void*) &std::malloc);
+    EXPECT_EQ(CajetaJit::sharedStdlibResolves("free"), (void*) &std::free);
+    EXPECT_EQ(run(*a), 3);
+}

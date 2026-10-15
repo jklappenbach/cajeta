@@ -873,7 +873,16 @@ struct StdlibReuseCache {
         auto jdOrErr = sharedJit->createJITDylib("CajetaStdlib");
         if (!jdOrErr) throw std::runtime_error("shared StdlibJD create failed");
         sharedStdlibJD = &*jdOrErr;
-        sharedStdlibJD->addToLinkOrder(mainJD);
+        // An explicit order, self then main, not addToLinkOrder: LLJIT seeds a
+        // new dylib's order with its platform and process-symbols dylibs, and
+        // appending main behind them let the stdlib's own CRT imports resolve
+        // through the process generator first. On COFF that is ucrtbase's
+        // malloc/free, a second CRT instance beside the bridged host table on
+        // main, and every JIT'd free faulted in RtlFreeHeap (114 of 901 release
+        // tests on the v0.42.0 Windows dry-run). Main keeps the generator for
+        // libc, behind its own bridged definitions.
+        sharedStdlibJD->setLinkOrder(
+            { { &mainJD, llvm::orc::JITDylibLookupFlags::MatchExportedSymbolsOnly } });
 
         // Materialize the stdlib ONCE: clone its IR, bitcode-roundtrip into a
         // fresh long-lived context (O0 alwaysinline like the per-test path),
@@ -991,6 +1000,27 @@ void sweepTempRoots() { TempRootRegistry::instance().sweep(); }
 
 size_t CajetaJit::sharedStdlibMaterializations() {
     return StdlibReuseCache::instance().sharedMaterializations;
+}
+
+size_t CajetaJit::sharedStdlibLinkOrderSize() {
+    auto& cache = StdlibReuseCache::instance();
+    if (!cache.sharedJitReady || !cache.sharedStdlibJD) return 0;
+    size_t n = 0;
+    cache.sharedStdlibJD->withLinkOrderDo(
+        [&](const llvm::orc::JITDylibSearchOrder& so) { n = so.size(); });
+    return n;
+}
+
+void* CajetaJit::sharedStdlibResolves(const char* name) {
+    auto& cache = StdlibReuseCache::instance();
+    if (!cache.sharedJitReady || !cache.sharedStdlibJD) return nullptr;
+    llvm::orc::JITDylibSearchOrder order;
+    cache.sharedStdlibJD->withLinkOrderDo(
+        [&](const llvm::orc::JITDylibSearchOrder& so) { order = so; });
+    auto sym = cache.sharedJit->getExecutionSession().lookup(
+        order, cache.sharedJit->mangleAndIntern(name));
+    if (!sym) { llvm::consumeError(sym.takeError()); return nullptr; }
+    return (void*) sym->getAddress().getValue();
 }
 
 size_t CajetaJit::sharedStdlibObjectsServed() {
@@ -1146,15 +1176,6 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     // sweep, a bare run leaves it unset, and a test may set it for itself.
     bool reuseStdlib = std::getenv("CAJETA_STDLIB_REUSE") != nullptr
                     && stdlibReusable(opts);
-#ifdef _WIN32
-    // The shared stdlib dylib (U7) is unproven on COFF: the v0.42.0 Windows
-    // dry-run crashed 114 of 901 release tests, exit 139 right after the
-    // JITLink object layer came up, where v0.41.0's per-test stdlib under the
-    // same CAJETA_STDLIB_REUSE passed 882 of 882. Until that path is debugged
-    // on Windows, every compile there takes the fresh, fully isolated path
-    // (2026-10-14).
-    reuseStdlib = false;
-#endif
     // The reuse cache (one shared LLVMContext + a process-global captured
     // baseline mutated by restoreBaseline) is single-threaded by construction;
     // concurrent compiles racing on it corrupt the heap (ConcurrentCompileTests
@@ -1726,6 +1747,36 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         useSharedDylib ? jitState->sharedJit : jitState->jit.get();
     llvm::orc::JITDylib& activeDylib =
         useSharedDylib ? *jitState->userDylib : activeJit->getMainJITDylib();
+
+    // Diagnostic (CAJETA_PRIME_TIMING): where the allocator family resolves
+    // from each dylib, beside the host's own addresses. On COFF a name that
+    // resolves outside the bridged host table lands in a second CRT instance.
+    if (std::getenv("CAJETA_PRIME_TIMING")) {
+        // Resolve through the dylib's LINK ORDER, as its modules' imports do;
+        // a plain lookup(JD, name) searches that one dylib only.
+        auto show = [&](const char* tag, llvm::orc::LLJIT& j, llvm::orc::JITDylib& d) {
+            auto& es = j.getExecutionSession();
+            llvm::orc::JITDylibSearchOrder order;
+            d.withLinkOrderDo([&](const llvm::orc::JITDylibSearchOrder& so) { order = so; });
+            for (const char* name : {"free", "malloc"}) {
+                auto sym = es.lookup(order, j.mangleAndIntern(name));
+                if (sym) {
+                    std::fprintf(stderr, "[sym] %s %s = %p (order of %zu)\n", tag, name,
+                                 (void*) sym->getAddress().getValue(), order.size());
+                } else {
+                    std::fprintf(stderr, "[sym] %s %s = <%s>\n", tag, name,
+                                 cajeta::jittest::toString(sym.takeError()).c_str());
+                }
+            }
+        };
+        std::fprintf(stderr, "[sym] host free = %p malloc = %p\n",
+                     (void*) &std::free, (void*) &std::malloc);
+        show("active", *activeJit, activeDylib);
+        if (useSharedDylib) {
+            show("stdlibJD", *activeJit, *stdlibCache.sharedStdlibJD);
+            show("sharedMain", *activeJit, activeJit->getMainJITDylib());
+        }
+    }
 
     // Run any global ctors / static initializers (P6.2 clinit, etc.)
     // before handing control to test code. LLJIT does NOT run

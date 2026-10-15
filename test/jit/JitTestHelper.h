@@ -189,6 +189,11 @@ public:
 
     // How many times this process has materialized the shared stdlib.
     static size_t sharedStdlibMaterializations();
+    // The shared stdlib dylib's link order length (itself and the bridged main
+    // dylib: 2), and where a name resolves through that order, as the stdlib's
+    // own imports do. Null when no shared dylib exists or the name is absent.
+    static size_t sharedStdlibLinkOrderSize();
+    static void* sharedStdlibResolves(const char* name);
 
     // How many shared stdlib objects this process linked from the prime
     // cache, and how many it compiled and stored there.
