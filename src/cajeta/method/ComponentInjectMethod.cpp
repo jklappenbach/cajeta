@@ -500,12 +500,12 @@ namespace cajeta {
             llvm::Type::getInt64Ty(ctx), dl.getTypeAllocSize(contTy));
         llvm::CallInst* container = MemoryManager::createMallocInstruction(
             module, size, builder->GetInsertBlock());
-        if (auto vt = cont->getVirtualTableGlobal()) {
-            llvm::Constant* vtRef = CajetaModule::ensureGlobalInModule(lmod, vt);
-            llvm::Value* vts = builder->CreateStructGEP(
-                contTy, container, 0, "vtable_slot");
-            builder->CreateStore(vtRef, vts);
-        }
+        // Zero-filled with its vtable slots set, like every fresh instance: the
+        // container's constructor stores its buffer with `#=`, which reads the
+        // field's ownership bit, and over bare malloc bytes that bit was heap
+        // garbage (the register-user sample crashed in ArrayList's constructor
+        // dropping a garbage `items` pointer, 2026-10-14).
+        cont->initInstanceLayout(module, container, contTy, /*stackAlloc=*/false);
         std::string ctorName = cont->getTemplateOrigin()
             ? cont->getTemplateOrigin()->getQName()->getTypeName()
             : cont->getQName()->getTypeName();

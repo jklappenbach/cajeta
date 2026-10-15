@@ -4642,6 +4642,12 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
                     dl.getTypeAllocSize(structTy));
                 llvm::CallInst* instance = MemoryManager::createMallocInstruction(
                     module, allocSize, tbb);
+                // Zero-filled like a `heap` instance before the constructor runs:
+                // a `#=` field store in the constructor reads the field's ownership
+                // bit, which over bare malloc bytes is heap garbage.
+                tb.CreateMemSet(instance,
+                    llvm::ConstantInt::get(llvm::Type::getInt8Ty(llvmCtx), 0),
+                    allocSize, llvm::MaybeAlign(8));
 
                 // The vtable pointer goes in slot 0. Same cross-module fixup as CreatorRest: the
                 // vtable global may live in a different llvm::Module than this thunk.

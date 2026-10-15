@@ -167,3 +167,75 @@ TEST(MultibindingTests, singleSitesBesideAListStillResolveByName) {
         "}\n";
     EXPECT_EQ(runI32(src, "test.Main"), 23);
 }
+
+namespace {
+
+// The body of the first `define` whose header contains `needle`.
+std::string injectIr(const std::string& ir, const std::string& needle) {
+    size_t pos = 0;
+    while ((pos = ir.find("define ", pos)) != std::string::npos) {
+        size_t eol = ir.find('\n', pos);
+        if (ir.substr(pos, eol - pos).find(needle) != std::string::npos) {
+            size_t end = ir.find("\n}\n", eol);
+            return ir.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+        }
+        pos = eol;
+    }
+    return "";
+}
+
+const char* kRegistry =
+    "@Component public class Registry {\n"
+    "    @Inject ArrayList<Shape> shapes;\n"
+    "    public Registry() { return; }\n"
+    "}\n";
+
+}  // namespace
+
+// The multibinding container is a fresh instance like any other: zero-filled
+// before its constructor runs. emitMultibinding malloc'd it, stored the vtable
+// and called the constructor on uninitialized bytes, so ArrayList's `#=` store
+// into `items` read the ownership bit from heap garbage and dropped whatever
+// pointer sat there. The register-user sample built by the released v0.42.0
+// compiler crashed at startup on exactly this (2026-10-14); the Debug-built
+// compiler's output had the same hole and survived on a cleaner heap.
+TEST(MultibindingTests, listContainerIsZeroFilledBeforeItsConstructor) {
+    std::string src = std::string(kShapes) + kRegistry +
+        "public final class Main {\n"
+        "    public static int32 run() {\n"
+        "        Registry r = Registry.__cajeta_inject();\n"
+        "        return r.shapes.count();\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options opts;
+    opts.captureIr = true;
+    auto jit = CajetaJit::compile(src, "test.Main", opts);
+    std::string body = injectIr(jit->getModuleIr(), "test.Registry::__cajeta_inject()");
+    ASSERT_FALSE(body.empty());
+    // The pointer the list constructor receives, then a memset of THAT pointer
+    // before the call. The holder's own zero-fill precedes the call too and
+    // must not satisfy the check.
+    size_t ctor = body.find("ArrayList<test.Shape>::ArrayList(");
+    ASSERT_NE(ctor, std::string::npos) << body;
+    size_t open = body.find("(ptr ", ctor);
+    ASSERT_NE(open, std::string::npos) << body;
+    size_t nameStart = open + 5;
+    size_t nameEnd = body.find_first_of(",)", nameStart);
+    std::string container = body.substr(nameStart, nameEnd - nameStart);
+    ASSERT_FALSE(container.empty()) << body;
+    std::string before = body.substr(0, ctor);
+    size_t pos = 0;
+    bool zeroed = false;
+    while ((pos = before.find("llvm.memset", pos)) != std::string::npos) {
+        size_t eol = before.find('\n', pos);
+        std::string line = before.substr(pos, eol - pos);
+        if (line.find("(ptr " + container + ",") != std::string::npos
+                || line.find("(ptr align 8 " + container + ",") != std::string::npos
+                || line.find(" " + container + ",") != std::string::npos) {
+            zeroed = true;
+            break;
+        }
+        pos = eol;
+    }
+    EXPECT_TRUE(zeroed) << "no memset of " << container << " before its constructor:\n" << body;
+}

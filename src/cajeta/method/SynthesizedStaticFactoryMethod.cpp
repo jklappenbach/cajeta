@@ -62,6 +62,11 @@ namespace cajeta {
             llvm::Type::getInt64Ty(ctx), dl.getTypeAllocSize(parentTy));
         llvm::CallInst* instance = MemoryManager::createMallocInstruction(
             module, allocSize, llvmBasicBlock);
+        // Zero-filled like a `heap` instance before the wrapped constructor
+        // runs: a `#=` field store in that constructor reads the field's
+        // ownership bit, which over bare malloc bytes is heap garbage.
+        b.CreateMemSet(instance, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx), 0),
+                       allocSize, llvm::MaybeAlign(8));
 
         if (auto vt = parent->getVirtualTableGlobal()) {
             llvm::Constant* vtRef = CajetaModule::ensureGlobalInModule(

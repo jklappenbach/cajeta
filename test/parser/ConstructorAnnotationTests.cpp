@@ -288,3 +288,67 @@ TEST(ConstructorAnnotationTests, instanceFieldInitMixedTypes) {
     auto fn = jit->lookup<int64_t (*)()>("run");
     EXPECT_EQ(fn(), 1025);
 }
+
+namespace {
+
+// The body of the first `define` whose header contains `needle`.
+std::string defineIr(const std::string& ir, const std::string& needle) {
+    size_t pos = 0;
+    while ((pos = ir.find("define ", pos)) != std::string::npos) {
+        size_t eol = ir.find('\n', pos);
+        if (ir.substr(pos, eol - pos).find(needle) != std::string::npos) {
+            size_t end = ir.find("\n}\n", eol);
+            return ir.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+        }
+        pos = eol;
+    }
+    return "";
+}
+
+// True when `body` memsets the pointer it later passes as the first argument
+// of the call whose callee contains `ctorNeedle`, before that call.
+bool zeroFilledBeforeCtor(const std::string& body, const std::string& ctorNeedle) {
+    size_t ctor = body.find(ctorNeedle);
+    if (ctor == std::string::npos) return false;
+    size_t open = body.find("(ptr ", ctor);
+    if (open == std::string::npos) return false;
+    size_t nameStart = open + 5;
+    size_t nameEnd = body.find_first_of(",)", nameStart);
+    std::string inst = body.substr(nameStart, nameEnd - nameStart);
+    std::string before = body.substr(0, ctor);
+    size_t pos = 0;
+    while ((pos = before.find("llvm.memset", pos)) != std::string::npos) {
+        size_t eol = before.find('\n', pos);
+        std::string line = before.substr(pos, eol - pos);
+        if (line.find(" " + inst + ",") != std::string::npos) return true;
+        pos = eol;
+    }
+    return false;
+}
+
+}  // namespace
+
+// A @<Ctor>(staticName) factory's fresh instance is zero-filled before the
+// wrapped constructor runs, like every `heap` instance. It was malloc'd, given
+// its vtable and handed to the constructor over uninitialized bytes (the same
+// hole as the multibinding container found on 2026-10-14).
+TEST(ConstructorAnnotationTests, staticFactoryZeroFillsBeforeTheConstructor) {
+    auto src =
+        "package test;\n"
+        "@AllArgsConstructor(access=\"protected\", staticName=\"of\")\n"
+        "public class Pt {\n"
+        "    public int32 v;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Pt p #= Pt.of(42);\n"
+        "        return p.v;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options opts;
+    opts.captureIr = true;
+    auto jit = CajetaJit::compile(src, "test.D", opts);
+    std::string body = defineIr(jit->getModuleIr(), "test.Pt::of(");
+    ASSERT_FALSE(body.empty()) << jit->getModuleIr().substr(0, 2000);
+    EXPECT_TRUE(zeroFilledBeforeCtor(body, "test.Pt::Pt(")) << body;
+}
