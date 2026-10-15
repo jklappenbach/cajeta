@@ -42,6 +42,9 @@ static void (*mainGcovDumpFn())(void) {
 // The fork-per-test prime server (ForkPerTest.cpp): prime once, fork a COW
 // child per test. Dispatched by CAJETA_FORK_PER_TEST=1.
 int cajetaForkPerTestMain();
+// The per-shard fork server (ForkPerTest.cpp): prime once, fork a child per
+// chunk the harness requests on stdin. Dispatched by CAJETA_FORK_SERVER=1.
+int cajetaForkServerMain();
 #endif
 
 #include "jit/JitTestHelper.h"
@@ -60,6 +63,12 @@ int main(int argc, char **argv) {
         std::fflush(nullptr);
         cajeta_test::sweepTempRoots();
         std::_Exit(frc);
+    }
+    if (std::getenv("CAJETA_FORK_SERVER")) {
+        const int src = cajetaForkServerMain();
+        std::fflush(nullptr);
+        cajeta_test::sweepTempRoots();
+        std::_Exit(src);
     }
 #endif
     const int rc = RUN_ALL_TESTS();

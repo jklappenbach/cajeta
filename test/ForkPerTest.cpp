@@ -1,5 +1,6 @@
 // CAJETA_FORK_PER_TEST=1 — the fork-per-test prime server (compile-cache
 // plan Unit 3F; spec §5.3).
+// CAJETA_FORK_SERVER=1 — the per-shard fork server (Unit 6), below.
 //
 // The stdlib prime is 77% FRONT-END (parse/typecheck into a live C++ object
 // graph — measured 29.3s of 37.8s, 2026-08-10), which no on-disk artifact can
@@ -29,6 +30,11 @@
 #include <string>
 #include <vector>
 
+#include <chrono>
+#include <iostream>
+#include <sstream>
+#include <ctime>
+#include <fcntl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -208,6 +214,111 @@ int cajetaForkPerTestMain() {
     }
     std::fflush(nullptr);
     return failed ? 1 : 0;
+}
+
+namespace {
+
+// Waits for `pid` up to `deadlineS` seconds: the child's exit code, 128 plus
+// its signal, or 124 after it is killed (TERM, then KILL ten seconds later).
+int waitWithDeadline(pid_t pid, long deadlineS) {
+    using clock = std::chrono::steady_clock;
+    const auto start = clock::now();
+    bool termSent = false;
+    auto termAt = start;
+    for (;;) {
+        int status = 0;
+        pid_t got = waitpid(pid, &status, WNOHANG);
+        if (got == pid) {
+            if (termSent) return 124;
+            if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+            return WEXITSTATUS(status);
+        }
+        const auto now = clock::now();
+        if (!termSent && now - start >= std::chrono::seconds(deadlineS)) {
+            kill(pid, SIGTERM);
+            termSent = true;
+            termAt = now;
+        } else if (termSent && now - termAt >= std::chrono::seconds(10)) {
+            kill(pid, SIGKILL);
+        }
+        timespec nap{0, 50 * 1000 * 1000};
+        nanosleep(&nap, nullptr);
+    }
+}
+
+// Runs `filter` in this (forked) process with stdout and stderr in `outPath`.
+[[noreturn]] void runChunkChild(const std::string& filter, const std::string& outPath) {
+    int fd = open(outPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) {
+        dup2(fd, 1);
+        dup2(fd, 2);
+        if (fd > 2) close(fd);
+    }
+    int devnull = open("/dev/null", O_RDONLY);
+    if (devnull >= 0) {
+        dup2(devnull, 0);
+        close(devnull);
+    }
+    ::testing::GTEST_FLAG(filter) = filter;
+    const int rc = RUN_ALL_TESTS();
+    std::fflush(nullptr);
+    cajeta_test::sweepTempRoots();
+    _exit(rc != 0 ? 1 : 0);
+}
+
+} // namespace
+
+// CAJETA_FORK_SERVER=1 — the per-shard fork server (compile-cache plan Unit 6).
+// Primes once and prints READY, then serves `RUN <deadline-s> <filter> <out-path>`
+// requests from stdin: each forks a copy-on-write child that runs the filter
+// with its output in the file, and the parent answers `DONE <exit>` (124 past
+// the deadline, 128 plus the signal when killed, else the child's exit).
+// `QUIT` or EOF ends it.
+int cajetaForkServerMain() {
+    setenv("CAJETA_STDLIB_REUSE", "1", /*overwrite=*/0);
+    try {
+        auto jit = cajeta_test::CajetaJit::compile(
+            "package test;\n"
+            "public final class ForkPrime {\n"
+            "    public static int32 run() { return 0; }\n"
+            "}\n",
+            "test.ForkPrime");
+        (void) jit;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "cajeta: fork server prime FAILED (%s)\n", e.what());
+        return 2;
+    }
+    std::printf("READY\n");
+    std::fflush(stdout);
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        if (line == "QUIT") break;
+        if (line.rfind("RUN ", 0) != 0) continue;
+        std::istringstream in(line.substr(4));
+        long deadline = 0;
+        std::string filter, outPath;
+        in >> deadline >> filter;
+        std::getline(in, outPath);
+        size_t first = outPath.find_first_not_of(' ');
+        outPath = first == std::string::npos ? std::string() : outPath.substr(first);
+        if (deadline <= 0 || filter.empty() || outPath.empty()) {
+            std::printf("DONE 2\n");
+            std::fflush(stdout);
+            continue;
+        }
+        std::fflush(nullptr);
+        pid_t pid = fork();
+        if (pid < 0) {
+            std::perror("cajeta: fork");
+            std::printf("DONE 2\n");
+            std::fflush(stdout);
+            continue;
+        }
+        if (pid == 0) runChunkChild(filter, outPath);
+        std::printf("DONE %d\n", waitWithDeadline(pid, deadline));
+        std::fflush(stdout);
+    }
+    return 0;
 }
 
 #endif  // !_WIN32

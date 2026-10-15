@@ -57,6 +57,9 @@
 #                stdlib dylib, no prime cache); the serial path always does.
 #   PRIME=0      skip the prime-once step that fills the stdlib object cache
 #                before the shards start (each shard then primes itself).
+#   FORK=0       a process per chunk instead of one fork server per shard
+#                that primes once and forks a child per chunk (Linux default);
+#                FORK=1 forces the server elsewhere.
 #   CAJETA_PRIME_CACHE=0    no stdlib object cache at all; CAJETA_PRIME_CACHE_DIR
 #                relocates it from .cajeta/cache/prime. Warm/cold: the first
 #                sweep after a compiler change is cold (the prime step compiles
@@ -705,6 +708,76 @@ fi
 # console still shows only the compact summary in non-live mode.
 shard_brief="--gtest_brief=0"
 
+# Fork server mode (compile-cache 6.2.2). Each shard worker starts ONE test
+# binary under CAJETA_FORK_SERVER=1, which primes the stdlib once and then
+# forks a copy-on-write child per chunk (and per test for the crash fallback)
+# the worker requests over a FIFO pair, so a sweep pays the prime once per
+# shard instead of once per chunk process. The child's output, deadline and
+# exit code are what the process path gives, so everything downstream is
+# unchanged. Default on Linux; FORK=0 restores a process per chunk, FORK=1
+# forces it elsewhere (Windows has no fork, macOS is untried).
+if [ -z "${FORK:-}" ]; then
+    if [ "$(uname -s 2>/dev/null)" = "Linux" ]; then FORK=1; else FORK=0; fi
+fi
+SRV_LIVE=0
+SRV_PID=""
+SRV_SHARD=""
+
+# start_fork_server <shard>: starts the shard's server and waits for READY.
+start_fork_server() {
+    local s="$1" fin="$tmpdir/srv_${s}.in" fout="$tmpdir/srv_${s}.out" ready t0
+    SRV_LIVE=0; SRV_SHARD="$s"
+    mkfifo "$fin" "$fout" 2>/dev/null || return 0
+    env CAJETA_SOURCE_ROOT="$SCRIPT_DIR" CAJETA_FORK_SERVER=1 "$TEST_BIN" "$shard_brief" \
+        < "$fin" > "$fout" 2> "$tmpdir/srv_${s}.err" &
+    SRV_PID=$!
+    exec 3> "$fin" 4< "$fout"
+    t0=$SECONDS
+    if IFS= read -r -t 900 -u 4 ready && [ "$ready" = "READY" ]; then
+        SRV_LIVE=1
+        echo ">> Fork server: shard $s primed ($(( SECONDS - t0 ))s)"
+    else
+        echo ">> Fork server: shard $s did not prime; running a process per chunk"
+        exec 3>&- 4<&-
+        kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null
+        SRV_PID=""
+    fi
+}
+
+stop_fork_server() {
+    [ "$SRV_LIVE" = "1" ] || return 0
+    printf 'QUIT\n' >&3 2>/dev/null
+    exec 3>&- 4<&-
+    wait "$SRV_PID" 2>/dev/null
+    SRV_LIVE=0; SRV_PID=""
+}
+
+# run_filtered <deadline-s> <filter> <out-file>: runs one gtest filter with a
+# deadline, output in the file, through the shard's server when it is live and
+# as its own process otherwise. Returns the process path's exit code: 124 past
+# the deadline, 128 plus the signal, else gtest's.
+run_filtered() {
+    local deadline="$1" filter="$2" tf="$3" answer
+    if [ "$SRV_LIVE" = "1" ]; then
+        printf 'RUN %s %s %s\n' "$deadline" "$filter" "$tf" >&3
+        if IFS= read -r -t $(( deadline + 30 )) -u 4 answer && [[ "$answer" =~ ^DONE\ [0-9]+$ ]]; then
+            return "${answer#DONE }"
+        fi
+        echo ">> Fork server: shard $SRV_SHARD stopped answering; running a process per chunk"
+        exec 3>&- 4<&-
+        kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null
+        SRV_LIVE=0; SRV_PID=""
+    fi
+    if [ -n "$TIMEOUT_CMD" ]; then
+        "$TIMEOUT_CMD" --kill-after=10 "$deadline" \
+            env CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
+            "--gtest_filter=$filter" "$shard_brief" > "$tf" 2>&1
+    else
+        env CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
+            "--gtest_filter=$filter" "$shard_brief" > "$tf" 2>&1
+    fi
+}
+
 # Run ONE test in its own process, appending its output + a synthetic
 # >>> CRASH / >>> TIMEOUT marker (counted by the aggregator) to $1. This is the
 # strict-isolation path: BATCH=0 uses it directly, and the batch fallback uses
@@ -739,14 +812,7 @@ run_one_test() {
     fi
     [ "$tmo" -gt "$BATCH_CAP" ] && tmo=$BATCH_CAP
     printf '>> %s ... ' "$t" >> "$out_file"
-    if [ -n "$TIMEOUT_CMD" ]; then
-        "$TIMEOUT_CMD" --kill-after=10 "$tmo" \
-            env CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
-            "--gtest_filter=$t" "$shard_brief" > "$tf" 2>&1
-    else
-        env CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
-            "--gtest_filter=$t" "$shard_brief" > "$tf" 2>&1
-    fi
+    run_filtered "$tmo" "$t" "$tf"
     trc=$?
     case "$trc" in
         0)       printf 'PASS\n'              >> "$out_file" ;;
@@ -791,14 +857,7 @@ run_suite_batch() {
     deadline="$(chunk_deadline "$idx")"
     filter="${list//$'\n'/:}"; filter="${filter%:}"
     tf="${out_file}.b"
-    if [ -n "$TIMEOUT_CMD" ]; then
-        "$TIMEOUT_CMD" --kill-after=10 "$deadline" \
-            env CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
-            "--gtest_filter=$filter" "$shard_brief" > "$tf" 2>&1
-    else
-        env CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
-            "--gtest_filter=$filter" "$shard_brief" > "$tf" 2>&1
-    fi
+    run_filtered "$deadline" "$filter" "$tf"
     brc=$?
     if [ "$brc" -eq 0 ] || grep -qE '^\[==========\] .* ran\.' "$tf"; then
         cat "$tf" >> "$out_file"
@@ -867,6 +926,7 @@ for ((s=0; s<shards; s++)); do
         # Either way a crash/timeout is bounded and recorded with a synthetic
         # marker the aggregator counts — no whole-shard stall.
         set +e
+        if [ "$FORK" = "1" ]; then start_fork_server "$s"; fi
         while IFS= read -r unit; do
             [ -z "$unit" ] && continue
             if [ "$BATCH" = "1" ]; then
@@ -877,6 +937,7 @@ for ((s=0; s<shards; s++)); do
                 run_one_test "$out_file" "$_t0"
             fi
         done <<< "${shard_list[$s]}"
+        stop_fork_server
         echo 0 > "$exit_file"
     } 2>/dev/null &
     pids+=($!)
@@ -1184,6 +1245,7 @@ fi
 if [ -n "${KEEP_LOGS:-}" ]; then
     if mkdir -p "$KEEP_LOGS" 2>/dev/null \
         && cp "$tmpdir"/shard_*.out "$KEEP_LOGS"/ 2>/dev/null; then
+        cp "$tmpdir"/srv_*.err "$KEEP_LOGS"/ 2>/dev/null || true
         echo
         echo ">> Shard logs kept in: $KEEP_LOGS"
     else

@@ -53,9 +53,9 @@ objects=$(find "$CACHE" -name '*.o' 2>/dev/null | grep -c .)
 check "5.1.2 one stdlib object is stored" "$objects" "1"
 nlogs=$(ls "$TMP"/cold/shard_*.out 2>/dev/null | grep -c .)
 check "5.1.2 two shards ran" "$nlogs" "2"
-hits=$(cat "$TMP"/cold/shard_*.out 2>/dev/null | grep -c '\[shared-stdlib\] object HIT')
+hits=$(cat "$TMP"/cold/shard_*.out "$TMP"/cold/srv_*.err 2>/dev/null | grep -c '\[shared-stdlib\] object HIT')
 check "5.1.2 every shard links the stored object" "$hits" "2"
-misses=$(cat "$TMP"/cold/shard_*.out 2>/dev/null | grep -c '\[shared-stdlib\] object MISS')
+misses=$(cat "$TMP"/cold/shard_*.out "$TMP"/cold/srv_*.err 2>/dev/null | grep -c '\[shared-stdlib\] object MISS')
 check "5.1.2 no shard compiles the stdlib cold" "$misses" "0"
 passed=$(printf '%s\n' "$OUT" | sed -nE 's/^Passed: ([0-9]+) .*/\1/p')
 check "5.1.2 the sweep's tests pass" "$(printf '%s\n' "$OUT" | grep -c 'Failed: 0 ')" "1"
@@ -64,7 +64,7 @@ check "5.1.2 the sweep's tests pass" "$(printf '%s\n' "$OUT" | grep -c 'Failed: 
 OUT="$(run_sweep "$TMP/warm")"
 warm=$(printf '%s\n' "$OUT" | grep -c '^>> Stdlib prime: warm')
 check "5.1.2 the prime step on a warm cache is served" "$warm" "1"
-hits=$(cat "$TMP"/warm/shard_*.out 2>/dev/null | grep -c '\[shared-stdlib\] object HIT')
+hits=$(cat "$TMP"/warm/shard_*.out "$TMP"/warm/srv_*.err 2>/dev/null | grep -c '\[shared-stdlib\] object HIT')
 check "5.1.2 every shard still links the stored object" "$hits" "2"
 check "5.1.2 the warm sweep passes the same count" \
       "$(printf '%s\n' "$OUT" | sed -nE 's/^Passed: ([0-9]+) .*/\1/p')" "$passed"
@@ -73,7 +73,7 @@ check "5.1.2 the warm sweep passes the same count" \
 OUT="$(run_sweep "$TMP/off" CAJETA_PRIME_CACHE=0)"
 primes=$(printf '%s\n' "$OUT" | grep -c '^>> Stdlib prime: ')
 check "5.1.2 CAJETA_PRIME_CACHE=0 skips the prime step" "$primes" "0"
-uncached=$(cat "$TMP"/off/shard_*.out 2>/dev/null | grep -c '\[shared-stdlib\] object UNCACHED')
+uncached=$(cat "$TMP"/off/shard_*.out "$TMP"/off/srv_*.err 2>/dev/null | grep -c '\[shared-stdlib\] object UNCACHED')
 check "5.1.2 the shards compile uncached" "$uncached" "2"
 
 echo
