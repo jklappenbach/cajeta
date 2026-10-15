@@ -47,6 +47,9 @@ namespace cajeta {
         bool hasErrors() const { return errorSeen_; }
         std::size_t count() const { return diags_.size(); }
 
+        // Everything reported so far, before finalize's dedup, order and cap.
+        const std::vector<CollectedDiagnostic>& collected() const { return diags_; }
+
         // Deduped by (file,line,column,code), ordered project, dependency, stdlib and by span
         // within each, and each origin capped with its own trailing note.
         std::vector<CollectedDiagnostic> finalize() const;

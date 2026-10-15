@@ -8906,6 +8906,15 @@ namespace cajeta {
             builder->SetInsertPoint(nullSafeCallBB);
         }
 
+        // The callee, resolved once here for the lend advisory and the `#T` contract check.
+        bool callFloatingX = true;
+        for (auto& e : entries) {
+            if (e.label.empty()) { callFloatingX = false; break; }
+        }
+        MethodPtr xferTarget = targetClass->resolveMethod(
+            methodCallName, entries, /*isConstructor=*/false,
+            callFloatingX);
+
         // A caller's `#x` deactivates that argument's drop entry - the callee takes the
         // title. A `#T` formal alone deactivates nothing; the callee-side pass below
         // instead rejects a plain argument so the caller has to spell `#`.
@@ -8926,6 +8935,20 @@ namespace cajeta {
                 if (!advM->isFinalUseOfLocal(advId->getTextValue(),
                         advId->getSourceLine(), advId->getSourceColumn())) {
                     continue;
+                }
+                // Only a callee that can keep the lend makes the advisory worth reading
+                // (diagnostic-origin spec 5.2.3): a plain formal the callee never stores
+                // cannot outlive the call. An unresolved callee keeps the advisory.
+                if (xferTarget) {
+                    auto fps = xferTarget->getParameterList();
+                    bool st = xferTarget->getModifiers().find(STATIC)
+                        != xferTarget->getModifiers().end();
+                    bool hasThis = !fps.empty() && fps.front()->getName() == "this";
+                    size_t fi = i + ((st || !hasThis) ? 0 : 1);
+                    if (fi < fps.size() && fps[fi] && !fps[fi]->isTransferred()
+                            && !xferTarget->mayKeepFormal(fps[fi]->getName())) {
+                        continue;
+                    }
                 }
                 if (auto* eng = DiagnosticEngine::active()) {
                     eng->report("warning", "CAJETA_WARN_LAST_USE_TRANSFER",
@@ -9025,13 +9048,6 @@ namespace cajeta {
                 }
                 deactivateIfClassLocal(i);
             }
-            bool callFloatingX = true;
-            for (auto& e : entries) {
-                if (e.label.empty()) { callFloatingX = false; break; }
-            }
-            MethodPtr xferTarget = targetClass->resolveMethod(
-                methodCallName, entries, /*isConstructor=*/false,
-                callFloatingX);
             if (xferTarget) {
                 auto formalParams = xferTarget->getParameterList();
                 bool isStaticTgt = xferTarget->getModifiers().find(STATIC)

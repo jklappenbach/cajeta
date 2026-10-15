@@ -871,9 +871,10 @@ namespace cajeta {
                             std::string opName = "operator[]=";
                             // The `#T` contract check for the indexed store: this form lowers straight to
                             // invokeMethod, so MethodCallExpression's own check never sees it.
-                            if (auto opTgt = recvClass->resolveMethod(opName,
+                            MethodPtr opTgt = recvClass->resolveMethod(opName,
                                     entries, /*isConstructor=*/false,
-                                    /*floatingParams=*/false)) {
+                                    /*floatingParams=*/false);
+                            if (opTgt) {
                                 auto opFormals = opTgt->getParameterList();
                                 bool opStatic = opTgt->getModifiers().find(STATIC)
                                     != opTgt->getModifiers().end();
@@ -894,7 +895,9 @@ namespace cajeta {
                             }
                             // The lowered call's transfer word: bit 0 is the index argument, bit 1 the
                             // value argument; a runtime-owner source forwards its captured flag.
-                            for (ExpressionPtr advAst : { idxAst, valAst }) {
+                            ExpressionPtr advAsts[2] = { idxAst, valAst };
+                            for (size_t a = 0; a < 2; ++a) {
+                                ExpressionPtr advAst = advAsts[a];
                                 auto advId = std::dynamic_pointer_cast<IdentifierExpression>(advAst);
                                 if (!advId) continue;
                                 auto advScope = module->getScopeStack().peek();
@@ -907,6 +910,19 @@ namespace cajeta {
                                 if (!advM || !advM->isFinalUseOfLocal(advId->getTextValue(),
                                         advId->getSourceLine(), advId->getSourceColumn())) {
                                     continue;
+                                }
+                                // As in MethodCallExpression: only an operator that keeps the
+                                // lend makes the advisory worth reading (spec 5.2.3).
+                                if (opTgt) {
+                                    auto fps = opTgt->getParameterList();
+                                    bool st = opTgt->getModifiers().find(STATIC)
+                                        != opTgt->getModifiers().end();
+                                    bool hasThis = !fps.empty() && fps.front()->getName() == "this";
+                                    size_t fi = a + ((st || !hasThis) ? 0 : 1);
+                                    if (fi < fps.size() && fps[fi] && !fps[fi]->isTransferred()
+                                            && !opTgt->mayKeepFormal(fps[fi]->getName())) {
+                                        continue;
+                                    }
                                 }
                                 if (auto* eng = DiagnosticEngine::active()) {
                                     eng->report("warning", "CAJETA_WARN_LAST_USE_TRANSFER",

@@ -9,6 +9,8 @@
 #include "cajeta/error/Diagnostics.h"
 
 #include <cstdlib>
+#include <cstdio>
+#include <map>
 #include <string>
 
 using cajeta::CollectedDiagnostic;
@@ -182,4 +184,32 @@ TEST(DiagnosticOrigin, theFlagSelectsTheOrigins) {
     const char* project[] = {"cajeta", "--diag-origins=project"};
     cajeta::resolveDiagOriginsFromArgv(2, project);
     EXPECT_FALSE(cajeta::showAllDiagnosticOrigins());
+}
+
+// The stdlib warning census (diagnostic-origin 7.3.1, 8.1.1): armed by
+// CAJETA_STDLIB_CENSUS, a fresh compile with every origin shown, and the
+// stdlib's diagnostics counted by code on one line each.
+TEST(StdlibWarningCensus, printsTheStdlibWarningsByCode) {
+    if (!std::getenv("CAJETA_STDLIB_CENSUS")) GTEST_SKIP() << "armed by CAJETA_STDLIB_CENSUS";
+    FreshCompile fresh;
+    OriginsScope origins(true);
+    EngineScope scope;
+    auto jit = CajetaJit::compile(kProjectSource, "test.Ut");
+    ASSERT_NE(jit, nullptr);
+    std::map<std::string, int> byCode;
+    int stdlibTotal = 0;
+    for (const auto& d : scope.engine.collected()) {
+        if (d.origin != "stdlib") continue;
+        ++stdlibTotal;
+        ++byCode[d.severity + " " + d.code];
+    }
+    std::printf("[stdlib-census] total=%d\n", stdlibTotal);
+    for (const auto& [code, n] : byCode) std::printf("[stdlib-census] %s=%d\n", code.c_str(), n);
+    if (std::string(std::getenv("CAJETA_STDLIB_CENSUS")) == "2") {
+        for (const auto& d : scope.engine.collected()) {
+            if (d.origin != "stdlib") continue;
+            std::printf("[stdlib-site] %s %s:%d %.90s\n", d.code.c_str(), d.file.c_str(), d.line, d.message.c_str());
+        }
+    }
+    std::fflush(stdout);
 }

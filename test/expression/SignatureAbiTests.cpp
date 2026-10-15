@@ -250,6 +250,56 @@ TEST(SignatureAbiTests, lastUseOfLentLocalWarnsWithTransferFixit) {
     EXPECT_FALSE(warnedAbout("moved"));
 }
 
+// 7.1.1 (diagnostic-origin spec 5.2.3) — a final-use lend to a callee that
+// cannot keep the value is correct as written: no advisory, whether the callee
+// is an instance method or a static one.
+TEST(SignatureAbiTests, finalUseLendToANonRetainingCalleeIsQuiet) {
+    std::string src = std::string(kCellSrc) + kAdvisorySrc +
+        "public final class Reader {\n"
+        "    public static int32 read(Cell v) { return v.n; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Sink s = heap Sink();\n"
+        "        Cell peeked = heap Cell(4);\n"
+        "        s.peek(peeked);\n"
+        "        Cell shown = heap Cell(5);\n"
+        "        Reader.read(shown);\n"
+        "        return 9;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 9);
+    EXPECT_FALSE(warnedAbout("peeked"));
+    EXPECT_FALSE(warnedAbout("shown"));
+}
+
+// 7.1.2 (spec 5.2.4) — a final-use lend to a callee that keeps the value still
+// warns: a method that stores its formal, and a map's indexed store.
+TEST(SignatureAbiTests, finalUseLendToARetainingCalleeWarns) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.collection.HashMap;\n"
+        "public class Cell {\n"
+        "    public int32 n;\n"
+        "    public Cell(int32 nn) { this.n = nn; }\n"
+        "}\n"
+        + std::string(kAdvisorySrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Sink s = heap Sink();\n"
+        "        Cell kept = heap Cell(6);\n"
+        "        s.keep(kept);\n"
+        "        HashMap<String, Cell> m = heap HashMap<String, Cell>();\n"
+        "        Cell mapped = heap Cell(7);\n"
+        "        m[\"k\"] = mapped;\n"
+        "        return s.held.n + m[\"k\"].n;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 13);
+    EXPECT_TRUE(warnedAbout("kept"));
+    EXPECT_TRUE(warnedAbout("mapped"));
+}
+
 // 6.2.6c — a consumed formal returned THROUGH A CAST is the same
 // pass-through as `return formal;`: the title rides out on the return
 // flag and the callee epilogue must NOT drop it. The disarm used to

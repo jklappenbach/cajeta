@@ -1999,33 +1999,167 @@ namespace cajeta {
         }
     }
 
+    // The methods a forward inside `self` may reach when the call has not been
+    // resolved yet: by name and arity on the receiver's class and its supers,
+    // for a receiver that is `this`, a formal, one of the class's own fields or
+    // a class name. Empty when the receiver is anything else.
+    static std::vector<MethodPtr> forwardCandidates(
+            Method* self, const std::shared_ptr<MethodCallExpression>& call) {
+        std::vector<MethodPtr> out;
+        CajetaClassPtr owner = self->getParent();
+        if (!owner) return out;
+        CajetaClassPtr recv;
+        auto& kids = call->getChildren();
+        auto classOf = [](const CajetaTypePtr& t) {
+            return std::dynamic_pointer_cast<CajetaClass>(t);
+        };
+        if (kids.empty() || std::dynamic_pointer_cast<ThisExpression>(kids[0])) {
+            recv = owner;
+        } else if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(kids[0])) {
+            const std::string& n = id->getTextValue();
+            for (auto& fp : self->getParameterList()) {
+                if (fp && fp->getName() == n) { recv = classOf(fp->getType()); break; }
+            }
+            if (!recv) {
+                auto prop = owner->getProperties().find(n);
+                if (prop != owner->getProperties().end() && prop->second) {
+                    recv = classOf(prop->second->getType());
+                }
+            }
+            if (!recv && self->getModule()) {
+                recv = classOf(CajetaType::ofScoped(n, self->getModule()));
+            }
+        } else if (auto dot = std::dynamic_pointer_cast<DotExpression>(kids[0])) {
+            auto& dk = dot->getChildren();
+            if (!dk.empty() && std::dynamic_pointer_cast<ThisExpression>(dk[0])) {
+                auto prop = owner->getProperties().find(dot->getIdentifier());
+                if (prop != owner->getProperties().end() && prop->second) {
+                    recv = classOf(prop->second->getType());
+                }
+            }
+        }
+        if (!recv) return out;
+        const size_t argc = call->getParameters().size();
+        std::set<CajetaClass*> seen;
+        std::function<void(const CajetaClassPtr&)> collect = [&](const CajetaClassPtr& c) {
+            if (!c || seen.count(c.get())) return;
+            seen.insert(c.get());
+            for (auto& entry : c->getMethods()) {
+                MethodPtr m = entry.second;
+                if (!m || m->getName() != call->getMethodCallName()) continue;
+                auto fps = m->getParameterList();
+                size_t own = (!fps.empty() && fps.front()->getName() == "this") ? 1 : 0;
+                if (fps.size() - own == argc) out.push_back(m);
+            }
+            for (auto& s : c->getSuperClasses()) collect(s);
+        };
+        collect(recv);
+        return out;
+    }
+
     bool Method::retainsFormal(const std::string& formalName) {
-        auto cached = retainsFormalCache.find(formalName);
-        if (cached != retainsFormalCache.end()) return cached->second;
+        std::set<const Method*> visiting;
+        return formalReach(formalName, /*unresolvedKeeps=*/false, visiting);
+    }
+
+    bool Method::mayKeepFormal(const std::string& formalName) {
+        std::set<const Method*> visiting;
+        return formalReach(formalName, /*unresolvedKeeps=*/true, visiting);
+    }
+
+    bool Method::formalReach(const std::string& formalName, bool unresolvedKeeps,
+                             std::set<const Method*>& visiting) {
+        auto& cache = unresolvedKeeps ? mayKeepFormalCache : retainsFormalCache;
+        auto cached = cache.find(formalName);
+        if (cached != cache.end()) return cached->second;
+        if (visiting.count(this)) return false;
+        if (!block) {
+            // No body to read: an interface or abstract method may be anything,
+            // a native one cannot keep a cajeta value.
+            bool abstractLike = (parent && parent->isInterface())
+                || getModifiers().find(ABSTRACT) != getModifiers().end();
+            cache[formalName] = unresolvedKeeps && abstractLike;
+            return cache[formalName];
+        }
+        visiting.insert(this);
         bool retained = false;
+        auto namesFormal = [&](const AbstractSyntaxNodePtr& e) {
+            AbstractSyntaxNodePtr inner = e;
+            if (auto mv = std::dynamic_pointer_cast<MoveExpression>(e)) {
+                auto& mk = mv->getChildren();
+                if (!mk.empty()) inner = mk[0];
+            }
+            auto id = std::dynamic_pointer_cast<IdentifierExpression>(inner);
+            return id && id->getTextValue() == formalName;
+        };
+        auto mentionsFormal = [&](const AbstractSyntaxNodePtr& root) {
+            bool found = false;
+            std::function<void(const AbstractSyntaxNodePtr&)> w =
+                [&](const AbstractSyntaxNodePtr& n) {
+                    if (!n || found) return;
+                    if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(n)) {
+                        if (id->getTextValue() == formalName) { found = true; return; }
+                    }
+                    n->forEachSubNode(w);
+                };
+            w(root);
+            return found;
+        };
         std::function<void(const AbstractSyntaxNodePtr&)> walk =
             [&](const AbstractSyntaxNodePtr& node) {
                 if (!node || retained) return;
                 if (auto bin = std::dynamic_pointer_cast<BinaryOpExpression>(node)) {
                     auto& kids = bin->getChildren();
                     if (kids.size() >= 2) {
-                        auto lhs = kids[0];
-                        auto rhs = kids[1];
                         bool lhsIsPlace =
-                            std::dynamic_pointer_cast<DotExpression>(lhs)
-                            || std::dynamic_pointer_cast<ArrayIndexExpression>(lhs);
-                        auto rhsInner = rhs;
-                        if (auto mv = std::dynamic_pointer_cast<MoveExpression>(rhs)) {
-                            auto& mk = mv->getChildren();
-                            if (!mk.empty()) rhsInner = mk[0];
-                        }
-                        auto rhsId =
-                            std::dynamic_pointer_cast<IdentifierExpression>(rhsInner);
-                        if (lhsIsPlace && rhsId
-                                && rhsId->getTextValue() == formalName) {
+                            std::dynamic_pointer_cast<DotExpression>(kids[0])
+                            || std::dynamic_pointer_cast<ArrayIndexExpression>(kids[0]);
+                        if (lhsIsPlace && namesFormal(kids[1])) {
                             retained = true;
                             return;
                         }
+                    }
+                }
+                if (auto call = std::dynamic_pointer_cast<MethodCallExpression>(node)) {
+                    const auto& args = call->getParameters();
+                    for (size_t i = 0; i < args.size(); ++i) {
+                        if (!namesFormal(args[i].expression)) continue;
+                        std::vector<MethodPtr> callees;
+                        if (MethodPtr resolved = call->getResolvedMethod()) {
+                            callees.push_back(resolved);
+                        } else {
+                            callees = forwardCandidates(this, call);
+                            // The exact form answers only when one method can be meant.
+                            if (!unresolvedKeeps && callees.size() != 1) continue;
+                        }
+                        if (callees.empty()) {
+                            if (unresolvedKeeps) { retained = true; return; }
+                            continue;
+                        }
+                        for (auto& callee : callees) {
+                            auto fps = callee->getParameterList();
+                            bool st = callee->getModifiers().find(STATIC)
+                                != callee->getModifiers().end();
+                            bool hasThis = !fps.empty() && fps.front()->getName() == "this";
+                            size_t fi = i + ((st || !hasThis) ? 0 : 1);
+                            if (fi >= fps.size() || !fps[fi]) {
+                                if (unresolvedKeeps) { retained = true; return; }
+                                continue;
+                            }
+                            if (callee->formalReach(fps[fi]->getName(), unresolvedKeeps,
+                                                    visiting)) {
+                                retained = true;
+                                return;
+                            }
+                        }
+                    }
+                }
+                if (unresolvedKeeps) {
+                    if (auto nw = std::dynamic_pointer_cast<NewExpression>(node)) {
+                        if (mentionsFormal(nw)) { retained = true; return; }
+                    }
+                    if (auto lam = std::dynamic_pointer_cast<LambdaExpression>(node)) {
+                        if (mentionsFormal(lam->getBody())) { retained = true; return; }
                     }
                 }
                 // Descend through forEachSubNode: statements and calls keep their
@@ -2033,7 +2167,8 @@ namespace cajeta {
                 node->forEachSubNode(walk);
             };
         walk(block);
-        retainsFormalCache[formalName] = retained;
+        visiting.erase(this);
+        cache[formalName] = retained;
         return retained;
     }
 

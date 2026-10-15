@@ -417,9 +417,13 @@ namespace cajeta {
         void emitInterfaceParamHomes(CajetaModulePtr module);
         void emitFormalDropEntries(CajetaModulePtr module);
 
-        // Does the body RETAIN this formal — store it into a field or element?
-        // Only a retaining callee can hold a lend of the caller's local. Cached.
+        // Does the body RETAIN this formal: store it into a field or element, or
+        // forward it to a resolved callee that does? Only a retaining callee can
+        // hold a lend of the caller's local. Cached.
         bool retainsFormal(const std::string& formalName);
+        // retainsFormal, with a forward to an unresolved callee, a creator or a
+        // lambda counted as keeping: what the last-use advisory asks.
+        bool mayKeepFormal(const std::string& formalName);
 
         // Last-use advisory: true when `name` has no later read than (line,
         // column). Uses inside a loop never qualify — a textual last use runs
@@ -427,6 +431,9 @@ namespace cajeta {
         bool isFinalUseOfLocal(const std::string& name, int line, int column);
     private:
         map<std::string, bool> retainsFormalCache;
+        map<std::string, bool> mayKeepFormalCache;
+        bool formalReach(const std::string& formalName, bool unresolvedKeeps,
+                         std::set<const Method*>& visiting);
         // name -> last (line, column) read; loop-used names are never advised.
         map<std::string, pair<int, int>> lastUseAt;
         set<std::string> loopUsedNames;
