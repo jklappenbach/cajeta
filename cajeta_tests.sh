@@ -752,13 +752,20 @@ stop_fork_server() {
     SRV_LIVE=0; SRV_PID=""
 }
 
+# Suites that need a fresh process even under the server: see the file.
+FRESH_SUITES_FILE="${CAJETA_FRESH_SUITES:-$SCRIPT_DIR/test/fresh_process_suites.txt}"
+needs_fresh_process() {
+    [ -s "$FRESH_SUITES_FILE" ] && grep -qxF "$1" "$FRESH_SUITES_FILE" 2>/dev/null
+}
+RUN_FRESH=0
+
 # run_filtered <deadline-s> <filter> <out-file>: runs one gtest filter with a
 # deadline, output in the file, through the shard's server when it is live and
 # as its own process otherwise. Returns the process path's exit code: 124 past
 # the deadline, 128 plus the signal, else gtest's.
 run_filtered() {
     local deadline="$1" filter="$2" tf="$3" answer
-    if [ "$SRV_LIVE" = "1" ]; then
+    if [ "$SRV_LIVE" = "1" ] && [ "$RUN_FRESH" != "1" ]; then
         printf 'RUN %s %s %s\n' "$deadline" "$filter" "$tf" >&3
         if IFS= read -r -t $(( deadline + 30 )) -u 4 answer && [[ "$answer" =~ ^DONE\ [0-9]+$ ]]; then
             return "${answer#DONE }"
@@ -812,8 +819,10 @@ run_one_test() {
     fi
     [ "$tmo" -gt "$BATCH_CAP" ] && tmo=$BATCH_CAP
     printf '>> %s ... ' "$t" >> "$out_file"
+    RUN_FRESH=0; needs_fresh_process "${t%%.*}" && RUN_FRESH=1
     run_filtered "$tmo" "$t" "$tf"
     trc=$?
+    RUN_FRESH=0
     case "$trc" in
         0)       printf 'PASS\n'              >> "$out_file" ;;
         124|137) printf 'TIMEOUT (%ss)\n' "$tmo" >> "$out_file" ;;
@@ -857,8 +866,10 @@ run_suite_batch() {
     deadline="$(chunk_deadline "$idx")"
     filter="${list//$'\n'/:}"; filter="${filter%:}"
     tf="${out_file}.b"
+    RUN_FRESH=0; needs_fresh_process "${sname%%[[<]*}" && RUN_FRESH=1
     run_filtered "$deadline" "$filter" "$tf"
     brc=$?
+    RUN_FRESH=0
     if [ "$brc" -eq 0 ] || grep -qE '^\[==========\] .* ran\.' "$tf"; then
         cat "$tf" >> "$out_file"
     else

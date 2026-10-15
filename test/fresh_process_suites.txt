@@ -1,0 +1,11 @@
+# Suites the parallel sweep runs in a fresh process even under the fork server
+# (cajeta_tests.sh FORK=1), one suite name per line. A suite belongs here when
+# a test's premise is the state of a process that has not compiled anything
+# yet, which a forked child of a primed server cannot give it.
+#
+# LazyKernelTests: lazyCellSkipsTheEagerWorld counts the stdlib bodies the
+# kernel's lazy generator delivers. In a process where the JIT harness primed
+# the shared stdlib with its codegen layer, every body already exists and the
+# count is the whole world (8866 against a ceiling of 1500), which is the
+# kernel process's own premise, not a defect of the generator.
+LazyKernelTests

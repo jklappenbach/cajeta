@@ -32,7 +32,7 @@ if [ ! -x "$TEST_BIN" ]; then
     exit 0
 fi
 
-SUITES="SharedStdlibDefaultTests ClosureTransferCaptureTests ZoneOffsetTests ForkCrashProbe"
+SUITES="SharedStdlibDefaultTests ClosureTransferCaptureTests ZoneOffsetTests ForkCrashProbe LazyKernelTests"
 
 # run_sweep <logdir> [env assignments...]
 run_sweep() {
@@ -69,6 +69,8 @@ check "6.1.4 the crash probe falls back per test under the server" \
       "$(cat "$TMP"/server/shard_*.out | grep -c '^>>> BATCH-FALLBACK ForkCrashProbe')" "1"
 check "6.1.4 the crash is attributed to the probe" \
       "$(cat "$TMP"/server/shard_*.out | grep -c '^>>> CRASH ForkCrashProbe.segvOnDemand')" "1"
+check "6.1.4 a fresh-process suite (test/fresh_process_suites.txt) passes under the server" \
+      "$(verdicts "$TMP/server" | grep -c '^OK LazyKernelTests.lazyCellSkipsTheEagerWorld')" "1"
 
 echo
 echo "PASS=$pass FAIL=$fail"

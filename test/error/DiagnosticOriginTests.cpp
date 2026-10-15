@@ -7,6 +7,7 @@
 #include "cajeta/error/DiagnosticEngine.h"
 #include "cajeta/error/Diagnostics.h"
 
+#include <cstdlib>
 #include <string>
 
 using cajeta::CollectedDiagnostic;
@@ -19,6 +20,21 @@ struct EngineScope {
     DiagnosticEngine engine;
     EngineScope() { DiagnosticEngine::setActive(&engine); }
     ~EngineScope() { DiagnosticEngine::setActive(nullptr); }
+};
+
+// Takes the fresh compile path for one test: the stdlib is parsed inside the
+// test, so its warnings reach the test's engine whether or not the process
+// primed the shared stdlib earlier.
+struct FreshCompile {
+    bool had;
+    std::string saved;
+    FreshCompile() {
+        const char* v = std::getenv("CAJETA_STDLIB_REUSE");
+        had = v != nullptr;
+        if (v) saved = v;
+        unsetenv("CAJETA_STDLIB_REUSE");
+    }
+    ~FreshCompile() { if (had) setenv("CAJETA_STDLIB_REUSE", saved.c_str(), 1); }
 };
 
 const char* kProjectSource =
@@ -91,6 +107,7 @@ TEST(DiagnosticOrigin, aJsonRecordCarriesItsOrigin) {
 // 2.2.1 and 2.2.2: in a real compile the stdlib's warnings are located and tagged stdlib,
 // and the project's are tagged project.
 TEST(DiagnosticOrigin, aCompileTagsStdlibAndProjectDiagnostics) {
+    FreshCompile fresh;
     EngineScope scope;
     auto jit = CajetaJit::compile(kProjectSource, "test.Ut");
     ASSERT_NE(jit, nullptr);

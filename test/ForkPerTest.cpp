@@ -259,6 +259,7 @@ int waitWithDeadline(pid_t pid, long deadlineS) {
         dup2(devnull, 0);
         close(devnull);
     }
+    unsetenv("CAJETA_FORK_SERVER");
     ::testing::GTEST_FLAG(filter) = filter;
     const int rc = RUN_ALL_TESTS();
     std::fflush(nullptr);
