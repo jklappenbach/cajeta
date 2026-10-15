@@ -3,6 +3,7 @@
 
 #include "gtest/gtest.h"
 
+#include "../PortableEnv.h"
 #include "../jit/JitTestHelper.h"
 #include "cajeta/error/DiagnosticEngine.h"
 #include "cajeta/error/Diagnostics.h"
