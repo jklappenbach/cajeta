@@ -1,3 +1,5 @@
+> **SUPERSEDED 2026-10-16, closed unstarted.** xpu-kernel-adaptor did this work: col-major load, native `fromWords` and S-verbs (4A.2.1–4A.2.3, 4A.2.4.1, 4A.5.4.B/C); native lowering in place of demotion (nvptx skips 78 → 0, 4A.3.1); the always-on build-error gate in place of `--strict-device` (4.1.2, 4.2.2). Its deliverable is met: the nvptx leg reads 640 / 0 / 4 with a clean census (12.2.7).
+
 # NVPTX cooperative-matrix lowering is incomplete, so 50 quant kernels get no
 # device code and silently produce zeros on NVIDIA
 
