@@ -8257,11 +8257,23 @@ namespace cajeta {
                     return builder->CreateLoad(i32Ty, fdSlot, "net.fd");
                 };
                 // &buf[8 + offset]: skip the array header, then add the offset.
-                auto bufPtrAtOffset = [&](size_t argIdx, llvm::Value* offV) -> llvm::Value* {
-                    llvm::Value* arr = parameters[argIdx].expression->generateCode(module);
-                    if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(arr)) {
-                        arr = builder->CreateLoad(a->getAllocatedType(), a);
+                // An argument is an r-value whatever its spelling: a local's
+                // alloca, a field slot (`this.outBuf`), an element, a call.
+                // Loading only an alloca sent a field array's SLOT address to
+                // send(2): the right length, the wrong bytes (measured
+                // 2026-10-16 through TlsStream.flushNow, whose server flight
+                // the client rejected). Load through the general l-value path.
+                auto netArgValue = [&](size_t argIdx) -> llvm::Value* {
+                    auto& p = parameters[argIdx].expression;
+                    llvm::Value* v = p->generateCode(module);
+                    auto ast = dynamic_pointer_cast<Expression>(p);
+                    if (ast && !ast->getResolvedType()) {
+                        ast->resolveTypes(module);
                     }
+                    return loadIfLValue(module, v, ast);
+                };
+                auto bufPtrAtOffset = [&](size_t argIdx, llvm::Value* offV) -> llvm::Value* {
+                    llvm::Value* arr = netArgValue(argIdx);
                     llvm::Value* dataStart = builder->CreateInBoundsGEP(
                         i8Ty, arr, llvm::ConstantInt::get(i64Ty, 8),
                         "net.buf_start");
@@ -8269,10 +8281,7 @@ namespace cajeta {
                         i8Ty, dataStart, offV, "net.buf_off");
                 };
                 auto loadI64Arg = [&](size_t argIdx) -> llvm::Value* {
-                    llvm::Value* v = parameters[argIdx].expression->generateCode(module);
-                    if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
-                        v = builder->CreateLoad(a->getAllocatedType(), a);
-                    }
+                    llvm::Value* v = netArgValue(argIdx);
                     if (v && v->getType() != i64Ty && v->getType()->isIntegerTy()) {
                         v = builder->CreateIntCast(v, i64Ty, true);
                     }

@@ -114,6 +114,10 @@ public class TlsConnection {
 
     @Native("__cajeta_tls_read_plaintext")
     private static int32 readNative(pointer conn, int8[] out, int32 max);
+    @Native("__cajeta_tls_read_plaintext_at")
+    private static int32 readAtNative(pointer conn, int8[] out, int32 off, int32 max);
+    @Native("__cajeta_tls_write_plaintext_at")
+    private static int32 writeAtNative(pointer conn, int8[] buf, int32 off, int32 len);
 
     @Native("__cajeta_tls_shutdown")
     private static int32 shutdownNative(pointer conn);
@@ -256,6 +260,14 @@ public class TlsConnection {
     /** Decrypt available app data into `out`; bytes, `WANT_IO`, `CLOSED`. */
     public int32 read(int8[] out, int32 max) {
         return TlsConnection.readNative(this.conn, out, max);
+    }
+    /** `read` into `out` at `off`: a framer decrypts straight into a connection buffer. */
+    public int32 readAt(int8[] out, int32 off, int32 max) {
+        return TlsConnection.readAtNative(this.conn, out, off, max);
+    }
+    /** `write` from `buf` at `off`. */
+    public int32 writeAt(int8[] buf, int32 off, int32 len) {
+        return TlsConnection.writeAtNative(this.conn, buf, off, len);
     }
 
     /** Queue a clean `close_notify`. */

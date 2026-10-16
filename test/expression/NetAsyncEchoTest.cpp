@@ -272,3 +272,64 @@ TEST(NetAsyncEchoTest, readNowNeverParks) {
         "listener.close();\n"
         "return 1;")), 1);
 }
+
+// --- A field array as the socket write's buffer -------------------------------
+// The TcpStream.write / read intrinsics take their buffer argument from the
+// argument expression directly and load it only when it is a local's alloca.
+// A FIELD array (`this.out`) reached the send as the field slot's address, so
+// the bytes on the wire were the slot, not the array: the right length and the
+// wrong contents. Measured 2026-10-16 through TlsStream.flushNow, whose server
+// flight the client rejected until the buffer went through a local alias.
+TEST(NetAsyncEchoTest, fieldArrayBufferWritesItsOwnBytes) {
+    auto src =
+        "package test;\n"
+        "import cajeta.io.net.IpAddress;\n"
+        "import cajeta.io.net.SocketAddress;\n"
+        "import cajeta.io.net.TcpStream;\n"
+        "import cajeta.io.net.TcpListener;\n"
+        "import cajeta.concurrent.Tasks;\n"
+        "public final class Holder {\n"
+        "    public TcpStream s;\n"
+        "    public int8[] out;\n"
+        "    public int8[] in;\n"
+        "    public Holder(#TcpStream s) {\n"
+        "        this.s #= s;\n"
+        "        this.out = heap int8[4];\n"
+        "        this.in = heap int8[4];\n"
+        "        this.out[0] = (int8) 112; this.out[1] = (int8) 105;\n"
+        "        this.out[2] = (int8) 110; this.out[3] = (int8) 103;\n"
+        "    }\n"
+        "    public int64 send() { return this.s.write(this.out, (int64) 0, (int64) 4); }\n"
+        "    public int64 recv() { return this.s.readAsync(this.in, (int64) 0, (int64) 4); }\n"
+        "}\n"
+        "public final class T {\n"
+        "    public static int32 run() {\n"
+        "        () -> int32 body = () -> {\n"
+        "            IpAddress la #= IpAddress.loopbackV4();\n"
+        "            SocketAddress bindAddr #= SocketAddress.of(#la, 0);\n"
+        "            TcpListener listener #= TcpListener.bind(bindAddr);\n"
+        "            int32 port = listener.boundPort();\n"
+        "            IpAddress ca #= IpAddress.loopbackV4();\n"
+        "            SocketAddress connAddr #= SocketAddress.of(#ca, port);\n"
+        "            TcpStream client #= TcpStream.connect(#connAddr);\n"
+        "            TcpStream server #= listener.accept();\n"
+        "            Holder c = heap Holder(#client);\n"
+        "            Holder s = heap Holder(#server);\n"
+        "            int64 sent = c.send();\n"
+        "            if (sent != 4) { return -1; }\n"
+        "            int64 got = s.recv();\n"
+        "            if (got != 4) { return -2; }\n"
+        "            int32 i = 0;\n"
+        "            while (i < 4) {\n"
+        "                if (s.in[i] != c.out[i]) { return -10 - i; }\n"
+        "                i = i + 1;\n"
+        "            }\n"
+        "            listener.close();\n"
+        "            return 1;\n"
+        "        };\n"
+        "        return Tasks.runBlocking<int32>(body);\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.T");
+    EXPECT_EQ(jit->lookup<int32_t (*)()>("run")(), 1);
+}

@@ -392,6 +392,30 @@ int __cajeta_tls_read_plaintext(void* connv, void* out_hdr, int max) {
     return cajeta_tls_classify(c->ssl, n);
 }
 
+// Plaintext read at an offset into the caller's array: a framer decrypts
+// straight into a connection's buffer at its write position
+// (request-dispatch spec §2.4.3), with no scratch copy.
+int __cajeta_tls_read_plaintext_at(void* connv, void* out_hdr, int off, int max) {
+    cajeta_tls_conn* c = (cajeta_tls_conn*) connv;
+    char* out = CAJETA_ARR_DATA(out_hdr);
+    if (!c || !out || off < 0 || max <= 0) return CAJETA_TLS_ERROR;
+    int n = SSL_read(c->ssl, out + off, max);
+    if (n > 0) return n;
+    return cajeta_tls_classify(c->ssl, n);
+}
+
+// Plaintext write from an offset into the caller's array: a framer seals its
+// own small replies (100-continue, refusals) from a connection buffer.
+int __cajeta_tls_write_plaintext_at(void* connv, const void* buf_hdr, int off, int len) {
+    cajeta_tls_conn* c = (cajeta_tls_conn*) connv;
+    const char* buf = CAJETA_ARR_DATA(buf_hdr);
+    if (!c || off < 0 || (len > 0 && !buf)) return CAJETA_TLS_ERROR;
+    if (len == 0) return 0;
+    int n = SSL_write(c->ssl, buf + off, len);
+    if (n > 0) return n;
+    return cajeta_tls_classify(c->ssl, n);
+}
+
 int __cajeta_tls_shutdown(void* connv) {
     cajeta_tls_conn* c = (cajeta_tls_conn*) connv;
     if (!c) return CAJETA_TLS_ERROR;
