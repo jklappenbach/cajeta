@@ -94,6 +94,7 @@ bool waitFor(const std::atomic<int>& flag, int want, int ms = 10000) {
 struct SetFiber {
     std::vector<Pair>* pairs = nullptr;
     int32_t timeoutMs = -1;
+    int32_t thenTimeoutMs = 0;          // timeout for waits after the first; 0 = timeoutMs
     int waits = 1;                      // how many waits to perform
     int removeFd = -1;                  // remove this member before waiting
     int readdFd = -1;                   // re-add it before the second wait
@@ -123,7 +124,8 @@ void setFiberBody(void* argp) {
     int32_t evs[64];
     for (int w = 0; w < s->waits; ++w) {
         if (w == 1 && s->readdFd >= 0) __cajeta_io_set_add(s->set, s->readdFd, IO_READ);
-        int32_t n = __cajeta_io_set_wait(s->set, fds, evs, 64, s->timeoutMs);
+        int32_t to = (w > 0 && s->thenTimeoutMs > 0) ? s->thenTimeoutMs : s->timeoutMs;
+        int32_t n = __cajeta_io_set_wait(s->set, fds, evs, 64, to);
         s->ns[(size_t) w] = n;
         for (int32_t i = 0; i < n; ++i) s->fdsOf[(size_t) w].push_back(fds[i]);
         if (n > 0 && s->consumeBytes > 0) {
@@ -233,9 +235,14 @@ TEST(ReadySetTests, disjointSetsAreIndependentAndSharedMembersWakeBoth) {
     std::vector<Pair> lm = left;  lm.push_back(shared[0]);
     std::vector<Pair> rm = right; rm.push_back(shared[0]);
 
+    // L never needs to expire. R's first wait must expire (nothing of its own
+    // is written), and its second must not: the shared byte is written only
+    // after R's first wait expired, about 300 ms after L's second wait began,
+    // so a 300 ms second wait on L raced the write under sweep load (proton,
+    // 2026-10-16: L.n(1) read 0 once in 32-way, 3/3 alone).
     SetFiber L, R;
-    L.pairs = &lm; L.waits = 2; L.timeoutMs = 300; L.consumeBytes = 1;
-    R.pairs = &rm; R.waits = 2; R.timeoutMs = 300; R.consumeBytes = 1;
+    L.pairs = &lm; L.waits = 2; L.timeoutMs = 5000; L.consumeBytes = 1;
+    R.pairs = &rm; R.waits = 2; R.timeoutMs = 300; R.thenTimeoutMs = 5000; R.consumeBytes = 1;
     void* sl = nullptr; void* sr = nullptr;
     __cajeta_task_run(&L, setFiberBody, &sl);
     __cajeta_task_run(&R, setFiberBody, &sr);
