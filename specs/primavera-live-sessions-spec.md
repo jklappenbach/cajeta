@@ -131,8 +131,9 @@ release.
 Julian, 2026-10-16: keep data buffered and send it asynchronously while a
 client is slow; bound the buffer; once it is full, the next send closes.
 
-- **4.1** When a connection's queue is bounded, the bound is in payload bytes
-  of the queued messages, framing excluded, configurable per server. It replaces the message-count bound (Julian,
+- **4.1** When a connection's queue is bounded, the bound is in bytes: each
+  queued message counts its payload plus a 4-byte length, WebSocket framing
+  excluded, configurable per server. The bound is then the queue's memory. It replaces the message-count bound (Julian,
   2026-10-16: bytes manage memory more precisely), so a connection's send
   memory is known whatever the message sizes. The default is set at plan time
   (§7.2).
