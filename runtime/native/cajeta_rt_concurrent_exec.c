@@ -1276,36 +1276,6 @@ struct cajeta_io_set {
 };
 
 static int64_t __cajeta_io_set_live = 0;
-static int __caj_rt_trace;              // defined with the reactor counters below
-
-// Records a readiness event for a member and detaches the set's parked
-// fiber onto `*to_publish`. The member is unlisted by the caller and stays
-// owned by its set (never freed here). Caller holds task_mutex.
-static void __cajeta_io_set_record_locked(struct cajeta_io_waiter* w, int fd,
-                                          int fired_mask,
-                                          struct cajeta_fiber** to_publish) {
-    struct cajeta_io_set* s = w->set;
-    struct cajeta_io_set_member* m = (struct cajeta_io_set_member*) w;
-    m->armed = 0;
-    int ev = fired_mask & w->events;
-    if (ev == 0) ev = fired_mask;       // ERR/HUP: report what fired
-    if (s->ring_n < CAJETA_IO_SET_RING) {
-        s->ring_fd[s->ring_n] = fd;
-        s->ring_ev[s->ring_n] = ev;
-        s->ring_n++;
-    }
-    if (__caj_rt_trace == 1) {
-        fprintf(stderr, "[set] record fd=%d ev=%d ring=%d parked=%p set=%p\n",
-                fd, ev, (int) s->ring_n, (void*) s->parked, (void*) s);
-    }
-    // A full ring drops the record; the member stays disarmed and the next
-    // wait re-arms it, so level readiness reports it again, one wait later.
-    if (s->parked && __cajeta_parked_remove_locked(s->parked)) {
-        s->parked->next = *to_publish;
-        *to_publish = s->parked;
-        s->parked = NULL;
-    }
-}
 
 #if defined(__linux__)
 
@@ -1355,6 +1325,35 @@ static void __cajeta_reactor_rearm_locked(int fd) {
     if (epoll_ctl(__cajeta_reactor_epfd, EPOLL_CTL_MOD, fd, &ep) < 0
             && errno == ENOENT) {
         epoll_ctl(__cajeta_reactor_epfd, EPOLL_CTL_ADD, fd, &ep);
+    }
+}
+
+// Records a readiness event for a set member and detaches the set's parked
+// fiber onto `*to_publish`. The member is unlisted by the caller and stays
+// owned by its set (never freed here). Caller holds task_mutex.
+static void __cajeta_io_set_record_locked(struct cajeta_io_waiter* w, int fd,
+                                          int fired_mask,
+                                          struct cajeta_fiber** to_publish) {
+    struct cajeta_io_set* s = w->set;
+    struct cajeta_io_set_member* m = (struct cajeta_io_set_member*) w;
+    m->armed = 0;
+    int ev = fired_mask & w->events;
+    if (ev == 0) ev = fired_mask;       // ERR/HUP: report what fired
+    if (s->ring_n < CAJETA_IO_SET_RING) {
+        s->ring_fd[s->ring_n] = fd;
+        s->ring_ev[s->ring_n] = ev;
+        s->ring_n++;
+    }
+    if (__caj_rt_trace == 1) {
+        fprintf(stderr, "[set] record fd=%d ev=%d ring=%d parked=%p set=%p\n",
+                fd, ev, (int) s->ring_n, (void*) s->parked, (void*) s);
+    }
+    // A full ring drops the record; the member stays disarmed and the next
+    // wait re-arms it, so level readiness reports it again, one wait later.
+    if (s->parked && __cajeta_parked_remove_locked(s->parked)) {
+        s->parked->next = *to_publish;
+        *to_publish = s->parked;
+        s->parked = NULL;
     }
 }
 
@@ -1977,16 +1976,8 @@ int32_t __cajeta_io_set_wait(void* setp, int32_t* out_fds, int32_t* out_events,
 // the bring-up shape, replaced when those engines arrive.
 int32_t __cajeta_net_reactor_poll_fd(int32_t fd, int32_t interest, int32_t timeout_ms);
 
-struct cajeta_io_set_member {
-    int32_t fd;
-    int32_t events;
-    struct cajeta_io_set_member* next;
-};
-struct cajeta_io_set {
-    struct cajeta_io_set_member* members;
-    int32_t size;
-};
-static int64_t __cajeta_io_set_live = 0;
+// The member and set structs are the shared ones above; here a member is
+// never listed with the reactor, so `armed` stays 0 and `w.next` unused.
 
 void* __cajeta_io_set_create(void) {
     return calloc(1, sizeof(struct cajeta_io_set));
@@ -1994,15 +1985,16 @@ void* __cajeta_io_set_create(void) {
 
 int32_t __cajeta_io_set_add(void* setp, int32_t fd, int32_t events) {
     struct cajeta_io_set* s = (struct cajeta_io_set*) setp;
-    if (!s || fd < 0 || (events & 3) == 0) return -1;
-    for (struct cajeta_io_set_member* m = s->members; m; m = m->next) {
-        if (m->fd == fd) { m->events = events; return 0; }
+    if (!s || fd < 0 || (events & (CAJETA_IO_READ | CAJETA_IO_WRITE)) == 0) return -1;
+    for (struct cajeta_io_set_member* m = s->members; m; m = m->set_next) {
+        if (m->w.fd == fd) { m->w.events = events; return 0; }
     }
     struct cajeta_io_set_member* m = calloc(1, sizeof(*m));
     if (!m) return -1;
-    m->fd = fd;
-    m->events = events;
-    m->next = s->members;
+    m->w.fd = fd;
+    m->w.events = events;
+    m->w.set = s;
+    m->set_next = s->members;
     s->members = m;
     s->size++;
     __cajeta_io_set_live++;
@@ -2012,10 +2004,10 @@ int32_t __cajeta_io_set_add(void* setp, int32_t fd, int32_t events) {
 int32_t __cajeta_io_set_remove(void* setp, int32_t fd) {
     struct cajeta_io_set* s = (struct cajeta_io_set*) setp;
     if (!s) return -1;
-    for (struct cajeta_io_set_member** pm = &s->members; *pm; pm = &(*pm)->next) {
-        if ((*pm)->fd == fd) {
+    for (struct cajeta_io_set_member** pm = &s->members; *pm; pm = &(*pm)->set_next) {
+        if ((*pm)->w.fd == fd) {
             struct cajeta_io_set_member* m = *pm;
-            *pm = m->next;
+            *pm = m->set_next;
             s->size--;
             __cajeta_io_set_live--;
             free(m);
@@ -2028,7 +2020,7 @@ int32_t __cajeta_io_set_remove(void* setp, int32_t fd) {
 void __cajeta_io_set_destroy(void* setp) {
     struct cajeta_io_set* s = (struct cajeta_io_set*) setp;
     if (!s) return;
-    while (s->members) __cajeta_io_set_remove(s, s->members->fd);
+    while (s->members) __cajeta_io_set_remove(s, s->members->w.fd);
     free(s);
 }
 
@@ -2051,18 +2043,18 @@ int32_t __cajeta_io_set_wait(void* setp, int32_t* out_fds, int32_t* out_events,
     }
     for (;;) {
         int32_t out = 0;
-        for (struct cajeta_io_set_member* m = s->members; m && out < cap; m = m->next) {
+        for (struct cajeta_io_set_member* m = s->members; m && out < cap; m = m->set_next) {
             int ev = 0;
-            if ((m->events & CAJETA_IO_READ)
-                    && __cajeta_net_reactor_poll_fd(m->fd, CAJETA_IO_READ, 0) == 1) {
+            if ((m->w.events & CAJETA_IO_READ)
+                    && __cajeta_net_reactor_poll_fd(m->w.fd, CAJETA_IO_READ, 0) == 1) {
                 ev |= CAJETA_IO_READ;
             }
-            if ((m->events & CAJETA_IO_WRITE)
-                    && __cajeta_net_reactor_poll_fd(m->fd, CAJETA_IO_WRITE, 0) == 1) {
+            if ((m->w.events & CAJETA_IO_WRITE)
+                    && __cajeta_net_reactor_poll_fd(m->w.fd, CAJETA_IO_WRITE, 0) == 1) {
                 ev |= CAJETA_IO_WRITE;
             }
             if (ev) {
-                out_fds[out] = m->fd;
+                out_fds[out] = m->w.fd;
                 out_events[out] = ev;
                 out++;
             }
