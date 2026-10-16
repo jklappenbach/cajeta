@@ -1,6 +1,6 @@
 # request-dispatch — the server assigns a fiber when a unit of work is complete
 
-Status: draft, 2026-10-16. Repo of record: cajeta (ecosystem spec); the work
+Status: active, approved by Julian 2026-10-16. Repo of record: cajeta (ecosystem spec); the work
 lands in cajeta-http with two runtime enablers in cajeta. Origin:
 primavera-web plan 1.2.8.6, decided with Julian 2026-10-15 and 2026-10-16.
 Companion: `fiber-stack-pool-spec.md` (runtime stack reuse and size classes).
