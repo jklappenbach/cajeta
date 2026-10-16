@@ -229,3 +229,46 @@ TEST(NetAsyncEchoTest, connectAsyncLoopbackEchoRoundTrips) {
         "}\n"
         "return 1;")), 1);
 }
+
+// --- readNow: the framer's non-parking read (request-dispatch plan 1.2.4) ---
+// A framer drains whatever a socket holds and then waits on its ReadySet; it
+// must never park inside a read. `readNow` answers -1 when the socket would
+// block, the byte count when data is there, and 0 at EOF, without touching
+// the reactor's park path. Single fiber: a parking read here would hang.
+TEST(NetAsyncEchoTest, readNowNeverParks) {
+    EXPECT_EQ(runI32(makeSource(
+        "IpAddress la #= IpAddress.loopbackV4();\n"
+        "SocketAddress bindAddr #= SocketAddress.of(#la, 0);\n"
+        "TcpListener listener #= TcpListener.bind(bindAddr);\n"
+        "int32 port = listener.boundPort();\n"
+        "if (port <= 0) { return -10; }\n"
+        "IpAddress ca #= IpAddress.loopbackV4();\n"
+        "SocketAddress connAddr #= SocketAddress.of(#ca, port);\n"
+        "TcpStream client #= TcpStream.connect(#connAddr);\n"
+        "TcpStream server #= listener.accept();\n"
+        "int8[] rbuf = heap int8[8];\n"
+        // Idle: would block, and we are still here (no park).
+        "int64 idle = server.readNow(rbuf, (int64) 0, (int64) 8);\n"
+        "if (idle != -1) { return -1; }\n"
+        "int8[] hi = heap int8[2];\n"
+        "hi[0] = (int8) 72;\n"
+        "hi[1] = (int8) 105;\n"
+        "client.writeAllAsync(hi, (int64) 0, (int64) 2);\n"
+        // Loopback delivery is not instantaneous: a parking read settles it,
+        // then readNow sees whatever remains. Read one byte async, one now.
+        "int64 one = server.readAsync(rbuf, (int64) 0, (int64) 1);\n"
+        "if (one != 1) { return -2; }\n"
+        "int64 rest = server.readNow(rbuf, (int64) 1, (int64) 7);\n"
+        "if (rest != 1) { return -3; }\n"
+        "if (rbuf[0] != hi[0] || rbuf[1] != hi[1]) { return -4; }\n"
+        // Drained again: would block.
+        "if (server.readNow(rbuf, (int64) 0, (int64) 8) != -1) { return -5; }\n"
+        // EOF is sticky: once a parking read has seen it, readNow sees it too.
+        "client.close();\n"
+        "int64 eof = server.readAsync(rbuf, (int64) 0, (int64) 8);\n"
+        "if (eof != 0) { return -6; }\n"
+        "if (server.readNow(rbuf, (int64) 0, (int64) 8) != 0) { return -7; }\n"
+        "server.close();\n"
+        "listener.close();\n"
+        "return 1;")), 1);
+}

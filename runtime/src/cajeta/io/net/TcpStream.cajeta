@@ -246,6 +246,26 @@ public class TcpStream implements ByteChannel {
      * other error raises. A `0`-byte write (peer gone) raises
      * [`BrokenPipeException`](BrokenPipeException.cajeta).
      */
+    /**
+     * The non-parking read a framer uses to drain a socket before waiting on
+     * its [`ReadySet`](reactor/ReadySet.cajeta) (request-dispatch spec §3.2):
+     * the count read (`> 0`), `0` at orderly EOF, or `-1` when the socket
+     * would block, without touching the reactor's park path. A real socket
+     * error throws as [`readAsync`](#readAsync) does.
+     */
+    public int64 readNow(int8[] buf, int64 offset, int64 length) {
+        this.ensureAsyncReady();
+        int64 n = this.read(buf, offset, length);
+        if (n >= 0) {
+            return n;
+        }
+        if (TcpStream.isWouldBlockNative() == 1) {
+            return -1;
+        }
+        int32 err = TcpStream.lastErrorNative();
+        throw NetErrors.fromErrno(err, "readNow");
+    }
+
     public int64 writeAsync(int8[] data, int64 offset, int64 length) {
         this.ensureAsyncReady();
         int32 fd = this.fd;
