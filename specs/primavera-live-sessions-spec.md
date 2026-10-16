@@ -115,7 +115,7 @@ release.
   `CloseException`, a handler failure, send overflow, server shutdown, a
   transport error), the path's close handler runs exactly once with the close
   code, inside the `Connection` scope, before that scope's components drop.
-  It runs on the connection's reader fiber after the writer fiber has
+  It runs on the connection's serving fiber after the writer fiber has
   stopped. Server shutdown closes each connection with 1001, and the handler
   sees that code.
 - **3.3** When the close handler has started, a send to that connection
