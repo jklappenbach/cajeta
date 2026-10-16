@@ -1,7 +1,7 @@
 # primavera-live-sessions — issued sessions, WebSocket lifecycle hooks, byte-bounded sends
 
-Status: **draft**, 2026-10-16. Author: Proton - Cajeta; reviewer: Phoenix - Cajeta;
-approver: Julian. Repo of record: cajeta (ecosystem spec); the work lands in
+Status: **draft**, 2026-10-16. Author: Proton - Cajeta; reviewer: Phoenix - Cajeta
+(review applied 2026-10-16); approver: Julian. Repo of record: cajeta (ecosystem spec); the work lands in
 cajeta-primavera. Origin: the 2026-10-16 review of cabra unit 12 against
 primavera 0.3.0, and Julian's decisions that day.
 
@@ -74,22 +74,33 @@ release.
 - **2.3** When many sessions have come and gone, the gone/unknown answer
   stays correct without the store keeping every ended id; memory for ended
   sessions does not grow with the number ever issued.
+- **2.3.1** When a client presents an id the store did not issue, including
+  one forged to look like an earlier id, the answer is unknown, never gone.
+- **2.3.2** When an open is refused (§2.5), it consumes nothing that a later
+  lookup could read as a gone session.
 - **2.4** When a lookup answers open, it refreshes the idle clock, as today.
   A gone or unknown answer never creates a session.
 - **2.5** When the store has a capacity and holds that many live sessions,
   opening another is refused with a result the caller can tell apart from
   success, and no live session is displaced. Expired sessions not yet swept
-  do not count against capacity.
+  do not count against capacity. `create(id)` on an id that is live is a
+  displacement: the count does not grow, so it is allowed at capacity.
 - **2.6** When fibers open sessions concurrently at the capacity, no more than
   the capacity succeed.
 - **2.7** When a session leaves the store for any reason, the application's
-  eviction observer is called once with its id and the reason: closed,
-  expired, invalidated, or displaced. Its `Session` components are dropped,
-  as today. cabra uses the observer to return the KV slot to the pool
-  (cabra §5.2.3, §5.2.4).
-- **2.8** When a server runs with an idle TTL set, expired sessions are swept
-  on an interval without application code, so a client that vanished frees
-  its session (cabra §5.2.4).
+  eviction observer is called once with its id and the reason: **closed**
+  (the application ended it: `invalidate` of that id, or `invalidateAll`),
+  **expired** (a TTL passed), or **displaced** (`create` on its id). The
+  observer runs before the session's `Session` components drop, so it can
+  read them; they drop after it returns, as today. cabra uses the observer
+  to return the KV slot to the pool (cabra §5.2.3, §5.2.4).
+- **2.7.1** When different sessions leave the store at once, their observers
+  may run concurrently; an observer guards any state it shares across
+  sessions with its own lock.
+- **2.8** When a server runs with an idle TTL set, a sweep fiber the server
+  starts at `serve` and stops at shutdown removes expired sessions on an
+  interval, so a client that vanished frees its session (cabra §5.2.4).
+  Without a server, `evictExpired` works as today.
 - **2.9** When a WebSocket message handler attaches a session by id, that
   session's components resolve for that message. One connection may attach
   different sessions on different messages (cabra §5.2.6). A connection
@@ -104,6 +115,9 @@ release.
   `CloseException`, a handler failure, send overflow, server shutdown, a
   transport error), the path's close handler runs exactly once with the close
   code, inside the `Connection` scope, before that scope's components drop.
+  It runs on the connection's reader fiber after the writer fiber has
+  stopped. Server shutdown closes each connection with 1001, and the handler
+  sees that code.
 - **3.3** When the close handler has started, a send to that connection
   reports not open and queues nothing.
 - **3.4** When the open handler throws, the connection closes as a message
@@ -117,14 +131,16 @@ release.
 Julian, 2026-10-16: keep data buffered and send it asynchronously while a
 client is slow; bound the buffer; once it is full, the next send closes.
 
-- **4.1** When a connection's queue is bounded, the bound is in bytes queued,
-  configurable per server. It replaces the message-count bound (Julian,
+- **4.1** When a connection's queue is bounded, the bound is in payload bytes
+  of the queued messages, framing excluded, configurable per server. It replaces the message-count bound (Julian,
   2026-10-16: bytes manage memory more precisely), so a connection's send
   memory is known whatever the message sizes. The default is set at plan time
   (§7.2).
 - **4.2** When the queue is under its bound, a send never parks the caller.
   The writer fiber sends in order as the client reads, so a slow client delays
   only its own stream.
+- **4.2.1** When a single message is larger than the whole bound, the send
+  is refused and the connection closes as for any overflow (§4.3).
 - **4.3** When a send would take the queue past its bound, the send reports
   that it was not queued, and the connection closes with the overflow code
   (1008 unless set). The close handler runs with that code (§3.2). Sessions
@@ -136,9 +152,13 @@ client is slow; bound the buffer; once it is full, the next send closes.
 
 - **5.1** When an application mounts a directory at a path prefix, GET and
   HEAD under it serve files with content types by extension, the prefix itself
-  serves `index.html`, a missing file answers 404, and no request path
-  resolves outside the directory. cabra mounts `web/dist` at `/` (cabra
-  §10.1).
+  serves `index.html`, and a missing file answers 404. A path that escapes the
+  directory, lexically or through a symlink that resolves outside it,
+  answers 403 (cajeta-http `StaticFile`'s jail and realpath check). cabra
+  mounts `web/dist` at `/` (cabra §10.1).
+- **5.1.1** When a request under a mount uses a method other than GET or
+  HEAD and no declared route takes it, it answers 405. (`StaticFile` passes
+  such requests on; primavera answers them.)
 - **5.2** When a server has a static mount, endpoints, and WebSocket paths,
   they share one port; a declared route wins over a file of the same path.
 - **5.3** When security rules are configured, a static mount is a route like
@@ -150,25 +170,37 @@ client is slow; bound the buffer; once it is full, the next send closes.
   cajeta-http 0.6.0 and toolchain v0.42.1, published to Olla, ahead of
   request-dispatch.
 - **6.2** When 0.4.0 is published, cabra pins it (cabra plan 12.2.1).
+- **6.3** Migration: `WebSocketEndpoints.queueBound(n)` (messages) is
+  replaced by a byte bound (§4.1). The release notes say so, and
+  `peakQueued()` gives way to the peak in bytes (§4.4).
 
 ## 7. Open questions (resolve at plan time)
 
-- **7.1** How ids carry gone versus unknown (§2.2, §2.3). Recommendation:
-  an id is a per-store epoch, a serial and a random part. The epoch tells a
-  foreign or pre-restart id apart (unknown); a serial below the next one in
-  this epoch, not live, is gone; the random part makes the id unguessable.
-  No tombstones.
+- **7.1** *(agreed with Phoenix 2026-10-16)* How ids carry gone versus
+  unknown (§2.2, §2.3). An id is a per-store epoch, a serial, and a keyed
+  MAC over (epoch, serial) under a per-store `SecureRandom` key
+  (`HmacSha256` truncated, or `SipHash`; both are in the stdlib). Gone: the
+  MAC verifies, the epoch is this store's, the serial is below the next one,
+  and it is not live. Unknown: anything else. A random suffix alone could
+  not be checked without tombstones, so a forged id with a plausible serial
+  would read as gone. Serials advance only on a successful open (§2.3.2).
 - **7.2** The default byte bound. Recommendation: 1 MiB per connection.
   cabra sets its own.
-- **7.3** The sweep interval when an idle TTL is set. Recommendation: a
-  quarter of the TTL, at most 60 seconds, configurable; off when no TTL.
-- **7.4** Where the eviction observer runs. Recommendation: after the store
-  lock is released, on the fiber that removed the session (a resolve, the
-  sweep, `invalidate` or `open`), so it may call back into the store.
+- **7.3** The sweep interval when an idle TTL is set. Recommendation (Phoenix
+  agrees): a quarter of the TTL, at most 60 seconds, configurable; off when
+  no TTL.
+- **7.4** *(agreed with Phoenix 2026-10-16)* The eviction observer runs after
+  the store lock is released, on the fiber that removed the session (a
+  resolve, the sweep, `invalidate` or `create`), so it may call back into the
+  store; see §2.7.1 for concurrency.
 
 ## 8. Acceptance (spec level)
 
 - Each use case in §2–§5 has a primavera self-test, written first.
-- primavera's existing self-tests pass unchanged.
+- primavera's existing self-tests pass unchanged, except `WsSelfTest`'s move
+  from `queueBound(n)` to the byte bound (§6.3).
+- §2.6 is shown by a test on real fibers: N fibers open at once against a
+  store at capacity minus one, and exactly one succeeds. A serial test cannot
+  show it.
 - cabra's §5.2 session tests pass when its `SessionRegistry` is replaced by
   primavera's store (verified in cabra unit 12, not here).
