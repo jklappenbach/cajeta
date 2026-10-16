@@ -126,3 +126,33 @@ TEST(ChannelSelectTests, allClosedReturnsEmpty) {
         "}\n";
     EXPECT_EQ(runI32(src), 9999);
 }
+
+// --- trySend: the framer's non-parking enqueue (request-dispatch plan 1.2.5) ---
+// A framer hands a connection to the dispatch pool and must never park, so the
+// channel needs a send that answers false when full instead of waiting. Single
+// fiber, no consumer: a parking send on the full channel would hang here.
+TEST(ChannelSelectTests, trySendAnswersFalseWhenFull) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.Optional;\n"
+        "import cajeta.concurrent.Channel;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Channel<int32> a = heap Channel<int32>(2);\n"
+        "        if (!a.trySend(7)) { return -1; }\n"
+        "        if (!a.trySend(8)) { return -2; }\n"
+        "        if (a.trySend(9)) { return -3; }\n"          // full: refused, no park
+        "        Optional<int32> first = a.tryReceive();\n"
+        "        if (!first.isPresent() || first.get() != 7) { return -4; }\n"
+        "        if (!a.trySend(9)) { return -5; }\n"         // room again
+        "        a.close();\n"
+        "        if (a.trySend(10)) { return -6; }\n"         // closed: refused, no throw
+        "        Optional<int32> second = a.tryReceive();\n"
+        "        if (!second.isPresent() || second.get() != 8) { return -7; }\n"
+        "        Optional<int32> third = a.tryReceive();\n"
+        "        if (!third.isPresent() || third.get() != 9) { return -8; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}

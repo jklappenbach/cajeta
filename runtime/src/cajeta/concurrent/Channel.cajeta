@@ -107,6 +107,25 @@ public class Channel<T> {
      * channel is open. Returns a present `Optional<T>` with the item, or an
      * empty `Optional<T>` once the channel is closed and drained.
      */
+    /**
+     * Enqueues `item` without parking: `false` when the channel is full or
+     * closed, and the item is not taken. The non-parking send a framer uses
+     * to hand a connection to the dispatch pool (request-dispatch spec §4.3).
+     */
+    public boolean trySend(T item) {
+        Cajeta.lockAcquire(this.handle);
+        if (this.closed || this.size >= this.capacity) {
+            Cajeta.lockRelease(this.handle);
+            return false;
+        }
+        this.buf[this.tail] #= item;
+        this.tail = (this.tail + 1) % this.capacity;
+        this.size = this.size + 1;
+        Cajeta.condvarNotifyAll(this.cond);
+        Cajeta.lockRelease(this.handle);
+        return true;
+    }
+
     public Optional<T> receive() {
         Cajeta.lockAcquire(this.handle);
         while (this.size == 0 && !this.closed) {
