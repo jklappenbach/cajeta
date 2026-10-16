@@ -5,11 +5,12 @@
 **1.1 Purpose.** A self-contained LLM inference engine written in Cajeta,
 modeled on llama.cpp's architecture: load open weights, build a decoder
 graph, run KV-cached incremental decode, sample, detokenize. Target models
-are Llama 3.x, Mistral, Qwen2/3, and Gemma 3 (text path), loaded from Hugging
+are Llama 3.x, Mistral and Qwen2/3, loaded from Hugging
 Face safetensors and from GGUF, executing on CPU and on all four XPU backends.
 Gemma 3 is included deliberately: it exercises per-layer attention config
 (§5) and the windowed ring-buffer cache (§6) that the others do not, so it
 keeps those abstractions honest rather than speculative.
+Deferred 2026-10-16 (Julian): not in this release; Gemma 3 (text path) moves to a later release (§1.5).
 
 **1.2 Why a rewrite and not a binding.** `@Native` marshals scalars,
 opaque `pointer` handles, and Cajeta array headers only — no C structs by
@@ -75,6 +76,8 @@ language. The engine is rewritten against `cajeta.math.Tensor` and
 - No codebook/lattice quantization (the `IQ*` i-quants). Those resolve weights
   through learned grid tables rather than bit-field extraction and are a
   different mechanism from the block quants in §10.
+- No Gemma 3 in this release; its requirements below stay for a later one.
+  Deferred 2026-10-16 (Julian): not in this release.
 - No cross-process or cross-machine scheduling. In-process continuous
   batching, the paged cache and preemption are **in** v1 — this bullet
   originally excluded them and 14.3 reversed it (§13.13, §13.15).
@@ -699,7 +702,7 @@ Use cases:
   silent under short prompts, so no shorter fixture can catch them.
 - **12.7** When Gemma 3 and a Llama-shaped model both run, each matches its own
   reference — the same code path serves a four-RMSNorm windowed 5:1 stack and
-  a two-RMSNorm uniform one.
+  a two-RMSNorm uniform one. Deferred 2026-10-16 (Julian): not in this release.
 - **12.8** When decode throughput is measured on a given model, quantization
   and backend, it reaches **60%** of `llama.cpp`'s throughput on the same
   hardware and configuration (§13.20). Batch 1 and a representative batched
