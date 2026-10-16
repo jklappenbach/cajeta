@@ -1,5 +1,5 @@
 name: 'Publish to Olla'
-description: 'Signed publish of a built .cja to the Olla registry (olla.cajeta.dev)'
+description: 'Publish a built .cja to the Olla registry (olla.cajeta.dev)'
 inputs:
   cja-path:
     description: 'Path to the built .cja artifact'
@@ -32,11 +32,16 @@ inputs:
     required: false
     default: 'olla.cajeta.dev'
   signing-key-pem:
-    description: 'Ed25519 private key (PKCS#8 PEM) — the CI publisher key'
-    required: true
+    description: >-
+      Ed25519 private key (PKCS#8 PEM), the CI publisher key. Optional: with
+      neither signing input, the upload goes unsigned and Olla signs it with
+      the organization's held key (server-signing).
+    required: false
+    default: ''
   signing-key-id:
-    description: 'key-id inside the organization''s signed key document on Olla'
-    required: true
+    description: 'key-id inside the organization''s signed key document on Olla; optional, as signing-key-pem'
+    required: false
+    default: ''
 runs:
   using: composite
   steps:

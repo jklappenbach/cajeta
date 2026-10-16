@@ -1,5 +1,6 @@
 // olla-trusted-publishing plan 4.1.1 – 4.1.3 (cajeta-olla/specs/
-// olla-trusted-publishing-spec.md §4.2). Run with:
+// olla-trusted-publishing-spec.md §4.2) and olla-worker-signing plan
+// 3.1.1 – 3.1.4 (olla-worker-signing-spec.md §4.2). Run with:
 //   node --test .github/actions/olla-publish/olla-publish.test.mjs
 //
 // Two local stubs stand in for GitHub's identity endpoint and for Olla, so
@@ -28,8 +29,8 @@ function fixture() {
 const pem = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' });
 
 /** One server for both roles: /token answers GitHub's shape, /v2/publish Olla's. */
-async function stubs() {
-  const seen = { tokenRequests: [], publishBearer: null };
+async function stubs({ serverSigning = false } = {}) {
+  const seen = { tokenRequests: [], publishBearer: null, publishBody: null };
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
     if (url.pathname === '/token') {
@@ -38,10 +39,17 @@ async function stubs() {
       res.end(JSON.stringify({ value: 'eyJhbGciOiJSUzI1NiJ9.e30.c2ln' }));
       return;
     }
+    if (url.pathname === '/.well-known/cajeta-capabilities.json') {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ capabilities: serverSigning ? { 'server-signing': ['github'] } : {} }));
+      return;
+    }
     if (url.pathname === '/v2/publish') {
       seen.publishBearer = req.headers.authorization ?? null;
-      req.resume();
+      let body = '';
+      req.on('data', (d) => (body += d));
       req.on('end', () => {
+        seen.publishBody = body;
         res.statusCode = 201;
         res.end('{}');
       });
@@ -123,6 +131,62 @@ test('4.1.3 with neither it fails naming the id-token permission', async () => {
     assert.notEqual(r.status, 0);
     assert.match(r.stderr, /id-token: write/);
     assert.equal(s.seen.publishBearer, null);
+  } finally {
+    await s.close();
+  }
+});
+
+const identity = (base) => ({
+  OLLA_URL: base,
+  ACTIONS_ID_TOKEN_REQUEST_URL: `${base}/token?api-version=2`,
+  ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'runner-secret',
+});
+const field = (body, name) => body.includes(`name="${name}"`);
+
+test('worker-signing 3.1.1 with no signing pair it uploads unsigned when the registry signs', async () => {
+  const s = await stubs({ serverSigning: true });
+  try {
+    const r = await run(fixture(), { ...identity(s.base), OLLA_SIGNING_KEY_PEM: undefined, OLLA_SIGNING_KEY_ID: undefined });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(field(s.seen.publishBody, 'archive'));
+    assert.ok(!field(s.seen.publishBody, 'signature'));
+    assert.ok(!field(s.seen.publishBody, 'key-id'));
+  } finally {
+    await s.close();
+  }
+});
+
+test('worker-signing 3.1.2 an empty signing pair is treated as no pair', async () => {
+  const s = await stubs({ serverSigning: true });
+  try {
+    const r = await run(fixture(), { ...identity(s.base), OLLA_SIGNING_KEY_PEM: '', OLLA_SIGNING_KEY_ID: '' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(!field(s.seen.publishBody, 'signature'));
+    assert.ok(!field(s.seen.publishBody, 'key-id'));
+  } finally {
+    await s.close();
+  }
+});
+
+test('worker-signing 3.1.3 with no pair and no server-signing it fails before uploading, naming the capability', async () => {
+  const s = await stubs({ serverSigning: false });
+  try {
+    const r = await run(fixture(), { ...identity(s.base), OLLA_SIGNING_KEY_PEM: '', OLLA_SIGNING_KEY_ID: '' });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /server-signing/);
+    assert.equal(s.seen.publishBody, null);
+  } finally {
+    await s.close();
+  }
+});
+
+test('worker-signing 3.1.4 with the pair it signs as before', async () => {
+  const s = await stubs({ serverSigning: true });
+  try {
+    const r = await run(fixture(), identity(s.base));
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(field(s.seen.publishBody, 'signature'));
+    assert.match(s.seen.publishBody, /name="key-id"\r\n\r\nci-key-1/);
   } finally {
     await s.close();
   }
