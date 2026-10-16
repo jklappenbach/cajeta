@@ -1,6 +1,6 @@
 # primavera-live-sessions — issued sessions, WebSocket lifecycle hooks, byte-bounded sends
 
-Status: **draft**, 2026-10-16. Author: Proton - Cajeta; reviewer: Phoenix - Cajeta
+Status: **active**, approved by Julian 2026-10-16. Author: Proton - Cajeta; reviewer: Phoenix - Cajeta
 (review applied 2026-10-16); approver: Julian. Repo of record: cajeta (ecosystem spec); the work lands in
 cajeta-primavera. Origin: the 2026-10-16 review of cabra unit 12 against
 primavera 0.3.0, and Julian's decisions that day.
@@ -174,7 +174,7 @@ client is slow; bound the buffer; once it is full, the next send closes.
   replaced by a byte bound (§4.1). The release notes say so, and
   `peakQueued()` gives way to the peak in bytes (§4.4).
 
-## 7. Open questions (resolve at plan time)
+## 7. Decisions (resolved 2026-10-16)
 
 - **7.1** *(agreed with Phoenix 2026-10-16)* How ids carry gone versus
   unknown (§2.2, §2.3). An id is a per-store epoch, a serial, and a keyed
@@ -184,10 +184,10 @@ client is slow; bound the buffer; once it is full, the next send closes.
   and it is not live. Unknown: anything else. A random suffix alone could
   not be checked without tombstones, so a forged id with a plausible serial
   would read as gone. Serials advance only on a successful open (§2.3.2).
-- **7.2** The default byte bound. Recommendation: 1 MiB per connection.
-  cabra sets its own.
-- **7.3** The sweep interval when an idle TTL is set. Recommendation (Phoenix
-  agrees): a quarter of the TTL, at most 60 seconds, configurable; off when
+- **7.2** *(Julian 2026-10-16)* The default byte bound is 1 MiB per
+  connection. cabra sets its own.
+- **7.3** *(Julian 2026-10-16)* The sweep interval when an idle TTL is set:
+  a quarter of the TTL, at most 60 seconds, configurable; off when
   no TTL.
 - **7.4** *(agreed with Phoenix 2026-10-16)* The eviction observer runs after
   the store lock is released, on the fiber that removed the session (a
