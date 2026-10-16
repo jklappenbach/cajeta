@@ -2766,10 +2766,13 @@ namespace cajeta {
                     sliceData = builder->CreateInBoundsGEP(i8Ty, bytesPtr, skip, "view_data_ptr");
                 } else {
                     bytesPtr = parameters[0].expression->generateCode(module);
-                    if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(bytesPtr)) {
-                        bytesPtr = builder->CreateLoad(a->getAllocatedType(), a);
-                    }
                     if (!bytesPtr) return nullptr;
+                    // The argument may be a local (an alloca), a field or an
+                    // element (a slot GEP): load the array pointer out of any
+                    // of them. Loading only the alloca case handed a field's
+                    // slot address to the view, which then read the slot as
+                    // the bytes (cajeta-http's h2 frame header, 2026-10-16).
+                    bytesPtr = loadIfLValue(module, bytesPtr, viewArg);
                     if (viewArg) {
                         if (auto arrType = dynamic_pointer_cast<CajetaArray>(viewArg->getResolvedType())) {
                             if (auto elemTy = arrType->getElementLlvmType(&llvmCtx)) {

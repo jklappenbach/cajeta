@@ -82,3 +82,48 @@ TEST(MultiVarSizeViewTests, threeTrailingStrings) {
 
 
 
+
+// --- A view built over a FIELD array -------------------------------------------
+// The second instance of the field-argument defect (2026-10-16): the socket
+// intrinsics took a field array's slot address instead of the array, and so
+// does a wire-format view constructor. `H(this.buf)` read garbage where
+// `H(local)` read the bytes; cajeta-http's h2 feed path saw frame type 64
+// and length 6304513 until it went through a local. Both spellings must agree.
+TEST(MultiVarSizeViewTests, viewOverAFieldArrayReadsTheArray) {
+    auto src =
+        "package test;\n"
+        "@BigEndian\n"
+        "public view H {\n"
+        "    uint16 hi;\n"
+        "    uint8 lo;\n"
+        "    uint8 kind;\n"
+        "}\n"
+        "public final class S {\n"
+        "    public int8[] buf;\n"
+        "    public S() {\n"
+        "        this.buf = heap int8[4];\n"
+        "        this.buf[0] = (int8) 0;\n"
+        "        this.buf[1] = (int8) 1;\n"
+        "        this.buf[2] = (int8) 2;\n"
+        "        this.buf[3] = (int8) 4;\n"
+        "    }\n"
+        "    public int32 viaLocal() {\n"
+        "        int8[] b = this.buf;\n"
+        "        H h = H(b);\n"
+        "        return ((int32) h.hi) * 1000 + ((int32) h.lo) * 10 + (int32) h.kind;\n"
+        "    }\n"
+        "    public int32 viaField() {\n"
+        "        H h = H(this.buf);\n"
+        "        return ((int32) h.hi) * 1000 + ((int32) h.lo) * 10 + (int32) h.kind;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        S s = heap S();\n"
+        "        int32 local = s.viaLocal();\n"
+        "        if (local != 1024) { return -local; }\n"
+        "        int32 field = s.viaField();\n"
+        "        if (field != 1024) { return -1000000 - field; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
