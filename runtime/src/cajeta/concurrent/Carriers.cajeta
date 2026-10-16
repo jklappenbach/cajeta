@@ -1,0 +1,16 @@
+package cajeta.concurrent;
+
+/**
+ * The carrier threads that run fibers. The count is `CAJETA_CARRIERS` when
+ * set, else the smaller of the core count and the runtime's default cap,
+ * resolved once for the life of the process (request-dispatch spec §3.1).
+ */
+public final class Carriers {
+    @Native("__cajeta_carriers_count")
+    private static int32 countNative();
+
+    /** How many carriers this process runs fibers on. */
+    public static int32 count() {
+        return Carriers.countNative();
+    }
+}

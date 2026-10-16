@@ -1,0 +1,76 @@
+package cajeta.io.net.reactor;
+
+/**
+ * A readiness set: one fiber waits on many descriptors at once
+ * (request-dispatch spec §3.4). The framer owns one; the single-descriptor
+ * `awaitReadable` path is unchanged.
+ *
+ * Members persist across waits until removed. A member that became ready
+ * is reported once per readiness and is re-armed by the next `wait`, so
+ * level-ready descriptors (bytes still unread) are reported again on the
+ * following wait. `wait` returns the number of ready members written into
+ * the caller's arrays, `0` on a deadline, and `-1` on error.
+ *
+ * Internal plumbing like [`Reactor`](Reactor.cajeta): the HTTP server's
+ * framer is its consumer.
+ */
+public final class ReadySet {
+    public static final int32 READ = 1;
+    public static final int32 WRITE = 2;
+
+    @Native("__cajeta_io_set_create")
+    private static #pointer createNative();
+    @Native("__cajeta_io_set_destroy")
+    private static void destroyNative(pointer set);
+    @Native("__cajeta_io_set_add")
+    private static int32 addNative(pointer set, int32 fd, int32 events);
+    @Native("__cajeta_io_set_remove")
+    private static int32 removeNative(pointer set, int32 fd);
+    @Native("__cajeta_io_set_wait_hdr")
+    private static int32 waitNative(pointer set, int32[] outFds, int32[] outEvents,
+                                    int32 cap, int32 timeoutMs);
+    @Native("__cajeta_io_set_size")
+    private static int32 sizeNative(pointer set);
+
+    pointer handle;
+
+    public ReadySet() {
+        this.handle #= ReadySet.createNative();
+    }
+
+    /** Adds `fd` with `events` (READ, WRITE or both); an existing member's interest is replaced. */
+    public boolean add(int32 fd, int32 events) {
+        return ReadySet.addNative(this.handle, fd, events) == 0;
+    }
+
+    /** Removes `fd`; `false` when it was not a member. */
+    public boolean remove(int32 fd) {
+        return ReadySet.removeNative(this.handle, fd) == 0;
+    }
+
+    /** The number of members. */
+    public int32 size() {
+        return ReadySet.sizeNative(this.handle);
+    }
+
+    /**
+     * Parks the calling fiber until at least one member is ready, or
+     * `timeoutMs` elapses (negative waits without bound). Up to `cap` ready
+     * members are written to `outFds` and `outEvents`, which must each hold
+     * at least `cap` elements.
+     */
+    public int32 wait(int32[] outFds, int32[] outEvents, int32 cap, int32 timeoutMs) {
+        if (cap <= 0) {
+            return -1;
+        }
+        return ReadySet.waitNative(this.handle, outFds, outEvents, cap, timeoutMs);
+    }
+
+    /** Drops every member and the native set. */
+    public void close() {
+        if (this.handle != null) {
+            ReadySet.destroyNative(this.handle);
+            this.handle = null;
+        }
+    }
+}

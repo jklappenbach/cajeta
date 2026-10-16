@@ -426,6 +426,32 @@ struct cajeta_carrier {
 
 static struct cajeta_carrier __cajeta_carriers[CAJETA_MAX_CARRIERS];
 static int __cajeta_carrier_count = 0;
+
+// The carrier count rule: $CAJETA_CARRIERS when set, else min(cores, cap),
+// never above CAJETA_MAX_CARRIERS. Used once by the pool start and by
+// __cajeta_carriers_count() when asked before any spawn.
+static int __cajeta_resolve_carrier_count(void) {
+    int n;
+    const char* env = getenv("CAJETA_CARRIERS");
+    if (env && *env) {
+        int parsed = atoi(env);
+        n = (parsed >= 1) ? parsed : 1;
+    } else {
+#if defined(_WIN32)
+        // sysconf/_SC_NPROCESSORS_ONLN is POSIX; ask the Win32 API instead.
+        SYSTEM_INFO cpu_si;
+        GetSystemInfo(&cpu_si);
+        long cores = (long) cpu_si.dwNumberOfProcessors;
+#else
+        long cores = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
+        if (cores < 1) cores = 1;
+        n = (int) cores;
+        if (n > CAJETA_DEFAULT_CARRIERS_CAP) n = CAJETA_DEFAULT_CARRIERS_CAP;
+    }
+    if (n > CAJETA_MAX_CARRIERS) n = CAJETA_MAX_CARRIERS;
+    return n;
+}
 // Carriers currently parked in cond_wait; pushers signal only when non-zero.
 static int __cajeta_sleeping_count = 0;
 
@@ -854,25 +880,8 @@ static void __cajeta_task_run_impl(void* arg, cajeta_task_trampoline_fn trampoli
     if (!__cajeta_task_workers_started) {
         __cajeta_task_workers_started = 1;
         // Carrier count from $CAJETA_CARRIERS, else min(cores, cap); read once.
-        int n;
-        const char* env = getenv("CAJETA_CARRIERS");
-        if (env && *env) {
-            int parsed = atoi(env);
-            n = (parsed >= 1) ? parsed : 1;
-        } else {
-#if defined(_WIN32)
-            // sysconf/_SC_NPROCESSORS_ONLN is POSIX; ask the Win32 API instead.
-            SYSTEM_INFO cpu_si;
-            GetSystemInfo(&cpu_si);
-            long cores = (long) cpu_si.dwNumberOfProcessors;
-#else
-            long cores = sysconf(_SC_NPROCESSORS_ONLN);
-#endif
-            if (cores < 1) cores = 1;
-            n = (int) cores;
-            if (n > CAJETA_DEFAULT_CARRIERS_CAP) n = CAJETA_DEFAULT_CARRIERS_CAP;
-        }
-        if (n > CAJETA_MAX_CARRIERS) n = CAJETA_MAX_CARRIERS;
+        // The same rule answers __cajeta_carriers_count() before any spawn.
+        int n = __cajeta_resolve_carrier_count();
         __cajeta_carrier_count = n;
         for (int i = 0; i < n; ++i) {
             __cajeta_carriers[i].carrier_id = i;
@@ -1224,6 +1233,7 @@ void __cajeta_fiber_sleep_nanos(int64_t nanos) {
 #define CAJETA_IO_READ  1
 #define CAJETA_IO_WRITE 2
 
+struct cajeta_io_set;
 struct cajeta_io_waiter {
     int fd;
     int events;
@@ -1234,7 +1244,68 @@ struct cajeta_io_waiter {
     // under task_mutex. Untimed (heap) waiters keep both fields zero.
     int stack_owned;
     int fired;
+    // Non-NULL for a readiness-set member (request-dispatch spec §3.4): the
+    // reactor records the event in the set's ring and wakes the set's one
+    // parked fiber instead of publishing a fiber per waiter.
+    struct cajeta_io_set* set;
 };
+
+// --- Readiness set (request-dispatch spec §3.4) -----------------------------
+// A framer waits on many sockets at once. A set owns members, each a waiter
+// in the same list the single-fd path uses, tagged with its set. When the
+// reactor matches a member it records (fd, events) in the set's ready ring
+// and publishes the set's parked fiber once. ONESHOT leaves a fired member
+// disarmed; the next wait re-arms only the members that fired, so a wait
+// costs O(fired), never O(members). Membership persists until removed.
+#define CAJETA_IO_SET_RING 256
+
+struct cajeta_io_set_member {
+    struct cajeta_io_waiter w;          // first, so a waiter* casts back
+    int armed;                          // listed and armed in epoll
+    int dead;                           // its fd was closed under it
+    struct cajeta_io_set_member* set_next;
+};
+
+struct cajeta_io_set {
+    struct cajeta_io_set_member* members;
+    int32_t size;
+    int32_t ring_fd[CAJETA_IO_SET_RING];
+    int32_t ring_ev[CAJETA_IO_SET_RING];
+    int32_t ring_n;
+    struct cajeta_fiber* parked;        // the fiber inside set_wait, or NULL
+};
+
+static int64_t __cajeta_io_set_live = 0;
+static int __caj_rt_trace;              // defined with the reactor counters below
+
+// Records a readiness event for a member and detaches the set's parked
+// fiber onto `*to_publish`. The member is unlisted by the caller and stays
+// owned by its set (never freed here). Caller holds task_mutex.
+static void __cajeta_io_set_record_locked(struct cajeta_io_waiter* w, int fd,
+                                          int fired_mask,
+                                          struct cajeta_fiber** to_publish) {
+    struct cajeta_io_set* s = w->set;
+    struct cajeta_io_set_member* m = (struct cajeta_io_set_member*) w;
+    m->armed = 0;
+    int ev = fired_mask & w->events;
+    if (ev == 0) ev = fired_mask;       // ERR/HUP: report what fired
+    if (s->ring_n < CAJETA_IO_SET_RING) {
+        s->ring_fd[s->ring_n] = fd;
+        s->ring_ev[s->ring_n] = ev;
+        s->ring_n++;
+    }
+    if (__caj_rt_trace == 1) {
+        fprintf(stderr, "[set] record fd=%d ev=%d ring=%d parked=%p set=%p\n",
+                fd, ev, (int) s->ring_n, (void*) s->parked, (void*) s);
+    }
+    // A full ring drops the record; the member stays disarmed and the next
+    // wait re-arms it, so level readiness reports it again, one wait later.
+    if (s->parked && __cajeta_parked_remove_locked(s->parked)) {
+        s->parked->next = *to_publish;
+        *to_publish = s->parked;
+        s->parked = NULL;
+    }
+}
 
 #if defined(__linux__)
 
@@ -1268,8 +1339,15 @@ static int __cajeta_reactor_union_events_locked(int fd) {
 static void __cajeta_reactor_rearm_locked(int fd) {
     int u = __cajeta_reactor_union_events_locked(fd);
     if (u == 0) {
-        epoll_ctl(__cajeta_reactor_epfd, EPOLL_CTL_DEL, fd, NULL);
+        int rc = epoll_ctl(__cajeta_reactor_epfd, EPOLL_CTL_DEL, fd, NULL);
+        if (__caj_rt_trace == 1) {
+            fprintf(stderr, "[rearm] fd=%d union=0 DEL rc=%d errno=%d\n", fd, rc,
+                    rc < 0 ? errno : 0);
+        }
         return;
+    }
+    if (__caj_rt_trace == 1) {
+        fprintf(stderr, "[rearm] fd=%d union=%d MOD\n", fd, u);
     }
     struct epoll_event ep;
     ep.events = __cajeta_io_events_to_epoll(u);
@@ -1332,6 +1410,19 @@ static void* __cajeta_reactor_loop_body(void* arg) {
                 fired_mask |= CAJETA_IO_WRITE;
             struct cajeta_io_waiter** p = &__cajeta_reactor_waiters;
             while (*p) {
+                if ((*p)->fd == fd && (*p)->set
+                        && (((*p)->events & fired_mask)
+                            || (ep[i].events & (EPOLLERR | EPOLLHUP)))) {
+                    // A set member: unlist (ONESHOT disarmed it), record the
+                    // event in its set, wake the set's fiber once. Owned by
+                    // the set, never freed here.
+                    __matched_this = 1;
+                    __caj_rt_matched++;
+                    struct cajeta_io_waiter* w = *p;
+                    *p = w->next;
+                    __cajeta_io_set_record_locked(w, fd, fired_mask, &to_publish);
+                    continue;
+                }
                 if ((*p)->fd == fd && ((*p)->events & fired_mask)) {
                     __matched_this = 1;
                     __caj_rt_matched++;
@@ -1384,9 +1475,13 @@ static void __cajeta_reactor_ensure_started_locked(void) {
 // Caller holds task_mutex; entry must NOT have been published yet.
 static void __cajeta_reactor_cancel_locked(struct cajeta_io_waiter* w) {
     struct cajeta_io_waiter** p = &__cajeta_reactor_waiters;
+    int found = 0;
     while (*p) {
-        if (*p == w) { *p = w->next; break; }
+        if (*p == w) { *p = w->next; found = 1; break; }
         p = &(*p)->next;
+    }
+    if (__caj_rt_trace == 1) {
+        fprintf(stderr, "[cancel] fd=%d found=%d set=%p\n", w->fd, found, (void*) w->set);
     }
     // A same-fd peer may still be armed, so re-arm for the remaining union: an
     // unconditional DEL destroyed its registration and parked it forever.
@@ -1434,6 +1529,7 @@ int32_t __cajeta_io_wait(int32_t fd, int32_t events) {
     w->fiber = __cajeta_current_fiber;
     w->stack_owned = 0;
     w->fired = 0;
+    w->set = NULL;
     w->next = __cajeta_reactor_waiters;
     __cajeta_reactor_waiters = w;
     struct epoll_event ep;
@@ -1502,6 +1598,7 @@ int32_t __cajeta_io_wait_timed(int32_t fd, int32_t events, int32_t timeout_ms) {
     w.fiber = __cajeta_current_fiber;
     w.stack_owned = 1;
     w.fired = 0;
+    w.set = NULL;
     struct cajeta_timer_entry entry;
     entry.deadline_ns = deadline_ns;
     entry.fiber = __cajeta_current_fiber;
@@ -1604,6 +1701,15 @@ int32_t __cajeta_io_close_fd(int32_t fd) {
     struct cajeta_io_waiter** p = &__cajeta_reactor_waiters;
     while (*p) {
         struct cajeta_io_waiter* w = *p;
+        if (w->fd == fd && w->set) {
+            // A set member whose fd is closing: unlist it, mark it dead so no
+            // wait re-arms it, and report it so the owner removes it.
+            *p = w->next;
+            ((struct cajeta_io_set_member*) w)->dead = 1;
+            __cajeta_io_set_record_locked(w, fd, CAJETA_IO_READ | CAJETA_IO_WRITE,
+                                          &to_publish);
+            continue;
+        }
         if (w->fd == fd) {
             *p = w->next;
             // Same protocol as the reactor's ready path: mark fired so a
@@ -1635,7 +1741,348 @@ int32_t __cajeta_fd_close(int32_t fd) {
     return __cajeta_io_close_fd(fd);
 }
 
+// --- Readiness set: the public surface (request-dispatch spec §3.4) --------
+
+void* __cajeta_io_set_create(void) {
+    return calloc(1, sizeof(struct cajeta_io_set));
+}
+
+// Lists the member and arms the union for its fd. Caller holds task_mutex.
+static int __cajeta_io_set_arm_locked(struct cajeta_io_set_member* m) {
+    if (m->armed || m->dead || m->w.fd < 0) return 0;
+    m->w.next = __cajeta_reactor_waiters;
+    __cajeta_reactor_waiters = &m->w;
+    m->armed = 1;
+    struct epoll_event ep;
+    ep.events = __cajeta_io_events_to_epoll(
+        __cajeta_reactor_union_events_locked(m->w.fd));
+    ep.data.fd = m->w.fd;
+    int rc = epoll_ctl(__cajeta_reactor_epfd, EPOLL_CTL_ADD, m->w.fd, &ep);
+    if (rc >= 0) __caj_rt_adds++;
+    if (rc < 0 && errno == EEXIST) {
+        rc = epoll_ctl(__cajeta_reactor_epfd, EPOLL_CTL_MOD, m->w.fd, &ep);
+        if (rc >= 0) __caj_rt_mods++; else __caj_rt_modfail++;
+    }
+    if (__caj_rt_trace == 1) {
+        fprintf(stderr, "[set] arm fd=%d rc=%d errno=%d set=%p\n", m->w.fd, rc,
+                rc < 0 ? errno : 0, (void*) m->w.set);
+    }
+    if (rc < 0) {
+        __cajeta_reactor_cancel_locked(&m->w);   // unlists, re-arms peers
+        m->armed = 0;
+        return -1;
+    }
+    return 0;
+}
+
+int32_t __cajeta_io_set_add(void* setp, int32_t fd, int32_t events) {
+    struct cajeta_io_set* s = (struct cajeta_io_set*) setp;
+    if (!s || fd < 0 || (events & (CAJETA_IO_READ | CAJETA_IO_WRITE)) == 0) return -1;
+    if (__caj_rt_trace < 0) {
+        const char* t = getenv("CAJETA_REACTOR_TRACE");
+        __caj_rt_trace = (t && t[0] == '1') ? 1 : 0;
+    }
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    __cajeta_reactor_ensure_started_locked();
+    if (!__cajeta_reactor_started) {
+        pthread_mutex_unlock(&__cajeta_task_mutex);
+        return -1;
+    }
+    for (struct cajeta_io_set_member* m = s->members; m; m = m->set_next) {
+        if (m->w.fd == fd && !m->dead) {        // a member: replace its interest
+            m->w.events = events;
+            int rc = m->armed ? 0 : __cajeta_io_set_arm_locked(m);
+            if (rc == 0 && m->armed) __cajeta_reactor_rearm_locked(fd);
+            pthread_mutex_unlock(&__cajeta_task_mutex);
+            return rc;
+        }
+    }
+    struct cajeta_io_set_member* m = calloc(1, sizeof(*m));
+    if (!m) {
+        pthread_mutex_unlock(&__cajeta_task_mutex);
+        return -1;
+    }
+    m->w.fd = fd;
+    m->w.events = events;
+    m->w.fiber = NULL;
+    m->w.stack_owned = 1;               // the reactor never frees a member
+    m->w.set = s;
+    m->set_next = s->members;
+    s->members = m;
+    s->size++;
+    __cajeta_io_set_live++;
+    if (__cajeta_io_set_arm_locked(m) < 0) {
+        s->members = m->set_next;
+        s->size--;
+        __cajeta_io_set_live--;
+        free(m);
+        pthread_mutex_unlock(&__cajeta_task_mutex);
+        return -1;
+    }
+    pthread_mutex_unlock(&__cajeta_task_mutex);
+    return 0;
+}
+
+// Unlists (if armed), purges its ring records, unlinks and frees a member.
+// Caller holds task_mutex.
+static void __cajeta_io_set_drop_member_locked(struct cajeta_io_set* s,
+                                               struct cajeta_io_set_member** pm) {
+    struct cajeta_io_set_member* m = *pm;
+    if (__caj_rt_trace == 1) {
+        fprintf(stderr, "[set] drop fd=%d armed=%d set=%p\n", m->w.fd, m->armed, (void*) s);
+    }
+    if (m->armed) {
+        __cajeta_reactor_cancel_locked(&m->w);   // unlists + re-arms the fd union
+        m->armed = 0;
+    }
+    int32_t k = 0;
+    for (int32_t i = 0; i < s->ring_n; ++i) {
+        if (s->ring_fd[i] != m->w.fd) {
+            s->ring_fd[k] = s->ring_fd[i];
+            s->ring_ev[k] = s->ring_ev[i];
+            k++;
+        }
+    }
+    s->ring_n = k;
+    *pm = m->set_next;
+    s->size--;
+    __cajeta_io_set_live--;
+    free(m);
+}
+
+int32_t __cajeta_io_set_remove(void* setp, int32_t fd) {
+    struct cajeta_io_set* s = (struct cajeta_io_set*) setp;
+    if (!s) return -1;
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    for (struct cajeta_io_set_member** pm = &s->members; *pm; pm = &(*pm)->set_next) {
+        if ((*pm)->w.fd == fd) {
+            __cajeta_io_set_drop_member_locked(s, pm);
+            pthread_mutex_unlock(&__cajeta_task_mutex);
+            return 0;
+        }
+    }
+    if (__caj_rt_trace == 1) {
+        fprintf(stderr, "[set] remove fd=%d: not a member of set=%p\n", fd, (void*) s);
+    }
+    pthread_mutex_unlock(&__cajeta_task_mutex);
+    return -1;
+}
+
+void __cajeta_io_set_destroy(void* setp) {
+    struct cajeta_io_set* s = (struct cajeta_io_set*) setp;
+    if (!s) return;
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    while (s->members) __cajeta_io_set_drop_member_locked(s, &s->members);
+    pthread_mutex_unlock(&__cajeta_task_mutex);
+    free(s);
+}
+
+int32_t __cajeta_io_set_size(void* setp) {
+    struct cajeta_io_set* s = (struct cajeta_io_set*) setp;
+    return s ? s->size : -1;
+}
+
+int64_t __cajeta_io_set_live_members(void) {
+    return __cajeta_io_set_live;
+}
+
+// Copies up to `cap` ring records out, keeping the rest. Caller holds task_mutex.
+static int32_t __cajeta_io_set_drain_locked(struct cajeta_io_set* s, int32_t* out_fds,
+                                            int32_t* out_events, int32_t cap) {
+    int32_t n = s->ring_n < cap ? s->ring_n : cap;
+    for (int32_t i = 0; i < n; ++i) {
+        out_fds[i] = s->ring_fd[i];
+        out_events[i] = s->ring_ev[i];
+    }
+    int32_t rest = s->ring_n - n;
+    for (int32_t i = 0; i < rest; ++i) {
+        s->ring_fd[i] = s->ring_fd[n + i];
+        s->ring_ev[i] = s->ring_ev[n + i];
+    }
+    s->ring_n = rest;
+    return n;
+}
+
+// Parks the calling fiber until a member is ready: n > 0 ready members
+// written to `out_*`, 0 when `timeout_ms` (>= 0) elapsed first, -1 on error.
+// Fiber-only: a non-fiber caller has the single-fd probes.
+int32_t __cajeta_io_set_wait(void* setp, int32_t* out_fds, int32_t* out_events,
+                             int32_t cap, int32_t timeout_ms) {
+    struct cajeta_io_set* s = (struct cajeta_io_set*) setp;
+    if (!s || !out_fds || !out_events || cap <= 0) return -1;
+    if (!__cajeta_current_fiber) return -1;
+    int64_t deadline_ns = 0;
+    if (timeout_ms >= 0) {
+        deadline_ns = __cajeta_now_ns() + (int64_t) timeout_ms * 1000000LL;
+    }
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    __cajeta_reactor_ensure_started_locked();
+    if (!__cajeta_reactor_started) {
+        pthread_mutex_unlock(&__cajeta_task_mutex);
+        return -1;
+    }
+    // Re-arm only the members that fired since the last wait.
+    for (struct cajeta_io_set_member* m = s->members; m; m = m->set_next) {
+        if (!m->armed) __cajeta_io_set_arm_locked(m);
+    }
+    for (;;) {
+        if (__caj_rt_trace == 1) {
+            fprintf(stderr, "[set] wait set=%p ring=%d fib=%p\n", (void*) s,
+                    (int) s->ring_n, (void*) __cajeta_current_fiber);
+        }
+        if (s->ring_n > 0) {
+            int32_t n = __cajeta_io_set_drain_locked(s, out_fds, out_events, cap);
+            pthread_mutex_unlock(&__cajeta_task_mutex);
+            return n;
+        }
+        if (timeout_ms >= 0 && __cajeta_now_ns() >= deadline_ns) {
+            pthread_mutex_unlock(&__cajeta_task_mutex);
+            return 0;
+        }
+        struct cajeta_timer_entry entry;
+        s->parked = __cajeta_current_fiber;
+        if (timeout_ms >= 0) {
+            entry.deadline_ns = deadline_ns;
+            entry.fiber = __cajeta_current_fiber;
+            entry.next = NULL;
+            __cajeta_timer_ensure_started_locked();
+            int signal_timer = (__cajeta_timer_head == NULL
+                                || __cajeta_timer_head->deadline_ns > deadline_ns);
+            __cajeta_timer_insert_locked(&entry);
+            if (signal_timer) pthread_cond_signal(&__cajeta_timer_cond);
+        }
+        __cajeta_fiber_park_locked();          // releases task_mutex, swaps out
+        // Woken by the reactor (ring), the timer (deadline) or a cancel.
+        if (timeout_ms >= 0) __cajeta_timer_cancel(&entry);
+        void* cancel = __cajeta_current_fiber->cancel_with;
+        if (cancel) {
+            __cajeta_current_fiber->cancel_with = NULL;
+            pthread_mutex_lock(&__cajeta_task_mutex);
+            s->parked = NULL;
+            pthread_mutex_unlock(&__cajeta_task_mutex);
+            __cajeta_throw(cancel);
+        }
+        pthread_mutex_lock(&__cajeta_task_mutex);
+        s->parked = NULL;
+    }
+}
+
 #else /* !__linux__ */
+
+// --- Readiness set, non-Linux (request-dispatch plan 1.2.2) -----------------
+// The kqueue and IOCP fiber-park engines have not landed, so the set is a
+// probe loop over its members through the portable single-fd probe the
+// Reactor adapters use there, with a 1 ms cooperative sleep between rounds
+// so the calling fiber's carrier runs other fibers. O(members) per round;
+// the bring-up shape, replaced when those engines arrive.
+int32_t __cajeta_net_reactor_poll_fd(int32_t fd, int32_t interest, int32_t timeout_ms);
+
+struct cajeta_io_set_member {
+    int32_t fd;
+    int32_t events;
+    struct cajeta_io_set_member* next;
+};
+struct cajeta_io_set {
+    struct cajeta_io_set_member* members;
+    int32_t size;
+};
+static int64_t __cajeta_io_set_live = 0;
+
+void* __cajeta_io_set_create(void) {
+    return calloc(1, sizeof(struct cajeta_io_set));
+}
+
+int32_t __cajeta_io_set_add(void* setp, int32_t fd, int32_t events) {
+    struct cajeta_io_set* s = (struct cajeta_io_set*) setp;
+    if (!s || fd < 0 || (events & 3) == 0) return -1;
+    for (struct cajeta_io_set_member* m = s->members; m; m = m->next) {
+        if (m->fd == fd) { m->events = events; return 0; }
+    }
+    struct cajeta_io_set_member* m = calloc(1, sizeof(*m));
+    if (!m) return -1;
+    m->fd = fd;
+    m->events = events;
+    m->next = s->members;
+    s->members = m;
+    s->size++;
+    __cajeta_io_set_live++;
+    return 0;
+}
+
+int32_t __cajeta_io_set_remove(void* setp, int32_t fd) {
+    struct cajeta_io_set* s = (struct cajeta_io_set*) setp;
+    if (!s) return -1;
+    for (struct cajeta_io_set_member** pm = &s->members; *pm; pm = &(*pm)->next) {
+        if ((*pm)->fd == fd) {
+            struct cajeta_io_set_member* m = *pm;
+            *pm = m->next;
+            s->size--;
+            __cajeta_io_set_live--;
+            free(m);
+            return 0;
+        }
+    }
+    return -1;
+}
+
+void __cajeta_io_set_destroy(void* setp) {
+    struct cajeta_io_set* s = (struct cajeta_io_set*) setp;
+    if (!s) return;
+    while (s->members) __cajeta_io_set_remove(s, s->members->fd);
+    free(s);
+}
+
+int32_t __cajeta_io_set_size(void* setp) {
+    struct cajeta_io_set* s = (struct cajeta_io_set*) setp;
+    return s ? s->size : -1;
+}
+
+int64_t __cajeta_io_set_live_members(void) {
+    return __cajeta_io_set_live;
+}
+
+int32_t __cajeta_io_set_wait(void* setp, int32_t* out_fds, int32_t* out_events,
+                             int32_t cap, int32_t timeout_ms) {
+    struct cajeta_io_set* s = (struct cajeta_io_set*) setp;
+    if (!s || !out_fds || !out_events || cap <= 0) return -1;
+    int64_t deadline_ns = 0;
+    if (timeout_ms >= 0) {
+        deadline_ns = __cajeta_now_ns() + (int64_t) timeout_ms * 1000000LL;
+    }
+    for (;;) {
+        int32_t out = 0;
+        for (struct cajeta_io_set_member* m = s->members; m && out < cap; m = m->next) {
+            int ev = 0;
+            if ((m->events & CAJETA_IO_READ)
+                    && __cajeta_net_reactor_poll_fd(m->fd, CAJETA_IO_READ, 0) == 1) {
+                ev |= CAJETA_IO_READ;
+            }
+            if ((m->events & CAJETA_IO_WRITE)
+                    && __cajeta_net_reactor_poll_fd(m->fd, CAJETA_IO_WRITE, 0) == 1) {
+                ev |= CAJETA_IO_WRITE;
+            }
+            if (ev) {
+                out_fds[out] = m->fd;
+                out_events[out] = ev;
+                out++;
+            }
+        }
+        if (out > 0) return out;
+        if (timeout_ms >= 0 && __cajeta_now_ns() >= deadline_ns) return 0;
+        if (__cajeta_current_fiber) {
+            __cajeta_fiber_sleep_nanos(1000000LL);
+        } else {
+#if defined(_WIN32)
+            Sleep(1);
+#else
+            struct timespec ts;
+            ts.tv_sec = 0;
+            ts.tv_nsec = 1000000L;
+            nanosleep(&ts, NULL);
+#endif
+        }
+    }
+}
 
 int32_t __cajeta_io_close_fd(int32_t fd) { (void) fd; return -1; }
 
@@ -1661,5 +2108,40 @@ int64_t __cajeta_eventfd_consume(int32_t fd) { (void) fd; return -1; }
 int32_t __cajeta_fd_close(int32_t fd) { (void) fd; return -1; }
 
 #endif /* __linux__ */
+
+// The carrier count as cajeta code sees it (request-dispatch spec §3.1):
+// the pool's number once started, else the same rule resolved now and
+// kept, so the pool later starts with exactly the count that was reported.
+// The cajeta-facing wait: `ReadySet.wait` passes its two `int32[]` as array
+// HEADERS ({ i64 count, data }), the @Native ABI, so this entry skips the
+// 8-byte header and bounds `cap` by both counts before calling the raw wait
+// that C callers use.
+int32_t __cajeta_io_set_wait_hdr(void* set, void* fds_hdr, void* evs_hdr,
+                                 int32_t cap, int32_t timeout_ms) {
+    if (!fds_hdr || !evs_hdr) return -1;
+    int64_t nf = *(const int64_t*) fds_hdr;
+    int64_t ne = *(const int64_t*) evs_hdr;
+    if (nf < cap) cap = (int32_t) nf;
+    if (ne < cap) cap = (int32_t) ne;
+    if (cap <= 0) return -1;
+    return __cajeta_io_set_wait(set, (int32_t*) ((char*) fds_hdr + 8),
+                                (int32_t*) ((char*) evs_hdr + 8), cap, timeout_ms);
+}
+
+// The rule alone, read fresh each call: what a process starting now would
+// resolve. Test surface for the rule; production code reads carriers_count.
+int32_t __cajeta_carriers_rule(void) {
+    return (int32_t) __cajeta_resolve_carrier_count();
+}
+
+int32_t __cajeta_carriers_count(void) {
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    if (__cajeta_carrier_count == 0) {
+        __cajeta_carrier_count = __cajeta_resolve_carrier_count();
+    }
+    int n = __cajeta_carrier_count;
+    pthread_mutex_unlock(&__cajeta_task_mutex);
+    return (int32_t) n;
+}
 
 // --- Threading: scope frames (R5-A) ---------------------------------------
