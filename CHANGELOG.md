@@ -11,6 +11,7 @@
 - The `TcpStream.read` and `write` intrinsics load a field array argument (`this.outBuf`) as the array rather than its slot's address. The bytes on the wire were the right length and the wrong contents whenever a buffer was a field instead of a local.
 - A wire view built over a field array, `Header(this.buf)`, reads the array. The view constructor loaded only a local's slot; a field or element slot was handed to the view as the bytes, so the view read the slot's pointer as its first fields. Both spellings now agree (`MultiVarSizeViewTests.viewOverAFieldArrayReadsTheArray`).
 - Runtime: the fiber pool's condvars (carrier backstop, timer thread, the program thread's timed wait) wait on CLOCK_MONOTONIC on Linux, so a wall-clock step no longer moves a timed park (991f5a55).
+- Windows: the JIT symbol bridge binds `TlsStream`'s new non-parking entries, so a JIT-run program or test that links the stdlib loads on COFF; `scripts/check-jit-win-symbols.sh` keeps every TLS entry point bound.
 
 ## 0.42.1 (2026-10-15)
 
