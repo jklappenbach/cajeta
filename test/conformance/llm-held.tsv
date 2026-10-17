@@ -6,7 +6,7 @@
 # Bounds may be joined, ulps=N,rel=X, and either admits an element.
 #
 # The device library's exp, sin and cos against the reference's float64 rounded once.
-attnCombineKernel	cpu	ulps=4	Math.exp from the device library; worst 4 ulp measured 2026-10-05
+attnCombineKernel	cpu	ulps=4,rel=5e-7	Math.exp from the device library; worst 4 ulp on 2026-10-05, then 64 ulp but 1.3e-8 of the scale once llm d20a051 moved attnScore to Wave.reduceSumF32
 attnCombinePrefillKernel	cpu	ulps=6	Math.exp from the device library; worst 6 ulp measured 2026-10-05
 qkPrepKernel	cpu	ulps=1	Math.sin, Math.cos and Math.sqrt from the device library; worst 1 ulp
 ropeAppendRowsKernel	cpu	ulps=2	Math.sin and Math.cos from the device library; worst 2 ulp
