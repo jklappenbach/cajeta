@@ -582,9 +582,11 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
         for (int j = 0; j < ntex; ++j) g_xpu_cuda.cuTexObjectDestroy(texObjs[j]);
         for (int j = 0; j < nsurf; ++j) g_xpu_cuda.cuSurfObjectDestroy(surfObjs[j]);
     }
-    if (launchRc != 0)
+    if (launchRc != 0) {
+        cajeta_xpu_note_launch_failure();
         fprintf(stderr, "cajeta.xpu: cuLaunchKernel('%s') failed (%d)\n",
                 kernelName, launchRc);
+    }
 }
 
 // HIP launch: mirrors cajeta_xpu_launch_cuda with hip* entry points, over the shared
@@ -747,13 +749,20 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
         }
     }
 
-    if (launchOk)
-        g_xpu_hip.hipModuleLaunchKernel(fn, (unsigned) gridX, (unsigned) gridY,
+    if (launchOk) {
+        int launchRc = g_xpu_hip.hipModuleLaunchKernel(fn, (unsigned) gridX, (unsigned) gridY,
                                         (unsigned) gridZ, (unsigned) blockX,
                                         (unsigned) blockY, (unsigned) blockZ,
                                         (unsigned) sharedBytes,
                                         /*stream=*/(void*) (intptr_t) streamHandle,
                                         useArgv, /*extra=*/NULL);
+        if (launchRc != 0) {
+            cajeta_xpu_note_launch_failure();
+            fprintf(stderr, "cajeta.xpu: hipModuleLaunchKernel('%s') failed (%d)\n",
+                    kernelName, launchRc);
+            launchOk = 0;
+        }
+    }
     if (ntex > 0 || nsurf > 0 || nbufarr > 0) {
         if (launchOk)
             g_xpu_hip.hipDeviceSynchronize();   // finish before freeing resources
@@ -1372,9 +1381,26 @@ static int caj_xpu_pinned_block(const char* name, int backend, int32_t out[3]) {
     return has;
 }
 
-// Refuses, with reason 4, a launch whose block is not the one its kernel was built for.
+// Refuses, with reason 6, a GPU launch whose block exceeds the device's limit, and with
+// reason 4 one whose block is not the one its kernel was built for.
 static int caj_xpu_block_refused(const char* name, int32_t bx, int32_t by, int32_t bz) {
     int backend = cajeta_xpu_active_backend();
+    if (backend == CAJ_XPU_CUDA || backend == CAJ_XPU_HIP || backend == CAJ_XPU_VULKAN) {
+        const int64_t maxThreads =
+            __cajeta_xpu_device_geometry(CAJETA_XPU_GEO_MAX_THREADS_PER_BLOCK);
+        const int64_t maxX = __cajeta_xpu_device_geometry(CAJETA_XPU_GEO_MAX_BLOCK_DIM_X);
+        const int64_t threads = (int64_t) bx * by * bz;
+        if ((maxThreads > 0 && threads > maxThreads) || (maxX > 0 && bx > maxX)) {
+            cajeta_xpu_note_launch_refusal(name, backend);
+            g_xpu_refusal_reason = 6;
+            fprintf(stderr,
+                    "cajeta.xpu: [xpu-launch-refused] %s launches block [%d, %d, %d], "
+                    "%lld work-items, and this device allows %lld a block and %lld in x\n",
+                    name, bx, by, bz, (long long) threads, (long long) maxThreads,
+                    (long long) maxX);
+            return 1;
+        }
+    }
     int32_t b[3];
     if (!caj_xpu_pinned_block(name, backend, b)) return 0;
     if (b[0] == bx && b[1] == by && b[2] == bz) return 0;

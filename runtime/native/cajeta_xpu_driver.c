@@ -30,6 +30,7 @@ static __thread char    g_xpu_refusal_name[256];
 // 1 a buffer's base is not aligned to the words the kernel reads it in.
 // 3 the kernel declares a wave width the Vulkan device cannot run.
 // 4 the launch passes a block other than the one the kernel was built for.
+// 6 the block exceeds the device's work-items per block, checked before any submit.
 static __thread int32_t g_xpu_refusal_reason;
 int32_t __cajeta_xpu_last_launch_reason(void) { return g_xpu_refusal_reason; }
 

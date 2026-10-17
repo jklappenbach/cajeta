@@ -370,6 +370,10 @@ public final class Device {
             why = "the submission was rejected: its deadline window closed before "
                 + "it was submitted, and a late run is never silent";
         }
+        if (reason == 6) {
+            why = "the block holds more work-items than this device allows in one "
+                + "block, Device.maxThreadsPerBlock(); it was not submitted";
+        }
         String msg #= "cajeta.xpu: launch refused for kernel '" + kernel
                     + "' on backend '" + backend
                     + "' (" + why + ")";
