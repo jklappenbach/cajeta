@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.43.0 (2026-10-16)
+
+- `cajeta.io.net.reactor.ReadySet`: one fiber waits on many descriptors at once. Members persist across waits, a wait returns the members that became ready, and a fired member is re-armed by the next wait, so a wait costs the ready set and never the membership. On Linux it rides the epoll fiber-park engine; elsewhere it probes its members with a cooperative sleep until the kqueue and IOCP engines land. The framers of request dispatch wait on it (request-dispatch spec §3.4).
+- `cajeta.concurrent.Carriers.count()`: how many carrier threads run fibers, `CAJETA_CARRIERS` when set and otherwise the smaller of the core count and the runtime's cap, resolved once for the process. A server sizes its framers by it.
+- `TcpStream.readNow`: a read that answers `-1` when the socket would block instead of parking, the count when bytes are there, and `0` at EOF.
+- `Channel.trySend`: a send that answers `false` on a full or closed channel instead of parking.
+- The reactor's closing path reports a closed descriptor to the set that held it, and `CAJETA_REACTOR_TRACE=1` traces set arms, records, drops and re-arms beside the single-descriptor waits.
+- `TlsStream` gains the entries a framer drives it with, none of them parking: `fd`, `fillNow`, `handshakeNow`, `flushNow` (a partial write stays pending for the next call), `readPlaintextNow` straight into a `ByteBuffer`, `writeNow` from an offset, `pendingOut`.
+- The `TcpStream.read` and `write` intrinsics load a field array argument (`this.outBuf`) as the array rather than its slot's address. The bytes on the wire were the right length and the wrong contents whenever a buffer was a field instead of a local.
+- A wire view built over a field array, `Header(this.buf)`, reads the array. The view constructor loaded only a local's slot; a field or element slot was handed to the view as the bytes, so the view read the slot's pointer as its first fields. Both spellings now agree (`MultiVarSizeViewTests.viewOverAFieldArrayReadsTheArray`).
+- Runtime: the fiber pool's condvars (carrier backstop, timer thread, the program thread's timed wait) wait on CLOCK_MONOTONIC on Linux, so a wall-clock step no longer moves a timed park (991f5a55).
+
 ## 0.42.1 (2026-10-15)
 
 - A multibinding container (`@Inject ArrayList<T>`, `@Inject HashMap<String, T>`), a `@<Ctor>(staticName)` factory's instance and a constructor reference's instance (`T::heap`) are zero-filled before their constructor runs, like every `heap` instance. They were built on bare malloc bytes, so a constructor's `#=` field store read the field's ownership bit from heap garbage and could drop a garbage pointer; primavera's register-user sample faulted at startup in `ArrayList`'s constructor on v0.42.0. A library whose archive was built by an earlier compiler carries the old code until it is rebuilt.
