@@ -3,6 +3,7 @@
 ## 0.43.1 (2026-10-17)
 
 - Runtime: an idle carrier sleeps when the only runnable fiber is pinned to a busy peer. A started fiber resumes only on its home carrier, and every other carrier that found nothing it could take went round again at full CPU for the whole of that carrier's turn: three threads at 100% beside one hashing a password, and on a two-vCPU CI runner the spinner shared a physical core with the worker, so primavera's test step went from 18 minutes to past its 30-minute cap when its server moved to cajeta-http 0.7.0's pool. A carrier now looks twice more, then sleeps on its 50 ms backstop as for an empty pool. Measured on the register-user sample under two CPUs: 15:18 before, 10:17 after.
+- xpu: a launch whose block exceeds the device's work-group limit is refused before submit (`XpuLaunchException`, reason 6) instead of reaching the driver; on gfx1151 it hung the GPU. cuda and hip now count a launch the driver rejects.
 
 ## 0.43.0 (2026-10-16)
 
