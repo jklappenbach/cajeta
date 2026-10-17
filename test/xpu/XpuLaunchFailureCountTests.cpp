@@ -65,6 +65,68 @@ const char* kSource =
     "    }\n"
     "}\n";
 
+// 1.6.8: a bindless array over the 16-buffer cap is skipped while the launch's resources
+// are set up, and counts like any other failure. count 0 keeps the kernel from reading.
+const char* kBindlessSource =
+    "package test;\n"
+    "import cajeta.xpu.Device;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
+    "import cajeta.xpu.XpuLaunchException;\n"
+    "public class B {\n"
+    "    @Kernel\n"
+    "    public static void gather(KernelBuffer<int32>[] bufs, uint32 count,\n"
+    "                              KernelBuffer<int32> out, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            int32 s = 0;\n"
+    "            for (uint32 b = 0; b < count; b = b + 1) {\n"
+    "                s = s + bufs[b][i];\n"
+    "            }\n"
+    "            out[i] = s;\n"
+    "        }\n"
+    "    }\n"
+    "    /** Failures one launch over `k` buffers adds, +10 if it threw, +100 if a\n"
+    "     *  legal one wrote wrong. */\n"
+    "    public static int64 failuresWith(int32 k) {\n"
+    "        uint32 n = 64;\n"
+    "        KernelBuffer<int32>[] bufs = heap KernelBuffer<int32>[k];\n"
+    "        for (int32 b = 0; b < k; b = b + 1) {\n"
+    "            int32[] h = heap int32[n];\n"
+    "            for (uint32 i = 0; i < n; i = i + 1) {\n"
+    "                h[i] = (int32)((b + 1) * 10 + (int32) i);\n"
+    "            }\n"
+    "            bufs[b] = heap KernelBuffer<int32>(n);\n"
+    "            bufs[b].upload(h);\n"
+    "        }\n"
+    "        uint32 used = 0;\n"
+    "        if (k <= 16) { used = (uint32) k; }\n"
+    "        KernelBuffer<int32> out = heap KernelBuffer<int32>(n);\n"
+    "        KernelStream s #= KernelStream.current();\n"
+    "        int64 before = Device.launchFailures();\n"
+    "        int64 thrown = 0;\n"
+    "        try {\n"
+    "            gather.launch(s, grid: [1], block: [64])(bufs, used, out, n);\n"
+    "        } catch (XpuLaunchException e) {\n"
+    "            thrown = 10;\n"
+    "        }\n"
+    "        s.sync();\n"
+    "        int64 after = Device.launchFailures();\n"
+    "        int64 wrong = 0;\n"
+    "        if (k <= 16) {\n"
+    "            int32[] ho = heap int32[n];\n"
+    "            out.download(ho);\n"
+    "            for (uint32 i = 0; i < n; i = i + 1) {\n"
+    "                int32 want = 0;\n"
+    "                for (int32 b = 0; b < k; b = b + 1) { want = want + (b + 1) * 10 + (int32) i; }\n"
+    "                if (ho[i] != want) { wrong = 100; }\n"
+    "            }\n"
+    "        }\n"
+    "        return after - before + thrown + wrong;\n"
+    "    }\n"
+    "}\n";
+
 using Failures = int64_t (*)(int32_t);
 
 Failures compileFor(std::unique_ptr<CajetaJit>& jit, cajeta::xpu::Backend b) {
@@ -88,6 +150,21 @@ void expectCounted(cajeta::xpu::Backend b) {
                             "did not run (100) after the refused one";
 }
 
+// Seventeen buffers count one failure without throwing; three after it run and count none.
+void expectBindlessCounted(cajeta::xpu::Backend b) {
+    CajetaJit::Options o;
+    o.xpuBackends = {b};
+    auto jit = CajetaJit::compile(kBindlessSource, "test.B", o);
+    ASSERT_NE(jit, nullptr);
+    auto with = jit->lookup<int64_t (*)(int32_t)>("failuresWith");
+    ASSERT_NE(with, nullptr);
+    const int64_t over = with(17);
+    EXPECT_EQ(over, 1) << "a 17-buffer launch moved launchFailures() by " << over % 10
+                       << (over >= 10 ? " and threw" : "");
+    EXPECT_EQ(with(3), 0) << "a legal launch counted a failure (1), threw (10) or "
+                             "wrote wrong (100) after the skipped one";
+}
+
 } // namespace
 
 TEST(XpuLaunchFailureCount, aCudaBlockAboveTheLimitIsRefusedBeforeSubmit) {
@@ -103,4 +180,19 @@ TEST(XpuLaunchFailureCount, aHipBlockAboveTheLimitIsRefusedBeforeSubmit) {
 TEST(XpuLaunchFailureCount, aVulkanBlockAboveTheLimitIsRefusedBeforeSubmit) {
     CAJETA_SKIP_IF_NO_VULKAN();
     expectCounted(cajeta::xpu::Backend::Spirv);
+}
+
+TEST(XpuLaunchFailureCount, aCudaBindlessArrayOverTheCapIsCounted) {
+    CAJETA_SKIP_IF_NO_CUDA();
+    expectBindlessCounted(cajeta::xpu::Backend::Nvptx);
+}
+
+TEST(XpuLaunchFailureCount, aHipBindlessArrayOverTheCapIsCounted) {
+    CAJETA_SKIP_IF_NO_HIP();
+    expectBindlessCounted(cajeta::xpu::Backend::Amdgpu);
+}
+
+TEST(XpuLaunchFailureCount, aVulkanBindlessArrayOverTheCapIsCounted) {
+    CAJETA_SKIP_IF_NO_VULKAN();
+    expectBindlessCounted(cajeta::xpu::Backend::Spirv);
 }

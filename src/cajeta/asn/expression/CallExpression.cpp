@@ -336,9 +336,10 @@ namespace cajeta {
                     headerTy, v, 0, "bufarr.size.ptr");
                 llvm::Value* count =
                     builder->CreateLoad(i64Ty, sizePtr, "bufarr.count");
-                // The slot is fixed-size, so a runtime count above the cap must
-                // be clamped here or both the store loop and the runtime (which
-                // trusts slot[0]) run off the alloca.
+                // slot[0] keeps the real count so the runtime refuses an array over
+                // the cap; the store loop is clamped to the fixed-size slot.
+                builder->CreateStore(count, builder->CreateInBoundsGEP(
+                    arrSlotTy, slot, {zero, zero}, "bufarr.count.slot"));
                 {
                     llvm::Value* cap =
                         llvm::ConstantInt::get(i64Ty, kMaxBindlessBuffers);
@@ -347,8 +348,6 @@ namespace cajeta {
                     count = builder->CreateSelect(over, cap, count,
                                                   "bufarr.count.capped");
                 }
-                builder->CreateStore(count, builder->CreateInBoundsGEP(
-                    arrSlotTy, slot, {zero, zero}, "bufarr.count.slot"));
                 llvm::Function* curFn = builder->GetInsertBlock()->getParent();
                 llvm::BasicBlock* condBB =
                     llvm::BasicBlock::Create(ctx, "bufarr.cond", curFn);

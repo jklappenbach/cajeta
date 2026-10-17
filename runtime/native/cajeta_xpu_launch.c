@@ -332,6 +332,7 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
                 if ((kp->kind[i] == CAJETA_KP_IMAGE ||
                      kp->kind[i] == CAJETA_KP_TEXTURE) && av[i] &&
                     *(int64_t*) av[i] == 0) {
+                    cajeta_xpu_note_launch_failure();
                     fprintf(stderr, "cajeta.xpu: CUDA texture/storage-image alloc "
                             "failed (driver lacks cuArray/TexObject/SurfObject?); "
                             "not launching '%s'\n", kernelName);
@@ -353,6 +354,7 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
         if (relocated > sharedBytes) sharedBytes = relocated;
         if (relocated > CAJETA_XPU_CUDA_STATIC_SHARED_CAP) {
             if (!g_xpu_cuda.cuFuncSetAttribute) {
+                cajeta_xpu_note_launch_failure();
                 fprintf(stderr,
                         "cajeta.xpu: '%s' needs %u bytes of shared memory, over "
                         "the %u-byte static cap, but this CUDA driver exports no "
@@ -364,6 +366,7 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
             // 8 = CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES.
             int setRc = g_xpu_cuda.cuFuncSetAttribute(fn, 8, (int) relocated);
             if (setRc != 0) {
+                cajeta_xpu_note_launch_failure();
                 fprintf(stderr,
                         "cajeta.xpu: '%s' asked for %u bytes of shared memory and "
                         "the driver refused the opt-in (%d). This device's "
@@ -552,6 +555,7 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
                     }
                 }
                 if (!ok) {
+                    cajeta_xpu_note_launch_failure();
                     for (int j = 0; j < nbufarr; ++j) g_xpu_cuda.cuMemFree(bufArrDev[j]);
                     for (int j = 0; j < ntex; ++j)
                         g_xpu_cuda.cuTexObjectDestroy(texObjs[j]);
@@ -749,7 +753,9 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
         }
     }
 
-    if (launchOk) {
+    if (!launchOk) {
+        cajeta_xpu_note_launch_failure();
+    } else {
         int launchRc = g_xpu_hip.hipModuleLaunchKernel(fn, (unsigned) gridX, (unsigned) gridY,
                                         (unsigned) gridZ, (unsigned) blockX,
                                         (unsigned) blockY, (unsigned) blockZ,
