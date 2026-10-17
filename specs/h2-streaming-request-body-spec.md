@@ -1,6 +1,6 @@
 # h2-streaming-request-body — an h2 stream's handler starts at end of HEADERS when its body streams
 
-Status: draft, written 2026-10-17 with Julian (decisions 2026-10-17: flow
+Status: active, approved by Julian 2026-10-17 ("Approve"); written the same day with him (decisions: flow
 control is the only back-pressure and the window follows the slab; an unread
 remainder is drained up to 256 KB, else RST_STREAM(NO_ERROR); PART mode on
 h2 is in scope; ships as cajeta-http 0.8.0). Origin: request-dispatch plan
