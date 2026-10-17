@@ -1,6 +1,6 @@
 # cajeta-crypto — cryptography leaves the stdlib
 
-Status: draft, 2026-10-17. Decisions with Julian the same day are in §1.5.
+Status: approved by Julian 2026-10-17. Decisions with Julian the same day are in §1.5.
 Plan: `agents/cajeta-crypto-plan.md`.
 
 ## 1. Definition
