@@ -161,11 +161,14 @@ match the bytes received is a stream error (PROTOCOL_ERROR), as RFC 9113
 
 ### 2.5 An unread remainder
 
-When the handler returns with the body still open, the server reads and
-discards up to 256 KB more; if the body has still not ended it sends
-RST_STREAM(NO_ERROR) for the stream, which RFC 9113 §8.1 allows after a
+When the handler returns with the body still open, the server grants the
+stream 256 KB more of credit at once and discards what arrives; if the body
+ends inside that budget the stream closes cleanly, otherwise the frame that
+spends it draws RST_STREAM(NO_ERROR), which RFC 9113 §8.1 allows after a
 complete response, and the connection goes on. (Julian, 2026-10-17; the
-limit mirrors HTTP/1.1's `Http1Connection.DRAIN_LIMIT`.)
+limit mirrors HTTP/1.1's `Http1Connection.DRAIN_LIMIT`. The budget is
+granted whole because the handler may return with the stream's window
+already spent, and a window that only refills on arrival would never move.)
 
 - 2.5.1 As a handler that answers 413 after reading one frame of a 1 GB
   upload, then the client sees my response followed by RST_STREAM(NO_ERROR)
