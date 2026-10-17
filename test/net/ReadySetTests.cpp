@@ -23,6 +23,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <ctime>
 #include <thread>
 #include <vector>
 
@@ -47,6 +48,7 @@ extern "C" {
     int64_t __cajeta_io_set_live_members(void);
     int32_t __cajeta_carriers_count(void);
     int32_t __cajeta_carriers_rule(void);
+    int32_t __cajeta_dbg_cond_clock(void);
 }
 
 namespace {
@@ -287,6 +289,23 @@ void siblingBody(void* argp) {
     s->done.store(1);
 }
 }  // namespace
+
+// The pool's timed waits (a fiber's timed park, the timer thread, a carrier's
+// idle backstop) must not read the wall clock: pthread_cond_timedwait takes
+// its abstime on the condvar's clock, CLOCK_REALTIME unless the condvar was
+// built on CLOCK_MONOTONIC, so a host clock step would stretch every timed
+// park at once (Phoenix runs under Hyper-V TimeSync). This pins the clock;
+// it is not a fix for the 1.2 to 1.6 s timed-wait stalls measured on
+// 2026-10-16, which persisted with it (see the runtime's note by
+// __cajeta_cond_init_once).
+TEST(ReadySetTests, timedWaitsRunOnTheMonotonicClock) {
+#if defined(__linux__)
+    EXPECT_EQ(__cajeta_dbg_cond_clock(), (int32_t) CLOCK_MONOTONIC)
+        << "the pool's condvars wait on CLOCK_REALTIME";
+#else
+    GTEST_SKIP() << "the monotonic condvar clock is set on Linux only";
+#endif
+}
 
 TEST(ReadySetTests, timedWaitExpiresWhileTheCarrierRunsASibling) {
 #if defined(_WIN32)

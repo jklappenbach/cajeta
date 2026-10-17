@@ -393,6 +393,49 @@ static int __cajeta_task_shutdown_requested = 0;
 struct cajeta_timer_entry;
 static struct cajeta_timer_entry* __cajeta_timer_head = NULL;
 static pthread_cond_t __cajeta_timer_cond = PTHREAD_COND_INITIALIZER;
+
+// The clock the pool's three condvars (task queue, task done, timer) wait on.
+// pthread_cond_timedwait reads its abstime on the condvar's clock, which is
+// CLOCK_REALTIME unless the condvar was built with another, so a step in the
+// wall clock would stretch or cut every timed park at once. Exposed for the
+// test that pins it.
+static clockid_t __cajeta_cond_clock = CLOCK_REALTIME;
+static pthread_once_t __cajeta_cond_once = PTHREAD_ONCE_INIT;
+static void __cajeta_cond_init_once(void) {
+#if defined(__linux__)
+    // Linux only: Darwin has no pthread_condattr_setclock and winpthreads
+    // keeps the wall clock, so those stay on the interval conversion in
+    // __cajeta_cond_abstime. This guards against wall-clock steps (Phoenix
+    // runs under Hyper-V TimeSync); it is NOT the cause of the 1.2 to 1.6 s
+    // timed-wait stalls measured 2026-10-16 (cajeta-http ServerLimitTests
+    // headDeadline, about 1 run in 60): those persisted with this change,
+    // with one carrier, and on the 0.6.0 connection-loop server, while the
+    // timer thread, the task mutex, the carriers' pickup and every CPU's
+    // scheduling all measured on time. That stall is still open.
+    pthread_condattr_t at;
+    if (pthread_condattr_init(&at) == 0) {
+        if (pthread_condattr_setclock(&at, CLOCK_MONOTONIC) == 0
+                && pthread_cond_init(&__cajeta_task_queue_cond, &at) == 0
+                && pthread_cond_init(&__cajeta_task_done_cond, &at) == 0
+                && pthread_cond_init(&__cajeta_timer_cond, &at) == 0) {
+            __cajeta_cond_clock = CLOCK_MONOTONIC;
+        }
+        pthread_condattr_destroy(&at);
+    }
+#endif
+}
+// Before the first wait on any of the three: the pool start, the timer start
+// and the program thread's timed wait all call it, and a signal or broadcast
+// before any waiter exists is harmless either way.
+static void __cajeta_conds_ensure(void) {
+    pthread_once(&__cajeta_cond_once, __cajeta_cond_init_once);
+}
+static int64_t __cajeta_now_ns(void);
+static void __cajeta_cond_abstime(int64_t deadline_ns, struct timespec* ts);
+int32_t __cajeta_dbg_cond_clock(void) {
+    __cajeta_conds_ensure();
+    return (int32_t) __cajeta_cond_clock;
+}
 static pthread_t __cajeta_timer_thread;
 static int __cajeta_timer_started = 0;
 static int __cajeta_timer_shutdown_requested = 0;
@@ -687,12 +730,7 @@ static void* __cajeta_carrier_loop_body(void* arg) {
             }
             __cajeta_sleeping_count++;
             struct timespec __wait_ts;
-            clock_gettime(CLOCK_REALTIME, &__wait_ts);
-            __wait_ts.tv_nsec += 50 * 1000 * 1000;  // 50ms backstop
-            if (__wait_ts.tv_nsec >= 1000000000L) {
-                __wait_ts.tv_nsec -= 1000000000L;
-                __wait_ts.tv_sec += 1;
-            }
+            __cajeta_cond_abstime(__cajeta_now_ns() + 50LL * 1000 * 1000, &__wait_ts);  // 50ms backstop
             pthread_cond_timedwait(&__cajeta_task_queue_cond, &__cajeta_task_mutex, &__wait_ts);
             __cajeta_sleeping_count--;
             pthread_mutex_unlock(&__cajeta_task_mutex);
@@ -879,6 +917,7 @@ static void __cajeta_task_run_impl(void* arg, cajeta_task_trampoline_fn trampoli
     __cajeta_dbg_fiber_register(f);
     if (!__cajeta_task_workers_started) {
         __cajeta_task_workers_started = 1;
+        __cajeta_conds_ensure();
         // Carrier count from $CAJETA_CARRIERS, else min(cores, cap); read once.
         // The same rule answers __cajeta_carriers_count() before any spawn.
         int n = __cajeta_resolve_carrier_count();
@@ -1006,6 +1045,23 @@ static int64_t __cajeta_now_ns(void) {
     return (int64_t) ts.tv_sec * 1000000000LL + (int64_t) ts.tv_nsec;
 }
 
+// The abstime for a CLOCK_MONOTONIC `deadline_ns` on the condvars' clock: the
+// deadline itself when they wait on CLOCK_MONOTONIC, else the wall clock plus
+// the remaining interval (a step in the wall clock then still moves the wake).
+static void __cajeta_cond_abstime(int64_t deadline_ns, struct timespec* ts) {
+    int64_t abs_ns = deadline_ns;
+    if (__cajeta_cond_clock != CLOCK_MONOTONIC) {
+        int64_t remaining_ns = deadline_ns - __cajeta_now_ns();
+        if (remaining_ns < 0) remaining_ns = 0;
+        struct timespec real_ts;
+        clock_gettime(CLOCK_REALTIME, &real_ts);
+        abs_ns = (int64_t) real_ts.tv_sec * 1000000000LL
+               + (int64_t) real_ts.tv_nsec + remaining_ns;
+    }
+    ts->tv_sec = (time_t) (abs_ns / 1000000000LL);
+    ts->tv_nsec = (long) (abs_ns % 1000000000LL);
+}
+
 // Insert entry into the sorted-by-deadline list. Caller holds __cajeta_task_mutex.
 static void __cajeta_timer_insert_locked(struct cajeta_timer_entry* e) {
     struct cajeta_timer_entry** p = &__cajeta_timer_head;
@@ -1075,32 +1131,14 @@ static void* __cajeta_timer_loop_body(void* arg) {
         }
         if (__cajeta_timer_head) {
             int64_t deadline = __cajeta_timer_head->deadline_ns;
-            // deadline_ns is CLOCK_MONOTONIC (it came from __cajeta_now_ns), but
-            // pthread_cond_timedwait reads abstime on CLOCK_REALTIME. Handing it
-            // the monotonic value names a moment in 1970 — already long past — so
-            // the wait returned ETIMEDOUT instantly and this loop spun. MEASURED
-            // before the fix: a 200ms deadline waited 10us on Linux and 23us on
-            // Windows, ~20000x short. The old comment called that "fine for an
-            // upper bound", which is true of CORRECTNESS and false of COST: the
-            // loop reacquires __cajeta_task_mutex every few microseconds, and
-            // that is the same mutex every fiber park and unpark needs.
-            //
-            // It stayed invisible on Linux because the epoll engine services I/O
-            // waits directly and leaves the timer wheel empty (the branch below
-            // waits untimed). On every other host Reactor.pollPark drives all
-            // socket readiness through Fiber.sleep, so the wheel is never
-            // empty and the timer thread spun for the life of the process.
-            //
-            // Convert through the elapsed interval, the way the sibling
-            // __cajeta_task_wait_timeout below already does.
-            int64_t remaining_ns = deadline - __cajeta_now_ns();
-            if (remaining_ns < 0) remaining_ns = 0;
+            // deadline_ns is CLOCK_MONOTONIC (it came from __cajeta_now_ns).
+            // Before 2026-10 the raw value was handed to a CLOCK_REALTIME wait,
+            // which named a moment in 1970 and spun this loop every few
+            // microseconds (measured: a 200ms deadline waited 10us); then the
+            // wait converted through the remaining interval, which a wall
+            // clock step still stretched. Now the condvar's own clock decides.
             struct timespec ts;
-            clock_gettime(CLOCK_REALTIME, &ts);
-            int64_t abs_ns = (int64_t) ts.tv_sec * 1000000000LL
-                           + (int64_t) ts.tv_nsec + remaining_ns;
-            ts.tv_sec = (time_t) (abs_ns / 1000000000LL);
-            ts.tv_nsec = (long) (abs_ns % 1000000000LL);
+            __cajeta_cond_abstime(deadline, &ts);
             pthread_cond_timedwait(&__cajeta_timer_cond,
                                     &__cajeta_task_mutex, &ts);
         } else {
@@ -1113,6 +1151,7 @@ static void* __cajeta_timer_loop_body(void* arg) {
 static void __cajeta_timer_ensure_started_locked(void) {
     if (__cajeta_timer_started) return;
     __cajeta_timer_started = 1;
+    __cajeta_conds_ensure();
     __cajeta_live_set_go_multithreaded();   // second-thread barrier (see live-set)
     pthread_create(&__cajeta_timer_thread, NULL, __cajeta_timer_loop, NULL);
 }
@@ -1138,8 +1177,9 @@ static void __cajeta_timer_cancel(struct cajeta_timer_entry* entry) {
 int32_t __cajeta_task_wait_timeout(int32_t* done_addr, int64_t deadline_ns) {
     if (!done_addr) return 1;
     if (!__cajeta_current_fiber) {
-        // Non-fiber caller: cond_timedwait on the task-done condvar, whose clock
-        // is CLOCK_REALTIME — convert the remaining monotonic nanos onto it.
+        // Non-fiber caller: cond_timedwait on the task-done condvar, on the
+        // condvars' clock (__cajeta_cond_abstime).
+        __cajeta_conds_ensure();
         pthread_mutex_lock(&__cajeta_task_mutex);
         while (!*done_addr) {
             int64_t mono_now = __cajeta_now_ns();
@@ -1147,14 +1187,8 @@ int32_t __cajeta_task_wait_timeout(int32_t* done_addr, int64_t deadline_ns) {
                 pthread_mutex_unlock(&__cajeta_task_mutex);
                 return 0;
             }
-            int64_t remaining_ns = deadline_ns - mono_now;
             struct timespec real_ts;
-            clock_gettime(CLOCK_REALTIME, &real_ts);
-            int64_t real_deadline = (int64_t) real_ts.tv_sec * 1000000000LL
-                                  + (int64_t) real_ts.tv_nsec
-                                  + remaining_ns;
-            real_ts.tv_sec = (time_t) (real_deadline / 1000000000LL);
-            real_ts.tv_nsec = (long) (real_deadline % 1000000000LL);
+            __cajeta_cond_abstime(deadline_ns, &real_ts);
             int rc = pthread_cond_timedwait(&__cajeta_task_done_cond,
                                              &__cajeta_task_mutex,
                                              &real_ts);
