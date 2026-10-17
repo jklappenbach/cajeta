@@ -58,7 +58,8 @@ body of any size in the memory of one connection buffer.
 
 ### 1.5 Constraints
 
-- A streaming stream allocates nothing beyond the slot it already holds.
+- A streaming stream allocates nothing on the heap that grows with the
+  body: one more pooled slab while it is open, and nothing else.
 - The framer never parks: feeding a body channel is a copy into the slot's
   buffer and a wake, never a wait.
 - The handler's reads park on the stream's body channel, never on the
@@ -109,30 +110,39 @@ in place; the heap spill of `append` is never used for an open stream.
 
 ### 2.3 Flow control is the back-pressure
 
-The server grants a streaming stream exactly the free space of its slot's
-input buffer after the head, and returns credit only as the handler
-consumes: a WINDOW_UPDATE for the stream and for the connection carries the
-bytes consumed since the last one, sent once they reach a quarter of the
-stream's window or the body ends. The client can therefore never have more
-bytes in flight for one stream than fit in its slot, and a handler that
-reads slowly slows only its own stream.
+An open stream's body lives in one more pooled slab, taken when the stream
+opens and returned when it closes, and the stream's window is exactly that
+slab: every stream starts at the protocol's default window (65,535 bytes,
+which the server now advertises instead of its receive window), a stream
+held whole is topped up to the receive window at head complete as before,
+and an open stream is topped up to its slab. Stream credit returns only as
+the handler consumes: a WINDOW_UPDATE for the stream carries the bytes
+consumed since the last one, sent by the handler's own fiber once they
+reach a quarter of the slab. Connection credit returns on receipt as for
+every stream; the per-stream window is what bounds memory. The client can
+therefore never have more bytes in flight for one stream than its slab
+holds, and a handler that reads slowly slows only its own stream.
 
-With the default 64 KB slab the stream window is 64 KB minus the head, about
-one slab per round trip when the handler lags; `bufferPool` with a larger
-slab raises it in step, with no new allocation. (Julian, 2026-10-17,
-choosing this over a heap-backed per-stream queue: zero allocation per
-streaming stream, throughput tuned by the slab.)
+The body is a separate slab rather than the slot's input buffer behind the
+head because a client may legitimately send a full default window before it
+has read the server's SETTINGS, and the input buffer minus a head cannot
+hold 65,535 bytes. So an open stream costs one pooled slab, 64 KB by
+default, not a heap allocation that grows: 100 streaming uploads hold 100
+slabs beyond their slots. (Measured 2026-10-17 while building Unit 1;
+Julian chose window-only back-pressure over a heap-backed per-stream queue
+the same day, and this is that choice with the slab as the window.) A
+larger `bufferPool` slab raises the per-stream window in step.
 
 - 2.3.1 As a developer, when 100 streams each stream a 1 GB body at once
   through a server with the default slab, then the server's allocated bytes
-  after warm-up grow by less than one slab per stream and every body is
-  read to the end.
+  after warm-up grow by less than one slab per stream beyond the pooled
+  slabs, and every body is read to the end.
 - 2.3.2 As a client, when one handler stops reading for a second, then that
   stream's window closes and my other streams on the same connection keep
   moving at full rate.
 - 2.3.3 As a client, when the handler consumes, then I receive WINDOW_UPDATE
-  frames for the stream and the connection that together equal what was
-  consumed, never more than the slot can hold.
+  frames for the stream that total what was consumed, and the stream's
+  window never exceeds its slab.
 
 ### 2.4 End of body
 
