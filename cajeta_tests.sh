@@ -1286,6 +1286,14 @@ if ! "$SCRIPT_DIR/scripts/check-release-docs.sh"; then
     exit 1
 fi
 
+# The Windows JIT symbol bridge: cajeta_tls.c is linked natively, not embedded
+# in the runtime bitcode, so every `__cajeta_tls_*` entry point must be bound
+# in CajetaJitWinSymbols.cpp or every JIT test fails on COFF. Two unbound
+# entries cost the first v0.43.0 cut its Windows leg; this catches it on Linux.
+if ! "$SCRIPT_DIR/scripts/check-jit-win-symbols.sh"; then
+    exit 1
+fi
+
 # The cajeta.dev downloads section, same reasoning: it is built from a file
 # only a release writes, so nothing else exercises it. Skips itself where
 # the site toolchain is absent, which is every C++-only host.

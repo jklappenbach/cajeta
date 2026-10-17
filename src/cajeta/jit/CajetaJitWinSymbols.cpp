@@ -104,12 +104,14 @@ extern "C" void __cajeta_tls_handshake_step();
 extern "C" void __cajeta_tls_pending_ciphertext();
 extern "C" void __cajeta_tls_pull_ciphertext();
 extern "C" void __cajeta_tls_read_plaintext();
+extern "C" void __cajeta_tls_read_plaintext_at();
 extern "C" void __cajeta_tls_set_alpn();
 extern "C" void __cajeta_tls_set_sni();
 extern "C" void __cajeta_tls_set_verify_host();
 extern "C" void __cajeta_tls_shutdown();
 extern "C" void __cajeta_tls_verify_result();
 extern "C" void __cajeta_tls_write_plaintext();
+extern "C" void __cajeta_tls_write_plaintext_at();
 extern "C" void cajeta_xpu_optix_available();
 extern "C" void cajeta_xpu_optix_context();
 extern "C" void cajeta_xpu_optix_cuda_context();
@@ -207,12 +209,14 @@ static const JitWinSym kSymbols[] = {
     CJ_SYM("__cajeta_tls_pending_ciphertext", &__cajeta_tls_pending_ciphertext),
     CJ_SYM("__cajeta_tls_pull_ciphertext", &__cajeta_tls_pull_ciphertext),
     CJ_SYM("__cajeta_tls_read_plaintext", &__cajeta_tls_read_plaintext),
+    CJ_SYM("__cajeta_tls_read_plaintext_at", &__cajeta_tls_read_plaintext_at),
     CJ_SYM("__cajeta_tls_set_alpn", &__cajeta_tls_set_alpn),
     CJ_SYM("__cajeta_tls_set_sni", &__cajeta_tls_set_sni),
     CJ_SYM("__cajeta_tls_set_verify_host", &__cajeta_tls_set_verify_host),
     CJ_SYM("__cajeta_tls_shutdown", &__cajeta_tls_shutdown),
     CJ_SYM("__cajeta_tls_verify_result", &__cajeta_tls_verify_result),
     CJ_SYM("__cajeta_tls_write_plaintext", &__cajeta_tls_write_plaintext),
+    CJ_SYM("__cajeta_tls_write_plaintext_at", &__cajeta_tls_write_plaintext_at),
     CJ_SYM("cajeta_xpu_optix_available", &cajeta_xpu_optix_available),
     CJ_SYM("cajeta_xpu_optix_context", &cajeta_xpu_optix_context),
     CJ_SYM("cajeta_xpu_optix_cuda_context", &cajeta_xpu_optix_cuda_context),
