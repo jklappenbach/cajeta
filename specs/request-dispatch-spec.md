@@ -293,10 +293,23 @@ fibers. `await` is unchanged and is for fan-out only.
 
 ### 4.6 The fiber-per-connection model
 
-`fiberPerConnection()` keeps today's behavior exactly: one fiber per
+`fiberPerConnection()` keeps today's connection model: one fiber per
 accepted socket, the connection's own loop, h2 spawning per stream,
 `WsUpgrade.run` on the connection fiber. It is the model for a small number
-of long, busy connections.
+of long, busy connections. What differs from the pool is only who reads the
+socket and when a handler is assigned. The per-route multipart modes of
+§2.3 apply under it too (amended 2026-10-17 with Julian; before that the
+loop took every route as `whole`): the connection loop feeds the parser and
+runs the handler per completed part on a PART route, and a STREAM route
+hands the body to the handler at head complete.
+
+- 4.6.1 As a developer who built a server with `fiberPerConnection()` and
+  `multipart("POST", "/parts", PART)`, when a five-file form arrives, then
+  my handler runs five times in order as in 2.3.2, and a part over
+  `maxPartBytes` ends the request with 413.
+- 4.6.2 As that developer with a STREAM route, when a 64 MB part arrives
+  without `streamRequestBody` on, then my handler reads it incrementally as
+  in 2.3.3.
 
 ## 5. Developer-defined framing
 
