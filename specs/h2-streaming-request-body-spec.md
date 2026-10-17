@@ -136,7 +136,10 @@ larger `bufferPool` slab raises the per-stream window in step.
 - 2.3.1 As a developer, when 100 streams each stream a 1 GB body at once
   through a server with the default slab, then the server's allocated bytes
   after warm-up grow by less than one slab per stream beyond the pooled
-  slabs, and every body is read to the end.
+  slabs, and every body is read to the end. (Measured 2026-10-17 at 100 x
+  4 MB: 32 KB per stream beyond the slabs, client included; a burst of 100
+  open streams takes 302 slabs and the pool keeps 64 idle, so a server
+  that expects such bursts sizes its `bufferPool` idle count to match.)
 - 2.3.2 As a client, when one handler stops reading for a second, then that
   stream's window closes and my other streams on the same connection keep
   moving at full rate.
