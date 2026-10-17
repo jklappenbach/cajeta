@@ -99,6 +99,8 @@ extern "C" {
     int   __cajeta_tls_handshake_step(void* conn);
     int   __cajeta_tls_write_plaintext(void* conn, const void* buf, int len);
     int   __cajeta_tls_read_plaintext(void* conn, void* out, int max);
+    int   __cajeta_tls_write_plaintext_at(void* conn, const void* buf, int off, int len);
+    int   __cajeta_tls_read_plaintext_at(void* conn, void* out, int off, int max);
     int   __cajeta_tls_shutdown(void* conn);
     void  __cajeta_tls_free(void* conn);
 }
@@ -831,6 +833,8 @@ struct StdlibReuseCache {
         bind("__cajeta_tls_handshake_step", (void*) &__cajeta_tls_handshake_step);
         bind("__cajeta_tls_write_plaintext", (void*) &__cajeta_tls_write_plaintext);
         bind("__cajeta_tls_read_plaintext", (void*) &__cajeta_tls_read_plaintext);
+        bind("__cajeta_tls_write_plaintext_at", (void*) &__cajeta_tls_write_plaintext_at);
+        bind("__cajeta_tls_read_plaintext_at", (void*) &__cajeta_tls_read_plaintext_at);
         bind("__cajeta_tls_shutdown", (void*) &__cajeta_tls_shutdown);
         bind("__cajeta_tls_free", (void*) &__cajeta_tls_free);
         cajeta::jittest::cantFail(jd.define(llvm::orc::absoluteSymbols(std::move(tlsSyms))));

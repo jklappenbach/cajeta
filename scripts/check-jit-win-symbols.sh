@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Every `__cajeta_tls_*` entry point the runtime defines in
 # runtime/native/cajeta_tls.c must be bound in the Windows JIT symbol bridge
-# (src/cajeta/jit/CajetaJitWinSymbols.cpp). cajeta_tls.c is linked natively,
+# (src/cajeta/jit/CajetaJitWinSymbols.cpp) AND in the test harness's own bind
+# list (test/jit/JitTestHelper.cpp). cajeta_tls.c is linked natively,
 # not embedded in the runtime bitcode, so on COFF the JIT finds its symbols only
 # through that table: a definition missing from it fails EVERY JIT test on
 # Windows with "Symbols not found: [ __cajeta_tls_... ]", which is how the first
@@ -14,6 +15,11 @@ while read -r name; do
     [ -z "$name" ] && continue
     if ! grep -q "CJ_SYM(\"$name\"" src/cajeta/jit/CajetaJitWinSymbols.cpp; then
         echo "check-jit-win-symbols: $name is defined in runtime/native/cajeta_tls.c but not bound in src/cajeta/jit/CajetaJitWinSymbols.cpp" >&2
+        missing=$((missing + 1))
+    fi
+    # The test harness binds its own list for the JITs it builds itself.
+    if ! grep -q "bind(\"$name\"" test/jit/JitTestHelper.cpp; then
+        echo "check-jit-win-symbols: $name is defined in runtime/native/cajeta_tls.c but not bound in test/jit/JitTestHelper.cpp" >&2
         missing=$((missing + 1))
     fi
 done < <(grep -oE '^(int|int64_t|void|void\*|const char\*|long)[a-zA-Z0-9_ *]* __cajeta_tls_[a-zA-Z0-9_]+' runtime/native/cajeta_tls.c | awk '{print $NF}' | sort -u)
