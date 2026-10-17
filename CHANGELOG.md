@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.43.1 (2026-10-17)
+
+- Runtime: an idle carrier sleeps when the only runnable fiber is pinned to a busy peer. A started fiber resumes only on its home carrier, and every other carrier that found nothing it could take went round again at full CPU for the whole of that carrier's turn: three threads at 100% beside one hashing a password, and on a two-vCPU CI runner the spinner shared a physical core with the worker, so primavera's test step went from 18 minutes to past its 30-minute cap when its server moved to cajeta-http 0.7.0's pool. A carrier now looks twice more, then sleeps on its 50 ms backstop as for an empty pool. Measured on the register-user sample under two CPUs: 15:18 before, 10:17 after.
+
 ## 0.43.0 (2026-10-16)
 
 - `cajeta.io.net.reactor.ReadySet`: one fiber waits on many descriptors at once. Members persist across waits, a wait returns the members that became ready, and a fired member is re-armed by the next wait, so a wait costs the ready set and never the membership. On Linux it rides the epoll fiber-park engine; elsewhere it probes its members with a cooperative sleep until the kqueue and IOCP engines land. The framers of request dispatch wait on it (request-dispatch spec §3.4).
