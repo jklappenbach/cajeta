@@ -683,6 +683,16 @@ static void __cajeta_fiber_park_locked(void) {
     __cajeta_swapcontext(&f->ctx, &__cajeta_carrier_ctx);
 }
 
+// Times a carrier found work it could not take (pinned to a busy peer) and
+// went round again instead of sleeping. Read by the test that pins the bound.
+static int64_t __cajeta_dbg_carrier_spin_count = 0;
+int64_t __cajeta_dbg_carrier_spins(void) {
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    int64_t n = __cajeta_dbg_carrier_spin_count;
+    pthread_mutex_unlock(&__cajeta_task_mutex);
+    return n;
+}
+
 // Carrier loop: pop own deque (LIFO), else steal from a peer, else sleep on the
 // pool condvar. The wrapper registers this thread's shadow stack.
 static void* __cajeta_carrier_loop_body(void* arg);
@@ -695,6 +705,7 @@ static void* __cajeta_carrier_loop(void* arg) {
 static void* __cajeta_carrier_loop_body(void* arg) {
     struct cajeta_carrier* self = (struct cajeta_carrier*) arg;
     __cajeta_my_carrier = self;
+    int pinned_rounds = 0;   // consecutive looks that found only work pinned to a peer
     for (;;) {
         pthread_mutex_lock(&self->deque_mutex);
         struct cajeta_fiber* f = __cajeta_deque_pop_bottom(&self->deque);
@@ -702,6 +713,9 @@ static void* __cajeta_carrier_loop_body(void* arg) {
 
         if (!f) {
             f = __cajeta_steal_one(self);
+        }
+        if (f) {
+            pinned_rounds = 0;
         }
 
         if (!f) {
@@ -717,10 +731,21 @@ static void* __cajeta_carrier_loop_body(void* arg) {
                 }
                 continue;  // drain reachable work; never cond_wait at shutdown
             }
-            if (work > 0) {
+            if (work > 0 && ++pinned_rounds <= 2) {
+                // Work sits in a peer's deque and nothing stole it: a started
+                // fiber resumes only on its home carrier, so it is that peer's,
+                // or a steal lost its race to another thief. Two more looks
+                // cover the race; after that this carrier sleeps on the backstop
+                // below exactly as for an empty pool, and a publish or a
+                // steal's broadcast wakes it. Going round here for the whole of
+                // a peer's long turn burned a core per idle carrier (measured
+                // 2026-10-17: 10.4 million rounds in one 600 ms turn, three
+                // carriers at 100% beside one hashing a password).
+                __cajeta_dbg_carrier_spin_count++;
                 pthread_mutex_unlock(&__cajeta_task_mutex);
                 continue;
             }
+            pinned_rounds = 0;
             // An idle carrier under a debugger stop parks instead — outside the
             // task mutex, since stop_mu is a leaf — so the barrier converges.
             if (__cajeta_stop_is_requested()) {

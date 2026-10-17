@@ -54,6 +54,7 @@ extern "C" {
     void* __cajeta_condvar_new(void);
     void  __cajeta_condvar_wait(void* cv, void* lock);
     void  __cajeta_condvar_notify_all(void* cv);
+    int64_t __cajeta_dbg_carrier_spins(void);
 }
 
 namespace {
@@ -147,4 +148,80 @@ TEST(FiberArenaIsolation, parkedFiberArenaBlockSurvivesCoHostedReset) {
         << "a co-hosted fiber's arena reset reclaimed a parked fiber's "
            "live allocation (" << kBlock - st.intactBytes.load()
         << " of " << kBlock << " bytes corrupted)";
+}
+
+// ---------------------------------------------------------------------------
+// An idle carrier must sleep, not spin, when the only runnable work is pinned
+// to a busy peer. A started fiber resumes only on its home carrier, so while
+// that carrier runs a long turn (primavera's register-user hashes a password
+// for seconds) every peer that finds nothing stealable used to see
+// "work > 0" and go round again at full CPU. On Phoenix that was three
+// carriers at 100% beside one hashing; on a two-vCPU CI runner the spinning
+// carrier shares a physical core with the hashing one and the sample's
+// self-test blew its 30-minute cap on 2026-10-17. Measured here by the
+// runtime's own count of those rounds across a 600 ms busy turn with sixteen
+// parked fibers woken onto both carriers' deques.
+namespace {
+struct Parker { void* lock; void* cv; std::atomic<int>* parked; std::atomic<int>* done; };
+void parkerBody(void* argp) {
+    auto* p = static_cast<Parker*>(argp);
+    __cajeta_lock_acquire(p->lock);
+    p->parked->fetch_add(1);
+    __cajeta_condvar_wait(p->cv, p->lock);
+    __cajeta_lock_release(p->lock);
+    p->done->fetch_add(1);
+}
+struct Busy { std::atomic<int> started{0}; std::atomic<int> done{0}; };
+void busyBody(void* argp) {
+    auto* b = static_cast<Busy*>(argp);
+    b->started.store(1);
+    auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(600);
+    volatile uint64_t sink = 0;
+    while (std::chrono::steady_clock::now() < end) { sink = sink + 1; }
+    b->done.store(1);
+}
+bool spinWaitFor(std::atomic<int>& v, int want, int ms) {
+    auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while (v.load() < want) {
+        if (std::chrono::steady_clock::now() > end) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
+}
+}  // namespace
+
+TEST(FiberCarriers, anIdleCarrierSleepsWhenTheOnlyWorkIsPinnedToABusyPeer) {
+#if defined(_WIN32)
+    _putenv_s("CAJETA_CARRIERS", "2");
+#else
+    setenv("CAJETA_CARRIERS", "2", 1);               // before the pool starts
+#endif
+    void* lock = __cajeta_lock_new();
+    void* cv = __cajeta_condvar_new();
+    std::atomic<int> parked{0}, done{0};
+    const int N = 16;
+    Parker parkers[N];
+    void* slots[N];
+    for (int i = 0; i < N; ++i) {
+        parkers[i] = Parker{lock, cv, &parked, &done};
+        slots[i] = nullptr;
+        __cajeta_task_run(&parkers[i], parkerBody, &slots[i]);
+    }
+    ASSERT_TRUE(spinWaitFor(parked, N, 5000)) << "the parkers never parked";
+
+    Busy busy;
+    void* bslot = nullptr;
+    __cajeta_task_run(&busy, busyBody, &bslot);
+    ASSERT_TRUE(spinWaitFor(busy.started, 1, 5000)) << "the busy fiber never started";
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+
+    int64_t before = __cajeta_dbg_carrier_spins();
+    __cajeta_lock_acquire(lock);
+    __cajeta_condvar_notify_all(cv);      // sixteen fibers published to their home carriers
+    __cajeta_lock_release(lock);
+    ASSERT_TRUE(spinWaitFor(busy.done, 1, 5000)) << "the busy fiber never finished";
+    int64_t spins = __cajeta_dbg_carrier_spins() - before;
+    ASSERT_TRUE(spinWaitFor(done, N, 5000)) << "the parkers never resumed: " << done.load();
+    EXPECT_LT(spins, 1000)
+        << "the idle carrier went round " << spins << " times in 600 ms instead of sleeping";
 }
