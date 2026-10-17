@@ -196,3 +196,7 @@ TEST(XpuLaunchFailureCount, aVulkanBindlessArrayOverTheCapIsCounted) {
     CAJETA_SKIP_IF_NO_VULKAN();
     expectBindlessCounted(cajeta::xpu::Backend::Spirv);
 }
+
+TEST(XpuLaunchFailureCount, aCpuBindlessArrayOverTheCapIsCounted) {
+    expectBindlessCounted(cajeta::xpu::Backend::Cpu);
+}

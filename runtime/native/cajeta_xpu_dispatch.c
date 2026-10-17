@@ -1363,6 +1363,21 @@ static void cajeta_xpu_launch_cpu(const char* name,
                 name);
         return;
     }
+    struct cajeta_kparams* kp = cajeta_xpu_find_kparams(name);
+    if (kp && argv) {
+        for (int i = 0; i < kp->count; ++i) {
+            if (kp->kind[i] != CAJETA_KP_BUFFER_ARRAY) continue;
+            const int64_t* arr = (const int64_t*) ((void**) argv)[i];
+            int64_t cnt = arr ? arr[0] : -1;
+            if (cnt < 0 || cnt > 16) {   // 16 = kMaxBindlessBuffers
+                cajeta_xpu_note_launch_failure();
+                fprintf(stderr, "cajeta.xpu: CPU kernel '%s' bindless buffer-array "
+                        "count %lld out of range; not launching\n", name,
+                        (long long) cnt);
+                return;
+            }
+        }
+    }
     cajeta_cpu_launch_fn fn = (cajeta_cpu_launch_fn) p;
     if (gridX < 1) gridX = 1; if (gridY < 1) gridY = 1; if (gridZ < 1) gridZ = 1;
     // sharedBytes becomes a per-block alloca on the worker's stack; bound it so
