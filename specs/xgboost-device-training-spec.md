@@ -329,6 +329,11 @@ All five were decided by Julian on 2026-10-17, each as recommended:
 - **10.3:** within 3x of upstream's training-alone time on the 4090, with
   flat scaling from 200k to 1M rows.
 - **10.4:** batch by level when `maxLeaves` is 0, per node otherwise.
+  Note, 2026-10-18 (plan 8.2.1): this builder's `maxLeaves` is depthwise
+  growth with a leaf cap checked in FIFO queue order, not a priority order.
+  Deciding a level's nodes in node order is that queue order, so the level
+  batch keeps it, and both cases batch by level. `GpuMaxLeavesTest` holds
+  it to the CPU model.
 - **10.5:** a separate spec for the sketch and the binner, written now and
   run in parallel.
 
