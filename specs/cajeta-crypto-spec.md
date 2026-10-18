@@ -105,8 +105,15 @@ cajeta-codec uses it for zlib. `cajeta.codec.Base64` (url-safe),
 - **2.3** A consumer adds `"dev.cajeta.crypto": "0.1.0"` and nothing else. The
   `.cja` carries the native archive for every supported platform, so no
   consumer sets `CAJETA_NATIVE_PATH`.
-- **2.4** A program that calls nothing from the library links no native code
-  from it.
+- **2.4** A program with the library on its classpath links the shim, even
+  one that calls nothing from it. Amended 2026-10-17 with Julian after
+  measuring it: the compiler gives every classpath class a registration
+  constructor and a reflection invoke table that reach its `@Native` thunks, so
+  tree-shaking cannot drop them. The cost is a few KB beside an OpenSSL the
+  executable links anyway, and a program cannot link on a platform the `.cja`
+  carries no archive for. When the compiler stops rooting unreferenced classes,
+  this returns to "links no native code from it" and run-tests.sh's check
+  flips back.
 
 ## 3. Feature: the moved types
 
