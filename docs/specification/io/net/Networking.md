@@ -226,6 +226,11 @@ caps, configurable `listen` backlog, load-shed policy.
 
 ## TLS
 
+*(Amended 2026-10-18 with cajeta-crypto spec 6.3.)* `cajeta.io.net.tls` left
+the stdlib for the `dev.cajeta.crypto` library as `dev.cajeta.crypto.tls`, with
+the same types and APIs over the stdlib's sockets. The design below holds; the
+code lives there.
+
 **v1 bundles BoringSSL** (statically linked) — one code path on all OSes, TLS 1.3
 + ALPN, a memory-BIO interface that composes with the async reactor (no fd
 ownership; the Cajeta layer pumps ciphertext). An internal `TlsBackend` keeps an

@@ -5,7 +5,7 @@ import cajeta.lang.String;
 /**
  * Uniform streaming-hash contract.
  *
- * Every algorithm class (`XXHash3`, `SipHash`, `MD5`,
+ * Every algorithm class (`XXHash3`, `SipHash`, dev.cajeta.crypto's `MD5`,
  * `DefaultHasher`) implements this interface so callers can write a
  * single hash-loop body that swaps algorithms by changing the
  * constructor. Per-type entry points are explicit width-named

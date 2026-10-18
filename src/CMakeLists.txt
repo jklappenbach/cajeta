@@ -921,54 +921,6 @@ configure_file(
     @ONLY)
 list(APPEND GENERATED_SOURCES ${CAJETA_EMBEDDED_ROOT})
 
-# cajeta.io.net TLS engine (NET-5.1). Compiled as a STANDALONE native C object —
-# NOT #included into cajeta_runtime.c — so OpenSSL's headers stay out of the
-# embedded JIT bitcode (which is loaded into every JIT test). The `__cajeta_tls_*`
-# symbols land in libcajeta_lib, so the test binary calls them directly and the
-# JIT resolves them through its process-symbol generator at @Native call sites.
-set(CAJETA_TLS_SRC ${PROJECT_SOURCE_DIR}/runtime/native/cajeta_tls.c)
-set_source_files_properties(${CAJETA_TLS_SRC} PROPERTIES LANGUAGE C)
-list(APPEND GENERATED_SOURCES ${CAJETA_TLS_SRC})
-
-# ── AOT standalone-exe support (ALL platforms). Embed the COMPILED TLS native
-# object into the compiler binary so `--emit=exe` can produce a self-contained
-# executable. Background: a produced exe references `__cajeta_tls_*` from the
-# stdlib TlsConnection @Native thunks, which are ALWAYS linked — cajeta roots
-# every class's metadata via eager clinit global-constructors, so `--gc-sections`
-# can't drop the unused TLS/net subsystem (true on ELF as well as PE-COFF — an
-# orthogonal, deeper codegen change). Those natives live in this standalone
-# object (kept out of the embedded JIT bitcode on purpose, see above), and the
-# machine running `--emit=exe` has a C toolchain but not cajeta's runtime source
-# — so the object bytes ride along in the compiler binary (mirrors the
-# runtime-bitcode embed) and Compiler::linkExecutable materializes + links them
-# alongside `-lssl -lcrypto`. Compiled with the build's own C compiler so the
-# object ABI matches the C link driver used for the produced exe. Originally
-# Windows-only; extended to Linux/macOS so `--emit=exe` links there too (the
-# undefined `__cajeta_tls_*` symbols broke ANY exe, not just TLS-using programs).
-set(CAJETA_TLS_OBJ   ${CMAKE_CURRENT_BINARY_DIR}/cajeta_tls.o)
-set(CAJETA_TLS_EMBED ${CMAKE_CURRENT_BINARY_DIR}/cajeta_tls_embedded.cpp)
-set(CAJETA_TLS_CFLAGS -c -O2 -fno-builtin -ffunction-sections -fdata-sections)
-if(NOT WIN32)
-    # The cajeta-emitted objects are PIC (so they link into the default PIE
-    # executable); compile the TLS native PIC too for a clean ELF/Mach-O link.
-    list(APPEND CAJETA_TLS_CFLAGS -fPIC)
-endif()
-add_custom_command(
-        OUTPUT ${CAJETA_TLS_OBJ}
-        COMMAND ${CMAKE_C_COMPILER} ${CAJETA_TLS_CFLAGS}
-                -I${OPENSSL_INCLUDE_DIR}
-                -o ${CAJETA_TLS_OBJ} ${CAJETA_TLS_SRC}
-        DEPENDS ${CAJETA_TLS_SRC}
-        COMMENT "Compiling cajeta TLS native object for AOT exe embedding")
-add_custom_command(
-        OUTPUT ${CAJETA_TLS_EMBED}
-        COMMAND ${CAJETA_XXD} -i cajeta_tls.o ${CAJETA_TLS_EMBED}
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-        DEPENDS ${CAJETA_TLS_OBJ}
-        COMMENT "Embedding cajeta TLS native object")
-set_source_files_properties(${CAJETA_TLS_EMBED} PROPERTIES GENERATED TRUE)
-list(APPEND GENERATED_SOURCES ${CAJETA_TLS_EMBED})
-
 # Embed the cajeta stdlib `.cajeta` source files into the compiler binary.
 # The Compiler iterates the resulting cajeta::stdlib::g_files manifest at
 # parse time, treating each entry as a stdlib prelude source. Sources live
@@ -1342,9 +1294,9 @@ endif()
 if(WIN32)
     # bcrypt: __cajeta_alloc/random helpers. ws2_32: the cajeta.io.net native
     # runtime (cajeta_net_*.c, #included into cajeta_runtime.c) calls Winsock —
-    # WSAStartup/socket/bind/getaddrinfo/select/etc. crypt32: the OS trust-store
-    # shim in cajeta_tls.c (CertOpenSystemStore / CertEnumCertificatesInStore,
-    # NET-5.3). PUBLIC so every consumer (cajeta.exe, cajeta_test,
+    # WSAStartup/socket/bind/getaddrinfo/select/etc. crypt32: OpenSSL's CryptoAPI
+    # dependencies (the OS trust-store shim moved to dev.cajeta.crypto with
+    # cajeta-crypto spec 6.3). PUBLIC so every consumer (cajeta.exe, cajeta_test,
     # cajeta_debug_test) inherits the import lib.
     target_link_libraries(${CMAKE_PROJECT_NAME}_lib PUBLIC bcrypt ws2_32 crypt32)
     # winpthreads, AGAIN and deliberately last. `pthread` is already in the
@@ -1456,15 +1408,25 @@ add_executable(${CMAKE_PROJECT_NAME} main.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/cajeta/cli/DocCommand.cpp)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ${CMAKE_PROJECT_NAME}_lib)
 # Native-deps unit 12 (jit-run unblock): the in-process JIT resolves the
-# standalone native runtime — the TLS natives (`__cajeta_tls_*`, kept OUT of the
-# embedded JIT bitcode) and `cajeta_xpu_optix_*` — via dlsym on the driver's own
-# symbols. main.cpp references none of them statically, so without this the
-# driver drops the TLS object and never exports the optix symbols, and `jit-run`
-# of any non-trivial program fails ("Symbols not found"). Mirror the cajeta_test
-# target: force-link the TLS object + OpenSSL and export symbols (`-rdynamic`).
+# standalone native runtime (`cajeta_xpu_optix_*`) and every library shim's
+# OpenSSL calls (dev.cajeta.crypto) via dlsym on the driver's own symbols.
+# main.cpp references none of them statically, so without this `jit-run` of
+# any non-trivial program fails ("Symbols not found"). Mirror the cajeta_test
+# target: link OpenSSL and export symbols (`-rdynamic`). The stdlib's TLS
+# object that used to ride here left with cajeta-crypto spec 6.3;
+# scripts/check-jit-openssl.sh checks the driver still resolves libssl.
 if(NOT WIN32)
     target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
-            ${CAJETA_TLS_OBJ} OpenSSL::SSL OpenSSL::Crypto)
+            OpenSSL::SSL OpenSSL::Crypto)
+    # Nothing in the driver calls libssl any more, so an --as-needed link drops
+    # it, and it then reached the process only through an OpenSSL-built libcurl
+    # (measured 2026-10-18). Keep it a direct dependency on ELF.
+    if(NOT APPLE)
+        target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
+                "LINKER:--push-state,--no-as-needed"
+                "${OPENSSL_SSL_LIBRARY}"
+                "LINKER:--pop-state")
+    endif()
     set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES ENABLE_EXPORTS ON)
     target_link_options(${CMAKE_PROJECT_NAME} PRIVATE -rdynamic)
     # Don't export the static LLVM symbols (HIP's bundled LLVM would clash) —

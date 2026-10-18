@@ -64,7 +64,7 @@ public class AsyncReader implements AsyncIterator<int8[]> {
 
     /**
      * The channel this reader pulls from — a plaintext
-     * [`TcpStream`](TcpStream.cajeta) or a [`TlsStream`](tls/TlsStream.cajeta),
+     * [`TcpStream`](TcpStream.cajeta) or a dev.cajeta.crypto's `TlsStream`,
      * via the [`ByteChannel`](ByteChannel.cajeta) seam (NET-8.1 / NET-9.5).
      * **Borrowed** — not owned, not closed here. Field index after the vtable
      * slot.

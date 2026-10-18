@@ -8,7 +8,7 @@ description: The streaming-hash contract every algorithm implements; swap algori
 # Hasher — the streaming-hash contract
 
 `Hasher` is the **interface** in package `cajeta.hash` that every algorithm class
-(`XXHash3`, `SipHash`, `MD5`, `DefaultHasher`, …) implements. Program your hash loop
+(`XXHash3`, `SipHash`, `DefaultHasher`, and dev.cajeta.crypto's digests) implements. Program your hash loop
 against a `Hasher` variable; pick the algorithm by which class you `heap`-construct.
 Swapping algorithms is a one-line change to the constructor — the loop body never moves.
 
@@ -19,7 +19,7 @@ You obtain a concrete instance with `heap <Algo>(...)` and hold it as a `Hasher`
 import cajeta.hash.Hasher;
 import cajeta.hash.XXHash3;
 
-Hasher h = heap XXHash3();        // swap algorithm here only: heap SipHash(key0, key1), heap MD5(), heap DefaultHasher()
+Hasher h = heap XXHash3();        // swap algorithm here only: heap SipHash(key0, key1), heap DefaultHasher()
 h.writeInt32(point.x);
 h.writeInt32(point.y);
 h.writeString(point.label);
@@ -29,7 +29,7 @@ int64 digest = h.finish();
 ## Construction & ownership
 
 - You never write `heap Hasher()`; instantiate a concrete algorithm class.
-  See `cajeta/hash/XXHash3`, `cajeta/hash/SipHash`, `cajeta/hash/MD5`,
+  See `cajeta/hash/XXHash3`, `cajeta/hash/SipHash`,
   `cajeta/hash/DefaultHasher` for each one's constructor and seeding.
 - `heap <Algo>()` yields an **owned** reference; the `Hasher` variable owns the instance
   and it drops at scope end. No `close()` exists on the contract.
@@ -62,7 +62,7 @@ All feed bytes into the running digest and return **`void`** (see v1 limitation 
 - **No fluent chaining.** v1 ships `void` write returns (not `return this`) to dodge
   interface-covariance edge cases. Chain with separate statements, not `h.writeX().writeY()`.
 - **64-bit only.** The digest is one `int64`; this contract has no wide-digest variant.
-  Cryptographic-strength wide digests are a future `cajeta.crypto` concern, not here.
+  Cryptographic-strength wide digests are the `dev.cajeta.crypto` library's, not here.
 - **No errors.** No method declares a thrown error or returns a sentinel; `finish()`
   always yields a value.
 

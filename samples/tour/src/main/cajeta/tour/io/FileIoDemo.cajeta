@@ -114,7 +114,7 @@ public class FileIoDemo extends DemoClass {
     }
 
     // 4. The file that isn't there: readAllBytes yields null-or-empty —
-    //    guard BOTH before trusting the bytes (the TlsTour idiom). No
+    //    guard BOTH before trusting the bytes (the idiom dev.cajeta.crypto's TLS tour uses for its certificates). No
     //    exception on this path; absence is a normal case for a reader.
     public void missingFile() {
         int8[] ghost #= File.readAllBytes("/tmp/cajeta_tour_no_such_file");

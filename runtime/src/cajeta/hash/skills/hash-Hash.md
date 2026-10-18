@@ -15,8 +15,8 @@ cajeta-side surface for three runtime hash primitives. Route by task:
 | key on *same heap object* (IdentityHashMap, observer/weak-ref tables) | `Hash.identity(obj)`               |
 | thread field hashes in a hand-written `hash()` override               | `Hash.combine(a, b)`               |
 | read the per-process seed (e.g. replay a hash-table snapshot)         | `Hash.processSeed()`               |
-| run a named algorithm (XXH3, SipHash, MD5)                            | sibling classes, **not** here      |
-| cryptographic hashing (SHA-2/3, BLAKE) or KDF/AEAD                    | future `cajeta.crypto`, **not** here |
+| run a named algorithm (XXH3, SipHash)                                 | sibling classes, **not** here      |
+| cryptographic hashing (MD5, SHA-1, SHA-256, BLAKE3), HMAC, KDF        | the `dev.cajeta.crypto` library, **not** here |
 
 It does **not** do structural hashing — the compiler synthesizes `Object.hash()`
 for that; `combine` is only the mixer that synthesis emits between field hashes,

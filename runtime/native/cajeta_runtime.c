@@ -130,8 +130,5 @@ typedef void (*cajeta_ctor_fn)(void* self);
 // body its init delegates to, so it must follow cajeta_net_reactor.c.
 #include "cajeta_net_reactor_lifecycle.c"
 
-// SHA-1 for the WebSocket handshake only — never for security.
-#include "cajeta_sha1.c"
-
 // Execution epochs over every registry above, so it comes last.
 #include "cajeta_rt_epoch.c"

@@ -128,12 +128,10 @@ tutorial; it links here for API detail. Docs link the
 > protocols and live in the external
 > [`dev.cajeta.http`](https://github.com/jklappenbach/cajeta-http) library.
 
-## cajeta.io.net.tls
-
-| Class | |
-|---|---|
-| [TlsConnection](io/net/tls/TlsConnection.md) | One TLS connection's engine state |
-| [TlsListener](io/net/tls/TlsListener.md) | Server-side TLS termination over `TcpListener` |
+> TLS is **not stdlib** either: `TlsStream`, `TlsListener` and `TlsConnection`
+> live in the external
+> [`dev.cajeta.crypto`](https://github.com/jklappenbach/cajeta-crypto) library
+> (`dev.cajeta.crypto.tls`), which took them from `cajeta.io.net.tls`.
 
 ## cajeta.hash
 
@@ -143,15 +141,12 @@ tutorial; it links here for API detail. Docs link the
 | [DefaultHasher](hash/DefaultHasher.md) | Process-seeded XXH3-64 behind synthesized `hash()` |
 | [XXHash3](hash/XXHash3.md) | Fast 64-bit non-cryptographic hash |
 | [SipHash](hash/SipHash.md) | DoS-resistant keyed 64-bit hash |
-| [Blake3](hash/Blake3.md) | Fast modern cryptographic hash (and XOF) |
-| [Sha256](hash/Sha256.md) | SHA-256 digest |
-| [Sha1](hash/Sha1.md) | SHA-1 digest |
-| [HmacSha256](hash/HmacSha256.md) | HMAC-SHA256 keyed authentication |
-| [Pbkdf2](hash/Pbkdf2.md) | PBKDF2-HMAC-SHA256 password hashing and key derivation |
-| [HmacSha1](hash/HmacSha1.md) | HMAC-SHA1, for HOTP and TOTP only |
-| [Totp](hash/Totp.md) | HOTP and TOTP one-time passwords as authenticator apps compute them |
-| [SecureRandom](hash/SecureRandom.md) | OS entropy for salts, keys and ids |
-| [MD5](hash/MD5.md) | MD5 checksum / identifier |
+
+Cryptographic digests (`Sha256`, `Sha1`, `MD5`, `Blake3`), `HmacSha256`,
+`HmacSha1`, `Pbkdf2`, `Totp` and `SecureRandom` are the external
+[`dev.cajeta.crypto`](https://github.com/jklappenbach/cajeta-crypto) library,
+with the same names and APIs; `cajeta.hash.Sha256` became
+`dev.cajeta.crypto.Sha256`. `Hash.constantTimeEquals` stays here.
 
 ## cajeta.math
 

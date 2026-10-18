@@ -48,8 +48,8 @@ TEST(DiagnosticLocation, aProjectFileIsSourceAndKeepsItsLegacyFields) {
 }
 
 TEST(DiagnosticLocation, aStdlibFileIsStdlib) {
-    std::string out = emitted("<stdlib>/cajeta/hash/Sha256.cajeta", 40, 5, "stdlib");
-    EXPECT_TRUE(has(out, "\"file\":\"<stdlib>/cajeta/hash/Sha256.cajeta\"")) << out;
+    std::string out = emitted("<stdlib>/cajeta/hash/XXHash3.cajeta", 40, 5, "stdlib");
+    EXPECT_TRUE(has(out, "\"file\":\"<stdlib>/cajeta/hash/XXHash3.cajeta\"")) << out;
     EXPECT_TRUE(has(out, "\"at\":\"stdlib\"")) << out;
 }
 

@@ -1286,12 +1286,21 @@ if ! "$SCRIPT_DIR/scripts/check-release-docs.sh"; then
     exit 1
 fi
 
-# The Windows JIT symbol bridge: cajeta_tls.c is linked natively, not embedded
-# in the runtime bitcode, so every `__cajeta_tls_*` entry point must be bound
-# in CajetaJitWinSymbols.cpp or every JIT test fails on COFF. Two unbound
-# entries cost the first v0.43.0 cut its Windows leg; this catches it on Linux.
+# The Windows JIT symbol bridge: the runtime bitcode's winpthread, 64-bit
+# time and emutls imports must be bound in CajetaJitWinSymbols.cpp or the
+# static release cajeta.exe runs no program in its JIT. Caught here on Linux.
 if ! "$SCRIPT_DIR/scripts/check-jit-win-symbols.sh"; then
     exit 1
+fi
+
+# The driver's JIT resolves OpenSSL from its own process for library shims
+# (dev.cajeta.crypto). The stdlib's TLS object used to hold the driver's only
+# libssl reference; this checks libssl still resolves without it.
+if [[ -x "$SCRIPT_DIR/build/src/cajeta" && "$(uname -s)" != MINGW* && "$(uname -s)" != MSYS* ]]; then
+    if ! "$SCRIPT_DIR/scripts/check-jit-openssl.sh" "$SCRIPT_DIR/build/src/cajeta" >/dev/null; then
+        "$SCRIPT_DIR/scripts/check-jit-openssl.sh" "$SCRIPT_DIR/build/src/cajeta"
+        exit 1
+    fi
 fi
 
 # The cajeta.dev downloads section, same reasoning: it is built from a file

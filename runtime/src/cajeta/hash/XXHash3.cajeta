@@ -198,7 +198,7 @@ public final class XXHash3 implements Hasher {
     // higher-collision-margin replacement for MD5 in new code (cache keys,
     // ETags, content fingerprints). The digest is delivered as 16 bytes
     // (low64 little-endian, then high64 little-endian) into a caller-provided
-    // `int8[16]`, mirroring the native reference and `MD5.hash` — so the hot
+    // `int8[16]`, mirroring the native reference and dev.cajeta.crypto's `MD5.hash` — so the hot
     // path is heap-free when the buffer is reused. Inputs > 240 B take the
     // pure-Cajeta AVX-512 SIMD long path (hashLong128Into); shorter inputs use
     // the native reference. NOTE: low64 is bit-identical to the 64-bit XXH3

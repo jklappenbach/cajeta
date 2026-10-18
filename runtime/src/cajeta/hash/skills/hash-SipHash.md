@@ -19,7 +19,7 @@ trailing parameters; the streaming object takes it in the constructor. Pick one 
 per logical table and keep it secret/stable.
 
 For non-attacker, internal data use `XXHash3` (~10x faster/byte); for ETag/fingerprint
-use `MD5`. See `cajeta.hash.Hasher` for the shared streaming contract (the `write*`
+use dev.cajeta.crypto's `MD5`. See `cajeta.hash.Hasher` for the shared streaming contract (the `write*`
 methods and `finish()` semantics) — not repeated here.
 
 ## One-shot (the common case)

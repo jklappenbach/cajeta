@@ -16,7 +16,7 @@ Three cooperating types for stream TCP:
 - **`ByteChannel`** — the async transport *interface* (`readAsync`, `writeAllAsync`,
   `readWithin`, `close`) that buffered I/O and the HTTP/WS codecs read/write *through*,
   so they don't care whether the transport is plaintext (`TcpStream`) or encrypted
-  (`tls/TlsStream`).
+  (`dev.cajeta.crypto.tls.TlsStream`, in the dev.cajeta.crypto library).
 
 ## Sync vs async — the one decision that matters
 
@@ -42,7 +42,7 @@ SocketAddress ──#──> TcpStream.connect ──> #TcpStream  (impl ByteCha
                      /connectAsync                 ▲
                                                    │ also returned by accept*
 AsyncReader/AsyncWriter ── read/write through ──> ByteChannel ──┬─ TcpStream (plaintext)
-   (→ dev.cajeta.http HttpServer/HttpClient, WebSocket)                         └─ TlsStream (TLS)
+   (→ dev.cajeta.http HttpServer/HttpClient, WebSocket)                         └─ TlsStream (TLS, dev.cajeta.crypto)
 ```
 
 - `TcpStream.connect(#SocketAddress)` / `connectAsync(#SocketAddress)` **take ownership**
@@ -71,7 +71,7 @@ AsyncReader/AsyncWriter ── read/write through ──> ByteChannel ──┬�
 ## When to use which
 
 - **`TcpStream` directly** for raw plaintext byte streams. For TLS, don't construct a
-  `TcpStream` and encrypt yourself — use `tls/TlsStream` (same `ByteChannel` API).
+  `TcpStream` and encrypt yourself — use `dev.cajeta.crypto.tls.TlsStream` (same `ByteChannel` API).
 - **Program against `ByteChannel`**, not the concrete type, in any code that should run
   over both `http://`/`ws://` and `https://`/`wss://` — that is the whole point of the seam.
 - **`acceptAsync` over `accept`** in a real server (one accept fiber shouldn't pin a

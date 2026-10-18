@@ -27,7 +27,7 @@ the same buffered reader/writer.
 | Listen/accept TCP | `TcpListener.bind(SocketAddress)` → `accept()` / `acceptAsync()` |
 | Run a concurrency-managed TCP server | `Server.bind(addr, handler)` (NET-4 accept loop, graceful drain) |
 | Speak HTTP or WebSocket | the external `dev.cajeta.http` library (HTTP is application-layer, not stdlib) |
-| Wrap a socket in TLS | `TlsStream.client/clientSystemTrust/server(#TcpStream, …)` |
+| Wrap a socket in TLS | the dev.cajeta.crypto library: `dev.cajeta.crypto.tls.TlsStream.client/clientSystemTrust/server(#TcpStream, …)` |
 | Resolve a hostname | `Dns.resolve(host[, port[, ResolveFamily]])` |
 | Parse/build a URL | `Uri.parse(String)` / `Uri.builder()` |
 | Datagram (UDP) | `UdpSocket.bind(SocketAddress)` |
@@ -140,6 +140,6 @@ r.close();
 ## Going deeper
 
 Packages: `cajeta.io.file` (filesystem), `cajeta.io.net` (sockets, `Server`,
-`ByteChannel`), `cajeta.io.net.dns`, `cajeta.io.net.tls`,
+`ByteChannel`), `cajeta.io.net.dns`,
 `cajeta.io.net.uri`. See the per-package/class skills for
 signatures, return-ownership detail, and protocol sequences.

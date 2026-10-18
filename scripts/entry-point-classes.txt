@@ -42,10 +42,6 @@ cajeta.error.RecoverableException
 cajeta.error.NoOptionalValueException
 cajeta.error.UnrecoverableException
 cajeta.hash.XXHash3
-cajeta.hash.Blake3
-cajeta.hash.Sha256
-cajeta.hash.Sha1
-cajeta.hash.MD5
 cajeta.hash.SipHash
 cajeta.hash.Hash
 cajeta.hash.DefaultHasher
@@ -79,8 +75,6 @@ cajeta.io.net.http.HttpServer
 cajeta.io.net.http.Router
 cajeta.io.net.http.HttpServerBuilder
 cajeta.io.net.ws.WebSocket
-cajeta.io.net.tls.TlsConnection
-cajeta.io.net.tls.TlsListener
 cajeta.io.net.dns.Dns
 cajeta.io.net.uri.Uri
 cajeta.io.net.uri.UriBuilder

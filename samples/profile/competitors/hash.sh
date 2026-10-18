@@ -22,7 +22,9 @@ VENDOR="${DIR}/vendor"
 LANGS="${PROFILE_LANGS:-rust cpp go python java}"
 strip() { tr -d ',"'; }
 N=1048576
-BENCHES="xxhash3 xxhash3-256k xxhash3_128 xxhash3_128-256k sha256 md5 blake3"
+# sha256, md5 and blake3 left the stdlib for dev.cajeta.crypto (cajeta-crypto
+# spec 6.3), so the Cajeta side no longer emits them.
+BENCHES="xxhash3 xxhash3-256k xxhash3_128 xxhash3_128-256k"
 
 skip_lang() {
     local lang="$1" lib="$2" reason="$3"

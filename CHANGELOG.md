@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+- **Cryptography leaves the stdlib for the `dev.cajeta.crypto` library** (cajeta-crypto spec 6.3; [cajeta-crypto](https://github.com/jklappenbach/cajeta-crypto) 0.1.0). Each type keeps its name and API; add `"dev.cajeta.crypto": "0.1.0"` to `dependencies` and change the import:
+
+  | Removed | New import |
+  |---|---|
+  | `cajeta.hash.Sha256` | `dev.cajeta.crypto.Sha256` |
+  | `cajeta.hash.Sha1` | `dev.cajeta.crypto.Sha1` |
+  | `cajeta.hash.MD5` | `dev.cajeta.crypto.MD5` |
+  | `cajeta.hash.Blake3` | `dev.cajeta.crypto.Blake3` |
+  | `cajeta.hash.HmacSha256` | `dev.cajeta.crypto.HmacSha256` |
+  | `cajeta.hash.HmacSha1` | `dev.cajeta.crypto.HmacSha1` |
+  | `cajeta.hash.Pbkdf2` | `dev.cajeta.crypto.Pbkdf2` |
+  | `cajeta.hash.Totp` | `dev.cajeta.crypto.Totp` |
+  | `cajeta.hash.SecureRandom` | `dev.cajeta.crypto.SecureRandom` |
+  | `cajeta.io.net.tls.TlsStream` | `dev.cajeta.crypto.tls.TlsStream` |
+  | `cajeta.io.net.tls.TlsListener` | `dev.cajeta.crypto.tls.TlsListener` |
+  | `cajeta.io.net.tls.TlsConnection` | `dev.cajeta.crypto.tls.TlsConnection` |
+  | `cajeta.io.net.tls.TlsException` | `dev.cajeta.crypto.tls.TlsException` |
+  | `cajeta.io.net.tls.CertificateInvalidException` | `dev.cajeta.crypto.tls.CertificateInvalidException` |
+
+  Code that still uses a removed type fails with `CAJETA_ERROR_UNRESOLVED_TYPE` naming it. `cajeta.hash.Hasher`, `XXHash3`, `SipHash`, `DefaultHasher` and `Hash.constantTimeEquals` stay, and so does `cajeta.codec.Base32`. The digests' runtime C, `__cajeta_secure_random_fill`, the TLS engine and the TLS object the compiler embedded for `--emit=exe` are gone; an exe still links `-lssl -lcrypto` (and `-lcrypt32` on Windows) for the library's shim, and the driver still exports OpenSSL to its JIT (`scripts/check-jit-openssl.sh`).
+- Windows: the static release `cajeta.exe` binds winpthread, the 64-bit time calls and emutls in its JIT symbol bridge, so `cajeta jit-run` and `cajeta test` run programs again; v0.43.1's could run none ("Symbols not found: pthread_create, ..."). The release workflow smoke-tests `jit-run`.
+- Windows: under Git Bash or MSYS2, `--classpath` entries spelled `/d/...` resolve to `D:/...`, and `--emit=exe` falls back to MSYS2's `C:/msys64/mingw64/bin` gcc or clang when no C driver is on `PATH`.
+
 ## 0.43.1 (2026-10-17)
 
 - Runtime: an idle carrier sleeps when the only runnable fiber is pinned to a busy peer. A started fiber resumes only on its home carrier, and every other carrier that found nothing it could take went round again at full CPU for the whole of that carrier's turn: three threads at 100% beside one hashing a password, and on a two-vCPU CI runner the spinner shared a physical core with the worker, so primavera's test step went from 18 minutes to past its 30-minute cap when its server moved to cajeta-http 0.7.0's pool. A carrier now looks twice more, then sleeps on its 50 ms backstop as for an empty pool. Measured on the register-user sample under two CPUs: 15:18 before, 10:17 after.

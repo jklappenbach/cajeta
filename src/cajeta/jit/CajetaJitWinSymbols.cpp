@@ -95,31 +95,8 @@ extern "C" void* __cajeta_install_ctx;
 extern "C" char  __cajeta_install_out[2048];
 
 // cajeta's OWN native families: in libcajeta_lib but off the PE export table
-// like libm, so the standalone TLS object and the OptiX entry points need
-// binding too. The void() prototypes are deliberate: only addresses are taken.
-extern "C" void __cajeta_tls_conn_new();
-extern "C" void __cajeta_tls_ctx_add_trust_pem();
-extern "C" void __cajeta_tls_ctx_free();
-extern "C" void __cajeta_tls_ctx_new();
-extern "C" void __cajeta_tls_ctx_set_alpn_select();
-extern "C" void __cajeta_tls_ctx_set_verify();
-extern "C" void __cajeta_tls_ctx_use_cert_key_pem();
-extern "C" void __cajeta_tls_ctx_use_system_trust();
-extern "C" void __cajeta_tls_feed_ciphertext();
-extern "C" void __cajeta_tls_free();
-extern "C" void __cajeta_tls_get_alpn();
-extern "C" void __cajeta_tls_handshake_step();
-extern "C" void __cajeta_tls_pending_ciphertext();
-extern "C" void __cajeta_tls_pull_ciphertext();
-extern "C" void __cajeta_tls_read_plaintext();
-extern "C" void __cajeta_tls_read_plaintext_at();
-extern "C" void __cajeta_tls_set_alpn();
-extern "C" void __cajeta_tls_set_sni();
-extern "C" void __cajeta_tls_set_verify_host();
-extern "C" void __cajeta_tls_shutdown();
-extern "C" void __cajeta_tls_verify_result();
-extern "C" void __cajeta_tls_write_plaintext();
-extern "C" void __cajeta_tls_write_plaintext_at();
+// like libm, so the OptiX entry points need binding too. The void()
+// prototypes are deliberate: only addresses are taken.
 extern "C" void cajeta_xpu_optix_available();
 extern "C" void cajeta_xpu_optix_context();
 extern "C" void cajeta_xpu_optix_cuda_context();
@@ -226,29 +203,6 @@ static const JitWinSym kSymbols[] = {
     CJ_SYM("fminf",  &fminf),   CJ_SYM("fmin",   &fmin),
     CJ_SYM("fmaxf",  &fmaxf),   CJ_SYM("fmax",   &fmax),
     // cajeta native families invisible to COFF process lookup — see above.
-    CJ_SYM("__cajeta_tls_conn_new", &__cajeta_tls_conn_new),
-    CJ_SYM("__cajeta_tls_ctx_add_trust_pem", &__cajeta_tls_ctx_add_trust_pem),
-    CJ_SYM("__cajeta_tls_ctx_free", &__cajeta_tls_ctx_free),
-    CJ_SYM("__cajeta_tls_ctx_new", &__cajeta_tls_ctx_new),
-    CJ_SYM("__cajeta_tls_ctx_set_alpn_select", &__cajeta_tls_ctx_set_alpn_select),
-    CJ_SYM("__cajeta_tls_ctx_set_verify", &__cajeta_tls_ctx_set_verify),
-    CJ_SYM("__cajeta_tls_ctx_use_cert_key_pem", &__cajeta_tls_ctx_use_cert_key_pem),
-    CJ_SYM("__cajeta_tls_ctx_use_system_trust", &__cajeta_tls_ctx_use_system_trust),
-    CJ_SYM("__cajeta_tls_feed_ciphertext", &__cajeta_tls_feed_ciphertext),
-    CJ_SYM("__cajeta_tls_free", &__cajeta_tls_free),
-    CJ_SYM("__cajeta_tls_get_alpn", &__cajeta_tls_get_alpn),
-    CJ_SYM("__cajeta_tls_handshake_step", &__cajeta_tls_handshake_step),
-    CJ_SYM("__cajeta_tls_pending_ciphertext", &__cajeta_tls_pending_ciphertext),
-    CJ_SYM("__cajeta_tls_pull_ciphertext", &__cajeta_tls_pull_ciphertext),
-    CJ_SYM("__cajeta_tls_read_plaintext", &__cajeta_tls_read_plaintext),
-    CJ_SYM("__cajeta_tls_read_plaintext_at", &__cajeta_tls_read_plaintext_at),
-    CJ_SYM("__cajeta_tls_set_alpn", &__cajeta_tls_set_alpn),
-    CJ_SYM("__cajeta_tls_set_sni", &__cajeta_tls_set_sni),
-    CJ_SYM("__cajeta_tls_set_verify_host", &__cajeta_tls_set_verify_host),
-    CJ_SYM("__cajeta_tls_shutdown", &__cajeta_tls_shutdown),
-    CJ_SYM("__cajeta_tls_verify_result", &__cajeta_tls_verify_result),
-    CJ_SYM("__cajeta_tls_write_plaintext", &__cajeta_tls_write_plaintext),
-    CJ_SYM("__cajeta_tls_write_plaintext_at", &__cajeta_tls_write_plaintext_at),
     CJ_SYM("cajeta_xpu_optix_available", &cajeta_xpu_optix_available),
     CJ_SYM("cajeta_xpu_optix_context", &cajeta_xpu_optix_context),
     CJ_SYM("cajeta_xpu_optix_cuda_context", &cajeta_xpu_optix_cuda_context),

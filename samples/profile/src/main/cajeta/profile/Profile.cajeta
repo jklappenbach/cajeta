@@ -35,9 +35,6 @@ import profile.hash.XXHash3_256kBench;
 import profile.hash.XXHash3_128Bench;
 import profile.hash.XXHash3_128_256kBench;
 import profile.hash.SipHashBench;
-import profile.hash.Sha256Bench;
-import profile.hash.Md5Bench;
-import profile.hash.Blake3Bench;
 import profile.stream.StreamPipelineBench;
 import profile.stream.StreamParallelReduceBench;
 import profile.math.SaxpyBench;
@@ -111,9 +108,6 @@ public final class Profile {
         benchmarks.add(heap XXHash3_128Bench());
         benchmarks.add(heap XXHash3_128_256kBench());
         benchmarks.add(heap SipHashBench());
-        benchmarks.add(heap Sha256Bench());
-        benchmarks.add(heap Md5Bench());
-        benchmarks.add(heap Blake3Bench());
         // -- stream area (Unit 10) --
         benchmarks.add(heap StreamPipelineBench());
         benchmarks.add(heap StreamParallelReduceBench());

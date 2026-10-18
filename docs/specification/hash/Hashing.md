@@ -1,9 +1,10 @@
 # Hashing — `cajeta.hash`
 
-Non-cryptographic *and* cryptographic digesting. Collision-resistant
-fingerprints (`Sha256`, `Blake3`) now ship in this package; only
-authenticated/keyed primitives (HMAC, AEAD, signatures) are deferred to
-the future `cajeta.crypto` peer library.
+Non-cryptographic digesting. *(Amended 2026-10-18 with cajeta-crypto spec
+6.3.)* The cryptographic digests (`Sha256`, `Sha1`, `MD5`, `Blake3`), HMAC,
+PBKDF2, TOTP and `SecureRandom` left this package for the `dev.cajeta.crypto`
+library, which also carries JWS signatures and TLS. What this document says
+of them below is history; the library's own docs are current.
 
 This is the cajeta surface for the runtime `__cajeta_hash_*` symbols
 plus the algorithm classes that wrap them. Every cajeta value has a

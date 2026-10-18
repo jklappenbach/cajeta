@@ -147,7 +147,7 @@ public final class Tour {
         System.stdout.println("=== tour complete: " + DemoClass.checks
             + " self-checks passed ===");
         System.stdout.println("separate tours: samples/tour/xpu (GPU kernels), "
-            + "samples/tour/ifx (windowing, headless), samples/tour/tls (TLS loopback)");
+            + "samples/tour/ifx (windowing, headless); TLS is dev.cajeta.crypto's tour");
         return 0;
     }
 }

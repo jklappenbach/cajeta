@@ -10,7 +10,7 @@ description: The bufio-style buffered read/write pair the HTTP and WebSocket cod
 The buffered streaming pair every HTTP/1.1 and WebSocket codec reads and writes
 *through* (plan item NET-3.5). Each wraps a borrowed
 [`ByteChannel`](../ByteChannel.cajeta) (a `TcpStream` for `http://`/`ws://`, a
-`TlsStream` for `https://`/`wss://`) and bridges the gap between *whatever bytes the
+dev.cajeta.crypto's `TlsStream` for `https://`/`wss://`) and bridges the gap between *whatever bytes the
 socket has ready* and the *tokens* a codec wants — a CRLF line, an exact
 `Content-Length` body, a fixed WS frame header. The Go `bufio` / Rust `BufReader`+
 `BufWriter` shape. Every refill/flush parks the **fiber** (not the carrier) on the

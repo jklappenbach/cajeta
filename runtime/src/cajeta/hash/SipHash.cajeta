@@ -14,7 +14,7 @@ import cajeta.lang.String;
  *
  * For internal keys (compiler-generated, known-shape buffers,
  * non-attacker inputs) use `XXHash3` instead — ~10× faster per byte.
- * For ETag / fingerprint use `MD5`. Default `Object``.hash()` uses a
+ * For ETag / fingerprint use dev.cajeta.crypto's `MD5`. Default `Object``.hash()` uses a
  * process-seeded XXH3-64 (which is itself DoS-resistant by virtue
  * of the secret per-process seed).
  *

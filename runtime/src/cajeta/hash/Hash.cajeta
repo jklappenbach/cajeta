@@ -27,12 +27,11 @@ package cajeta.hash;
  * | `XXHash3`       | XXH3-64                  | fast general-purpose; default backing   |
  * | `RapidHash`     | rapidhash                | maximum throughput, smaller code        |
  * | `SipHash`       | SipHash-2-4              | DoS-resistant, key-derived              |
- * | `MD5`           | MD5                      | checksum / identifier, **not security** |
  * | `DefaultHasher` | XXH3-64 + seed           | what `Object.hash()` uses               |
  *
- * **Cryptographic hashes** (SHA-2, SHA-3, BLAKE2/3) and AEAD /
- * signature / KDF primitives live in the future `cajeta.crypto` peer
- * library — never inside `cajeta.hash`.
+ * **Cryptographic hashes** (MD5, SHA-1, SHA-256, BLAKE3), HMAC, PBKDF2,
+ * TOTP, a secure random source and JWS signatures live in the
+ * `dev.cajeta.crypto` library — never inside `cajeta.hash`.
  *
  * ## Usage
  *

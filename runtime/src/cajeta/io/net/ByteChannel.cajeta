@@ -11,7 +11,7 @@ package cajeta.io.net;
  *   - [`TcpStream`](TcpStream.cajeta) — the raw socket (plaintext `http://` /
  *     `ws://`), where `readAsync` / `writeAllAsync` are the reactor-parking
  *     non-blocking ops directly;
- *   - [`TlsStream`](tls/TlsStream.cajeta) — the TLS engine over a socket
+ *   - `dev.cajeta.crypto.tls.TlsStream` — the TLS engine over a socket (a library since the stdlib's TLS moved there)
  *     (`https://` / `wss://`), where the same calls drive the memory-BIO
  *     pump (encrypt-on-write, decrypt-on-read) over the socket underneath.
  *

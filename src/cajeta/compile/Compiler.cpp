@@ -26,7 +26,6 @@
 #include "cajeta/dbg/DebugCodegen.h"
 #include "cajeta/xref/XrefIndex.h"
 #include "cajeta/xref/StaticReceiverCapture.h"
-#include "cajeta/runtime/EmbeddedTls.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/Analysis/ModuleSummaryAnalysis.h"   // buildModuleSummaryIndex (ThinLTO)
@@ -3035,16 +3034,6 @@ namespace cajeta {
         if (!haveLld) haveLld = linkToolRuns("lld-link");
 #endif
 
-        // Materialize the embedded TLS native object beside the output: the exe
-        // references `__cajeta_tls_*` from the always-linked stdlib thunks, and those
-        // natives are kept out of the embedded JIT bitcode.
-        std::string tlsObjPath = archiveRootPath + "__cajeta_tls.o";
-        {
-            std::ofstream tlsOut(tlsObjPath, std::ios::binary);
-            tlsOut.write(reinterpret_cast<const char*>(cajeta_tls_o),
-                         (std::streamsize) cajeta_tls_o_len);
-        }
-
         writeAotStubs(archiveRootPath);
         const std::string optixStubPath =
             archiveRootPath + "__cajeta_xpu_optix_stub.c";
@@ -3137,7 +3126,6 @@ namespace cajeta {
                 opt.argv.push_back("-fuse-ld=lld");
             }
             for (const auto& obj : objectFiles) opt.argv.push_back(obj);
-            opt.argv.push_back(tlsObjPath);
             opt.argv.push_back(optixStubPath);
             opt.argv.push_back(sessionStubPath);
             // Native-dep archives AFTER the objects that reference them (single-
@@ -3167,10 +3155,10 @@ namespace cajeta {
             // runtime and OpenSSL: the binary then depends only on Windows system DLLs.
             // cja / uber artifacts stay dynamic — they run inside cajeta's JIT host.
             opt.argv.push_back("-static");    // libgcc / libstdc++ / winpthread
-            opt.argv.push_back("-lssl");      // TLS engine (__cajeta_tls_*, cajeta_tls.o)
+            opt.argv.push_back("-lssl");      // dev.cajeta.crypto's TLS shim, and any @Native OpenSSL
             opt.argv.push_back("-lcrypto");
             opt.argv.push_back("-lws2_32");   // Winsock (cajeta.io.net natives in the bitcode)
-            opt.argv.push_back("-lcrypt32");  // OS trust-store shim (cajeta_tls.c)
+            opt.argv.push_back("-lcrypt32");  // OS trust store (dev.cajeta.crypto's TLS shim)
             opt.argv.push_back("-lbcrypt");   // BCryptGenRandom (runtime RNG)
             opt.argv.push_back("-ladvapi32"); // OpenSSL CryptoAPI dependencies
             opt.argv.push_back("-luser32");

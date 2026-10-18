@@ -60,7 +60,7 @@ rarely call it directly.
 
 **Seam / buffer types:**
 - `ByteChannel` — the interface (`readAsync`, `writeAllAsync`, `readWithin`, `close`);
-  implementors are `TcpStream` (plaintext) and `tls/TlsStream` (encrypted). Code written
+  implementors are `TcpStream` (plaintext) and `dev.cajeta.crypto.tls.TlsStream` (encrypted, in the dev.cajeta.crypto library). Code written
   against `ByteChannel` runs unchanged over cleartext or TLS.
 - `ByteBuffer` — growable cursor buffer (`put`/`write`/`read`/`compact`/`reserve`).
 - `RingBuffer` — fixed-capacity ring with low/high watermarks (backpressure signalling).
@@ -140,7 +140,7 @@ or unbracketed IPv6, raises `MalformedAddressException`.
 
 - Buffers (cursors, watermarks, pooling): `ByteBuffer`, `RingBuffer`, `BufferPool` class skills.
 - Servers (models, builder, drain, caps): `Server`, `ServerBuilder`, `ServerModel`, `SharedPoolServer`.
-- Protocols: `.../tls` (TLS termination via `TlsStream`/`TlsListener`), `.../dns`
+- Protocols: TLS is in the dev.cajeta.crypto library (`dev.cajeta.crypto.tls`: `TlsStream`/`TlsListener`); `.../dns`
   (resolution), `.../uri` (URI parse/encode). HTTP/1.1 + WebSocket live in the
   external `dev.cajeta.http` library.
 - Reactor primitive: `cajeta/io/net/reactor/Reactor`.

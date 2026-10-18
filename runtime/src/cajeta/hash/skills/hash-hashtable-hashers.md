@@ -25,8 +25,8 @@ Notes that prevent dead ends:
   so an attacker can't precompute colliding keys for *your* process. Reach for
   `SipHash` only when you need a caller-chosen 128-bit key (e.g. a key rotated/derived
   per tenant or shared across a cluster) — not merely because input is untrusted.
-- These produce **64-bit non-cryptographic** digests. For ETag/checksum use `MD5`;
-  for security hashes (SHA-2/3, BLAKE) use the future `cajeta.crypto` library — there
+- These produce **64-bit non-cryptographic** digests. For ETag/checksum use `dev.cajeta.crypto.MD5`;
+  for security hashes (SHA-256, BLAKE3) use the `dev.cajeta.crypto` library — there
   is none here.
 - `DefaultHasher` is *not* a separate algorithm: it wraps an `XXHash3`. Use it for
   intent ("same shape as `Object.hash()`"), not for speed.

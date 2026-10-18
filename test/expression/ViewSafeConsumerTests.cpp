@@ -52,7 +52,7 @@ const std::string& moduleSrc() {
     static const std::string s =
     "package test;\n"
     "import cajeta.hash.XXHash3;\n"
-    "import cajeta.hash.Sha256;\n"
+    "import cajeta.hash.SipHash;\n"
     "import cajeta.codec.Base64;\n"
     "import cajeta.codec.json.Json;\n"
     "import cajeta.codec.json.JsonValue;\n"
@@ -84,15 +84,16 @@ const std::string& moduleSrc() {
     "        return 0;\n"
     "    }\n"
 
-    // Sha256 String overloads (oneshot + hex) window-correct.
-    "    public static int32 run_sha256ViewParity() {\n"
+    // SipHash String overload sees the window, not the root prefix. (The
+    // Sha256 case moved with Sha256 to dev.cajeta.crypto.)
+    "    public static int32 run_sipHashViewParity() {\n"
     "        String a = \"abcdefghijklmnopqrstuvwxyz\";\n"
     "        String b = \"0123456789\";\n"
     "        String s = a + b;\n"
     "        String v #= s.substring(10, 16);\n"
-    "        String hv #= Sha256.hashStringHex(v);\n"
-    "        String hk #= Sha256.hashStringHex(\"klmnop\");\n"
-    "        if (!hv.equals(hk)) { return 1; }\n"
+    "        if (!v.equals(\"klmnop\")) { return 90; }\n"
+    "        if (SipHash.hashStringKeyed(v, (int64) 1, (int64) 2)\n"
+    "                != SipHash.hashStringKeyed(\"klmnop\", (int64) 1, (int64) 2)) { return 1; }\n"
     "        return 0;\n"
     "    }\n"
 
@@ -261,7 +262,7 @@ std::unique_ptr<CajetaJit> ViewSafeConsumerTests::jit;
 }  // namespace
 
 TEST_F(ViewSafeConsumerTests, xxhashViewParity)    { EXPECT_EQ(i32("run_xxhashViewParity"), 0); }
-TEST_F(ViewSafeConsumerTests, sha256ViewParity)    { EXPECT_EQ(i32("run_sha256ViewParity"), 0); }
+TEST_F(ViewSafeConsumerTests, sipHashViewParity)   { EXPECT_EQ(i32("run_sipHashViewParity"), 0); }
 TEST_F(ViewSafeConsumerTests, sbAppendViewSmall)   { EXPECT_EQ(i32("run_sbAppendViewSmall"), 0); }
 TEST_F(ViewSafeConsumerTests, sbAppendViewSpilled) { EXPECT_EQ(i32("run_sbAppendViewSpilled"), 0); }
 TEST_F(ViewSafeConsumerTests, jsonWriterView)      { EXPECT_EQ(i32("run_jsonWriterView"), 0); }

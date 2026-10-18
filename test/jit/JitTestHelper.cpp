@@ -72,37 +72,6 @@ extern "C" {
     void __cajeta_set_poison_free(int enabled);
     void __cajeta_set_drop_chain_validate(int enabled);
     void __cajeta_set_stack_trace_capture(int enabled);
-
-    // cajeta.io.net TLS engine (runtime/native/cajeta_tls.c). Unlike the other
-    // __cajeta_* runtime symbols, these are NOT in the embedded JIT bitcode
-    // (that would drag OpenSSL's headers + unresolvable static-libssl SSL_*
-    // externs into every JIT module). They're native-only in libcajeta_lib, so
-    // the JIT's process-symbol generator can't see them (exe-local, not
-    // PE-exported on MinGW) — registerTlsEngineSymbols() binds them explicitly.
-    void* __cajeta_tls_ctx_new(int isServer);
-    int   __cajeta_tls_ctx_use_cert_key_pem(void* ctx, const void* cert, int cl,
-                                            const void* key, int kl);
-    void  __cajeta_tls_ctx_free(void* ctx);
-    int   __cajeta_tls_ctx_set_verify(void* ctx, int mode);
-    int   __cajeta_tls_ctx_add_trust_pem(void* ctx, const void* pem, int len);
-    int   __cajeta_tls_ctx_use_system_trust(void* ctx);
-    void* __cajeta_tls_conn_new(void* ctx, int isServer);
-    int   __cajeta_tls_set_verify_host(void* conn, const void* host, int len);
-    int   __cajeta_tls_verify_result(void* conn);
-    int   __cajeta_tls_set_sni(void* conn, const void* host, int hostLen);
-    int   __cajeta_tls_set_alpn(void* conn, const void* protos, int len);
-    int   __cajeta_tls_get_alpn(void* conn, void* out, int max);
-    int   __cajeta_tls_ctx_set_alpn_select(void* ctx, const void* protos, int len);
-    int   __cajeta_tls_feed_ciphertext(void* conn, const void* buf, int len);
-    int   __cajeta_tls_pull_ciphertext(void* conn, void* out, int max);
-    int   __cajeta_tls_pending_ciphertext(void* conn);
-    int   __cajeta_tls_handshake_step(void* conn);
-    int   __cajeta_tls_write_plaintext(void* conn, const void* buf, int len);
-    int   __cajeta_tls_read_plaintext(void* conn, void* out, int max);
-    int   __cajeta_tls_write_plaintext_at(void* conn, const void* buf, int off, int len);
-    int   __cajeta_tls_read_plaintext_at(void* conn, void* out, int off, int max);
-    int   __cajeta_tls_shutdown(void* conn);
-    void  __cajeta_tls_free(void* conn);
 }
 
 namespace cajeta_test {
@@ -784,9 +753,9 @@ struct StdlibReuseCache {
         return names;
     }
 
-    // Bind host process symbols, the MinGW CRT entry points and the native
-    // TLS-engine symbols onto `jd` so JIT'd stdlib and user code resolves
-    // libc, the statically-linked runtime and the net TLS entry points.
+    // Bind host process symbols and the MinGW CRT entry points onto `jd` so
+    // JIT'd stdlib and user code resolves libc and the statically-linked
+    // runtime. (The TLS engine left with cajeta-crypto spec 6.3.)
     void installHostSymbols(llvm::orc::LLJIT& jit, llvm::orc::JITDylib& jd) {
         auto gen = llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
             jit.getDataLayout().getGlobalPrefix());
@@ -808,36 +777,6 @@ struct StdlibReuseCache {
                 jd.define(llvm::orc::absoluteSymbols(std::move(winSymMap))));
         }
 #endif
-        llvm::orc::SymbolMap tlsSyms;
-        auto bind = [&](const char* name, void* addr) {
-            tlsSyms[ES.intern(name)] = llvm::orc::ExecutorSymbolDef(
-                llvm::orc::ExecutorAddr::fromPtr(addr),
-                llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable);
-        };
-        bind("__cajeta_tls_ctx_new", (void*) &__cajeta_tls_ctx_new);
-        bind("__cajeta_tls_ctx_use_cert_key_pem", (void*) &__cajeta_tls_ctx_use_cert_key_pem);
-        bind("__cajeta_tls_ctx_free", (void*) &__cajeta_tls_ctx_free);
-        bind("__cajeta_tls_ctx_set_verify", (void*) &__cajeta_tls_ctx_set_verify);
-        bind("__cajeta_tls_ctx_add_trust_pem", (void*) &__cajeta_tls_ctx_add_trust_pem);
-        bind("__cajeta_tls_ctx_use_system_trust", (void*) &__cajeta_tls_ctx_use_system_trust);
-        bind("__cajeta_tls_conn_new", (void*) &__cajeta_tls_conn_new);
-        bind("__cajeta_tls_set_verify_host", (void*) &__cajeta_tls_set_verify_host);
-        bind("__cajeta_tls_verify_result", (void*) &__cajeta_tls_verify_result);
-        bind("__cajeta_tls_set_sni", (void*) &__cajeta_tls_set_sni);
-        bind("__cajeta_tls_set_alpn", (void*) &__cajeta_tls_set_alpn);
-        bind("__cajeta_tls_get_alpn", (void*) &__cajeta_tls_get_alpn);
-        bind("__cajeta_tls_ctx_set_alpn_select", (void*) &__cajeta_tls_ctx_set_alpn_select);
-        bind("__cajeta_tls_feed_ciphertext", (void*) &__cajeta_tls_feed_ciphertext);
-        bind("__cajeta_tls_pull_ciphertext", (void*) &__cajeta_tls_pull_ciphertext);
-        bind("__cajeta_tls_pending_ciphertext", (void*) &__cajeta_tls_pending_ciphertext);
-        bind("__cajeta_tls_handshake_step", (void*) &__cajeta_tls_handshake_step);
-        bind("__cajeta_tls_write_plaintext", (void*) &__cajeta_tls_write_plaintext);
-        bind("__cajeta_tls_read_plaintext", (void*) &__cajeta_tls_read_plaintext);
-        bind("__cajeta_tls_write_plaintext_at", (void*) &__cajeta_tls_write_plaintext_at);
-        bind("__cajeta_tls_read_plaintext_at", (void*) &__cajeta_tls_read_plaintext_at);
-        bind("__cajeta_tls_shutdown", (void*) &__cajeta_tls_shutdown);
-        bind("__cajeta_tls_free", (void*) &__cajeta_tls_free);
-        cajeta::jittest::cantFail(jd.define(llvm::orc::absoluteSymbols(std::move(tlsSyms))));
     }
 
     void ensureSharedStdlibDylib() {

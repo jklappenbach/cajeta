@@ -58,7 +58,7 @@ public class AsyncWriter {
 
     /**
      * The channel this writer flushes to — a plaintext
-     * [`TcpStream`](TcpStream.cajeta) or a [`TlsStream`](tls/TlsStream.cajeta),
+     * [`TcpStream`](TcpStream.cajeta) or a dev.cajeta.crypto's `TlsStream`,
      * via the [`ByteChannel`](ByteChannel.cajeta) seam (NET-8.1 / NET-9.5).
      * **Borrowed** — not owned, not closed here.
      */

@@ -162,14 +162,6 @@ TEST(ExceptionMessageOwnershipTests, TimedOutException) {
     EXPECT_EQ(1, runI32(canary("cajeta.io.net", "TimedOutException", "")));
 }
 
-TEST(ExceptionMessageOwnershipTests, CertificateInvalidException) {
-    EXPECT_EQ(1, runI32(canary("cajeta.io.net.tls", "CertificateInvalidException", ", 0")));
-}
-
-TEST(ExceptionMessageOwnershipTests, TlsException) {
-    EXPECT_EQ(1, runI32(canary("cajeta.io.net.tls", "TlsException", "")));
-}
-
 TEST(ExceptionMessageOwnershipTests, TooManyConnectionsException) {
     EXPECT_EQ(1, runI32(canary("cajeta.io.net", "TooManyConnectionsException", ", 0")));
 }
