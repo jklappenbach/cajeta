@@ -1,7 +1,8 @@
 # cajeta-xgboost device-resident training (spec)
 
-Status: draft, 2026-10-17. Written at Julian's request, relayed by Phoenix
-with the 4090 measurements in 1.2. The open questions are in 10.
+Status: active, approved by Julian 2026-10-17. He answered the open
+questions interactively the same day; the decisions are in 10. Written at his
+request, relayed by Phoenix with the 4090 measurements in 1.2.
 
 ## 1. Definition
 
@@ -321,6 +322,17 @@ is the target (10.3).
   model, and its time is recorded beside the 4090's.
 
 ## 10. Open questions
+
+All five were decided by Julian on 2026-10-17, each as recommended:
+- **10.1:** the wide fixed point.
+- **10.2:** the current level plus its parents.
+- **10.3:** within 3x of upstream's training-alone time on the 4090, with
+  flat scaling from 200k to 1M rows.
+- **10.4:** batch by level when `maxLeaves` is 0, per node otherwise.
+- **10.5:** a separate spec for the sketch and the binner, written now and
+  run in parallel.
+
+The questions as they were put:
 
 - **10.1 The quantiser's sums on the device.** These options would make the
   exponent exact and order-free:
