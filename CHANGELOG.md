@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.44.0 (2026-10-18)
 
 - **Cryptography leaves the stdlib for the `dev.cajeta.crypto` library** (cajeta-crypto spec 6.3; [cajeta-crypto](https://github.com/jklappenbach/cajeta-crypto) 0.1.0). Each type keeps its name and API; add `"dev.cajeta.crypto": "0.1.0"` to `dependencies` and change the import:
 
@@ -22,6 +22,7 @@
   | `cajeta.io.net.tls.CertificateInvalidException` | `dev.cajeta.crypto.tls.CertificateInvalidException` |
 
   Code that still uses a removed type fails with `CAJETA_ERROR_UNRESOLVED_TYPE` naming it. `cajeta.hash.Hasher`, `XXHash3`, `SipHash`, `DefaultHasher` and `Hash.constantTimeEquals` stay, and so does `cajeta.codec.Base32`. The digests' runtime C, `__cajeta_secure_random_fill`, the TLS engine and the TLS object the compiler embedded for `--emit=exe` are gone; an exe still links `-lssl -lcrypto` (and `-lcrypt32` on Windows) for the library's shim, and the driver still exports OpenSSL to its JIT (`scripts/check-jit-openssl.sh`).
+- xpu: a launch whose bindless buffer array holds more than 16 buffers is refused and counted on every backend. The launch site clamped the count to 16 before storing it, so a 17-buffer launch ran silently with 16; cuda and hip now refuse it by count, cpu checks each array against the cap before running (it used to read `bufs[16]` off its slot), and vulkan refuses it as before. `Device.launchFailures()` also counts cuda's texture-allocation, shared-memory opt-in and argument-translation exits and hip's launch exit, which returned without counting.
 - Windows: the static release `cajeta.exe` binds winpthread, the 64-bit time calls and emutls in its JIT symbol bridge, so `cajeta jit-run` and `cajeta test` run programs again; v0.43.1's could run none ("Symbols not found: pthread_create, ..."). The release workflow smoke-tests `jit-run`.
 - Windows: under Git Bash or MSYS2, `--classpath` entries spelled `/d/...` resolve to `D:/...`, and `--emit=exe` falls back to MSYS2's `C:/msys64/mingw64/bin` gcc or clang when no C driver is on `PATH`.
 
