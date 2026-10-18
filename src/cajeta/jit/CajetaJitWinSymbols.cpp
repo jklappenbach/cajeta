@@ -19,6 +19,14 @@
 #include <signal.h>
 // libmingwex is off the PE export table, so its dirent trio needs binding too.
 #include <dirent.h>
+// winpthread, with the 64-bit time calls in pthread_time.h: the runtime's
+// carriers, locks and timed waits import these, and the release cajeta.exe
+// links them statically, so its JIT can reach them only through this table.
+#include <pthread.h>
+
+// libgcc's emulated thread-local storage, which the runtime's thread_local
+// variables lower to on mingw.
+extern "C" void* __emutls_get_address(void*);
 
 // fprintf/snprintf/strtod lower to these under ANSI stdio; bound by real name.
 extern "C" int __mingw_fprintf(FILE*, const char*, ...);
@@ -166,6 +174,30 @@ static const JitWinSym kSymbols[] = {
     CJ_SYM("__mingw_snprintf", &__mingw_snprintf),
     CJ_SYM("__mingw_strtod",   &__mingw_strtod),
     CJ_SYM("___chkstk_ms",     &___chkstk_ms),
+    // winpthread, the 64-bit time calls and emutls — see the includes above.
+    // Measured 2026-10-17: unbound, the static release exe's `jit-run` failed
+    // for every program on exactly these names.
+    CJ_SYM("pthread_create",            &::pthread_create),
+    CJ_SYM("pthread_join",              &::pthread_join),
+    CJ_SYM("pthread_self",              &::pthread_self),
+    CJ_SYM("pthread_equal",             &::pthread_equal),
+    CJ_SYM("pthread_once",              &::pthread_once),
+    CJ_SYM("pthread_mutex_init",        &::pthread_mutex_init),
+    CJ_SYM("pthread_mutex_destroy",     &::pthread_mutex_destroy),
+    CJ_SYM("pthread_mutex_lock",        &::pthread_mutex_lock),
+    CJ_SYM("pthread_mutex_unlock",      &::pthread_mutex_unlock),
+    CJ_SYM("pthread_mutexattr_init",    &::pthread_mutexattr_init),
+    CJ_SYM("pthread_mutexattr_destroy", &::pthread_mutexattr_destroy),
+    CJ_SYM("pthread_mutexattr_settype", &::pthread_mutexattr_settype),
+    CJ_SYM("pthread_cond_init",         &::pthread_cond_init),
+    CJ_SYM("pthread_cond_destroy",      &::pthread_cond_destroy),
+    CJ_SYM("pthread_cond_wait",         &::pthread_cond_wait),
+    CJ_SYM("pthread_cond_signal",       &::pthread_cond_signal),
+    CJ_SYM("pthread_cond_broadcast",    &::pthread_cond_broadcast),
+    CJ_SYM("pthread_cond_timedwait64",  &::pthread_cond_timedwait64),
+    CJ_SYM("nanosleep64",               &::nanosleep64),
+    CJ_SYM("clock_gettime64",           &::clock_gettime64),
+    CJ_SYM("__emutls_get_address",      &__emutls_get_address),
     CJ_SYM("sincos",           &sincos),
     CJ_SYM("sincosf",          &sincosf),
     // sjlj exception machinery (MSVCRT) — see the extern "C" block above.

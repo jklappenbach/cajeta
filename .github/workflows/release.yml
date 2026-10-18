@@ -731,6 +731,29 @@ jobs:
           ./build/src/cajeta --version
           ./build/src/cajeta --version --verbose
 
+      # ---- Smoke test: the shipped binary's JIT runs a program ----------
+      # The release tests run through cajeta_test, which links winpthread as
+      # a DLL; the shipped Windows cajeta.exe is -static, so only this step
+      # exercises ITS JIT. v0.43.1 shipped with `jit-run` failing for every
+      # program on unbound winpthread/time64/emutls symbols, behind a green
+      # --version smoke.
+      - name: Smoke test (JIT)
+        run: |
+          mkdir -p build/jit-smoke/smoke
+          cat > build/jit-smoke/smoke/Main.cajeta <<'EOF'
+          package smoke;
+
+          public final class Main {
+              public static int32 run() {
+                  System.stdout.println("jit smoke ok");
+                  return 0;
+              }
+          }
+          EOF
+          out="$(./build/src/cajeta jit-run build/jit-smoke smoke.Main.run 2>&1)" || true
+          echo "$out"
+          echo "$out" | grep -q 'jit smoke ok'
+
       # ---- Run the release regression subset ----------------------------
       #
       # NOT the full ~1725-test battery — running that on all four matrix
