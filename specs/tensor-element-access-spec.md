@@ -35,5 +35,8 @@ pays the same: ml, timeseries, recsys and xgboost all do.
   - a per-call borrow or drop.
 
   Measure with `--emit=ir` on the probe before designing anything.
-- **3.2** Fix the access path, or add a bulk view (`hostArray()` / a span
-  borrow) for hot loops, or both.
+- **3.2** Fix the access path, or rely on the bulk view for hot loops, or
+  both. The bulk view already exists: `hostBuffer()` borrows the host
+  array, indexed from `hostBase()` (since v0.22). cajeta-xgboost's sketch
+  and binner read through it from xgboost-data-prep Unit 3 on. What
+  remains is whether `flatGet` itself should cost this much.
