@@ -58,9 +58,22 @@ int64-scan-verbs Unit 7 (cajeta-xgboost 97016e0) took the first step:
   place;
 - a histogram reads only its node's rows.
 
-One depth-6 tree on large_reg went from 2419 ms to 53 ms on gfx1151, and
-covertype from 5726 ms to 69 ms (median of 9, round-0 gradients). The 4090
-figure after Unit 7 is to be added when Phoenix reruns.
+One depth-6 tree, round-0 gradients, median of 9:
+
+| tree | gfx1151 | 4090 |
+|---|---|---|
+| large_reg | 2419 ms → 53 ms | 5442 ms → 196 ms |
+| covertype | 5726 ms → 69 ms | 13212 ms → 198 ms |
+
+On the 4090 the segment tree costs the same at 20k and 50k rows, so what
+is left is per-node fixed cost, not row work.
+
+Phoenix's xgbbench run at 0.5.0's code (97016e0) on the 4090:
+- `GBDT.fit` on large_reg takes 4.6 s, against 53.5 s before;
+- its boost takes 3588 ms, against 52,923 ms, and now beats cajeta's own
+  CPU boost (5,177 ms);
+- the boost is still about 46x upstream's training alone (78 ms), and the
+  whole fit about 26x upstream end to end (177 ms).
 
 ### 1.3 What is still per node after Unit 7
 
