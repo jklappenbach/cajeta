@@ -75,6 +75,23 @@ Phoenix's xgbbench run at 0.5.0's code (97016e0) on the 4090:
 - the boost is still about 46x upstream's training alone (78 ms), and the
   whole fit about 26x upstream end to end (177 ms).
 
+The 0.5.0 baseline on the 4090 (Phoenix, 2026-10-17, bd3c068). Each cajeta
+figure is the median whole fit and its sketch / bin / boost phases. Upstream
+is XGBoost 3.1.2, end to end and training alone, medians, WSL only:
+
+| data | cajeta, WSL2 | cajeta, native Windows | upstream |
+|---|---|---|---|
+| large_reg | 4822 ms (438 / 476 / 3538) | 4822 ms (401 / 830 / 3251) | 111 / 68 ms |
+| large_binary | 4934 ms (438 / 548 / 3790) | 4849 ms (413 / 817 / 3453) | 105 / 68 ms |
+| large_multi | 15404 ms (444 / 546 / 14254) | 15341 ms (385 / 790 / 12935) | 231 / 164 ms |
+| reg 200k | 13794 ms (3445 / 6103 / 4248) | 16754 ms (3593 / 7851 / 4025) | 358 / 87 ms |
+| 4-class 200k | 25846 ms (3458 / 5475 / 16500) | 29082 ms (3699 / 8016 / 15832) | 465 / 202 ms |
+
+Native Windows boosts only 4 to 9% faster than WSL2, so the per-node cost
+is not a WSL launch tax. At 200k rows the sketch and the binner take 9.5 s
+of a 13.8 s fit, against upstream's 358 ms end to end. The boost is no
+longer the larger share there (10.5).
+
 ### 1.3 What is still per node after Unit 7
 
 Read at 97016e0:
@@ -98,6 +115,9 @@ Read at 97016e0:
 On WSL2 a launch plus synchronization costs about 50 µs (featureScan's floor
 in int64-scan-verbs 6.1.2). A depth-6 tree has up to 63 splits, so six
 synchronizations per split is already about 19 ms per tree before any work.
+That floor is a small part of the 155 to 197 ms a tree takes on the 4090,
+and native Windows is barely faster (1.2). Most of the time goes to the
+allocations, transfers and host work listed above.
 
 ### 1.4 Systems
 
@@ -330,8 +350,9 @@ is the target (10.3).
   `maxLeaves` (lossguide-like) growth needs a priority order, not levels.
   - Recommended: batch by level when `maxLeaves` is 0, and keep the per-node
     order otherwise, with the same resident data.
-- **10.5 The sketch and the binner.** They take 0.9 s of the 1.3 s that
-  would remain on large_reg.
-  - Recommended: a separate spec once training meets 10.3, since upstream's
-    QuantileDMatrix costs 100 ms there and that difference will then
-    dominate end to end.
+- **10.5 The sketch and the binner.**
+  - At 20k rows they take 0.9 s; at 200k rows they take 9.5 s of a 13.8 s
+    fit (1.2).
+  - Revised recommendation: a separate spec, written now and run in
+    parallel rather than after this one. Below about 50k rows the boost
+    dominates; above it, the sketch and the binner do.
