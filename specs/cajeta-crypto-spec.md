@@ -78,8 +78,12 @@ Stays in the stdlib: `cajeta.hash.Hash`, `Hasher`, `DefaultHasher`,
 - PS256, EdDSA, RSA signing, RSA key generation, PEM and DER key files, X.509
   beyond what TLS already does.
 - Encryption of data at rest, AEAD, key agreement.
-- Porting any algorithm to pure cajeta. The moved hashes stay the cajeta code
-  they are today; the new signatures and TLS call OpenSSL.
+- Porting any algorithm to pure cajeta. Amended 2026-10-17 with Julian: the
+  four digests were cajeta wrappers over runtime C (cajeta_sha1.c,
+  cajeta_sha256.c, cajeta_blake3.c and the MD5 section of cajeta_rt_hash.c),
+  not pure cajeta. That C is copied into the library's shim with its exports
+  renamed `__cajeta_crypto_*`, unchanged otherwise. The new signatures and TLS
+  call OpenSSL.
 - Zeroizing private keys on drop. The ES256 private scalar lives in an owned
   `int8[]` and is documented as such.
 - Windows `cajeta test` for the library in CI (library CI has no Windows leg).
@@ -188,8 +192,9 @@ cajeta-codec uses it for zlib. `cajeta.codec.Base64` (url-safe),
   which still carries its own copies.
 - **6.2** Then cajeta-http 0.9.0, cajeta-cloud 0.4.0 and cajeta-primavera
   0.4.0 publish, importing only from the library.
-- **6.3** Then one cajeta release removes all nine types, `cajeta.io.net.tls`,
-  `cajeta_tls.c`, the TLS object embedded in the compiler for `--emit=exe`,
+- **6.3** Then one cajeta release removes all nine types, the digests' C
+  (`cajeta_sha1.c`, `cajeta_sha256.c`, `cajeta_blake3.c`, the MD5 section of
+  `cajeta_rt_hash.c`), `cajeta.io.net.tls`, `cajeta_tls.c`, the TLS object embedded in the compiler for `--emit=exe`,
   the `__cajeta_tls_*` bridge entries, the runtime's
   `__cajeta_secure_random_fill`, and the moved tests, docs and samples. Code
   importing a removed type fails to compile with the type's name in the
