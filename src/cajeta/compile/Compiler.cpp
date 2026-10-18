@@ -18,6 +18,7 @@
 
 #include "CajetaModule.h"
 #include "NativeLink.h"
+#include "WindowsHostPaths.h"
 #include "CajetaLlvmVisitor.h"
 #include "ScriptUnitSynthesis.h"
 #include "Optimizer.h"
@@ -3012,6 +3013,18 @@ namespace cajeta {
         drivers.emplace_back("cc");
         drivers.emplace_back("clang");
         drivers.emplace_back("gcc");
+#if defined(_WIN32)
+        // Git Bash's PATH holds no C compiler; MSYS2's mingw64 is the toolchain
+        // the release is built with, so its drivers come next by full path.
+        for (const auto& d : msysLinkDriverFallbacks(
+                 {"C:/msys64"},
+                 [](const std::string& p) {
+                     std::error_code ec;
+                     return std::filesystem::exists(p, ec);
+                 })) {
+            drivers.push_back(d);
+        }
+#endif
 
         // Prefer LLD when it is locatable: GNU ld's section GC keeps unreferenced
         // external COMDAT on COFF and dead-strips less everywhere. Passed as
@@ -3194,8 +3207,11 @@ namespace cajeta {
 
         if (!launched) {
             cerr << "cajeta: --emit=exe could not find a C compiler to link "
-                 << "with (tried $CC, cc, clang, gcc). Set $CC to your "
-                 << "toolchain's driver." << std::endl;
+                 << "with (tried $CC, cc, clang, gcc"
+#if defined(_WIN32)
+                 << ", C:/msys64/mingw64/bin/gcc.exe and clang.exe"
+#endif
+                 << "). Set $CC to your toolchain's driver." << std::endl;
             throw std::runtime_error("--emit=exe: no C compiler to link with");
         }
         if (res.code() != 0) {

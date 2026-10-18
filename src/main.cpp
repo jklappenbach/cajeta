@@ -16,6 +16,7 @@
 #include "cajeta/prof/TraceSummary.h"
 #include "cajeta/compile/CompilerMode.h"
 #include "cajeta/compile/LintService.h"
+#include "cajeta/compile/WindowsHostPaths.h"
 #include "cajeta/prof/ProfileSelection.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/error/Diagnostics.h"
@@ -674,6 +675,13 @@ int main(int argc, const char* argv[]) {
                     ? value.substr(start)
                     : value.substr(start, comma - start);
                 if (!piece.empty()) {
+#if defined(_WIN32)
+                    // Git Bash leaves `/d/...` list entries unconverted.
+                    std::error_code ec;
+                    if (!std::filesystem::exists(piece, ec)) {
+                        piece = cajeta::msysDriveToWindows(piece);
+                    }
+#endif
                     compiler.addClasspath(piece);
                 }
                 if (comma == std::string::npos) break;
