@@ -19,12 +19,20 @@ In cajeta-xgboost's old binner that difference was about 180 ns of the 226
 ns each cell took. Any library that loops over a Tensor element by element
 pays the same: ml, timeseries, recsys and xgboost all do.
 
+The stdlib pays it too. `cajeta.math.npio.Npy.decodeI32` (and its siblings)
+fills its result with one `flatSet` per element. Loading the 32 MB SFU
+capture (`SfuMath`'s 2^23-entry table) takes about 160 ms on proton, and it
+is most of what is left of cajeta-xgboost's cold first fit with the
+captures (xgboost-device-followups 3.2.3, 2026-10-19).
+
 ## 2. Use cases
 
 - **2.1** When a host loop reads a contiguous Tensor with `flatGet`, it costs
   within a small factor of a plain array read.
 - **2.2** When the data is device-resident, `flatGet` still refuses with
   `PlacementException`.
+- **2.3** When `Npy` decodes a numeric `.npy` image, it copies the data
+  in bulk, not one element at a time.
 
 ## 3. Open questions
 
