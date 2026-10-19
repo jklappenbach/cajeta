@@ -33,7 +33,10 @@ On the 4090 (Phoenix), cajeta-xgboost 4f7468c, cajeta v0.43.1:
   1.1 to 2.8 s for a cold 20k fit. Unit 13 already removed the ~0.3 s of
   clock calibration the tuner caused.
 - **Data prep at 1M**, WSL2: sketch 1191 ms and bin 2885 ms. The boost is
-  145 ms. Cajeta end to end is 1369 to 1387 ms per run in xgbbench's
+  145 ms. (Corrected 2026-10-19: xgbbench's phases driver bins with the
+  host `Binner.bin`, which a GPU fit does not use; a GPU fit bins on the
+  device. On gfx1151 at 1M x 50 the device binner takes 53 ms against the
+  host's 778 ms, beside a 679 ms sketch.) Cajeta end to end is 1369 to 1387 ms per run in xgbbench's
   repeated driver, and upstream end to end is 1294 to 1370 ms with
   training at 129 to 137 ms. At 200k: sketch 246 ms, bin 591 ms.
 - **The tuner under WSL2**, tuned against the global build: large_multi
