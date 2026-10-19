@@ -1,8 +1,9 @@
 # cajeta-xgboost device follow-ups (spec)
 
-Status: draft. Opened 2026-10-19 from xgboost-device-training Unit 12, the
-findings its 4090 runs turned up that were outside that plan's scope. That
-plan released dev.cajeta.xgboost 0.6.0 and closes once these move here.
+Status: approved by Julian 2026-10-19, with every open question in 7 taken
+as recommended. Opened the same day from xgboost-device-training Unit 12,
+the findings its 4090 runs turned up outside that plan's scope. That plan
+released dev.cajeta.xgboost 0.6.0 and closes with these moved here.
 
 ## 1. Definition
 
@@ -139,6 +140,8 @@ upstream 3.1.2 on the same 4090.
   each target in 7 met or its miss recorded.
 
 ## 7. Open questions
+
+All five were decided by Julian on 2026-10-19, each as recommended.
 
 - **7.1 How a fit without the captures reaches the device.**
   - (a) Device split finding in correctly rounded math, the same fallback
