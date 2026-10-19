@@ -125,7 +125,7 @@ A Cajeta front-end invocation costs roughly 80 seconds regardless of project
 size, and `instrument` runs two of them:
 
 - `--emit=exe`, to harvest a linkable stdlib object that already carries the
-  synthesized C `main`, plus `__cajeta_tls.o`;
+  synthesized C `main`;
 - `--emit=ir --emit-xref=…`, to get the per-class `.ll` coco instruments and
   the cross-reference index reachability needs.
 

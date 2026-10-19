@@ -75,17 +75,8 @@ echo "[2/3] Linking → $OUT_BINARY"
 # them (the dispatcher then falls to the CPU if `cpu` was bundled). -ldl for
 # dlopen; -lpthread/-lm for the runtime.
 #
-# cajeta_tls.o + -lssl -lcrypto: the stdlib object always references the
-# `__cajeta_tls_*` natives (eager clinit global-constructors root every class,
-# so --gc-sections cannot drop the unused TLS subsystem). `--emit=exe` links
-# them automatically; this manual `--emit=obj` + clang link must add them.
-# The compiled TLS native object sits next to the compiler binary.
-TLS_OBJ="$(dirname "$CAJETA_BIN")/cajeta_tls.o"
-if [[ ! -f "$TLS_OBJ" ]]; then
-    echo "error: TLS native object not found at $TLS_OBJ" >&2
-    echo "       (built alongside the compiler; rebuild with ./build.sh)" >&2
-    exit 1
-fi
+# The stdlib's TLS object and its -lssl -lcrypto left with cajeta-crypto
+# spec 6.3 (v0.44.0); nothing here references OpenSSL any more.
 # The compiler drops the weak AOT stub translation units beside the objects
 # (--emit=obj writes the same set --emit=exe links). They are compiled here
 # rather than hand-copied: this script DID carry its own copy of the OptiX
@@ -107,10 +98,7 @@ fi
 "$CLANG_BIN" \
     -o "$OUT_BINARY" \
     "${OBJECTS[@]}" \
-    "$TLS_OBJ" \
     "${AOT_STUBS[@]}" \
-    -lssl \
-    -lcrypto \
     -ldl \
     -lpthread \
     -lm \
