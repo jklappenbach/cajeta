@@ -1429,6 +1429,16 @@ if(NOT WIN32)
     endif()
     set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES ENABLE_EXPORTS ON)
     target_link_options(${CMAKE_PROJECT_NAME} PRIVATE -rdynamic)
+    # macOS: LLJIT lowers the JIT'd code's thread-locals through emutls, and
+    # __emutls_get_address lives in compiler-rt's static builtins, which the
+    # process-symbol generator cannot see. cajeta_test links a weak copy for
+    # that reason (test/jit/EmutlsShim.c); the driver did not, so `jit-run` of
+    # any program failed with "Symbols not found: [ ___emutls_get_address ]",
+    # first caught by the release smoke test in the v0.44.0 dry-run.
+    if(APPLE)
+        target_sources(${CMAKE_PROJECT_NAME} PRIVATE
+                ${PROJECT_SOURCE_DIR}/test/jit/EmutlsShim.c)
+    endif()
     # Don't export the static LLVM symbols (HIP's bundled LLVM would clash) —
     # the __cajeta_* runtime symbols the JIT dlsym's stay exported. `--exclude-libs`
     # is a GNU-ld/LLD option (Linux + mingw); Apple's ld64 rejects it, and macOS has
