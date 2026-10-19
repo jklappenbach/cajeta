@@ -157,6 +157,8 @@ OrderChainingTests.*
 OverrideFromTests.*
 OwnedIntrinsicTests.*
 PathOverrideTests.*
+# Path.mkdirs walks drive letters and separators in the C runtime, per OS.
+PathTests.mkdirs*
 Phase10AcceptanceTests.*
 Phase11.*
 Phase12.*

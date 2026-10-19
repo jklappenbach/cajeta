@@ -11,6 +11,7 @@
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
 
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <fcntl.h>
@@ -156,6 +157,32 @@ TEST(PathTests, mkdirsCreatesNestedDirectory) {
         "Path.of(\"" + base + "/a\").delete();\n"
         "Path.of(\"" + base + "\").delete();\n"
         "return 0;"));
+}
+
+// A forward-slash path on a drive other than the working directory's. mkdirs
+// walked every '/' and so stat'ed and mkdir'ed the bare drive "C:" first,
+// which on its own names drive C's current directory; from D: nothing was
+// created, while the same path with backslashes and any path on the current
+// drive worked (cajeta-xgboost's tune dir, C:/msys64/tmp/..., 2026-10-19).
+TEST(PathTests, mkdirsCreatesANestedDirectoryOnAnotherDrive) {
+#if !defined(_WIN32)
+    GTEST_SKIP() << "drive letters are a Windows path form";
+#else
+    std::string tmp = std::filesystem::temp_directory_path().generic_string();
+    std::string cwd = std::filesystem::current_path().generic_string();
+    if (tmp.size() < 2 || tmp[1] != ':' || cwd.size() < 2 || cwd[1] != ':'
+            || std::toupper((unsigned char) tmp[0]) == std::toupper((unsigned char) cwd[0]))
+        GTEST_SKIP() << "needs the temp dir on a drive other than the working directory's ("
+                     << tmp << " from " << cwd << ")";
+    std::string base = tmpFwd("xdrive");
+    std::string nested = base + "/a/b";
+    EXPECT_EQ(runI32(makeSource(
+        "Path p #= Path.of(\"" + nested + "\");\n"
+        "p.mkdirs();\n"
+        "return p.isDir() ? 1 : 0;")), 1) << nested << " from " << cwd;
+    std::error_code ec;
+    std::filesystem::remove_all(base, ec);
+#endif
 }
 
 TEST(PathTests, deleteRemovesEmptyFile) {

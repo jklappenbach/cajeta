@@ -643,20 +643,38 @@ int32_t __cajeta_path_mkdirs(const char* bytes, int64_t length) {
     if (__cajeta_copy_path_with_nul(path, sizeof(path), bytes, length) != 0) return -1;
     if (path[0] == '\0') return -1;
 
-    for (char* p = path + 1; *p != '\0'; ++p) {
+    char* first = path + 1;
+#if defined(_WIN32)
+    // A drive prefix is a root, never a component to stat or create. Alone,
+    // "C:" names drive C's current directory, so walking a forward-slash path
+    // on another drive (C:/msys64/tmp/... from D:) failed at "C:" and created
+    // nothing (cajeta-xgboost's tune dir, 2026-10-19). Backslashes separate
+    // components here too.
+    if (((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z'))
+            && path[1] == ':') {
+        first = path + 2;
+        if (*first == '/' || *first == '\\') ++first;
+    }
+#endif
+    for (char* p = first; *p != '\0'; ++p) {
+#if defined(_WIN32)
+        if (*p == '/' || *p == '\\') {
+#else
         if (*p == '/') {
+#endif
+            char sep = *p;
             *p = '\0';
             struct stat st;
             if (stat(path, &st) != 0) {
                 if (cajeta_mkdir(path, 0777) != 0 && errno != EEXIST) {
-                    *p = '/';
+                    *p = sep;
                     return -1;
                 }
             } else if (!S_ISDIR(st.st_mode)) {
-                *p = '/';
+                *p = sep;
                 return -1;
             }
-            *p = '/';
+            *p = sep;
         }
     }
     struct stat st;
