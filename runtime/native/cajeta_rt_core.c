@@ -308,6 +308,16 @@ static __thread CajetaShadowStack __cajeta_main_shadow;
 // Selector for the live shadow stack; defined in cajeta_rt_concurrent_exec.c.
 CajetaShadowStack* __cajeta_shadow_ptr(void);
 
+/** The running context's shadow stack, read by AOT code's inline line frames; NULL until set. */
+__thread CajetaShadowStack* __cajeta_shadow_cur = NULL;
+
+/** Selects the running context's shadow stack, caches it in __cajeta_shadow_cur and returns it. */
+CajetaShadowStack* __cajeta_shadow_cur_slow(void) {
+    CajetaShadowStack* s = __cajeta_shadow_ptr();
+    __cajeta_shadow_cur = s;
+    return s;
+}
+
 // Push, update and pop the shadow frame for the running context. `top` counts
 // past the cap so leave stays balanced with enter.
 void __cajeta_line_enter(const void* desc) {

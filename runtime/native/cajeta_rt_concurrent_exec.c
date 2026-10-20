@@ -766,6 +766,7 @@ static void* __cajeta_carrier_loop_body(void* arg) {
         if (__cajeta_stop_is_requested()) __cajeta_stop_park();
 
         __cajeta_current_fiber = f;
+        __cajeta_shadow_cur = &f->shadow;
         f->state = CAJETA_FIBER_RUNNING;
         // Windows never fills `stack`: CreateFiber allocates the fiber's stack
         // itself, so the malloc'd one was pure waste — a second committed MiB
@@ -794,6 +795,7 @@ static void* __cajeta_carrier_loop_body(void* arg) {
         }
         __cajeta_swapcontext(&__cajeta_carrier_ctx, &f->ctx);
         __cajeta_current_fiber = NULL;
+        __cajeta_shadow_cur = NULL;
         if (f->state == CAJETA_FIBER_DONE) {
             // Null the Task's fiber slot before freeing, under the task mutex,
             // so a concurrent scope-cancel sees NULL, never a dangling fiber.

@@ -22,6 +22,7 @@
 #include "CajetaLlvmVisitor.h"
 #include "ScriptUnitSynthesis.h"
 #include "Optimizer.h"
+#include "InlineLineFrames.h"
 #include "StdlibEmbedded.h"
 #include "cajeta/dbg/DebugCodegen.h"
 #include "cajeta/xref/XrefIndex.h"
@@ -2555,6 +2556,7 @@ namespace cajeta {
                                 f.addFnAttr("target-features", tfeat);
                         }
                     }
+                    inlineLineFrames(M);
                     optimizeModuleThinLTOPreLink(M, targetMachine, flags.opt);
                     llvm::ProfileSummaryInfo psi(M);
                     llvm::ModuleSummaryIndex index =
@@ -2567,6 +2569,7 @@ namespace cajeta {
                     return;
                 }
 
+                inlineLineFrames(*module->getLlvmModule());
                 optimizeModule(*module->getLlvmModule(), targetMachine, flags.opt);
 
                 // CAJETA_DUMP_CODEGEN_BC=<dir>: write each module exactly as it goes
