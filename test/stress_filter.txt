@@ -1,4 +1,5 @@
-# Stress battery (spec test-battery-restructure §2) — load/scale tests the
+# Stress battery (spec test-battery-restructure §2) — load/scale tests, and
+# timing-sensitive tests that fail under a loaded sweep but pass idle, which the
 # sweep EXCLUDES by default; run with `./cajeta_tests.sh stress`.
 # Cadence: pre-release and on demand, not per development cycle.
 # One Suite.test per line. Keep a capped functional twin in the sweep when a
@@ -12,3 +13,4 @@ OwnershipLeakProbe.benchScaleStaysBounded
 OwnershipLeakProbe.ownedElementsBalanceAtScale
 PrimitiveHashMapTests.swissResizeThousandInts
 StringBuildWorkload.fiveHundredAppendsIs4000Bytes
+XpuDeviceCalibrationAmdDeviceTests.theGpuFactsAreMeasuredAndTheRestAbsent

@@ -347,7 +347,8 @@ TEST(StreamIntermediateTests, peekStreamPassesValuesThrough) {
 
 TEST(StreamIntermediateTests, flatMapStreamRepeatedSingletonStreams) {
     // For each outer element v, yield a single-element ArrayStream<int32>
-    // containing v*10. Flatten → {10, 20, 30}. Count = 3.
+    // containing v*10. Flatten → {10, 20, 30}. Count = 3. The inner streams
+    // borrow `one`, so it lives in run(), not in the lambda.
     auto src =
         "package test;\n"
         "import cajeta.lang.stream.ArrayStream;\n"
@@ -356,8 +357,8 @@ TEST(StreamIntermediateTests, flatMapStreamRepeatedSingletonStreams) {
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = [1, 2, 3];\n"
+        "        int32[] one = heap int32[1];\n"
         "        (int32) -> #Stream<int32> mk = (int32 v) -> {\n"
-        "            int32[] one = heap int32[1];\n"
         "            one[0] = v * 10;\n"
         "            ArrayStream<int32> inner = heap ArrayStream<int32>(one, 1);\n"
         "            return inner;\n"
@@ -382,8 +383,8 @@ TEST(StreamIntermediateTests, flatMapStreamEmptyInnerStreamsSkipped) {
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = [1, 2, 3, 4, 5];\n"
+        "        int32[] none = heap int32[0];\n"
         "        (int32) -> #Stream<int32> mkEmpty = (int32 v) -> {\n"
-        "            int32[] none = heap int32[0];\n"
         "            ArrayStream<int32> inner = heap ArrayStream<int32>(none, 0);\n"
         "            return inner;\n"
         "        };\n"
