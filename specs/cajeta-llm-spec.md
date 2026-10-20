@@ -714,7 +714,8 @@ Use cases:
 - **12.9** When prefill throughput is measured under the same conditions, it
   is equal to or better than `llama.cpp`'s (100%, raised from 50%
   2026-10-20), on every backend that ships. It is measured at the chunk size the
-  scheduler actually uses (§13.14), not as an unbounded single pass.
+  scheduler actually uses (§13.14), not as an unbounded single pass: the
+  learned chunk for a lone prompt, and the budget-capped chunk under load.
 - **12.10** When throughput is reported, the measurement records model,
   quantization, backend, context length, batch size, **compiler mode and
   live-set setting**. Release and Minimal differ in both locking and bounds
@@ -884,6 +885,11 @@ the recommendation they were filed with; both are marked.
   windowed prefill inside the window. A threshold-triggered hybrid was
   rejected: it leaves the rarely-taken path untested, and that path is exactly
   where §6.10 and §6.11's silent windowing bugs live.
+  The chunk size adapts (2026-10-20, Julian). The scheduler learns from its
+  own step timings the chunk past which a device stops gaining throughput, and
+  uses it when no other sequence is decoding. While others decode, a tunable
+  pause budget in milliseconds caps the chunk. A fixed `--chunk` overrides
+  both. It is one path at varying N, so the hybrid objection does not apply.
 
 - **13.15 Continuous batching with preemption.** Sequences are admitted,
   scheduled at iteration granularity, and evicted under memory pressure — the
