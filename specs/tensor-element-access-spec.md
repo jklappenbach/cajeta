@@ -170,8 +170,9 @@ was then tightened (see there).
   Julian first accepted 5 ns and 20 ms, then asked whether that settled for
   less. It did: 5 ns kept the line-frame calls (1.2.3) and a 7-10x gap to an
   array. Tightened with section 4 added, 2026-10-19.
-- **8.4 Which Npy types.** Proposed: every fixed-width type Npy reads today
-  (int8 to int64, float16 to float64, bfloat16, bool).
+- **8.4 Which Npy types.** Every type Npy reads today: float32, float64,
+  int32 and int64. (An earlier draft listed int8 to bool; Npy has never read
+  those, and adding them is not in scope. Corrected 2026-10-20.)
 - **8.5 Thin LTO.** Proposed: file `--lto=thin`'s link failure as its own
   defect spec, outside this one.
 - **8.6 Inlining stdlib methods without LTO.** `--release` measured the
