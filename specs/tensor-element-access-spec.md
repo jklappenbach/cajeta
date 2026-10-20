@@ -115,6 +115,8 @@ of the method for the receiver's static type.
 
 ## 7. Open questions
 
+All five were decided by Julian on 2026-10-19, each as recommended.
+
 - **7.1 How a throwing method avoids the frame.**
   - (a) Drop `throw` from the scope-frame predicate, after showing a throw
     needs no frame of its own (2.2, 2.4).
