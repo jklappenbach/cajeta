@@ -50,16 +50,17 @@ What it adds:
 
 ### 1.4 Constraints
 
-- Builds on cajeta-http 0.6.0 and toolchain v0.42.1, primavera's current pins.
-- Independent of request-dispatch: nothing here waits on it, and it ships
-  first (Julian, 2026-10-16).
+- Builds on cajeta-http 0.9.0, dev.cajeta.crypto 0.1.0 and toolchain v0.44.0,
+  primavera's current pins (amended 2026-10-19: written against http 0.6.0
+  and v0.42.1; request-dispatch shipped first after all, in http 0.7.0).
 - Existing primavera applications keep their behaviour unless they opt in,
   except §4.1: `queueBound(n)` in messages gives way to a byte bound.
 
 ### 1.5 Systems
 
-cajeta-primavera (`context/`, `web/`), cajeta-http 0.6.0 (`ws.WsUpgrade`,
-`middleware.StaticFile`), the stdlib `cajeta.hash.SecureRandom`, Olla for the
+cajeta-primavera (`context/`, `web/`), cajeta-http 0.9.0 (`ws.WsUpgrade`,
+`middleware.StaticFile`), `dev.cajeta.crypto.SecureRandom` (the stdlib's until
+v0.44.0), Olla for the
 release.
 
 ## 2. Issued sessions
@@ -167,10 +168,10 @@ client is slow; bound the buffer; once it is full, the next send closes.
 
 ## 6. Release
 
-- **6.1** When this work is complete, it ships as primavera 0.4.0 on
-  cajeta-http 0.6.0 and toolchain v0.42.1, published to Olla, ahead of
-  request-dispatch.
-- **6.2** When 0.4.0 is published, cabra pins it (cabra plan 12.2.1).
+- **6.1** When this work is complete, it ships as primavera 0.5.0 on
+  cajeta-http 0.9.0 and toolchain v0.44.0, published to Olla. (Amended
+  2026-10-19: 0.4.0 shipped 2026-10-18 as the move to dev.cajeta.crypto.)
+- **6.2** When 0.5.0 is published, cabra pins it (cabra plan 12.2.1).
 - **6.3** Migration: `WebSocketEndpoints.queueBound(n)` (messages) is
   replaced by a byte bound (§4.1). The release notes say so, and
   `peakQueued()` gives way to the peak in bytes (§4.4).
@@ -180,7 +181,8 @@ client is slow; bound the buffer; once it is full, the next send closes.
 - **7.1** *(agreed with Phoenix 2026-10-16)* How ids carry gone versus
   unknown (§2.2, §2.3). An id is a per-store epoch, a serial, and a keyed
   MAC over (epoch, serial) under a per-store `SecureRandom` key
-  (`HmacSha256` truncated, or `SipHash`; both are in the stdlib). Gone: the
+  (`HmacSha256` truncated, or `SipHash`; HmacSha256 is in `dev.cajeta.crypto`
+  since v0.44.0, SipHash stays in the stdlib). Gone: the
   MAC verifies, the epoch is this store's, the serial is below the next one,
   and it is not live. Unknown: anything else. A random suffix alone could
   not be checked without tombstones, so a forged id with a plausible serial
