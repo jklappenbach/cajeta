@@ -45,3 +45,19 @@ java -cp "/tmp/jsonbench/lib/jackson-core.jar:/tmp/jsonbench/lib/gson.jar:/tmp/j
   canada 223 236) — a structural correctness cross-check.
 - `JsonBench.cajeta` was built with the cvm `0.7.0` toolchain; the reader code is
   unchanged on `main`/`feature/json-schema`.
+
+## Element access (tensor-element-access)
+
+`bench.ElementAccessBench` times one element read or write through
+`Tensor.flatGet`/`flatSet` against a plain array and the `hostBuffer()` view,
+and `Npy.decodeI32` of 2^23 elements. It checks that the read paths agree
+before it prints a time, and exits 1 if they do not.
+
+```sh
+cajeta --emit=exe --release -o /tmp/eab/rel bench.ElementAccessBench.run bench/src /tmp/eab/rel-arch
+cajeta --emit=exe --release --debug-info=off -o /tmp/eab/nodbg bench.ElementAccessBench.run bench/src /tmp/eab/nodbg-arch
+cajeta --emit=exe -o /tmp/eab/default bench.ElementAccessBench.run bench/src /tmp/eab/default-arch
+```
+
+Targets and the recorded runs are in `specs/tensor-element-access-spec.md` 8.3
+and the plan's Units 1 and 7.
