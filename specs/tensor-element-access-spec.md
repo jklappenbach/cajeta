@@ -92,6 +92,8 @@ of the method for the receiver's static type.
   unchanged.
 - **3.4** When the program is built from several `.cja` archives, a method
   overridden in any of them is not called directly.
+- **3.5** When a `--release` build without LTO calls a small stdlib method
+  directly, the optimizer can inline it into the caller.
 
 ## 4. Line frames
 
@@ -160,8 +162,8 @@ was then tightened (see there).
     paying. If (a) cannot see the whole program in some build mode, that mode
     keeps today's dispatch.
 - **8.3 Targets.** On proton, cajeta's own toolchain:
-  - release build (O2, debug line): `flatGet` and `flatSet` at most 1.5 ns,
-    from 15;
+  - `--release` (O2, debug line, no LTO): `flatGet` and `flatSet` at most
+    1.5 ns, from 15;
   - O2 with debug info off: at most 1 ns, which shows the call inlined;
   - `Npy.decodeI32` of 2^23 elements at most 10 ms, from 125. A 32 MB copy
     is about 3 ms.
@@ -172,3 +174,11 @@ was then tightened (see there).
   (int8 to int64, float16 to float64, bfloat16, bool).
 - **8.5 Thin LTO.** Proposed: file `--lto=thin`'s link failure as its own
   defect spec, outside this one.
+- **8.6 Inlining stdlib methods without LTO.** `--release` measured the
+  same as plain O2 (15 ns, 2026-10-19): the stdlib is its own object file
+  and `--release` has no LTO, so a direct call still cannot inline.
+  - (a) Give the user module a discardable copy of each small stdlib method
+    body it calls, for the optimizer to inline.
+  - (b) `--release` implies `--lto=full`.
+  - (c) Meet the targets under `--lto=full` only.
+  - Decided by Julian 2026-10-19: (a).
