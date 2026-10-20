@@ -23,6 +23,7 @@
 #include "ScriptUnitSynthesis.h"
 #include "Optimizer.h"
 #include "InlineLineFrames.h"
+#include "SetjmpLocals.h"
 #include "Devirtualize.h"
 #include "CrossModuleInline.h"
 #include "StdlibEmbedded.h"
@@ -2571,6 +2572,7 @@ namespace cajeta {
                         }
                     }
                     inlineLineFrames(M);
+                    if (flags.opt != OptLevel::O0) pinSetjmpLocals(M);
                     optimizeModuleThinLTOPreLink(M, targetMachine, flags.opt);
                     llvm::ProfileSummaryInfo psi(M);
                     llvm::ModuleSummaryIndex index =
@@ -2585,6 +2587,7 @@ namespace cajeta {
 
                 bool lateFrames = flags.opt != OptLevel::O0 && deferLineFrames(*module->getLlvmModule());
                 if (!lateFrames) inlineLineFrames(*module->getLlvmModule());
+                if (flags.opt != OptLevel::O0) pinSetjmpLocals(*module->getLlvmModule());
                 optimizeModule(*module->getLlvmModule(), targetMachine, flags.opt);
                 if (lateFrames) coalesceLineFrames(*module->getLlvmModule(), targetMachine);
 
