@@ -31,6 +31,11 @@ namespace cajeta::buildtool {
 
     /// One `settings.repositories` entry. Maven-compat parses, but its driver
     /// is not implemented.
+    // What a fetch from a repository is held to (publisher-trust spec 5.3-5.5):
+    // signed release metadata by default, the repository's checksum when the
+    // manifest relaxes that repository with `"verification": "checksum"`.
+    enum class Verification { Publisher, Checksum };
+
     struct RepositorySpec {
         std::string name;
         std::string type;        // "filesystem" | "http" | "git" | "maven-compat"
@@ -42,6 +47,7 @@ namespace cajeta::buildtool {
         // locates cajeta.json in the checkout, empty meaning the repo root.
         std::string gitRef;
         std::string gitSubdir;
+        Verification verification = Verification::Publisher;
     };
 
     /// One declared dependency from `settings.dependencies`.

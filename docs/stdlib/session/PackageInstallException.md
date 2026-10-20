@@ -25,7 +25,7 @@ try {
 | Version conflict | The archive is already loaded at a version this constraint excludes. A session cannot replace a loaded archive; the message says a restart is required |
 | Checksum mismatch | The fetched bytes do not match the repository's published sha256. They are discarded and nothing is installed |
 | Signature rejected | The archive is signed, but by no key in the machine's trust store — or it is signed and the machine trusts no keys at all, so the signature cannot be checked |
-| `require-signatures` | The governing manifest requires a signature and the archive publishes none |
+| No signed release metadata | The repository serves no signed metadata for the release and is not relaxed with `"verification": "checksum"`. The message names the repository and the setting |
 | Name collision | The archive declares a class the session already holds. An install never shadows session state |
 | No governing project | `installAndSave` with no `cajeta.json` to write to |
 

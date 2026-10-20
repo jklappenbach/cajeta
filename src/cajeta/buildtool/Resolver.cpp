@@ -1,5 +1,6 @@
 #include "cajeta/buildtool/Resolver.h"
 
+#include "cajeta/buildtool/FetchVerification.h"
 #include "cajeta/buildtool/Melt.h"
 #include "cajeta/buildtool/OllaStore.h"
 #include "cajeta/buildtool/repo/FilesystemRepository.h"
@@ -527,6 +528,21 @@ namespace cajeta::buildtool {
                         name, v, *cached, /*expectedSha256=*/"",
                         out.manifestJson);
                     if (!wt) return wt.takeError();
+                    // The envelope the fetch was verified against stays beside
+                    // the bytes, so the store holds what was checked.
+                    auto env = repo->releaseMetadataJson(name, v);
+                    if (!env) return env.takeError();
+                    if (env->has_value()) {
+                        auto sidecar = std::filesystem::path(*wt).parent_path()
+                            / (name + "-" + v + ".release.json");
+                        std::ofstream o(sidecar, std::ios::binary | std::ios::trunc);
+                        o << **env;
+                        if (!o) {
+                            return llvm::createStringError(
+                                llvm::inconvertibleErrorCode(),
+                                "could not write %s", sidecar.string().c_str());
+                        }
+                    }
                 }
                 return out;
             }
@@ -822,6 +838,12 @@ namespace cajeta::buildtool {
 
         auto repoSpecs = parseRepositories(m);
         if (!repoSpecs) { closeTotal(); return repoSpecs.takeError(); }
+        if (m.settingsRaw.get("require-signatures")) {
+            llvm::errs() << "warning: settings.require-signatures is retired and "
+                            "has no effect: publisher verification is now the "
+                            "default for every repository (relax one with "
+                            "\"verification\": \"checksum\")\n";
+        }
         // No early "deps but no repositories" error: the implicit ~/.olla repository
         // prepended below is always a source, and the pick step reports what is missing.
         // Downloads stage under the project's own .cajeta, scoping interrupted fetches.
@@ -830,6 +852,10 @@ namespace cajeta::buildtool {
              "downloads").string();
         auto repos = buildRepositories(*repoSpecs, downloadStage);
         if (!repos) { closeTotal(); return repos.takeError(); }
+        // Every declared repository verifies what it fetches (publisher-trust
+        // Unit 6); the built-in ~/.olla store, prepended below, is not wrapped.
+        const auto trust = cli::resolveTrustStoreLayout(homeOverride);
+        *repos = wrapWithVerification(*repos, *repoSpecs, trust);
 
         // Melts resolve before deps so their table can substitute `"*"` constraints.
         ArtifactCache cache(projectRoot, homeOverride);
@@ -846,7 +872,7 @@ namespace cajeta::buildtool {
                 });
             auto rebuilt = buildRepositories(specs, downloadStage);
             if (!rebuilt) { closeTotal(); return rebuilt.takeError(); }
-            *repos = std::move(*rebuilt);
+            *repos = wrapWithVerification(*rebuilt, specs, trust);
         }
 
         // Any `"*"` left after this substitution is a hard error; a consumer that

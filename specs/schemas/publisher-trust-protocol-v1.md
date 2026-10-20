@@ -88,6 +88,15 @@ at all — the legacy path of spec 5.4. A server that implements this
 contract but forgets to advertise v2 has therefore disabled publisher
 verification without any error appearing anywhere.
 
+**The deployed shape differs.** Measured 2026-10-20, olla.cajeta.dev serves
+`{"capabilities": {"v1": true, "v2": true, "bundle": true, "revocation":
+false, ...}, "ttl-seconds": 3600}`: booleans nested under `capabilities`,
+not a `protocol-versions` list. Until publisher-trust Unit 6 the client read
+only the flat form, so it saw no v2 on olla and every signed envelope went
+unread, exactly the silent failure described above. The client now accepts
+both forms (`parseCapabilitiesJson`, `HttpRepositoryV2Tests`). A server may
+serve either; new servers should serve the flat form.
+
 ### 3.2 The signed envelope
 
 Every signed document here shares one wrapper:

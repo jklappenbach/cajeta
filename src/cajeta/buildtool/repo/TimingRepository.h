@@ -30,6 +30,34 @@ namespace cajeta::buildtool {
             const std::string& depName,
             const std::string& version) const override;
 
+        // The trust surface is forwarded untimed: a decorator that answered
+        // "nothing published" here would make a timed run verify differently.
+        llvm::Expected<std::optional<std::string>> publishedChecksum(
+            const std::string& n, const std::string& v) const override {
+            return inner_->publishedChecksum(n, v);
+        }
+        llvm::Expected<std::optional<std::string>> publishedSignature(
+            const std::string& n, const std::string& v) const override {
+            return inner_->publishedSignature(n, v);
+        }
+        llvm::Expected<std::optional<std::string>> organizationKeys(
+            const std::string& org) const override {
+            return inner_->organizationKeys(org);
+        }
+        llvm::Expected<std::optional<std::string>> repositoryKeys() const override {
+            return inner_->repositoryKeys();
+        }
+        llvm::Expected<RepoCapabilities> capabilities() const override {
+            return inner_->capabilities();
+        }
+        llvm::Expected<std::optional<std::string>> revocations() const override {
+            return inner_->revocations();
+        }
+        llvm::Expected<std::optional<std::string>> releaseMetadataJson(
+            const std::string& n, const std::string& v) const override {
+            return inner_->releaseMetadataJson(n, v);
+        }
+
     private:
         RepositoryPtr inner_;
         ResolverTimings* timings_;

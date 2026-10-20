@@ -90,7 +90,8 @@ namespace {
   "settings": {
     "repositories": [
       { "name": "local", "type": "filesystem", "path": ")"
-            << repoRoot.generic_string() << R"(" }
+            << repoRoot.generic_string() << R"(",
+        "verification": "checksum" }
     ],
     "dependencies": {)";
         for (size_t i = 0; i < deps.size(); ++i) {

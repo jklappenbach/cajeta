@@ -36,13 +36,19 @@ The constraint resolves against the governing project's
 governs the session. The highest satisfying version from the first repository
 carrying one wins.
 
-A fetched archive is verified against the repository's published sha256 before
-it is spliced; a mismatch discards the bytes and fails the install, so there
-is never a half-installed state. When the repository publishes an ed25519
-signature it is verified against the machine's trust store (`cajeta trust`) —
-never against a key supplied with the artifact. Setting
-`"require-signatures": true` in the governing manifest makes a signature
-mandatory rather than opportunistic.
+A fetched archive is verified before it is spliced, by the same check
+`cajeta build` runs. By default the repository must serve release metadata
+signed through its root or delegation, and the bytes must hash to the value it
+names; a mismatch discards the bytes and fails the install, so there is never a
+half-installed state. A repository that serves no signed metadata (a local or
+vendored one) is refused unless the governing manifest relaxes that repository
+with `"verification": "checksum"` on its `settings.repositories` entry, which
+accepts its published sha256 instead. When the repository publishes an ed25519
+archive signature it is verified too: against the owning organization's key
+document when the signed metadata names one, otherwise against the machine's
+trust store (`cajeta trust`), and never against a key supplied with the
+artifact. `require-signatures` is retired: it is still read, has no effect,
+and logs a warning.
 
 A cached artifact is served without touching the network, and is held to the
 same verification as a freshly fetched one.

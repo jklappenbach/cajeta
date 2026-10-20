@@ -108,7 +108,8 @@ fs::path stageProject(const fs::path& root, const fs::path& repo) {
          << "  \"settings\": {\n"
          << "    \"repositories\": [\n"
          << "      { \"name\": \"fixture\", \"type\": \"filesystem\", "
-         << "\"path\": \"" << repo.generic_string() << "\", \"priority\": 0 }\n"
+         << "\"path\": \"" << repo.generic_string() << "\", \"priority\": 0,"
+         << " \"verification\": \"checksum\" }\n"
          << "    ]\n"
          << "  }\n"
          << "}\n";

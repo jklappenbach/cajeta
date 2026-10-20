@@ -843,7 +843,8 @@ TEST(DependencyTests, projectResolutionEndToEnd) {
         "settings": {
             "repositories": [
                 { "name": "test", "type": "filesystem",
-                  "path": ")" << repoRoot.generic_string() << R"(" }
+                  "path": ")" << repoRoot.generic_string() << R"(",
+                  "verification": "checksum" }
             ],
             "dependencies": {
                 "p.foo": "1.0.0"
@@ -915,7 +916,8 @@ TEST(DependencyTests, projectResolutionAppliesOverrides) {
         "settings": {
             "repositories": [
                 { "name": "test", "type": "filesystem",
-                  "path": ")" << repoRoot.generic_string() << R"(" }
+                  "path": ")" << repoRoot.generic_string() << R"(",
+                  "verification": "checksum" }
             ],
             "dependencies": { "o4.foo": "1.0.0" },
             "overrides":    { "o4.bar": "1.5.0" }

@@ -1,4 +1,5 @@
 #include <llvm/Support/Base64.h>
+#include "cajeta/buildtool/FetchVerification.h"
 #include "cajeta/buildtool/BuildErrors.h"
 #include "cajeta/buildtool/KeyRevocation.h"
 #include "cajeta/buildtool/RepositoryDelegation.h"
@@ -335,6 +336,8 @@ namespace cajeta::buildtool {
                     std::cerr << "cajeta info: " << msg << "\n";
                     return 1;
                 }
+                *repos = wrapWithVerification(
+                    *repos, *repoSpecs, cajeta::cli::resolveTrustStoreLayout());
                 ArtifactCache cache(projectRoot);
                 auto melts = resolveMelts(m, *repos, cache);
                 if (!melts) {
@@ -1181,6 +1184,9 @@ namespace cajeta::buildtool {
                     .string();
             auto repos = buildRepositories(*repoSpecs, downloadStage);
             if (!repos) return repos.takeError();
+            // A plugin is fetched under the same policy as a dependency.
+            *repos = wrapWithVerification(
+                *repos, *repoSpecs, cajeta::cli::resolveTrustStoreLayout());
 
             // Local-first, as dependency resolution does it: prepend the implicit ~/.olla
             // store, or a locally installed plugin resolves as "no satisfying version".

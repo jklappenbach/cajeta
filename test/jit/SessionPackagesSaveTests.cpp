@@ -107,7 +107,8 @@ std::string manifestText(const fs::path& repo, const std::string& pinned) {
     }
     json << "        \"repositories\": [\n"
          << "            { \"name\": \"fixture\", \"type\": \"filesystem\", "
-         << "\"path\": \"" << repo.generic_string() << "\", \"priority\": 0 }\n"
+         << "\"path\": \"" << repo.generic_string() << "\", \"priority\": 0,"
+         << " \"verification\": \"checksum\" }\n"
          << "        ]\n"
          << "    }\n"
          << "}\n";

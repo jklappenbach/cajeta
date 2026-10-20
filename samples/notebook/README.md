@@ -45,8 +45,8 @@ every one, the kernel keeps serving and the session keeps its bindings.
 
 ## Things to try
 
-- Add `"require-signatures": true` to `cajeta.json` and re-run Part 3's
-  `plain` install — the unsigned archive is now refused.
+- Remove `"verification": "checksum"` from `tour-local` in `cajeta.json` and
+  re-run Part 3's `plain` install — the unsigned release is now refused.
 - Restart without `CAJETA_TRUST_KEYS_DIR` and re-run Part 2 — a signed
   archive with no trusted keys is refused rather than waved through.
 - Restart after Part 5 — `import demo.Stats` works in the *first* cell,

@@ -87,7 +87,7 @@ fs::path stageRepo(const fs::path& root, const fs::path& cja,
 }
 
 fs::path stageProject(const fs::path& root, const fs::path& repo,
-                      bool requireSignatures = false) {
+                      bool defaultPolicy = false) {
     auto project = root / "project";
     fs::create_directories(project);
     std::ostringstream json;
@@ -98,10 +98,12 @@ fs::path stageProject(const fs::path& root, const fs::path& repo,
          << "    \"cajeta-lang-version\": \"1.0\"\n"
          << "  },\n"
          << "  \"settings\": {\n";
-    if (requireSignatures) json << "    \"require-signatures\": true,\n";
+    // The fixture serves no signed release metadata, so it is relaxed to
+    // checksum unless a test exercises the default policy itself.
     json << "    \"repositories\": [\n"
          << "      { \"name\": \"fixture\", \"type\": \"filesystem\", "
-         << "\"path\": \"" << repo.generic_string() << "\", \"priority\": 0 }\n"
+         << "\"path\": \"" << repo.generic_string() << "\", \"priority\": 0"
+         << (defaultPolicy ? "" : ", \"verification\": \"checksum\"") << " }\n"
          << "    ]\n"
          << "  }\n"
          << "}\n";
@@ -187,8 +189,9 @@ TEST(SessionPackagesFailureTests, checksumMismatchLeavesTheKernelServing) {
     fs::remove_all(root);
 }
 
-// 6.1.1 (3.5) — the require-signatures floor rejects an unsigned archive.
-TEST(SessionPackagesFailureTests, requireSignaturesLeavesTheKernelServing) {
+// publisher-trust 6.1.1 — under the default policy an unsigned release is
+// refused, the message names the relaxation, and the kernel keeps serving.
+TEST(SessionPackagesFailureTests, anUnverifiableReleaseLeavesTheKernelServing) {
     auto root = freshRoot("requiresig");
     auto cja = buildDep(root);
     ASSERT_FALSE(cja.empty()) << "fixture archive failed to build";
@@ -197,8 +200,10 @@ TEST(SessionPackagesFailureTests, requireSignaturesLeavesTheKernelServing) {
     seedBinding(*s);
 
     CellResult r = s->execute(cell("Packages.install(\"depx\", \"1.*\");\n"));
-    EXPECT_FALSE(r.ok);
-    expectStillServing(*s, "require-signatures");
+    EXPECT_FALSE(r.ok) << "an unsigned release must be refused by default";
+    EXPECT_NE(std::string::npos, r.message.find("\"verification\": \"checksum\""))
+        << r.message;
+    expectStillServing(*s, "default policy");
 
     s->shutdown();
     fs::remove_all(root);

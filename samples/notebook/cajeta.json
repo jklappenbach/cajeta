@@ -28,12 +28,12 @@
         // A filesystem repository, staged by ./setup.sh. Everything the
         // tour does is offline: no cajeta.dev, no network.
         //
-        // To make signatures mandatory rather than opportunistic, add:
-        //     "require-signatures": true
-        // and re-run the tour — Part 4's unsigned install then fails.
+        // It serves no signed release metadata, so it is relaxed to
+        // checksum. Remove "verification" and re-run the tour: Part 3's
+        // unsigned install then fails, as it would from any repository.
         "repositories": [
             { "name": "tour-local", "type": "filesystem",
-              "path": "./repo", "priority": 10 }
+              "path": "./repo", "priority": 10, "verification": "checksum" }
         ]
     },
 

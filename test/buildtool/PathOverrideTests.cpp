@@ -564,7 +564,8 @@ TEST(PathOverrideTests, projectResolutionWiresPathOverride) {
         "settings": {
             "repositories": [
                 { "name": "local", "type": "filesystem",
-                  "path": ")" << repoRoot.generic_string() << R"(" }
+                  "path": ")" << repoRoot.generic_string() << R"(",
+                  "verification": "checksum" }
             ],
             "dependencies": {
                 "e.direct": "1.0.0"

@@ -175,20 +175,6 @@ namespace cajeta::kernel {
             const std::function<void(const std::string&)>& phase,
             std::string* errorOut);
 
-        // True when `signature` is empty (policy is the caller's) or verifies as
-        // from the organization owning the name. A key document served for
-        // `owningOrganization` DECIDES, the trust store being only its fallback.
-        bool verifySignatureOrFail(
-            const std::string& archivePath, const std::string& name,
-            const std::string& version,
-            const cajeta::buildtool::Repository& repo,
-            const std::string& owningOrganization,
-            const std::string& signature,
-            // The repository's verified delegation, or nullptr.
-            const cajeta::buildtool::RepositoryDelegation* delegation,
-            const std::function<void(const std::string&)>& phase,
-            std::string* errorOut);
-
         // Resolve a library NAME + constraint to a verified local archive through
         // the buildtool's repositories, cache and checksums; `phase` narrates to
         // the cell's stream. False + `errorOut` leaves no half-installed state.

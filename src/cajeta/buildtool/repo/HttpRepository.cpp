@@ -374,6 +374,24 @@ namespace cajeta::buildtool {
         if (auto ttl = obj->getInteger("ttl")) {
             cap.ttl = std::chrono::seconds(*ttl);
         }
+        // The form olla deploys: booleans nested under "capabilities", one per
+        // protocol version and feature, and "ttl-seconds". Read as the flat
+        // form, it advertised no v2 and every signed envelope went unread.
+        if (const auto* nested = obj->getObject("capabilities")) {
+            for (const char* v : {"v1", "v2"}) {
+                if (nested->getBoolean(v).value_or(false)) {
+                    cap.protocolVersions.emplace_back(v);
+                }
+            }
+            if (auto b = nested->getBoolean("bundle")) cap.bundle = *b;
+            if (auto b = nested->getBoolean("revocation")) cap.revocation = *b;
+            if (auto b = nested->getBoolean("content-addressed")) {
+                cap.contentAddressed = *b;
+            }
+        }
+        if (auto ttl = obj->getInteger("ttl-seconds")) {
+            cap.ttl = std::chrono::seconds(*ttl);
+        }
         return cap;
     }
 

@@ -62,6 +62,18 @@ namespace cajeta::buildtool {
             if (auto v = obj->getString("branch")) r.gitRef = v->str();
             if (auto v = obj->getString("rev"))    r.gitRef = v->str();
             if (auto v = obj->getString("subdir")) r.gitSubdir = v->str();
+            if (auto v = obj->getString("verification")) {
+                if (*v == "publisher") {
+                    r.verification = Verification::Publisher;
+                } else if (*v == "checksum") {
+                    r.verification = Verification::Checksum;
+                } else {
+                    return err("settings.repositories." + r.name +
+                               ": unknown verification '" + v->str() +
+                               "'; use \"publisher\" (the default) or "
+                               "\"checksum\"");
+                }
+            }
 
             if (r.type == "filesystem" && r.path.empty()) {
                 return err("settings.repositories." + r.name +

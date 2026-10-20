@@ -41,6 +41,7 @@
 #include "cajeta/compile/ScriptUnitSynthesis.h"
 #include "cajeta/buildtool/ArtifactCache.h"
 #include "cajeta/buildtool/Dependency.h"
+#include "cajeta/buildtool/FetchVerification.h"
 #include "cajeta/buildtool/Manifest.h"
 #include "cajeta/buildtool/ManifestEditor.h"
 #include "cajeta/buildtool/KeyRevocation.h"
@@ -50,6 +51,7 @@
 #include "cajeta/buildtool/Repository.h"
 #include "cajeta/buildtool/Resolver.h"
 #include "cajeta/buildtool/Signature.h"
+#include "cajeta/buildtool/repo/FilesystemRepository.h"
 #include "cajeta/cli/TrustStore.h"
 #include "cajeta/jit/JitModulePrep.h"
 #include "cajeta/jit/CajetaSymbolIndex.h"
@@ -566,111 +568,6 @@ int32_t sessionInstallHook(const char* name, int32_t nameLen,
 
 }  // namespace
 
-bool KernelSession::verifySignatureOrFail(
-        const std::string& archivePath, const std::string& name,
-        const std::string& version,
-        const cajeta::buildtool::Repository& repo,
-        const std::string& owningOrganization,
-        const std::string& signature,
-        const cajeta::buildtool::RepositoryDelegation* delegation,
-        const std::function<void(const std::string&)>& phase,
-        std::string* errorOut) {
-    namespace bt = cajeta::buildtool;
-    Impl& impl = *impl_;
-    const std::string repoName = repo.name();
-    if (signature.empty()) return true;      // policy already decided above
-
-    phase("checking signature for " + name + " " + version);
-    auto layout = cajeta::cli::resolveTrustStoreLayout();
-
-    if (!owningOrganization.empty()) {
-        if (!impl.orgKeys) {
-            impl.orgKeys = std::make_unique<bt::OrgKeyCache>(
-                cajeta::cli::rootTrustLayoutOf(layout));
-        }
-        std::time_t now = std::time(nullptr);
-        auto doc = impl.orgKeys->documentFor(repo, owningOrganization, now);
-        if (!doc) {
-            if (errorOut) {
-                *errorOut = "Packages.install: the key document for '"
-                          + owningOrganization + "' from " + repoName
-                          + " could not be used: "
-                          + llvm::toString(doc.takeError())
-                          + " Nothing was installed.";
-            } else {
-                llvm::consumeError(doc.takeError());
-            }
-            return false;
-        }
-        if (doc->has_value()) {
-            // The revocation statement, consulted BEFORE the signature check and
-            // failing CLOSED: failing open would un-revoke every key.
-            auto revocation = bt::revocationFor(repo, delegation, now, 0);
-            if (!revocation) {
-                if (errorOut) {
-                    *errorOut = "Packages.install: "
-                              + llvm::toString(revocation.takeError())
-                              + " Nothing was installed.";
-                } else {
-                    llvm::consumeError(revocation.takeError());
-                }
-                return false;
-            }
-
-            phase("verifying publisher " + owningOrganization);
-            auto verdict = bt::verifyAgainstOrgDocument(
-                **doc, name, archivePath, signature, now,
-                revocation->has_value() ? &**revocation : nullptr);
-            if (!verdict.ok()) {
-                if (errorOut) {
-                    *errorOut = "Packages.install: " + verdict.message
-                              + " Nothing was installed.";
-                }
-                return false;
-            }
-            // The document DECIDES: falling through to the trust store on a
-            // failure is the bypass, so return here either way.
-            return true;
-        }
-        // No document: degrade to the trust store rather than refusing.
-    }
-
-    std::vector<std::string> keys;
-    for (const auto& entry : cajeta::cli::listTrustedKeys(layout)) {
-        keys.push_back(entry.path);
-    }
-    if (keys.empty()) {
-        if (errorOut) {
-            *errorOut = "Packages.install: '" + name + "' " + version
-                      + " is signed, but this machine trusts no signing "
-                        "keys, so the signature cannot be checked. Add the "
-                        "publisher's key with `cajeta trust add`.";
-        }
-        return false;
-    }
-
-    auto verified = bt::verifyAgainstAnyKey(archivePath, signature, keys);
-    if (!verified) {
-        llvm::consumeError(verified.takeError());
-        if (errorOut) {
-            *errorOut = "Packages.install: the signature for '" + name
-                      + "' " + version + " could not be checked.";
-        }
-        return false;
-    }
-    if (!verified->has_value()) {
-        if (errorOut) {
-            *errorOut = "Packages.install: the signature for '" + name + "' "
-                      + version + " from " + repoName + " does not match any "
-                        "trusted key (" + std::to_string(keys.size())
-                      + " checked). Nothing was installed. If this publisher "
-                        "is new, add their key with `cajeta trust add`.";
-        }
-        return false;
-    }
-    return true;
-}
-
 bool KernelSession::resolveForInstall(
         const std::string& name, const std::string& constraint,
         const std::function<void(const std::string&)>& phase,
@@ -684,7 +581,6 @@ bool KernelSession::resolveForInstall(
     };
 
     std::vector<bt::RepositorySpec> specs;
-    bool requireSignatures = false;
     std::string projectRoot = impl.projectDir;
     if (!projectRoot.empty()) {
         auto manifestPath =
@@ -703,8 +599,11 @@ bool KernelSession::resolveForInstall(
                             + manifestPath + " could not be parsed");
             }
             specs = *parsed;
-            if (auto b = m->settingsRaw.getBoolean("require-signatures")) {
-                requireSignatures = *b;
+            if (m->settingsRaw.get("require-signatures")) {
+                cajeta::logLine("warn",
+                    "[packages] settings.require-signatures is retired and has "
+                    "no effect: publisher verification is now the default "
+                    "(relax a repository with \"verification\": \"checksum\")\n");
             }
         }
     }
@@ -731,8 +630,10 @@ bool KernelSession::resolveForInstall(
     phase("resolving " + name + " " + constraint);
     std::vector<std::string> consulted;
     bt::RepositoryPtr chosen;
+    size_t chosenIndex = 0;
     std::string chosenVersion;
-    for (const auto& repo : *repos) {
+    for (size_t ri = 0; ri < repos->size(); ++ri) {
+        const auto& repo = (*repos)[ri];
         consulted.push_back(repo->name());
         auto versions = repo->listVersions(name);
         if (!versions) {
@@ -745,6 +646,7 @@ bool KernelSession::resolveForInstall(
                 || bt::compareVersions(v, chosenVersion) > 0) {
                 chosenVersion = v;
                 chosen = repo;
+                chosenIndex = ri;
             }
         }
         if (chosen) break;
@@ -762,94 +664,37 @@ bool KernelSession::resolveForInstall(
 
     bt::ArtifactCache cache(projectRoot.empty() ? stage : projectRoot);
 
-    // Resolved BEFORE the cache arm, so a cached artifact is held to the same
-    // policy as a fetched one: a cache hit skips the network, not the checks.
-    std::string signature;
-    if (auto ps = chosen->publishedSignature(name, chosenVersion)) {
-        if (ps->has_value()) signature = **ps;
-    } else {
-        llvm::consumeError(ps.takeError());
-    }
-
-    // The hash this install is held to and WHO owns the name, from the signed
-    // release metadata. Before the cache arm, for the same reason.
-    auto roots = bt::rootsFor(
-        cajeta::cli::rootTrustLayoutOf(cajeta::cli::resolveTrustStoreLayout()),
-        chosen->name());
-    std::string published;
-    bool signedHash = false;
-    std::string owningOrganization;
-    if (!roots) {
-        return fail("Packages.install: the trust anchors for repository '"
-                    + chosen->name() + "' could not be resolved: "
-                    + llvm::toString(roots.takeError()));
-    }
-    // The repository's delegation, resolved before the metadata so release
-    // signatures are checked against the online release key, not the root.
-    std::time_t verifyAt = std::time(nullptr);
+    // Every accept-or-refuse decision is verifyFetchedRelease's, the check
+    // `cajeta build` runs too. A cache hit skips the network, not the checks.
+    const bt::Verification policy = specs[chosenIndex].verification;
+    const auto trust = cajeta::cli::resolveTrustStoreLayout();
     if (!impl.orgKeys) {
         impl.orgKeys = std::make_unique<bt::OrgKeyCache>(
-            cajeta::cli::rootTrustLayoutOf(
-                cajeta::cli::resolveTrustStoreLayout()));
+            cajeta::cli::rootTrustLayoutOf(trust));
     }
-    std::optional<bt::RepositoryDelegation> delegation;
-    if (auto d = impl.orgKeys->delegationFor(*chosen, verifyAt)) {
-        delegation = *d;
+    const std::time_t verifyAt = std::time(nullptr);
+    auto verified = [&](const std::string& path) {
+        phase("verifying " + name + " " + chosenVersion);
+        auto v = bt::verifyFetchedRelease(*chosen, name, chosenVersion, path,
+                                          policy, trust, *impl.orgKeys, verifyAt);
+        if (v) return true;
+        fail("Packages.install: " + llvm::toString(v.takeError())
+             + " Nothing was installed.");
+        return false;
+    };
+
+    // The cache is keyed by hash, so look up the one this release is published
+    // under. A lookup failure only means no cache hit; `verified` decides.
+    std::string published;
+    if (auto h = bt::expectedHashFor(*chosen, name, chosenVersion, trust,
+                                     *impl.orgKeys, verifyAt)) {
+        published = *h;
     } else {
-        return fail("Packages.install: the delegation for repository '"
-                    + chosen->name() + "' could not be used: "
-                    + llvm::toString(d.takeError()));
+        llvm::consumeError(h.takeError());
     }
-
-    if (auto integrity = bt::releaseIntegrityFor(
-            *chosen, name, chosenVersion, *roots,
-            delegation ? &*delegation : nullptr, verifyAt)) {
-        published = integrity->sha256;
-        signedHash = integrity->fromSignedMetadata;
-        // Only a root-SIGNED organization counts. An unsigned one is
-        // written as freely as a name prefix by anyone in the path.
-        if (integrity->fromSignedMetadata) {
-            owningOrganization = integrity->organization;
-        }
-        // Retraction WARNS and does not refuse: a lockfile pinning this version
-        // must keep resolving. Say whether the withdrawal was itself signed.
-        if (integrity->retracted) {
-            std::string why = integrity->retractedReason.empty()
-                                  ? std::string("no reason given")
-                                  : integrity->retractedReason;
-            cajeta::logLine("warn",
-                "[packages] '" + name + "' " + chosenVersion + " from "
-                + chosen->name() + " is RETRACTED by its publisher: " + why
-                + (integrity->fromSignedMetadata
-                       ? ""
-                       : " (unsigned metadata — this withdrawal is not"
-                         " signed, so treat it as advisory)")
-                + "\n");
-        }
-    } else {
-        // Metadata that is present and does not verify is a refusal: a mirror
-        // able to strip a signature would make the whole chain optional.
-        return fail("Packages.install: " + llvm::toString(integrity.takeError())
-                    + " Nothing was installed.");
-    }
-
-    if (signature.empty() && requireSignatures) {
-        return fail("Packages.install: '" + name + "' " + chosenVersion
-                    + " from " + chosen->name() + " publishes no signature, "
-                      "and this project sets require-signatures. Install a "
-                      "signed release, or drop require-signatures to accept "
-                      "checksum-only verification.");
-    }
-
     if (!published.empty()) {
         if (auto hit = cache.lookup(published)) {
-            if (!verifySignatureOrFail(*hit, name, chosenVersion, *chosen,
-                                       owningOrganization, signature,
-                                       delegation ? &*delegation : nullptr,
-                                       phase,
-                                       errorOut)) {
-                return false;
-            }
+            if (!verified(*hit)) return false;
             phase("cached " + name + " " + chosenVersion);
             if (pathOut) *pathOut = *hit;
             if (versionOut) *versionOut = chosenVersion;
@@ -866,47 +711,22 @@ bool KernelSession::resolveForInstall(
                     + " could not be fetched from " + chosen->name()
                     + ". Cache checked: " + cache.projectCacheDir());
     }
-
-    if (!published.empty()) {
-        phase("verifying " + name + " " + chosenVersion);
-        std::string actual = bt::ArtifactCache::sha256OfFile(*fetched);
-        if (actual != published) {
+    if (!verified(*fetched)) {
+        // A filesystem repository hands back its own file; only a staged
+        // download is discarded.
+        if (!dynamic_cast<const bt::FilesystemRepository*>(chosen.get())) {
             std::error_code rm;
             std::filesystem::remove(*fetched, rm);
-            return fail("Packages.install: checksum mismatch for '" + name
-                        + "' " + chosenVersion + " from " + chosen->name()
-                        + " — " + (signedHash ? "the root-signed release "
-                                                "metadata says "
-                                              : "the published checksum says ")
-                        + published + ", the bytes hash to "
-                        + (actual.empty() ? std::string("nothing") : actual)
-                        + ". The download was discarded and nothing was "
-                          "installed.");
         }
-        if (!verifySignatureOrFail(*fetched, name, chosenVersion, *chosen,
-                                   owningOrganization, signature,
-                                   delegation ? &*delegation : nullptr, phase,
-                                   errorOut)) {
-            std::error_code rm;
-            std::filesystem::remove(*fetched, rm);
-            return false;
-        }
-        if (auto stored = cache.insert(*fetched)) {
-            if (pathOut) *pathOut = *stored;
-            if (versionOut) *versionOut = chosenVersion;
-            return true;
-        } else {
-            llvm::consumeError(stored.takeError());
-        }
-    } else if (!verifySignatureOrFail(*fetched, name, chosenVersion, *chosen,
-                                      owningOrganization, signature,
-                                      delegation ? &*delegation : nullptr,
-                                      phase, errorOut)) {
-        std::error_code rm;
-        std::filesystem::remove(*fetched, rm);
         return false;
     }
-
+    if (auto stored = cache.insert(*fetched)) {
+        if (pathOut) *pathOut = *stored;
+        if (versionOut) *versionOut = chosenVersion;
+        return true;
+    } else {
+        llvm::consumeError(stored.takeError());
+    }
     if (pathOut) *pathOut = *fetched;
     if (versionOut) *versionOut = chosenVersion;
     return true;

@@ -531,3 +531,31 @@ TEST(HttpRepositoryV2Tests, publishedChecksumIsAbsentOnAV1OnlyServer) {
 
     rmTree(stage);
 }
+
+// publisher-trust 6.3.1 — the capability document live olla serves, captured
+// 2026-10-20 from https://olla.cajeta.dev/.well-known/cajeta-capabilities.json.
+// It nests booleans under "capabilities" rather than listing
+// "protocol-versions", and the client read it as "no v2": every signed
+// envelope olla served was ignored, so verification was silently off.
+TEST(HttpRepositoryV2Tests, theCapabilityShapeLiveOllaServesAdvertisesV2) {
+    const std::string live =
+        "{\"capabilities\":{\"v1\":true,\"v2\":true,\"bundle\":true,"
+        "\"lockfile-diff\":false,\"supercompress\":false,\"revocation\":false,"
+        "\"transparency-log\":true,\"well-known-bundles\":[],"
+        "\"trusted-publishing\":[\"github\"],\"server-signing\":[\"github\"]},"
+        "\"ttl-seconds\":3600}";
+    auto cap = cajeta::buildtool::parseCapabilitiesJson(live);
+    ASSERT_TRUE(static_cast<bool>(cap)) << llvm::toString(cap.takeError());
+    EXPECT_TRUE(cap->supportsV2());
+    EXPECT_TRUE(cap->bundle);
+    EXPECT_FALSE(cap->revocation);
+    EXPECT_EQ(std::chrono::seconds(3600), cap->ttl);
+}
+
+// The nested form's booleans mean what they say: v2 false is not v2.
+TEST(HttpRepositoryV2Tests, aNestedCapabilityWithV2FalseDoesNotAdvertiseV2) {
+    auto cap = cajeta::buildtool::parseCapabilitiesJson(
+        "{\"capabilities\":{\"v1\":true,\"v2\":false}}");
+    ASSERT_TRUE(static_cast<bool>(cap)) << llvm::toString(cap.takeError());
+    EXPECT_FALSE(cap->supportsV2());
+}

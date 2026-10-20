@@ -194,7 +194,7 @@ TEST(RunCommandTests, projectClasspathResolves) {
         "  \"settings\": {\n"
         "    \"repositories\": [ { \"name\": \"localfs\","
         " \"type\": \"filesystem\", \"path\": \"" + repo.generic_string()
-            + "\" } ],\n"
+            + "\", \"verification\": \"checksum\" } ],\n"
         "    \"dependencies\": { \"dev.example.greet\": \"0.1.*\" }\n"
         "  }\n"
         "}\n");

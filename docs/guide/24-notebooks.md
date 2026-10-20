@@ -102,12 +102,16 @@ call tells you whether a file was written.
 Installing code into a running session is a supply-chain surface, so an
 archive is checked before it is spliced.
 
-Its sha256 is verified against the checksum the repository publishes. A
-mismatch discards the bytes and fails the install; nothing is half-installed.
+The repository must serve release metadata signed through its root: the
+root ships with the toolchain, so this works with no setup against the public
+repository. The metadata names the archive's sha256 and the organization that
+owns it. A mismatch discards the bytes and fails the install; nothing is
+half-installed. This is the same check `cajeta build` runs.
 
-When the repository publishes a signature, it is verified too — ed25519,
-against the keys **your machine** trusts, not a key shipped alongside the
-artifact. Manage those with `cajeta trust`:
+When the repository also publishes an ed25519 signature for the archive, it is
+verified against that organization's key document, or, where the repository
+serves none, against the keys **your machine** trusts, never a key shipped
+alongside the artifact. Manage those with `cajeta trust`:
 
 ```
 cajeta trust add acme-releases ./acme-releases.pem
@@ -118,20 +122,27 @@ A signature that does not match a trusted key rejects the install. So does a
 signed archive on a machine with no trusted keys at all: unverifiable is not
 the same as fine.
 
-Signatures are opportunistic by default — an unsigned archive with a good
-checksum installs. To make them mandatory, set the floor in `cajeta.json`:
+A local or vendored repository that signs nothing is refused until you relax
+that one repository in `cajeta.json`:
 
 ```json
 {
     "settings": {
-        "require-signatures": true
+        "repositories": [
+            { "name": "vendor", "type": "filesystem", "path": "./vendor",
+              "verification": "checksum" }
+        ]
     }
 }
 ```
 
-Note what the default does and does not buy you. A checksum authenticates the
-mirror: it says these are the bytes the repository meant to serve. Only a
-signature says a publisher you chose to trust stands behind them.
+The relaxation covers only that repository; the public one stays verified. The
+older `"require-signatures": true` setting is retired and has no effect.
+
+Note what the relaxation gives up. A checksum only says these are the bytes the
+repository meant to serve, so whoever controls that repository controls what
+you install. Signed metadata says the repository's root stands behind them,
+and a mirror cannot forge it.
 
 ---
 

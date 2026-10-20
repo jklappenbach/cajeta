@@ -126,7 +126,8 @@ fs::path stageProject(const fs::path& root, const fs::path& repo,
     if (requireSignatures) json << "    \"require-signatures\": true,\n";
     json << "    \"repositories\": [\n"
          << "      { \"name\": \"fixture\", \"type\": \"filesystem\", "
-         << "\"path\": \"" << repo.generic_string() << "\", \"priority\": 0 }\n"
+         << "\"path\": \"" << repo.generic_string() << "\", \"priority\": 0,"
+         << " \"verification\": \"checksum\" }\n"
          << "    ]\n"
          << "  }\n"
          << "}\n";
@@ -220,9 +221,10 @@ TEST(SessionPackagesSignatureTests, signatureFromAnUntrustedKeyIsRejected) {
     fs::remove_all(root);
 }
 
-// 4.1.2 (floor) / spec 3.5 — `require-signatures: true` rejects an archive
-// that publishes no signature at all, even with a good checksum.
-TEST(SessionPackagesSignatureTests, requireSignaturesRejectsAnUnsignedArchive) {
+// publisher-trust 6.2.2 — `require-signatures` is retired: publisher
+// verification is the default, so the setting no longer refuses an archive
+// that publishes no signature. This repository is relaxed to checksum.
+TEST(SessionPackagesSignatureTests, requireSignaturesIsRetiredAndHasNoEffect) {
     auto root = freshRoot("required");
     auto cja = buildDep(root);
     ASSERT_FALSE(cja.empty()) << "fixture archive failed to build";
@@ -233,10 +235,8 @@ TEST(SessionPackagesSignatureTests, requireSignaturesRejectsAnUnsignedArchive) {
     ASSERT_NE(nullptr, s.get());
 
     CellResult r = s->execute(cell("Packages.install(\"depx\", \"1.*\");\n"));
-    EXPECT_FALSE(r.ok) << "require-signatures must reject an unsigned archive";
-    EXPECT_TRUE(contains(r.message, "require-signatures"))
-        << "must name the setting that caused the rejection; got: "
-        << r.message;
+    EXPECT_TRUE(r.ok) << "a retired setting must not refuse: "
+                      << r.errorId << ": " << r.message;
 
     s->shutdown();
     fs::remove_all(root);

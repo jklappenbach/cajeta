@@ -19,6 +19,9 @@
 #include "cajeta/buildtool/repo/FilesystemRepository.h"
 
 #include <gtest/gtest.h>
+#include "OrgKeyFixture.h"
+#include "cajeta/buildtool/RootTrust.h"
+#include "cajeta/cli/TrustStore.h"
 #include <llvm/Support/Error.h>
 
 #include <filesystem>
@@ -89,6 +92,32 @@ namespace {
            << "\"melt\":{" << meltBody << "}}";
         std::ofstream o(dir / "cajeta.json", std::ios::binary);
         o << js.str();
+    }
+
+    // Plants a fixture root in `home`'s trust store and signs `name`@`version`
+    // in `repoRoot` with it, so a repository that cannot be relaxed (one a
+    // melt contributes) serves verifiable release metadata.
+    void signRelease(const std::filesystem::path& home,
+                     const std::filesystem::path& repoRoot,
+                     const std::string& name, const std::string& version) {
+        namespace t = cajeta::buildtool::testing;
+        auto keys = home / "fixture-keys";
+        auto root = t::makeKeyPair(keys, "root");
+        auto layout = cajeta::cli::rootTrustLayoutOf(
+            cajeta::cli::resolveTrustStoreLayout(
+                home.string(), (home / "no-system").string(), std::string()));
+        if (auto e = cajeta::buildtool::addRootKey(layout, "fixture-root",
+                                                   root.pub.string())) {
+            ADD_FAILURE() << errorText(std::move(e));
+        }
+        auto dir = repoRoot / name / version;
+        std::string sha = ArtifactCache::sha256OfFile(
+            (dir / (name + "-" + version + ".cja")).string());
+        t::writeWholeFile(dir / (name + "-" + version + ".release.json"),
+                          t::envelopeAround(keys,
+                                            t::releasePayload(name, version, sha,
+                                                              "from.melt"),
+                                            root, "fixture-root", "melt-release"));
     }
 
     // Stage a regular (non-melt) package with optional deps.
@@ -389,7 +418,8 @@ TEST(MeltResolverTests, projectResolutionAppliesStarFromMelt) {
         "settings": {
             "repositories": [
                 { "name": "local", "type": "filesystem",
-                  "path": ")" << root.generic_string() << R"(" }
+                  "path": ")" << root.generic_string() << R"(",
+                  "verification": "checksum" }
             ],
             "melts": [ "platform.melt@1.0.0" ],
             "dependencies": {
@@ -420,7 +450,8 @@ TEST(MeltResolverTests, projectResolutionStarWithNoMeltFails) {
         "settings": {
             "repositories": [
                 { "name": "local", "type": "filesystem",
-                  "path": ")" << root.generic_string() << R"(" }
+                  "path": ")" << root.generic_string() << R"(",
+                  "verification": "checksum" }
             ],
             "dependencies": {
                 "acme.lib": "*"
@@ -452,7 +483,8 @@ TEST(MeltResolverTests, projectResolutionExplicitOverridesMeltConstraint) {
         "settings": {
             "repositories": [
                 { "name": "local", "type": "filesystem",
-                  "path": ")" << root.generic_string() << R"(" }
+                  "path": ")" << root.generic_string() << R"(",
+                  "verification": "checksum" }
             ],
             "melts": [ "platform.melt@1.0.0" ],
             "dependencies": {
@@ -495,7 +527,8 @@ TEST(MeltResolverTests, meltRepositoriesAppendedToResolutionList) {
         "settings": {
             "repositories": [
                 { "name": "local", "type": "filesystem",
-                  "path": ")" << consumerRepo.generic_string() << R"(" }
+                  "path": ")" << consumerRepo.generic_string() << R"(",
+                  "verification": "checksum" }
             ],
             "melts": [ "platform.melt@1.0.0" ],
             "dependencies": {
@@ -507,10 +540,51 @@ TEST(MeltResolverTests, meltRepositoriesAppendedToResolutionList) {
 
     auto projectDir = makeTempDir("proj");
     auto homeDir    = makeTempDir("home");
+    // A melt cannot relax the repositories it contributes, so this one signs.
+    signRelease(homeDir, meltRepo, "from.melt.repo", "1.0.0");
     auto resolved = resolveProjectDependencies(
         m, projectDir.string(), homeDir.string());
     ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
     ASSERT_EQ(resolved->size(), 1u);
     EXPECT_EQ((*resolved)[0].name, "from.melt.repo");
     EXPECT_EQ((*resolved)[0].resolvedFromRepo, "melt-repo");
+}
+
+// publisher-trust Unit 6 — a melt is a dependency, not the operator: a
+// `"verification": "checksum"` it writes on a repository it contributes is not
+// honoured, so its unsigned release is refused (spec 5.5).
+TEST(MeltResolverTests, aMeltCannotRelaxTheRepositoriesItContributes) {
+    auto consumerRepo = makeTempDir("crepo-relax");
+    auto meltRepo     = makeTempDir("mrepo-relax");
+
+    stagePkg(meltRepo, "from.melt.repo", "1.0.0", {});
+    std::ostringstream meltBody;
+    meltBody << "\"dependencies\":{\"from.melt.repo\":\"1.0.0\"},"
+             << "\"repositories\":[{\"name\":\"melt-repo\","
+             << "\"type\":\"filesystem\","
+             << "\"path\":\"" << meltRepo.generic_string() << "\","
+             << "\"verification\":\"checksum\","
+             << "\"priority\":100}]";
+    stageMelt(consumerRepo, "platform.melt", "1.0.0", meltBody.str());
+
+    std::ostringstream src;
+    src << R"({
+        "details": { "name": "consumer", "version": "0.1.0" },
+        "settings": {
+            "repositories": [
+                { "name": "local", "type": "filesystem",
+                  "path": ")" << consumerRepo.generic_string() << R"(",
+                  "verification": "checksum" }
+            ],
+            "melts": [ "platform.melt@1.0.0" ],
+            "dependencies": { "from.melt.repo": "*" }
+        }
+    })";
+    auto m = mustLoad(src.str());
+    auto resolved = resolveProjectDependencies(
+        m, makeTempDir("proj-relax").string(), makeTempDir("home-relax").string());
+    ASSERT_FALSE((bool)resolved)
+        << "a melt-contributed repository must stay under the default policy";
+    std::string msg = errorText(resolved.takeError());
+    EXPECT_NE(std::string::npos, msg.find("melt-repo")) << msg;
 }

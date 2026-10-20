@@ -623,9 +623,11 @@ each other and with `tasks`/source content.
             "vendor.fork":  { "path": "./vendor/patched-fork" }
         },
 
-        // Repository list, priority-ordered.
+        // Repository list, priority-ordered. A fetch is verified against
+        // signed release metadata by default; "verification": "checksum"
+        // relaxes one repository that signs nothing (publisher-trust 5.4).
         "repositories": [
-            { "name": "local-dev",     "type": "filesystem", "path": "/home/me/cajeta-local", "priority": 200 },
+            { "name": "local-dev",     "type": "filesystem", "path": "/home/me/cajeta-local", "priority": 200, "verification": "checksum" },
             { "name": "company-nexus", "url":  "${org-nexus}",                                "auth": { "type": "bearer", "token-env": "NEXUS_TOKEN" }, "priority": 100 },
             { "name": "central",       "url":  "https://repo.cajeta.org",                     "priority": 0 }
         ],
@@ -3606,6 +3608,38 @@ Verification flow in `strict` mode:
 4. On match → proceed to load. On mismatch → refuse with the
    computed-vs-expected digest pair printed for triage.
 
+### Fetch-time verification (publisher-trust)
+
+Every archive a declared repository serves is verified when it is fetched,
+before anything stores or loads it: `cajeta build`, `deps`, plugins, melts and
+a notebook's `Packages.install` all run the same check
+(`buildtool/FetchVerification`).
+
+1. **Roots.** The repository root ships in the toolchain (`olla-root-1`),
+   so a default install verifies with no setup. `cajeta trust add-root`
+   adds a root for a private or mirrored repository, and `cajeta trust pin`
+   pins a repository to one root.
+2. **Delegation.** The repository serves `/v2/repository-keys`, a document
+   the root signs that names the online keys allowed to sign release
+   metadata (olla's is `release-1`).
+3. **Release metadata.** `/v2/resolve` carries a signed envelope naming the
+   release's sha256 and owning organization. The bytes must hash to it; a
+   mismatch discards them. Metadata that is present and does not verify is
+   refused under every policy.
+4. **Archive signature.** When the repository publishes one, it is checked
+   against the owning organization's key document; with no document, against
+   the trust store below.
+
+A repository's policy is its `verification` field in `settings.repositories`:
+`"publisher"`, the default, requires step 3; `"checksum"` accepts a repository
+that serves no signed metadata on its own sha256, for that repository only.
+A repository a melt contributes cannot be relaxed. `~/.olla` is a verified
+store, outside the policy: a fetched release is mirrored into it only after
+it passes, with its envelope beside it as `<name>-<version>.release.json`, and
+the machine's own `cajeta install` builds are admitted as local builds. The
+lockfile's sha256 pins what was verified, so offline builds keep working.
+`settings.require-signatures` is retired and only warns.
+
 ### Trust store
 
 Public keys the launcher will accept come from three locations,
@@ -3631,7 +3665,17 @@ cajeta trust add <key-id> <pem-path>  # install a public key
 cajeta trust remove <key-id>          # uninstall (user store only by default)
 cajeta trust show <key-id>            # print key fingerprint + metadata
 cajeta trust verify <archive>         # one-shot verification
+cajeta trust roots                    # roots that verify signed documents
+cajeta trust add-root <key-id> <pem>  # add a root (private or mirrored repository)
+cajeta trust remove-root <key-id>     # remove an added root (never the shipped one)
+cajeta trust pin <repository> <key-id> # verify that repository only against this root
+cajeta trust verify-document <file> [--origin <url>]  # will a client accept this document?
 ```
+
+Roots and keys are different anchors: a root verifies documents (key
+documents, delegations, release metadata), a trusted key verifies an archive
+signature directly. Trusted keys are additive to the document model, and when
+both could verify an archive the organization's key document wins.
 
 `cajeta trust add` writes into the per-user store by default;
 `--system` writes into the system store (typically requires
