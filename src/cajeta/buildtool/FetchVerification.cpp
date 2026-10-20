@@ -136,7 +136,8 @@ namespace cajeta::buildtool {
         Verification policy,
         const cli::TrustStoreLayout& trust,
         OrgKeyCache& orgKeys,
-        std::time_t now) {
+        std::time_t now,
+        const std::vector<LegacyRelease>* legacy) {
         const std::string what = "'" + name + "' " + version + " from repository '"
                                + repo.name() + "'";
         // Present metadata that does not verify is an error here under either
@@ -149,7 +150,18 @@ namespace cajeta::buildtool {
         const ReleaseIntegrity* integrity = &checked->value;
         const RepositoryDelegation* deleg =
             checked->delegation ? &*checked->delegation : nullptr;
+        // A release olla published before it signed metadata is admitted on
+        // the exact bytes this toolchain measured. Absent metadata only: a
+        // present envelope that failed was refused above.
         if (!integrity->fromSignedMetadata && policy == Verification::Publisher) {
+            const std::string actual = ArtifactCache::sha256OfFile(artifactPath);
+            for (const auto& r : legacy ? *legacy : legacyReleases()) {
+                if (r.name == name && r.version == version && r.sha256 == actual) {
+                    VerifiedRelease out;
+                    out.sha256 = actual;
+                    return out;
+                }
+            }
             return err("refusing " + what + ": the repository serves no signed "
                        "release metadata for it, so its publisher cannot be "
                        "verified. If you trust this repository's contents, relax "

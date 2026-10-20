@@ -23,6 +23,9 @@
 #include "TempTeardown.h"
 
 #include "cajeta/buildtool/ArtifactCache.h"
+#include "cajeta/buildtool/FetchVerification.h"
+#include "cajeta/buildtool/OrgKeyCache.h"
+#include "cajeta/buildtool/repo/FilesystemRepository.h"
 #include "cajeta/buildtool/Manifest.h"
 #include "cajeta/buildtool/OllaStore.h"
 #include "cajeta/buildtool/Resolver.h"
@@ -271,4 +274,69 @@ TEST(FetchVerificationTests, requireSignaturesIsRetiredWithAWarning) {
     std::string err = ::testing::internal::GetCapturedStderr();
     ASSERT_TRUE(!!r) << errText(r.takeError());
     EXPECT_NE(std::string::npos, err.find("require-signatures")) << err;
+}
+
+namespace {
+
+// Runs the shared check directly on `name`@1.0.0 in `repoRoot` under the
+// default policy, against `legacy`.
+llvm::Expected<VerifiedRelease> verifyAgainst(Fixture& fx, const fs::path& repoRoot,
+                                              const std::string& name,
+                                              const std::vector<LegacyRelease>& legacy) {
+    FilesystemRepository repo("central", repoRoot.string());
+    auto trust = cajeta::cli::resolveTrustStoreLayout(
+        fx.home.string(), (fx.dir / "no-system").string(), std::string());
+    OrgKeyCache orgKeys(cajeta::cli::rootTrustLayoutOf(trust));
+    auto path = repoRoot / name / "1.0.0" / (name + "-1.0.0.cja");
+    return verifyFetchedRelease(repo, name, "1.0.0", path.string(),
+                                Verification::Publisher, trust, orgKeys,
+                                std::time(nullptr), &legacy);
+}
+
+}  // namespace
+
+// A release olla published before it signed metadata is admitted under the
+// default when the toolchain's list names it with these exact bytes.
+TEST(FetchVerificationTests, aListedLegacyReleaseIsAdmittedUnderTheDefault) {
+    Fixture fx("legacy-ok");
+    std::string bytes = "LEGACY-BYTES";
+    auto remote = fx.repo("remote", "dev.cajeta.old", "1.0.0", bytes, "");
+    auto v = verifyAgainst(fx, remote, "dev.cajeta.old",
+                           {{"dev.cajeta.old", "1.0.0", fx.sha(bytes)}});
+    ASSERT_TRUE(!!v) << errText(v.takeError());
+    EXPECT_FALSE(v->fromSignedMetadata) << "a listed release is not signed";
+}
+
+// The list pins bytes, not names: other bytes under a listed name are refused.
+TEST(FetchVerificationTests, aLegacyEntryWithOtherBytesIsRefused) {
+    Fixture fx("legacy-bytes");
+    auto remote = fx.repo("remote", "dev.cajeta.old", "1.0.0", "SWAPPED", "");
+    auto v = verifyAgainst(fx, remote, "dev.cajeta.old",
+                           {{"dev.cajeta.old", "1.0.0", fx.sha("LEGACY-BYTES")}});
+    ASSERT_FALSE(!!v);
+    consumeError(v.takeError());
+}
+
+// An entry covers its own version only.
+TEST(FetchVerificationTests, aLegacyEntryCoversOnlyItsVersion) {
+    Fixture fx("legacy-version");
+    std::string bytes = "LEGACY-BYTES";
+    auto remote = fx.repo("remote", "dev.cajeta.old", "1.0.0", bytes, "");
+    auto v = verifyAgainst(fx, remote, "dev.cajeta.old",
+                           {{"dev.cajeta.old", "0.9.0", fx.sha(bytes)}});
+    ASSERT_FALSE(!!v);
+    consumeError(v.takeError());
+}
+
+// The embedded list is the 49 releases measured against live olla 2026-10-20.
+TEST(FetchVerificationTests, theEmbeddedListPinsTheMeasuredLegacyReleases) {
+    const auto& list = legacyReleases();
+    EXPECT_EQ(49u, list.size());
+    bool graph = false;
+    for (const auto& r : list) {
+        if (r.name == "dev.cajeta.graph" && r.version == "0.1.0") graph = true;
+        EXPECT_EQ(0u, r.sha256.rfind("sha256:", 0)) << r.name << " " << r.version;
+        EXPECT_EQ(71u, r.sha256.size()) << r.name << " " << r.version;
+    }
+    EXPECT_TRUE(graph) << "dev.cajeta.graph 0.1.0 is a measured legacy release";
 }

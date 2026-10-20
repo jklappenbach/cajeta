@@ -41,8 +41,24 @@ namespace cajeta::buildtool {
         std::string envelopeJson;
     };
 
+    // A release olla published before it signed release metadata
+    // (2026-09-03), pinned by the exact bytes it served.
+    struct LegacyRelease {
+        std::string name;
+        std::string version;
+        std::string sha256;
+    };
+
+    // The legacy releases this toolchain vouches for, measured against live olla
+    // 2026-10-20: each archive downloaded and hashed. The set is closed, since
+    // olla signs every publish now.
+    const std::vector<LegacyRelease>& legacyReleases();
+
     // The one check every fetch path runs on `artifactPath`, the bytes `repo`
     // just produced for `name@version`. An error means refuse and keep nothing.
+    // Under the default policy a release with no signed metadata is admitted
+    // only when `legacy` (the embedded list when null) names it with these
+    // exact bytes.
     llvm::Expected<VerifiedRelease> verifyFetchedRelease(
         const Repository& repo,
         const std::string& name,
@@ -51,7 +67,8 @@ namespace cajeta::buildtool {
         Verification policy,
         const cli::TrustStoreLayout& trust,
         OrgKeyCache& orgKeys,
-        std::time_t now);
+        std::time_t now,
+        const std::vector<LegacyRelease>* legacy = nullptr);
 
     // The hash `name@version` from `repo` is published under, signed or not.
     // It finds a cached copy; it decides nothing, so a hit still goes through
