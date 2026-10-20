@@ -24,6 +24,7 @@
 #include "Optimizer.h"
 #include "InlineLineFrames.h"
 #include "Devirtualize.h"
+#include "CrossModuleInline.h"
 #include "StdlibEmbedded.h"
 #include "cajeta/dbg/DebugCodegen.h"
 #include "cajeta/xref/XrefIndex.h"
@@ -2391,6 +2392,8 @@ namespace cajeta {
                 std::vector<llvm::Module*> lmods;
                 collectLinkModules(lmods);
                 devirtualizeUniqueSlots(lmods);
+                // Nothing inlines at O0, so copies there are only cost.
+                if (flags.opt != OptLevel::O0) copySmallBodiesIntoCallers(lmods);
             }
         }
 

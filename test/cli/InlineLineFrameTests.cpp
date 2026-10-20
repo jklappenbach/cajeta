@@ -58,8 +58,10 @@ Built build(const std::string& src, const std::string& flags, bool inlineFrames)
     std::ofstream(b.root / "src" / "app" / "Main.cajeta") << src;
     b.exe = b.root / "out" / "prog";
     b.dump = b.root / "dump";
+    // The call path also turns off cross-module copies, which would inline the runtime's own calls.
     std::string env = cajeta_env_prefix({{"CAJETA_DUMP_CODEGEN_BC", b.dump.string()},
-                                         {"CAJETA_INLINE_LINE_FRAMES", inlineFrames ? "1" : "0"}});
+                                         {"CAJETA_INLINE_LINE_FRAMES", inlineFrames ? "1" : "0"},
+                                         {"CAJETA_XMODULE_INLINE", inlineFrames ? "1" : "0"}});
     fs::path log = b.root / "build.log";
     std::string cmd = env + "\"" + lineFrameCompiler() + "\" --emit=exe " + flags + " -o \""
         + b.exe.string() + "\" app.Main.main \"" + (b.root / "src").string() + "\" \""
@@ -200,7 +202,8 @@ TEST(InlineLineFrame, tracesMatchTheCallPathAtEveryOptLevel) {
 }
 
 // 4.2: a fault in a small inlined method prints the same report either way (a SIGSEGV
-// prints the native backtrace, not the shadow stack, so addresses are stripped).
+// prints the native backtrace, not the shadow stack, so addresses are stripped). The null comes
+// from run-time data: a constant null is undefined behaviour to LLVM and folds to a trap at O2.
 TEST(InlineLineFrame, aFaultPrintsTheSameStack) {
     const char* src =
         "package app;\n"
@@ -208,7 +211,7 @@ TEST(InlineLineFrame, aFaultPrintsTheSameStack) {
         "    static int32 leaf(int32[] a, int32 i) { return a[i]; }\n"
         "    static int32 middle(int32[] a) { return Main.leaf(a, 0) + 1; }\n"
         "    public static int32 main(String[] args) {\n"
-        "        int32[] a = null;\n"
+        "        int32[] a = args.count() > 99 ? heap int32[1] : null;\n"
         "        return Main.middle(a);\n"
         "    }\n"
         "}\n";

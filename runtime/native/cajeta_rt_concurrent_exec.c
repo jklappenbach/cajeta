@@ -211,7 +211,7 @@ typedef enum {
 } cajeta_fiber_state;
 
 // Forward decl — scope_exit re-raises through __cajeta_throw, defined later.
-__attribute__((noreturn)) void __cajeta_throw(void* value);
+__attribute__((noreturn, cold)) void __cajeta_throw(void* value);
 
 // Per-scope tracking of spawned child tasks: the closing `}` waits on every
 // registered done flag, then re-raises the first exception slot it finds.

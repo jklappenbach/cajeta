@@ -253,7 +253,7 @@ static void __cajeta_emit_uncaught(void* value, int is_unrec) {
     __cajeta_print_trace(value, 2);
 }
 
-__attribute__((noreturn)) void __cajeta_throw_titled(void* value, int64_t title);
+__attribute__((noreturn, cold)) void __cajeta_throw_titled(void* value, int64_t title);
 
 // A throw that tenders no title: runtime-raised values and legacy integer throws.
 __attribute__((noreturn))

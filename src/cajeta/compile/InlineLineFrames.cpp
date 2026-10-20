@@ -28,6 +28,11 @@ namespace cajeta {
             llvm::StructType* stack = nullptr;
             llvm::GlobalVariable* cur = nullptr;
             llvm::FunctionCallee slow;
+            // Siblings of cajeta's field and array-element types (CajetaModule::ensureTbaaNodes),
+            // so shadow-stack traffic does not alias program data or the cached pointer.
+            llvm::MDNode* curTag = nullptr;
+            llvm::MDNode* topTag = nullptr;
+            llvm::MDNode* frameTag = nullptr;
         };
 
         Shapes shapesFor(llvm::Module& m) {
@@ -46,6 +51,23 @@ namespace cajeta {
                     llvm::GlobalValue::GeneralDynamicTLSModel);
             }
             s.slow = m.getOrInsertFunction("__cajeta_shadow_cur_slow", ptrTy);
+            // It only fills __cajeta_shadow_cur and is idempotent, so a stale read of the cache
+            // just takes the slow path again; claiming no visible writes lets frames share loads.
+            if (auto* sf = llvm::dyn_cast<llvm::Function>(s.slow.getCallee())) {
+                sf->addFnAttr(llvm::Attribute::NoUnwind);
+                sf->addFnAttr(llvm::Attribute::WillReturn);
+                sf->setMemoryEffects(llvm::MemoryEffects::inaccessibleMemOnly());
+            }
+            llvm::MDBuilder mdb(ctx);
+            llvm::MDNode* charTy =
+                mdb.createTBAAScalarTypeNode("omnipotent char", mdb.createTBAARoot("Cajeta TBAA"));
+            auto tag = [&](const char* name) {
+                llvm::MDNode* t = mdb.createTBAAScalarTypeNode(name, charTy);
+                return mdb.createTBAAStructTagNode(t, t, 0);
+            };
+            s.curTag = tag("cajeta shadow pointer");
+            s.topTag = tag("cajeta shadow top");
+            s.frameTag = tag("cajeta shadow frame");
             return s;
         }
 
@@ -54,6 +76,7 @@ namespace cajeta {
             llvm::IRBuilder<> b(at);
             auto* ptrTy = llvm::PointerType::get(b.getContext(), 0);
             llvm::LoadInst* cached = b.CreateLoad(ptrTy, s.cur, "shadow.cur");
+            cached->setMetadata(llvm::LLVMContext::MD_tbaa, s.curTag);
             llvm::Value* isNull = b.CreateICmpEQ(cached, llvm::ConstantPointerNull::get(ptrTy));
             llvm::BasicBlock* head = cached->getParent();
             llvm::MDNode* unlikely = llvm::MDBuilder(b.getContext()).createBranchWeights(1, 4096);
@@ -82,17 +105,21 @@ namespace cajeta {
             llvm::IRBuilder<> b(call);
             llvm::Type* i32 = b.getInt32Ty();
             llvm::Value* topPtr = b.CreateStructGEP(s.stack, st, 1, "shadow.top.ptr");
-            llvm::Value* top = b.CreateLoad(i32, topPtr, "shadow.top");
+            llvm::LoadInst* top = b.CreateLoad(i32, topPtr, "shadow.top");
+            top->setMetadata(llvm::LLVMContext::MD_tbaa, s.topTag);
             llvm::Value* inCap = b.CreateICmpULT(top, b.getInt32(kShadowMax));
             emitIf(inCap, call, [&](llvm::IRBuilder<>& tb) {
                 llvm::Value* idx = tb.CreateZExt(top, tb.getInt64Ty());
                 llvm::Value* fr = tb.CreateInBoundsGEP(
                     s.stack, st, {tb.getInt32(0), tb.getInt32(0), idx}, "shadow.frame");
-                tb.CreateStore(desc, tb.CreateStructGEP(s.frame, fr, 0));
-                tb.CreateStore(tb.getInt32(0), tb.CreateStructGEP(s.frame, fr, 1));
+                tb.CreateStore(desc, tb.CreateStructGEP(s.frame, fr, 0))
+                    ->setMetadata(llvm::LLVMContext::MD_tbaa, s.frameTag);
+                tb.CreateStore(tb.getInt32(0), tb.CreateStructGEP(s.frame, fr, 1))
+                    ->setMetadata(llvm::LLVMContext::MD_tbaa, s.frameTag);
             });
             b.SetInsertPoint(call);
-            b.CreateStore(b.CreateAdd(top, b.getInt32(1)), topPtr);
+            b.CreateStore(b.CreateAdd(top, b.getInt32(1)), topPtr)
+                ->setMetadata(llvm::LLVMContext::MD_tbaa, s.topTag);
             call->eraseFromParent();
         }
 
@@ -101,14 +128,16 @@ namespace cajeta {
             llvm::Value* st = emitStack(s, call);
             llvm::IRBuilder<> b(call);
             llvm::Type* i32 = b.getInt32Ty();
-            llvm::Value* top = b.CreateLoad(i32, b.CreateStructGEP(s.stack, st, 1), "shadow.top");
+            llvm::LoadInst* top = b.CreateLoad(i32, b.CreateStructGEP(s.stack, st, 1), "shadow.top");
+            top->setMetadata(llvm::LLVMContext::MD_tbaa, s.topTag);
             llvm::Value* below = b.CreateSub(top, b.getInt32(1));
             llvm::Value* inCap = b.CreateICmpULT(below, b.getInt32(kShadowMax));
             emitIf(inCap, call, [&](llvm::IRBuilder<>& tb) {
                 llvm::Value* idx = tb.CreateZExt(below, tb.getInt64Ty());
                 llvm::Value* fr = tb.CreateInBoundsGEP(
                     s.stack, st, {tb.getInt32(0), tb.getInt32(0), idx}, "shadow.frame");
-                tb.CreateStore(line, tb.CreateStructGEP(s.frame, fr, 1));
+                tb.CreateStore(line, tb.CreateStructGEP(s.frame, fr, 1))
+                    ->setMetadata(llvm::LLVMContext::MD_tbaa, s.frameTag);
             });
             call->eraseFromParent();
         }
@@ -118,10 +147,12 @@ namespace cajeta {
             llvm::IRBuilder<> b(call);
             llvm::Type* i32 = b.getInt32Ty();
             llvm::Value* topPtr = b.CreateStructGEP(s.stack, st, 1, "shadow.top.ptr");
-            llvm::Value* top = b.CreateLoad(i32, topPtr, "shadow.top");
+            llvm::LoadInst* top = b.CreateLoad(i32, topPtr, "shadow.top");
+            top->setMetadata(llvm::LLVMContext::MD_tbaa, s.topTag);
             llvm::Value* positive = b.CreateICmpSGT(top, b.getInt32(0));
             emitIf(positive, call, [&](llvm::IRBuilder<>& tb) {
-                tb.CreateStore(tb.CreateSub(top, tb.getInt32(1)), topPtr);
+                tb.CreateStore(tb.CreateSub(top, tb.getInt32(1)), topPtr)
+                    ->setMetadata(llvm::LLVMContext::MD_tbaa, s.topTag);
             });
             call->eraseFromParent();
         }

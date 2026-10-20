@@ -46,8 +46,9 @@ const char* kMain =
     "    }\n"
     "}\n";
 
+/** True when callF still dispatches: it reads the receiver's vtable (the lookup itself may be inlined). */
 bool callsLookup(const Built& b) {
-    return bodiesOf(dumpedIr(b), "app.Main::callF").find("@__cajeta_vtable_lookup") != std::string::npos;
+    return bodiesOf(dumpedIr(b), "app.Main::callF").find("%vtable") != std::string::npos;
 }
 
 }  // namespace
