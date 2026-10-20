@@ -230,7 +230,7 @@ namespace cajeta {
         else armEntryFlag(module, field, entryPtr, flag);
 
         field->setDropEntry(entryPtr);
-        if (auto m = module->getCurrentMethod()) m->registerDropEntry(entryPtr);
+        if (DropFrames* drops = module->getDropFrames()) drops->registerEntry(entryPtr);
     }
 
     // Synthesize, once per (hs, es, arrKind), the one-arg drop fn that walks an
@@ -373,7 +373,7 @@ namespace cajeta {
                 }
             }
         }
-        if (auto m = module->getCurrentMethod()) m->registerDropEntry(entryPtr);
+        if (DropFrames* drops = module->getDropFrames()) drops->registerEntry(entryPtr);
         field->setElemOwnSidecar(sidecar);
     }
 
@@ -420,7 +420,7 @@ namespace cajeta {
         }
 
         field->setDropEntry(entryPtr);
-        if (auto m = module->getCurrentMethod()) m->registerDropEntry(entryPtr);
+        if (DropFrames* drops = module->getDropFrames()) drops->registerEntry(entryPtr);
     }
 
     // Drop entry taking an already-resolved drop function: a class's synthesized
@@ -461,7 +461,7 @@ namespace cajeta {
         armEntryFlag(module, field, entryPtr, flag);
 
         field->setDropEntry(entryPtr);
-        if (auto m = module->getCurrentMethod()) m->registerDropEntry(entryPtr);
+        if (DropFrames* drops = module->getDropFrames()) drops->registerEntry(entryPtr);
     }
 
     // Collect every sub-node of `node` into `out`: `children` plus the subtrees

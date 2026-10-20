@@ -4038,6 +4038,20 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
         module->getScopeStack().peek()->setParent(nullptr);
 
         module->setCurrentMethod(nullptr);
+        // The body's own drop frames: with no current method, every block, return,
+        // break and catch in it registers and pops here. Restored with the outer
+        // method below, and by the guard if lowering the body throws.
+        DropFrames lambdaDrops;
+        struct LambdaDropsGuard {
+            CajetaModulePtr module;
+            DropFrames* outer;
+            bool restored = false;
+            void restore() {
+                if (!restored) module->setLambdaDropFrames(outer);
+                restored = true;
+            }
+            ~LambdaDropsGuard() { restore(); }
+        } lambdaDropsGuard{module, module->setLambdaDropFrames(&lambdaDrops)};
         bool savedLambdaRet = module->isLambdaClassPtrReturn();
         bool lambdaClassPtrRet = sretOffset == 0
             && fn->getReturnType()->isPointerTy()
@@ -4241,6 +4255,7 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
 
         module->setBuilder(outerBuilder);
         module->setCurrentMethod(outerMethod);
+        lambdaDropsGuard.restore();
         outerBuilder->SetInsertPoint(outerInsertBlock);
 
         // Closure layout `{ ptr fn, ptr captures, ptr drop_fn }`; the drop_fn slot lets
@@ -5677,8 +5692,8 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
                         outerBuilder->CreateCall(dropPush,
                             {dropEntryPtr, taskInstance, taskDropFn});
                     }
-                    if (auto m = module->getCurrentMethod()) {
-                        m->registerDropEntry(dropEntryPtr);
+                    if (DropFrames* drops = module->getDropFrames()) {
+                        drops->registerEntry(dropEntryPtr);
                     }
                     dropEntry = dropEntryPtr;
                 }

@@ -1195,42 +1195,49 @@ namespace cajeta {
         }
     }
 
-    void Method::emitTopFrameDrops(CajetaModulePtr module) {
-        if (dropFrameStack.empty() || dropFrameStack.back().empty()) return;
+    void DropFrames::emitTop(CajetaModulePtr module) {
+        if (frames.empty() || frames.back().empty()) return;
         llvm::Function* popRun = module->getRuntimeFunction("__cajeta_drop_pop_run");
         if (!popRun) return;
         auto* b = module->getBuilder();
-        auto& frame = dropFrameStack.back();
+        auto& frame = frames.back();
         for (auto it = frame.rbegin(); it != frame.rend(); ++it) {
             b->CreateCall(popRun, {*it});
         }
     }
 
-    void Method::emitFrameDropsToDepth(CajetaModulePtr module, size_t keep) {
-        if (dropFrameStack.size() <= keep) return;
+    void DropFrames::emitToDepth(CajetaModulePtr module, size_t keep) {
+        if (frames.size() <= keep) return;
         llvm::Function* popRun = module->getRuntimeFunction("__cajeta_drop_pop_run");
         if (!popRun) return;
         auto* b = module->getBuilder();
         // Every entry in these frames has provably executed its runtime push on any
         // path reaching here: codegen is linear and enclosing blocks ran in order.
-        for (size_t fi = dropFrameStack.size(); fi > keep; --fi) {
-            auto& frame = dropFrameStack[fi - 1];
+        for (size_t fi = frames.size(); fi > keep; --fi) {
+            auto& frame = frames[fi - 1];
             for (auto it = frame.rbegin(); it != frame.rend(); ++it) {
                 b->CreateCall(popRun, {*it});
             }
         }
     }
 
+    void DropFrames::emitAll(CajetaModulePtr module) {
+        emitToDepth(module, 0);
+    }
+
+    void Method::emitTopFrameDrops(CajetaModulePtr module) {
+        dropFrames.emitTop(module);
+    }
+
+    void Method::emitFrameDropsToDepth(CajetaModulePtr module, size_t keep) {
+        dropFrames.emitToDepth(module, keep);
+    }
+
     void Method::emitOwnerDrops(CajetaModulePtr module) {
-        if (dropFrameStack.empty()) return;
-        llvm::Function* popRun = module->getRuntimeFunction("__cajeta_drop_pop_run");
-        if (!popRun) return;
+        if (dropFrames.count() == 0) return;
+        if (!module->getRuntimeFunction("__cajeta_drop_pop_run")) return;
         auto* b = module->getBuilder();
-        for (auto fit = dropFrameStack.rbegin(); fit != dropFrameStack.rend(); ++fit) {
-            for (auto eit = fit->rbegin(); eit != fit->rend(); ++eit) {
-                b->CreateCall(popRun, {*eit});
-            }
-        }
+        dropFrames.emitAll(module);
         // Frame-arena: reclaim this method's arena locals after the drop chain, at
         // the method-entry mark, which dominates every return.
         if (methodArenaMark) {

@@ -223,6 +223,7 @@ namespace cajeta {
         map<string, CajetaClassPtr> structures;
         bool lambdaClassPtrReturn = false;
         MethodPtr currentMethod;
+        DropFrames* lambdaDropFrames = nullptr;
         StructureMetadataPtr structureMetadata;
 
         // Template instantiations this module's codegen drove into ANOTHER module;
@@ -950,6 +951,22 @@ namespace cajeta {
 
         MethodPtr getCurrentMethod() {
             return currentMethod;
+        }
+
+        // The drop frames of the body being lowered: the current method's, or,
+        // inside a lambda body (which runs with no current method), the lambda's.
+        // Null outside any body.
+        DropFrames* getDropFrames() {
+            if (currentMethod) return &currentMethod->getDropFrames();
+            return lambdaDropFrames;
+        }
+
+        // Installs a lambda body's frames and returns the ones it replaces, which
+        // the lambda restores on exit (a lambda may be lowered inside another).
+        DropFrames* setLambdaDropFrames(DropFrames* frames) {
+            DropFrames* prev = lambdaDropFrames;
+            lambdaDropFrames = frames;
+            return prev;
         }
 
         list<MethodPtr> getAllMethods() {

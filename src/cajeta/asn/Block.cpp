@@ -68,7 +68,8 @@ namespace cajeta {
         // into it and fire LIFO at the closing `}`. A terminator mid-block means a
         // return/throw already fired every frame, so here we only pop.
         auto m = module->getCurrentMethod();
-        if (m) m->pushDropFrame();
+        DropFrames* drops = module->getDropFrames();
+        if (drops) drops->push();
 
         // True only for the ENTRY's root block: a nested block's declarations are
         // ordinary locals even when they shadow a session-binding name.
@@ -207,11 +208,11 @@ namespace cajeta {
             }
         }
 
-        if (m) {
+        if (drops) {
             // A terminator means a return/throw already left; emit nothing more.
             llvm::BasicBlock* insertBB = builder ? builder->GetInsertBlock() : nullptr;
             if (insertBB && !insertBB->hasTerminator()) {
-                m->emitTopFrameDrops(module);
+                drops->emitTop(module);
                 // Reclaim this block's arena objects (after drops, before frame pop).
                 if (arenaMark) {
                     if (llvm::Function* resetFn =
@@ -220,7 +221,7 @@ namespace cajeta {
                     }
                 }
             }
-            m->popDropFrame();
+            drops->pop();
         }
         // Undo this block's bindings last, once the drop/arena teardown has
         // finished consulting the scope; reversed, so a repeated name unwinds fully.

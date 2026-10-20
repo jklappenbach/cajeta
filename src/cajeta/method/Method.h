@@ -83,6 +83,31 @@ namespace cajeta {
         ParameterEntry(const ParameterEntry& src) { type = src.type; label = src.label; value = src.value; }
     };
 
+    // The drop frames of one function body. Block::generateCode pushes one at
+    // entry, registers the owned locals declared inside, and fires + pops it at
+    // the closing `}`, which is what releases RAII guards at inner-block exit. A
+    // Method owns one; a lambda body, lowered with no current method, owns its
+    // own, and CajetaModule::getDropFrames answers whichever is being lowered.
+    class DropFrames {
+        vector<vector<llvm::Value*>> frames;
+    public:
+        void push() { frames.emplace_back(); }
+        // Pop the top frame without emitting IR, after its drops or a terminator.
+        void pop() { if (!frames.empty()) frames.pop_back(); }
+        size_t count() const { return frames.size(); }
+        // Register an owned local's DropEntry alloca into the current top frame.
+        void registerEntry(llvm::Value* entry) {
+            if (frames.empty()) frames.emplace_back();
+            frames.back().push_back(entry);
+        }
+        // pop_run for the top frame, LIFO, at a block's normal closing `}`.
+        void emitTop(CajetaModulePtr module);
+        // break/continue: pop_run for every frame deeper than `keep`.
+        void emitToDepth(CajetaModulePtr module, size_t keep);
+        // pop_run for every frame, innermost first, before a `ret`.
+        void emitAll(CajetaModulePtr module);
+    };
+
     class Method : public Modifiable, public Annotatable, public std::enable_shared_from_this<Method> {
     protected:
         static thread_local map<string, MethodPtr> archive;  // per-compile
@@ -155,10 +180,8 @@ namespace cajeta {
         const prof::ProfileFrame& getProfileFrame() const { return profFrame; }
     protected:
 
-        // Stack of drop frames: Block::generateCode pushes one at entry,
-        // registers the owned locals declared inside, and fires + pops it at the
-        // closing `}` — which is what releases RAII guards at inner-block exit.
-        vector<vector<llvm::Value*>> dropFrameStack;
+        // This body's drop frames (see DropFrames).
+        DropFrames dropFrames;
 
         CajetaModulePtr module;
         // Emit target — the llvm::Module this method's IR is CREATED in. Null
@@ -508,24 +531,18 @@ namespace cajeta {
         static int64_t bodyResolveWalks();
 
         // Push a fresh drop frame; Block::generateCode calls this at its entry.
-        void pushDropFrame() { dropFrameStack.emplace_back(); }
-        size_t dropFrameCount() const { return dropFrameStack.size(); }
+        void pushDropFrame() { dropFrames.push(); }
+        size_t dropFrameCount() const { return dropFrames.count(); }
+        DropFrames& getDropFrames() { return dropFrames; }
         // break/continue: emit pop_run for every frame deeper than `keep`
         // (inner -> outer), leaving the compile-time stack itself untouched.
         void emitFrameDropsToDepth(CajetaModulePtr module, size_t keep);
 
         // Pop the top frame without emitting IR, after its drops or a terminator.
-        void popDropFrame() {
-            if (!dropFrameStack.empty()) dropFrameStack.pop_back();
-        }
+        void popDropFrame() { dropFrames.pop(); }
 
         // Register an owned local's DropEntry alloca into the current top frame.
-        void registerDropEntry(llvm::Value* entry) {
-            if (dropFrameStack.empty()) {
-                dropFrameStack.emplace_back();
-            }
-            dropFrameStack.back().push_back(entry);
-        }
+        void registerDropEntry(llvm::Value* entry) { dropFrames.registerEntry(entry); }
 
         // Emit the top frame's drops in reverse order, at a block's normal
         // closing `}`. The frame is NOT popped — call popDropFrame() afterwards.

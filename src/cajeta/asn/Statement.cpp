@@ -493,8 +493,8 @@ namespace cajeta {
                 "__cajeta_scope_enter")) {
             builder->CreateCall(enterFn, {});
         }
-        auto m = module->getCurrentMethod();
-        if (m) m->pushDropFrame();
+        DropFrames* drops = module->getDropFrames();
+        if (drops) drops->push();
         if (block) {
             for (auto& child : block->getChildren()) {
                 child->generateCode(module);
@@ -508,9 +508,9 @@ namespace cajeta {
                     "__cajeta_scope_exit")) {
                 builder->CreateCall(exitFn, {});
             }
-            if (m) m->emitTopFrameDrops(module);
+            if (drops) drops->emitTop(module);
         }
-        if (m) m->popDropFrame();
+        if (drops) drops->pop();
         return nullptr;
     }
 
@@ -652,7 +652,7 @@ namespace cajeta {
 
         builder->SetInsertPoint(bodyBB);
         module->pushLoopContext(headBB, exitBB,
-            (module->getCurrentMethod() ? module->getCurrentMethod()->dropFrameCount() : 0));
+            (module->getDropFrames() ? module->getDropFrames()->count() : 0));
         if (body) body->generateCode(module);
         module->popLoopContext();
         if (!builder->GetInsertBlock()->hasTerminator()) {
@@ -701,7 +701,7 @@ namespace cajeta {
 
         builder->SetInsertPoint(bodyBB);
         module->pushLoopContext(updateBB, exitBB,
-            (module->getCurrentMethod() ? module->getCurrentMethod()->dropFrameCount() : 0));
+            (module->getDropFrames() ? module->getDropFrames()->count() : 0));
         if (body) body->generateCode(module);
         module->popLoopContext();
         if (!builder->GetInsertBlock()->hasTerminator()) {
@@ -740,7 +740,7 @@ namespace cajeta {
 
         builder->SetInsertPoint(bodyBB);
         module->pushLoopContext(tailBB, exitBB,
-            (module->getCurrentMethod() ? module->getCurrentMethod()->dropFrameCount() : 0));
+            (module->getDropFrames() ? module->getDropFrames()->count() : 0));
         if (body) body->generateCode(module);
         module->popLoopContext();
         if (!builder->GetInsertBlock()->hasTerminator()) {
@@ -847,7 +847,7 @@ namespace cajeta {
         }
 
         module->pushLoopContext(updateBB, exitBB,
-            (module->getCurrentMethod() ? module->getCurrentMethod()->dropFrameCount() : 0));
+            (module->getDropFrames() ? module->getDropFrames()->count() : 0));
         if (body) body->generateCode(module);
         module->popLoopContext();
         if (!builder->GetInsertBlock()->hasTerminator()) {
@@ -1002,7 +1002,7 @@ namespace cajeta {
                 builder->CreateCall(throwFn, {v});
             }
         };
-        Method* clauseMethod = module->getCurrentMethod().get();
+        DropFrames* clauseDrops = module->getDropFrames();
 
         // Binds the thrown value to a clause's catch variable in the current scope.
         auto bindCatchVar = [&](const CatchClause& c) {
@@ -1033,7 +1033,7 @@ namespace cajeta {
                 llvm::Function* pushFn = module->getRuntimeFunction(
                     debug ? "__cajeta_drop_push_flag_debug" : "__cajeta_drop_push_flag");
                 llvm::Function* dropFn = module->getRuntimeFunction("__cajeta_class_virtual_drop");
-                if (clauseMethod && catchCls && !catchCls->isInterface() && !catchCls->isValueType()
+                if (clauseDrops && catchCls && !catchCls->isInterface() && !catchCls->isValueType()
                         && catchCls->hasVtablePointerAtSlotZero() && pushFn && dropFn) {
                     catchCls->patchVirtualTableDropFn();
                     llvm::Value* entryPtr = entryBuilder.CreateAlloca(
@@ -1048,7 +1048,7 @@ namespace cajeta {
                     }
                     field->setDropEntry(entryPtr);
                     field->setRuntimeConditionalOwner(true);
-                    clauseMethod->registerDropEntry(entryPtr);
+                    clauseDrops->registerEntry(entryPtr);
                 }
             }
         };
@@ -1059,8 +1059,8 @@ namespace cajeta {
         auto emitClauseBody = [&](const CatchClause& c) -> std::set<std::string> {
             if (!finallyBlock) {
                 if (c.body) c.body->generateCode(module);
-                if (clauseMethod && !builder->GetInsertBlock()->hasTerminator()) {
-                    clauseMethod->emitTopFrameDrops(module);
+                if (clauseDrops && !builder->GetInsertBlock()->hasTerminator()) {
+                    clauseDrops->emitTop(module);
                 }
                 return daScope ? daScope->snapshotNotYetAssigned()
                                : std::set<std::string>();
@@ -1085,7 +1085,7 @@ namespace cajeta {
             std::set<std::string> afterBodyNYA;
             if (daScope) afterBodyNYA = daScope->snapshotNotYetAssigned();
             if (!builder->GetInsertBlock()->hasTerminator()) {
-                if (clauseMethod) clauseMethod->emitTopFrameDrops(module);
+                if (clauseDrops) clauseDrops->emitTop(module);
                 builder->CreateCall(pop, {});
                 builder->CreateBr(afterBB);
             }
@@ -1147,10 +1147,10 @@ namespace cajeta {
 
                 builder->SetInsertPoint(bindBB);
                 if (daScope) daScope->restoreNotYetAssigned(preTryNYA);
-                if (clauseMethod) clauseMethod->pushDropFrame();
+                if (clauseDrops) clauseDrops->push();
                 bindCatchVar(c);
                 std::set<std::string> armNYA = emitClauseBody(c);
-                if (clauseMethod) clauseMethod->popDropFrame();
+                if (clauseDrops) clauseDrops->pop();
                 if (daScope) armNYAs.push_back(armNYA);
                 if (!builder->GetInsertBlock()->hasTerminator()) {
                     builder->CreateBr(afterBB);
@@ -1256,7 +1256,7 @@ namespace cajeta {
                 ? module->currentLoopContext().continueTarget
                 : afterBB;
         module->pushLoopContext(enclosingCont, afterBB,
-            (module->getCurrentMethod() ? module->getCurrentMethod()->dropFrameCount() : 0));
+            (module->getDropFrames() ? module->getDropFrames()->count() : 0));
         bool anyArmMerged = false;
         for (size_t i = 0; i < groups.size(); i++) {
             auto& g = groups[i];
@@ -1353,6 +1353,17 @@ namespace cajeta {
         llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
         llvm::Value* watermark = builder->CreateLoad(ptrTy, mark);
         builder->CreateCall(exitToFn, {watermark});
+    }
+
+    // Emitted at every explicit return, after the scope exit: pops every drop
+    // frame of the body being left, a method's (with its arena reset) or a
+    // lambda's.
+    static void emitReturnDrops(CajetaModulePtr module) {
+        if (auto m = module->getCurrentMethod()) {
+            m->emitOwnerDrops(module);
+        } else if (DropFrames* drops = module->getDropFrames()) {
+            drops->emitAll(module);
+        }
     }
 
     // Stores the paired return flag of a class-pointer-returning method: called
@@ -1766,7 +1777,7 @@ namespace cajeta {
             module->flushStatementTemps(0, true);
             emitTryFinallyUnwind(module);
             emitScopeExitToWatermark(module);
-            if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
+            emitReturnDrops(module);
             return builder->CreateRetVoid();
         }
         // A returned literal is target-typed by the declared return type before
@@ -1895,7 +1906,7 @@ namespace cajeta {
             module->flushStatementTemps(0, true);
             emitTryFinallyUnwind(module);
             emitScopeExitToWatermark(module);
-            if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
+            emitReturnDrops(module);
             return builder->CreateRetVoid();
         }
         if (auto m = module->getCurrentMethod()) {
@@ -2366,8 +2377,7 @@ namespace cajeta {
                             module->flushStatementTemps(0, true);
                             emitTryFinallyUnwind(module);
                             emitScopeExitToWatermark(module);
-                            if (auto curM = module->getCurrentMethod())
-                                curM->emitOwnerDrops(module);
+                            emitReturnDrops(module);
                             emitReturnFlag(module);
                             return builder->CreateRet(val);
                         }
@@ -2605,7 +2615,7 @@ namespace cajeta {
         module->flushStatementTemps(0, true);
         emitTryFinallyUnwind(module);
         emitScopeExitToWatermark(module);
-        if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
+        emitReturnDrops(module);
         auto emitTitleContract = [&](llvm::Value* flag) {
             // A `#R` return is a CONTRACT: a runtime flag of 0 would hand the
             // caller a forged title, so panic TITLE_MISS instead. `return #= x`
@@ -2776,8 +2786,8 @@ namespace cajeta {
         emitTryFinallyUnwind(module, lc->tryFinallyDepth);
         // A skipped end-of-block pop_run leaves stale entries linked, which
         // poisons the next throw's chain walk.
-        if (auto m = module->getCurrentMethod()) {
-            m->emitFrameDropsToDepth(module, lc->dropFrameDepth);
+        if (DropFrames* drops = module->getDropFrames()) {
+            drops->emitToDepth(module, lc->dropFrameDepth);
         }
         builder->CreateBr(lc->breakTarget);
         llvm::BasicBlock* deadBB = llvm::BasicBlock::Create(
@@ -2798,8 +2808,8 @@ namespace cajeta {
             label.empty() ? nullptr : module->findLoopContext(label);
         if (!lc) lc = &module->currentLoopContext();
         emitTryFinallyUnwind(module, lc->tryFinallyDepth);
-        if (auto m = module->getCurrentMethod()) {
-            m->emitFrameDropsToDepth(module, lc->dropFrameDepth);
+        if (DropFrames* drops = module->getDropFrames()) {
+            drops->emitToDepth(module, lc->dropFrameDepth);
         }
         builder->CreateBr(lc->continueTarget);
         llvm::BasicBlock* deadBB = llvm::BasicBlock::Create(
