@@ -23,6 +23,7 @@
 #include "ScriptUnitSynthesis.h"
 #include "Optimizer.h"
 #include "InlineLineFrames.h"
+#include "Devirtualize.h"
 #include "StdlibEmbedded.h"
 #include "cajeta/dbg/DebugCodegen.h"
 #include "cajeta/xref/XrefIndex.h"
@@ -2384,6 +2385,12 @@ namespace cajeta {
             } else if (flags.treeShake == TreeShake::On) {
                 pruneDeadClinits();   // before the method prune so dead clinit
                 pruneUnreachable();   // callees cascade into it
+            }
+            // Cached objects were lowered against an earlier hierarchy, so an incremental build keeps dispatch.
+            if (!cacheManifest) {
+                std::vector<llvm::Module*> lmods;
+                collectLinkModules(lmods);
+                devirtualizeUniqueSlots(lmods);
             }
         }
 
