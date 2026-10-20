@@ -704,20 +704,25 @@ Use cases:
   reference — the same code path serves a four-RMSNorm windowed 5:1 stack and
   a two-RMSNorm uniform one. Deferred 2026-10-16 (Julian): not in this release.
 - **12.8** When decode throughput is measured on a given model, quantization
-  and backend, it reaches **60%** of `llama.cpp`'s throughput on the same
-  hardware and configuration (§13.20). Batch 1 and a representative batched
+  and backend, it is **equal to or better than** `llama.cpp`'s throughput (100%)
+  on the same hardware, backend and configuration (§13.20). This holds on every
+  backend that ships: Vulkan, HIP, CUDA and CPU, each against `llama.cpp` on the
+  same backend. Raised from 60% on 2026-10-20 (Julian: "We should be equal or
+  better"). Batch 1 and a representative batched
   shape are both measured — 13.13 makes batch 1 one operating point rather
   than the only one that runs.
 - **12.9** When prefill throughput is measured under the same conditions, it
-  reaches **50%** of `llama.cpp`'s. It is measured at the chunk size the
+  is equal to or better than `llama.cpp`'s (100%, raised from 50%
+  2026-10-20), on every backend that ships. It is measured at the chunk size the
   scheduler actually uses (§13.14), not as an unbounded single pass.
 - **12.10** When throughput is reported, the measurement records model,
   quantization, backend, context length, batch size, **compiler mode and
   live-set setting**. Release and Minimal differ in both locking and bounds
   checking, so a number without them is not comparable — and that is the axis
   along which a benchmark most easily flatters itself.
-- **12.11** When resident memory is measured for a loaded model, it is within
-  **1.25×** of `llama.cpp`'s for the same model and quantization — throughput
+- **12.11** When resident memory is measured for a loaded model, it is no more than
+  `llama.cpp`'s (**1.0×**, tightened from 1.25× 2026-10-20) for the same model,
+  quantization and backend — throughput
   parity bought with several times the memory is not parity.
 - **12.12** When a request is served from cached prefix blocks, its logits are
   identical to the same request computed from cold, within §12.1's tolerance.
@@ -969,8 +974,8 @@ the recommendation they were filed with; both are marked.
   them means they cannot slip behind that plan's other priorities.
 
 - **13.20 Throughput gates and the reference configuration.** *(Resolves
-  §14.8.)* Decode reaches **≥60%** of `llama.cpp`'s throughput and prefill
-  **≥50%**, with resident memory within **1.25×**, measured on
+  §14.8.)* Decode and prefill reach **≥100%** of `llama.cpp`'s throughput,
+  with resident memory within **1.0×** (raised 2026-10-20 from 60%, 50% and 1.25×), measured on
   Llama-3.1-8B-Instruct Q4_K_M, gfx1151 / ROCm 7.2.2, 4096-token context,
   Release build with `LiveSet::Bounded`. A first version reaching roughly two
   thirds of a mature hand-tuned engine is defensible — `llama.cpp` has years
@@ -983,8 +988,9 @@ the recommendation they were filed with; both are marked.
   llama.cpp 5306f4b, ROCm 7.2.53150, gfx1151): prefill pp4096
   **794.24 tok/s**, decode tg128 **39.57 tok/s** at batch 1; batched
   4×(512pp+128tg): PP 1291.85 / TG 107.40 tok/s; peak RSS **5,201,728 kB**.
-  The §12.8/12.9/12.11 denominators are therefore: decode ≥ 23.7 tok/s,
-  prefill ≥ 397 tok/s, RSS ≤ 6,502,160 kB at this configuration.
+  The §12.8/12.9/12.11 gates are therefore, at this configuration: decode
+  ≥ 39.57 tok/s, prefill ≥ 794.24 tok/s, RSS ≤ 5,201,728 kB (at the 2026-08-08
+  fractions they were 23.7, 397 and 6,502,160).
 
 - **13.21 §12.1 pins the parity metric; Unit 11 derives the threshold.**
   *(Resolves §14.4.)* Measured against Hugging Face `transformers` at **fp32
@@ -1180,8 +1186,8 @@ questions are appended here as they arise.
 - **14.7** *(Resolved 2026-08-08 — see §13.14.)* Always chunked, and decode is
   the same path at N=1. Required by 13.15's iteration-level scheduling rather
   than merely an activation-memory optimization.
-- **14.8** *(Resolved 2026-08-08 — see §13.20.)* Decode ≥60%, prefill ≥50%,
-  resident memory within 1.25×, on Llama-3.1-8B-Instruct Q4_K_M at gfx1151 /
+- **14.8** *(Resolved 2026-08-08 — see §13.20.)* Decode ≥100%, prefill ≥100%,
+  resident memory within 1.0× (raised 2026-10-20; was 60%, 50%, 1.25×), on Llama-3.1-8B-Instruct Q4_K_M at gfx1151 /
   ROCm 7.2.2, 4096-token context, Release with `LiveSet::Bounded`. The
   `llama.cpp` denominator is measured and recorded before Unit 11.
 - **14.9** *(Resolved 2026-08-08 — see §13.22.)* 99% per-token agreement, with
