@@ -559,3 +559,35 @@ TEST(HttpRepositoryV2Tests, aNestedCapabilityWithV2FalseDoesNotAdvertiseV2) {
     ASSERT_TRUE(static_cast<bool>(cap)) << llvm::toString(cap.takeError());
     EXPECT_FALSE(cap->supportsV2());
 }
+
+// publisher-trust spec 4.1 — olla serves the publisher's archive signature
+// base64 on the resolve body; the driver hands back the raw detached bytes,
+// the form a `.cja.sig` sidecar holds.
+TEST(HttpRepositoryV2Tests, publishedSignatureComesFromTheResolveBody) {
+    TestHttpServer srv;
+    srv.route("/.well-known/cajeta-capabilities.json", 200,
+              R"({"capabilities":{"v1":true,"v2":true}})");
+    srv.route("/v2/resolve?name=acme.lib&version=1.0.0", 200,
+              R"({"name":"acme.lib","version":"1.0.0","sha256":"sha256:00",)"
+              R"("signature":"AAECAw==","key-id":"acme-1"})");
+    auto stage = makeTempDir("sig");
+    HttpRepository repo("test", srv.baseUrl(), RepositoryAuth{}, stage.string());
+    auto sig = repo.publishedSignature("acme.lib", "1.0.0");
+    ASSERT_TRUE(static_cast<bool>(sig)) << errorText(sig.takeError());
+    ASSERT_TRUE(sig->has_value()) << "the served signature must be read";
+    EXPECT_EQ(std::string("\x00\x01\x02\x03", 4), **sig);
+}
+
+// A release whose resolve body carries no signature publishes none.
+TEST(HttpRepositoryV2Tests, aResolveBodyWithNoSignaturePublishesNone) {
+    TestHttpServer srv;
+    srv.route("/.well-known/cajeta-capabilities.json", 200,
+              R"({"capabilities":{"v1":true,"v2":true}})");
+    srv.route("/v2/resolve?name=acme.lib&version=1.0.0", 200,
+              R"({"name":"acme.lib","version":"1.0.0","sha256":"sha256:00"})");
+    auto stage = makeTempDir("nosig");
+    HttpRepository repo("test", srv.baseUrl(), RepositoryAuth{}, stage.string());
+    auto sig = repo.publishedSignature("acme.lib", "1.0.0");
+    ASSERT_TRUE(static_cast<bool>(sig)) << errorText(sig.takeError());
+    EXPECT_FALSE(sig->has_value());
+}

@@ -118,6 +118,18 @@ namespace {
                                             t::releasePayload(name, version, sha,
                                                               "from.melt"),
                                             root, "fixture-root", "melt-release"));
+        // The publisher's side (spec 4.1): the organization's key document
+        // and an archive signature by its key.
+        auto org = t::makeKeyPair(keys, "org");
+        t::OrgDocumentSpec spec;
+        spec.organization = "from.melt";
+        spec.namespaces = {"from.melt"};
+        t::writeWholeFile(repoRoot / ".well-known" / "org-keys" / "from.melt.json",
+                          t::orgKeyDocument(keys, spec, org, root, "fixture-root"));
+        t::writeWholeFile(dir / (name + "-" + version + ".cja.sig"),
+                          t::signWithKey(keys,
+                                         t::readWholeFile(dir / (name + "-" + version + ".cja")),
+                                         org.priv, "melt-archive"));
     }
 
     // Stage a regular (non-melt) package with optional deps.

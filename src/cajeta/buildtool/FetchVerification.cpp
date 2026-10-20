@@ -189,6 +189,27 @@ namespace cajeta::buildtool {
 
         auto sig = repo.publishedSignature(name, version);
         if (!sig) return sig.takeError();
+        // Signed metadata is the repository's word. Under the default the
+        // publisher's own must stand beside it: an archive signature verified
+        // against the owning organization's key document (spec 4.1, 4.6).
+        if (policy == Verification::Publisher && !out.organization.empty()) {
+            if (!sig->has_value()) {
+                return err("refusing " + what + ": it publishes no archive "
+                           "signature, so it cannot be verified against '"
+                           + out.organization + "''s key (spec 4.1).");
+            }
+            auto doc = orgKeys.documentFor(repo, out.organization, now);
+            if (!doc) {
+                return err("refusing " + what + ": the key document for '"
+                           + out.organization + "' could not be used: "
+                           + llvm::toString(doc.takeError()));
+            }
+            if (!doc->has_value()) {
+                return err("refusing " + what + ": the repository serves no key "
+                           "document for '" + out.organization + "', so its "
+                           "signature cannot be verified (spec 4.6).");
+            }
+        }
         if (sig->has_value()) {
             if (auto e = checkArchiveSignature(repo, name, version, artifactPath,
                                                **sig, out.organization, deleg,

@@ -67,6 +67,15 @@ struct EnvCleared {
     ~EnvCleared() { if (had) ::setenv(name.c_str(), old.c_str(), 1); }
 };
 
+// What a signed fixture release serves besides its envelope (spec 4.1): the
+// organization's key document and an archive signature, by default made by the
+// organization's key.
+struct Publisher {
+    bool keyDocument = true;
+    bool archiveSignature = true;
+    const TestKeyPair* signWith = nullptr;
+};
+
 struct Fixture {
     EnvCleared olla{"OLLA_HOME"};
     EnvCleared trust{"CAJETA_TRUST_KEYS_DIR"};
@@ -74,6 +83,7 @@ struct Fixture {
     fs::path home;
     fs::path proj;
     TestKeyPair root;
+    TestKeyPair orgKey;
 
     explicit Fixture(const std::string& tag) {
         dir = fs::temp_directory_path()
@@ -84,6 +94,7 @@ struct Fixture {
         fs::create_directories(home);
         fs::create_directories(proj);
         root = makeKeyPair(dir / "keys", "root");
+        orgKey = makeKeyPair(dir / "keys", "org");
         auto layout = cajeta::cli::rootTrustLayoutOf(
             cajeta::cli::resolveTrustStoreLayout(
                 home.string(), (dir / "no-system").string(), std::string()));
@@ -98,7 +109,8 @@ struct Fixture {
     fs::path repo(const std::string& tag, const std::string& name,
                   const std::string& version, const std::string& bytes,
                   const std::string& signedHash,
-                  const TestKeyPair* signer = nullptr) {
+                  const TestKeyPair* signer = nullptr,
+                  Publisher pub = Publisher{}) {
         auto root_ = dir / tag;
         auto rel = root_ / name / version;
         fs::create_directories(rel);
@@ -110,6 +122,18 @@ struct Fixture {
                                           releasePayload(name, version,
                                                          signedHash, "dev.cajeta"),
                                           k, "fixture-root", tag + "-" + name));
+            if (pub.keyDocument) {
+                OrgDocumentSpec spec;
+                writeWholeFile(root_ / ".well-known" / "org-keys" / "dev.cajeta.json",
+                               orgKeyDocument(dir / "keys", spec, orgKey, root,
+                                              "fixture-root", tag + "-doc"));
+            }
+            if (pub.archiveSignature) {
+                const TestKeyPair& sk = pub.signWith ? *pub.signWith : orgKey;
+                writeWholeFile(rel / (name + "-" + version + ".cja.sig"),
+                               signWithKey(dir / "keys", bytes, sk.priv,
+                                           tag + "-" + name + "-archive"));
+            }
         }
         return root_;
     }
@@ -340,4 +364,54 @@ TEST(FetchVerificationTests, theEmbeddedListPinsTheMeasuredLegacyReleases) {
         EXPECT_EQ(71u, r.sha256.size()) << r.name << " " << r.version;
     }
     EXPECT_TRUE(graph) << "dev.cajeta.graph 0.1.0 is a measured legacy release";
+}
+
+// spec 4.1 — signed metadata alone binds the repository's word, not the
+// publisher's: the archive must carry the organization's own signature.
+TEST(FetchVerificationTests, aSignedReleaseWithNoArchiveSignatureIsRefused) {
+    Fixture fx("nosig");
+    std::string bytes = "SIGNED-BYTES";
+    Publisher pub;
+    pub.archiveSignature = false;
+    auto remote = fx.repo("remote", "dev.cajeta.a", "1.0.0", bytes, fx.sha(bytes),
+                          nullptr, pub);
+    auto r = fx.resolve(
+        "\"dependencies\":{\"dev.cajeta.a\":\"1.0.0\"},"
+        "\"repositories\":[" + repoJson("remote", remote) + "]");
+    ASSERT_FALSE(!!r) << "no publisher signature must refuse under the default";
+    std::string msg = errText(r.takeError());
+    EXPECT_NE(std::string::npos, msg.find("signature")) << msg;
+    EXPECT_FALSE(fs::exists(fx.ollaEntry("dev.cajeta.a", "1.0.0")));
+}
+
+// spec 4.6 — an organization that serves no key document cannot be verified.
+TEST(FetchVerificationTests, aSignedReleaseWhoseOrganizationHasNoKeyDocumentIsRefused) {
+    Fixture fx("nodoc");
+    std::string bytes = "SIGNED-BYTES";
+    Publisher pub;
+    pub.keyDocument = false;
+    auto remote = fx.repo("remote", "dev.cajeta.a", "1.0.0", bytes, fx.sha(bytes),
+                          nullptr, pub);
+    auto r = fx.resolve(
+        "\"dependencies\":{\"dev.cajeta.a\":\"1.0.0\"},"
+        "\"repositories\":[" + repoJson("remote", remote) + "]");
+    ASSERT_FALSE(!!r) << "no key document must refuse under the default";
+    std::string msg = errText(r.takeError());
+    EXPECT_NE(std::string::npos, msg.find("key document")) << msg;
+}
+
+// A signature by a key outside the organization's document is refused.
+TEST(FetchVerificationTests, anArchiveSignatureByAnotherKeyIsRefused) {
+    Fixture fx("otherkey");
+    auto stranger = makeKeyPair(fx.dir / "keys", "stranger");
+    std::string bytes = "SIGNED-BYTES";
+    Publisher pub;
+    pub.signWith = &stranger;
+    auto remote = fx.repo("remote", "dev.cajeta.a", "1.0.0", bytes, fx.sha(bytes),
+                          nullptr, pub);
+    auto r = fx.resolve(
+        "\"dependencies\":{\"dev.cajeta.a\":\"1.0.0\"},"
+        "\"repositories\":[" + repoJson("remote", remote) + "]");
+    ASSERT_FALSE(!!r);
+    consumeError(r.takeError());
 }

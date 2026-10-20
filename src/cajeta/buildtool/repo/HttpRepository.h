@@ -61,6 +61,12 @@ namespace cajeta::buildtool {
         llvm::Expected<std::optional<std::string>>
         organizationKeys(const std::string& org) const override;
 
+        // The publisher's detached archive signature, which olla serves base64
+        // on the resolve body (publisher-trust spec 4.1), as raw bytes.
+        llvm::Expected<std::optional<std::string>>
+        publishedSignature(const std::string& packageName,
+                           const std::string& version) const override;
+
         // GET /v2/resolve verbatim, so the caller sees the `signed` envelope the
         // typed accessors here deliberately do not interpret.
         llvm::Expected<std::optional<std::string>>

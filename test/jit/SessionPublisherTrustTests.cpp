@@ -317,11 +317,11 @@ TEST(SessionPublisherTrustTests, aCachedArtifactIsHeldToTheSameVerification) {
     fs::remove_all(root);
 }
 
-// Spec 5.4 / 9.1 — a repository that serves no key document still installs
-// against the local trust store. This is the legacy path, and it is what
-// keeps a machine configured before this landed working. Unit 6 is where
-// the default flips; this test is the "before" it will have to change.
-TEST(SessionPublisherTrustTests, aRepositoryWithNoDocumentUsesTheTrustStore) {
+// Spec 4.6 — under the default policy an organization that serves no key
+// document cannot be verified, so its release is refused even when a key the
+// machine trusts would verify it (publisher-trust 4.1 gap, 2026-10-20). Until
+// then this was the 9.1 trust-store fallback; a relaxed repository keeps it.
+TEST(SessionPublisherTrustTests, aRepositoryWithNoDocumentIsRefusedByDefault) {
     auto root = freshRoot("legacy");
     auto cja = buildDep(root);
     ASSERT_FALSE(cja.empty()) << "fixture archive failed to build";
@@ -337,8 +337,8 @@ TEST(SessionPublisherTrustTests, aRepositoryWithNoDocumentUsesTheTrustStore) {
 
     CellResult r = s->execute(
         cell("Packages.install(\"dev.cajeta.depx\", \"1.*\");\n"));
-    EXPECT_TRUE(r.ok) << "the 9.1 fallback must keep working: "
-                      << r.errorId << ": " << r.message;
+    EXPECT_FALSE(r.ok) << "no key document must refuse under the default";
+    EXPECT_TRUE(contains(r.message, "key document")) << r.message;
 
     s->shutdown();
     fs::remove_all(root);

@@ -1,6 +1,7 @@
 #include "cajeta/buildtool/repo/HttpRepository.h"
 #include "cajeta/buildtool/repo/TarZstd.h"
 
+#include <llvm/Support/Base64.h>
 #include <llvm/Support/Error.h>
 #include <llvm/Support/JSON.h>
 
@@ -800,6 +801,30 @@ namespace cajeta::buildtool {
             return err("HTTP " + std::to_string(*code) + " from " + url);
         }
         return std::optional<std::string>{body};
+    }
+
+    llvm::Expected<std::optional<std::string>>
+    HttpRepository::publishedSignature(const std::string& packageName,
+                                       const std::string& version) const {
+        auto body = releaseMetadataJson(packageName, version);
+        if (!body) return body.takeError();
+        if (!body->has_value()) return std::optional<std::string>{};
+        auto val = llvm::json::parse(**body);
+        if (!val) {
+            return err("malformed /v2/resolve body for " + packageName + " "
+                       + version + ": " + llvm::toString(val.takeError()));
+        }
+        const auto* obj = val->getAsObject();
+        if (!obj) return std::optional<std::string>{};
+        auto b64 = obj->getString("signature");
+        if (!b64) return std::optional<std::string>{};
+        std::vector<char> raw;
+        if (auto e = llvm::decodeBase64(*b64, raw)) {
+            return err("the signature olla serves for " + packageName + " "
+                       + version + " is not base64: "
+                       + llvm::toString(std::move(e)));
+        }
+        return std::optional<std::string>{std::string(raw.begin(), raw.end())};
     }
 
     std::string HttpRepository::origin() const {
