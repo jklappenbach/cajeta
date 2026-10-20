@@ -19,6 +19,7 @@
 
 #include "gtest/gtest.h"
 
+#include "../PortableEnv.h"
 #include "OrgKeyFixture.h"
 #include "TempTeardown.h"
 
