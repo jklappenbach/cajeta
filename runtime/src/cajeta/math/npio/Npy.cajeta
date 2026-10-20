@@ -190,15 +190,20 @@ public final class Npy {
         float32[] ob = out.hostBuffer();
         int64 base = out.hostBase();
         int64 e = 0;
-        while (e < n) {
+        int64 even = n - (n & 1);
+        while (e < even) {
+            int64 w = Cajeta.loadU64(buf, dataOff + e * 4);
+            ob[base + e] = Cajeta.bitsToF32((int32) (w & 4294967295));
+            ob[base + e + 1] = Cajeta.bitsToF32((int32) (w >> 32));
+            e = e + 2;
+        }
+        if (e < n) {
             int64 bo = dataOff + e * 4;
             int32 b0 = (int32) buf[bo + 0] & 255;
             int32 b1 = (int32) buf[bo + 1] & 255;
             int32 b2 = (int32) buf[bo + 2] & 255;
             int32 b3 = (int32) buf[bo + 3] & 255;
-            int32 bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
-            ob[base + e] = Cajeta.bitsToF32(bits);
-            e = e + 1;
+            ob[base + e] = Cajeta.bitsToF32(b0 | (b1 << 8) | (b2 << 16) | (b3 << 24));
         }
         return #out;
     }
@@ -319,15 +324,20 @@ public final class Npy {
         int32[] ob = out.hostBuffer();
         int64 base = out.hostBase();
         int64 e = 0;
-        while (e < n) {
+        int64 even = n - (n & 1);
+        while (e < even) {
+            int64 w = Cajeta.loadU64(buf, dataOff + e * 4);
+            ob[base + e] = (int32) (w & 4294967295);
+            ob[base + e + 1] = (int32) (w >> 32);
+            e = e + 2;
+        }
+        if (e < n) {
             int64 bo = dataOff + e * 4;
             int32 b0 = (int32) buf[bo + 0] & 255;
             int32 b1 = (int32) buf[bo + 1] & 255;
             int32 b2 = (int32) buf[bo + 2] & 255;
             int32 b3 = (int32) buf[bo + 3] & 255;
-            int32 v = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
-            ob[base + e] = v;
-            e = e + 1;
+            ob[base + e] = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
         }
         return #out;
     }

@@ -75,3 +75,38 @@ TEST(CrossModuleInline, copiesNeverDuplicateADefinition) {
         EXPECT_EQ(run(b).out, "sum 28\n") << flags;
     }
 }
+
+// 7.1.1 (spec 5.2): with flatGet and flatSet inlined, a device-resident tensor still throws
+// PlacementException with Storage's message, at O0 and in --release.
+TEST(CrossModuleInline, inlinedAccessorsStillRefuseDeviceResidentData) {
+    Workspace w;
+    w.write("src/app/Main.cajeta",
+        "package app;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.PlacementException;\n"
+        "public class Main {\n"
+        "    public static int32 main(String[] args) {\n"
+        "        float32[] d = [ 3.0f, 4.0f, 5.0f, 6.0f ];\n"
+        "        int64[] s = heap int64[1];\n"
+        "        s[0] = 4;\n"
+        "        Tensor<float32> t #= Tensor.of<float32>(d, s);\n"
+        "        t.gpu();\n"
+        "        try { float32 v = t.flatGet(2); System.stdout.println(\"no throw \" + v); }\n"
+        "        catch (PlacementException ex) { System.stdout.println(ex.getMessage()); }\n"
+        "        try { t.flatSet(1, 9.0f); System.stdout.println(\"no throw\"); }\n"
+        "        catch (PlacementException ex) { System.stdout.println(ex.getMessage()); }\n"
+        "        t.cpu();\n"
+        "        System.stdout.println(\"back \" + t.flatGet(2));\n"
+        "        return 0;\n"
+        "    }\n}\n");
+    for (const char* flags : {"--emit=exe --xpu-backend=cpu", "--emit=exe --xpu-backend=cpu --release"}) {
+        Built b = compile(w, std::string(flags).find("release") != std::string::npos ? "rel" : "o0", flags,
+                          "app.Main.main", "src");
+        ASSERT_TRUE(b.ok) << flags << "\n" << b.log;
+        Ran r = run(b, cajeta_env_prefix({{"CAJETA_XPU_BACKEND", "cpu"}}));
+        EXPECT_EQ(r.rc, 0) << r.err;
+        EXPECT_NE(r.out.find("Storage.get: the data is device-resident"), std::string::npos) << flags << "\n" << r.out;
+        EXPECT_NE(r.out.find("Storage.set: the data is device-resident"), std::string::npos) << flags << "\n" << r.out;
+        EXPECT_NE(r.out.find("back 5"), std::string::npos) << flags << "\n" << r.out;
+    }
+}

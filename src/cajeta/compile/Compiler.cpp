@@ -2389,6 +2389,10 @@ namespace cajeta {
             }
             // Cached objects were lowered against an earlier hierarchy, so an incremental build keeps dispatch.
             if (!cacheManifest) {
+                // Tag accesses first so the cross-module copies carry their TBAA (idempotent).
+                for (auto& m : modules) m->applyTbaaTags();
+                for (auto& m : externalModules) m->applyTbaaTags();
+                if (auto stdlib = CajetaModule::getStdlibModule()) stdlib->applyTbaaTags();
                 std::vector<llvm::Module*> lmods;
                 collectLinkModules(lmods);
                 devirtualizeUniqueSlots(lmods);
