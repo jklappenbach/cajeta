@@ -231,7 +231,8 @@ public final class Device {
     private static int64 nativeFreeMemoryBytes();
 
     /**
-     * Is `name`'s device code actually REGISTERED for the active backend?
+     * Is `name`'s device code actually REGISTERED for the active backend,
+     * and does the shared memory its manifest records fit this device?
      *
      * A backend may skip a kernel at build (a NATIVE-only construct on the
      * shader tier is the standing example); launching a skipped kernel is a
@@ -373,6 +374,10 @@ public final class Device {
         if (reason == 6) {
             why = "the block holds more work-items than this device allows in one "
                 + "block, Device.maxThreadsPerBlock(); it was not submitted";
+        }
+        if (reason == 7) {
+            why = "the kernel's shared memory for one block exceeds what this device "
+                + "allows; it was not submitted";
         }
         String msg #= "cajeta.xpu: launch refused for kernel '" + kernel
                     + "' on backend '" + backend

@@ -1129,6 +1129,9 @@ static int caj_xpu_device_count(int backend) {
 // device, >= 0 = an index into the backend's devices, honored above 0 on HIP only;
 // out of range or unsupported is a diagnosed no-op. Frozen: add a v4, never a field.
 static int caj_xpu_block_refused(const char* name, int32_t bx, int32_t by, int32_t bz);
+static int caj_xpu_shared_refused(const char* name, uint32_t dynBytes);
+static uint64_t caj_xpu_manifest_lds(const char* name, int backend);
+static int64_t caj_xpu_lds_limit(void);
 
 void __cajeta_xpu_launch_v3(const char* kernelName,
                             int32_t gridX, int32_t gridY, int32_t gridZ,
@@ -1142,6 +1145,7 @@ void __cajeta_xpu_launch_v3(const char* kernelName,
     // after this call reports only THIS launch, never a prior thread-local one.
     cajeta_xpu_clear_launch_refusal();
     if (caj_xpu_block_refused(kernelName, blockX, blockY, blockZ)) return;
+    if (caj_xpu_shared_refused(kernelName, sharedBytes)) return;
 
     if (deviceId >= 0) {
         int backend = cajeta_xpu_active_backend();
@@ -1387,6 +1391,56 @@ static int caj_xpu_pinned_block(const char* name, int backend, int32_t out[3]) {
     return has;
 }
 
+// The static shared-memory bytes `name`'s manifest records on `backend`, or 0; a virtual
+// variant ("k$v64") reads its kernel's record.
+static uint64_t caj_xpu_manifest_lds(const char* name, int backend) {
+    char base[256];
+    size_t n = strcspn(name, "$");
+    if (n >= sizeof base) return 0;
+    memcpy(base, name, n);
+    base[n] = 0;
+    uint64_t v = 0;
+    const char* key = "\"ldsStaticBytes\":";
+    size_t kl = strlen(key);
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    for (int i = 0; i < g_xpu_manifest_count; i++) {
+        struct cajeta_xpu_manifest* e = &g_xpu_manifests[i];
+        if (e->backend != backend || strncmp(e->name, base, sizeof(e->name)) != 0 || !e->json)
+            continue;
+        for (uint64_t j = 0; j + kl < e->len; j++)
+            if (memcmp(e->json + j, key, kl) == 0) { v = strtoull(e->json + j + kl, NULL, 10); break; }
+        break;
+    }
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
+    return v;
+}
+
+// The most shared memory one block may use on the active device (the opt-in ceiling where
+// that is larger), or 0 when the device does not say.
+static int64_t caj_xpu_lds_limit(void) {
+    int64_t a = __cajeta_xpu_device_geometry(CAJETA_XPU_GEO_LDS_BYTES_PER_BLOCK);
+    int64_t b = __cajeta_xpu_device_geometry(CAJETA_XPU_GEO_LDS_BYTES_PER_BLOCK_OPTIN);
+    return b > a ? b : a;
+}
+
+// Refuses, with reason 7, a GPU launch whose static and dynamic shared memory exceed the
+// device's limit, before the driver sees it.
+static int caj_xpu_shared_refused(const char* name, uint32_t dynBytes) {
+    int backend = cajeta_xpu_active_backend();
+    if (backend != CAJ_XPU_CUDA && backend != CAJ_XPU_HIP && backend != CAJ_XPU_VULKAN) return 0;
+    const int64_t limit = caj_xpu_lds_limit();
+    const uint64_t stat = caj_xpu_manifest_lds(name, backend);
+    if (limit <= 0 || stat + dynBytes <= (uint64_t) limit) return 0;
+    cajeta_xpu_note_launch_refusal(name, backend);
+    g_xpu_refusal_reason = 7;
+    fprintf(stderr,
+            "cajeta.xpu: [xpu-launch-refused] %s needs %llu bytes of shared memory a block "
+            "(%llu static, %u dynamic) and this device allows %lld\n",
+            name, (unsigned long long) (stat + dynBytes), (unsigned long long) stat, dynBytes,
+            (long long) limit);
+    return 1;
+}
+
 // Refuses, with reason 6, a GPU launch whose block exceeds the device's limit, and with
 // reason 4 one whose block is not the one its kernel was built for.
 static int caj_xpu_block_refused(const char* name, int32_t bx, int32_t by, int32_t bz) {
@@ -1471,8 +1525,8 @@ void* __cajeta_xpu_kernel_manifest_json(void* nameArr, int64_t len) {
     return hdr;
 }
 
-// Is `kernelName` LAUNCHABLE on the active backend (device code registered, and on
-// Vulkan its kparams too)? Lets a route degrade rather than issue a loud no-op.
+// Is `kernelName` LAUNCHABLE on the active backend (device code and kparams registered,
+// and its static shared memory within the device's limit)? Lets a route degrade instead.
 // STATIC native (no `this`); `nameArr` is an int8[] whose payload starts at +8.
 void* __cajeta_xpu_lookup_cpu_kernel(const char* name);
 
@@ -1510,6 +1564,25 @@ int32_t __cajeta_xpu_kernel_available(void* nameArr, int64_t len) {
     if (ok) {
         struct cajeta_kparams* kp = cajeta_xpu_find_kparams(name);
         if (!kp || kp->count <= 0 || kp->count > 64) ok = 0;
+    }
+    if (ok) {
+        const uint64_t need = caj_xpu_manifest_lds(name, backend);
+        const int64_t limit = caj_xpu_lds_limit();
+        if (limit > 0 && need > (uint64_t) limit) {
+            ok = 0;
+            static char noted[32][64];
+            static int nNoted = 0;
+            int seen = 0;
+            pthread_mutex_lock(&g_xpu_cuda_lock);
+            for (int i = 0; i < nNoted && !seen; i++) seen = strncmp(noted[i], name, 63) == 0;
+            if (!seen && nNoted < 32) { strncpy(noted[nNoted], name, 63); noted[nNoted++][63] = 0; }
+            pthread_mutex_unlock(&g_xpu_cuda_lock);
+            if (!seen)
+                fprintf(stderr,
+                        "cajeta.xpu: note: [xpu-kernel-unavailable] %s needs %llu bytes of shared "
+                        "memory a block and this device allows %lld\n",
+                        name, (unsigned long long) need, (long long) limit);
+        }
     }
     return ok;
 }

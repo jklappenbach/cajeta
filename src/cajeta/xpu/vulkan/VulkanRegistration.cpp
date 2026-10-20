@@ -48,6 +48,15 @@ namespace vulkan {
             return out;
         }
 
+        /** Bytes of workgroup storage (address space 3) the device module's globals declare. */
+        unsigned workgroupBytes(const llvm::Module& m) {
+            uint64_t n = 0;
+            for (const llvm::GlobalVariable& g : m.globals())
+                if (g.getAddressSpace() == 3)
+                    n += m.getDataLayout().getTypeAllocSize(g.getValueType());
+            return (unsigned) n;
+        }
+
         // A virtual variant that cannot lower leaves the native kernel registered, so it is a note.
         void noteVirtualSkipped(const std::string& name, const std::string& why) {
             fprintf(stderr, "cajeta: note: [xpu-virtual-skipped] %s: %s\n", name.c_str(), why.c_str());
@@ -129,7 +138,8 @@ namespace vulkan {
                 return false;
             }
 
-            // Pipeline statistics are a driver fact, so the footprint holds only a declared wave width.
+            // Pipeline statistics are a driver fact; the footprint holds the declared wave width and
+            // the static workgroup bytes, which the runtime checks against the device's limit.
             std::optional<KernelManifest> manifest;
             if (registerKparams) {
                 KernelManifest m;
@@ -143,6 +153,7 @@ namespace vulkan {
                 applyNativeOps(m, kfn);
                 if (auto attr = XpuKernelAttr::from(*method); attr && attr->waveWidth())
                     m.waveWidth = (unsigned) *attr->waveWidth();
+                m.ldsStaticBytes = workgroupBytes(devMod);
                 applyCost(m, method);
                 manifest = std::move(m);
             }
