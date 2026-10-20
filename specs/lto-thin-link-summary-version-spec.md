@@ -1,6 +1,6 @@
 # --lto=thin fails to link (defect spec)
 
-Status: draft, 2026-10-19. Found by tensor-element-access's measurement (7.5).
+Status: draft, 2026-10-19. Found by tensor-element-access's measurement (8.5).
 
 ## 1. Definition
 
