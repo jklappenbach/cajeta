@@ -89,11 +89,14 @@ namespace cajeta {
         if (dynamic_pointer_cast<SpawnExpression>(node)) return true;
         if (dynamic_pointer_cast<DetachExpression>(node)) return true;
         if (dynamic_pointer_cast<ScopeStatement>(node)) return true;
-        if (dynamic_pointer_cast<TryStatement>(node)) return true;
-        if (dynamic_pointer_cast<SwitchStatement>(node)) return true;
-        if (dynamic_pointer_cast<SynchronizedStatement>(node)) return true;
-        if (dynamic_pointer_cast<ThrowStatement>(node)) return true;
-        if (dynamic_pointer_cast<YieldStatement>(node)) return true;
+        if (dynamic_pointer_cast<TryStatement>(node) || dynamic_pointer_cast<SwitchStatement>(node)
+                || dynamic_pointer_cast<ThrowStatement>(node)) {
+            bool nested = false;
+            node->forEachSubNode([&](const AbstractSyntaxNodePtr& sub) {
+                if (!nested && astHasSpawnSite(sub)) nested = true;
+            });
+            return nested;
+        }
         if (anyHasSpawnSite(node->getChildren())) return true;
         // Control-flow containers: recurse their typed sub-node fields.
         if (auto s = dynamic_pointer_cast<IfStatement>(node))

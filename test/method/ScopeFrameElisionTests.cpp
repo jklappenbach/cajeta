@@ -141,3 +141,124 @@ TEST(ScopeFrameElisionTests, scopeBlockMethodKeepsScopeEnter) {
     EXPECT_TRUE(callsScopeEnter(compileIr(src)))
         << "a method with scope { } must keep __cajeta_scope_enter";
 }
+
+// ---- tensor-element-access Unit 3: a throw, try or switch is not a spawn site.
+// A method whose only trigger was one of them malloc'd a scope frame per call
+// (Storage.get: 5 ns of a 15 ns read). Elision must not lose a spawn nested in
+// a catch, finally or switch arm, and a throw must still join spawned children.
+namespace {
+std::string bodyWithImports(const std::string& body) {
+    return std::string(
+        "package test;\n"
+        "import cajeta.error.Exception;\n"
+        "public final class D {\n"
+        "    public static async int32 compute() { return 7; }\n"
+        "    public static int32 run(int32 n) {\n"
+        "        int32 r = 0;\n"
+        "        ") + body + "\n"
+        "        return r;\n"
+        "    }\n"
+        "}\n";
+}
+void expectElides(const std::string& body) {
+    EXPECT_FALSE(callsScopeEnter(compileIr(bodyWithImports(body))))
+        << "no spawn here, so no scope frame; body:\n" << body;
+}
+void expectKeeps(const std::string& body) {
+    EXPECT_TRUE(callsScopeEnter(compileIr(bodyWithImports(body))))
+        << "spawn nested here must keep the scope frame; body:\n" << body;
+}
+int32_t runI32(const std::string& src) {
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    if (!fn) return -100;
+    return fn();
+}
+}
+TEST(ScopeFrameElisionTests, throwOnlyMethodElidesScopeEnter) {
+    expectElides("if (n < 0) { throw heap Exception(\"negative\"); }\n        r = n;");
+}
+TEST(ScopeFrameElisionTests, tryWithoutSpawnElidesScopeEnter) {
+    expectElides("try { r = n + 1; } catch (Exception e) { r = 2; } finally { r = r + 1; }");
+}
+TEST(ScopeFrameElisionTests, switchWithoutSpawnElidesScopeEnter) {
+    expectElides("switch (n) { case 0: r = 1; break; default: r = 2; break; }");
+}
+TEST(ScopeFrameElisionTests, spawnInCatchKeepsFrame) {
+    expectKeeps("try { r = n; } catch (Exception e) { r = await spawn compute(); }");
+}
+TEST(ScopeFrameElisionTests, spawnInFinallyKeepsFrame) {
+    expectKeeps("try { r = n; } finally { r = await spawn compute(); }");
+}
+TEST(ScopeFrameElisionTests, spawnInSwitchArmKeepsFrame) {
+    expectKeeps("switch (n) { case 0: r = await spawn compute(); break; default: r = 2; break; }");
+}
+TEST(ScopeFrameElisionTests, spawnAndThrowKeepsFrame) {
+    expectKeeps("if (n < 0) { throw heap Exception(\"negative\"); }\n        r = await spawn compute();");
+}
+
+// 2.2: a frameless throw reaches the caller with its type, message and frames.
+TEST(ScopeFrameElisionTests, framelessThrowKeepsTypeMessageAndFrames) {
+    EXPECT_EQ(runI32(
+        "package test;\n"
+        "import cajeta.error.Exception;\n"
+        "import cajeta.error.StackFrame;\n"
+        "public final class D {\n"
+        "    public static int32 boom(int32 n) {\n"
+        "        if (n < 0) { throw heap Exception(\"negative input\"); }\n"
+        "        return n;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        try {\n"
+        "            D.boom(-1);\n"
+        "            return -1;\n"
+        "        } catch (Exception e) {\n"
+        "            if (!e.getMessage().equals(\"negative input\")) { return -2; }\n"
+        "            StackFrame[] fs #= e.getStackTrace();\n"
+        "            boolean sawBoom = false;\n"
+        "            boolean sawRun = false;\n"
+        "            int64 i = 0;\n"
+        "            while (i < fs.count()) {\n"
+        "                if (fs[i].method.equals(\"boom\")) { sawBoom = true; }\n"
+        "                if (fs[i].method.equals(\"run\")) { sawRun = true; }\n"
+        "                i = i + 1;\n"
+        "            }\n"
+        "            if (!sawBoom) { return -3; }\n"
+        "            if (!sawRun) { return -4; }\n"
+        "            return 1;\n"
+        "        }\n"
+        "    }\n"
+        "}\n"), 1);
+}
+
+// 2.3, 2.4: a method that spawns and then throws, directly or through a frameless
+// callee, has its child joined before the catch body runs.
+TEST(ScopeFrameElisionTests, throwAfterSpawnJoinsTheChild) {
+    EXPECT_EQ(runI32(
+        "package test;\n"
+        "import cajeta.error.Exception;\n"
+        "public final class D {\n"
+        "    public static int32 done = 0;\n"
+        "    public static async int32 work() {\n"
+        "        int64 s = 0;\n"
+        "        int64 i = 0;\n"
+        "        while (i < 3000000) { s = s + i; i = i + 1; }\n"
+        "        D.done = D.done + 1;\n"
+        "        return (int32) (s & 1);\n"
+        "    }\n"
+        "    public static void boom() { throw heap Exception(\"callee\"); }\n"
+        "    public static void direct() {\n"
+        "        Task<int32> t = spawn work();\n"
+        "        throw heap Exception(\"direct\");\n"
+        "    }\n"
+        "    public static void viaCallee() {\n"
+        "        Task<int32> t = spawn work();\n"
+        "        D.boom();\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        try { D.direct(); return -1; } catch (Exception e) { if (D.done != 1) { return -2; } }\n"
+        "        try { D.viaCallee(); return -3; } catch (Exception e) { if (D.done != 2) { return -4; } }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n"), 1);
+}
