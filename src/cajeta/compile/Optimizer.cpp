@@ -591,6 +591,15 @@ void fuseFunction(llvm::Function& f, llvm::TargetMachine* tm) {
     fpm.run(f, env.fam);
 }
 
+void fuseFunctions(const std::vector<llvm::Function*>& fns, llvm::TargetMachine* tm) {
+    if (fns.empty()) return;
+    PassEnv env(tm, &fns.front()->getContext());
+    llvm::FunctionPassManager fpm = env.pb.buildFunctionSimplificationPipeline(
+        llvm::OptimizationLevel::O2, llvm::ThinOrFullLTOPhase::None);
+    for (llvm::Function* f : fns)
+        if (!f->isDeclaration()) fpm.run(*f, env.fam);
+}
+
 void vectorizeFunction(llvm::Function& f, llvm::TargetMachine* tm,
                        bool scalarizeVectorValues, llvm::StringRef kernelName,
                        llvm::Value* blockX) {

@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <vector>
+
 #include "CompilerMode.h"   // OptLevel
 
 #include "llvm/ADT/StringRef.h"
@@ -33,6 +35,9 @@ namespace cajeta {
     // Run the O2 function-simplification pipeline over one function — the "fusion"
     // a Tier-A Jit(f) applies to a specialized body. `tm` may be null here.
     void fuseFunction(llvm::Function& f, llvm::TargetMachine* tm);
+
+    // fuseFunction over each of `fns`, sharing one pass environment.
+    void fuseFunctions(const std::vector<llvm::Function*>& fns, llvm::TargetMachine* tm);
 
     // Vectorize a single function, always and independent of `--opt`: the CPU
     // backend turns its per-block kernel wrapper's work-item loop into SIMD.

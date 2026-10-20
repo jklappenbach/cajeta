@@ -45,8 +45,33 @@ namespace cajeta {
             return n;
         }
 
+        bool namesShadowGlobal(const llvm::Value* v, int depth = 0) {
+            if (auto* g = llvm::dyn_cast<llvm::GlobalVariable>(v)) {
+                llvm::StringRef n = g->getName();
+                return n.contains("__cajeta_main_shadow") || n.contains("__cajeta_current_fiber")
+                    || n.contains("__cajeta_shadow_cur");
+            }
+            auto* c = llvm::dyn_cast<llvm::Constant>(v);
+            if (!c || llvm::isa<llvm::GlobalValue>(c) || depth > 8) return false;
+            for (const llvm::Use& op : c->operands())
+                if (namesShadowGlobal(op.get(), depth + 1)) return true;
+            return false;
+        }
+
+        /** True for the runtime's shadow-stack code, which the deferred line calls hide from the optimizer. */
+        bool touchesShadow(const llvm::Function& f) {
+            llvm::StringRef n = f.getName();
+            if (n.starts_with("__cajeta_line_") || n.starts_with("__cajeta_shadow_")) return true;
+            for (const llvm::BasicBlock& bb : f)
+                for (const llvm::Instruction& i : bb)
+                    for (const llvm::Use& op : i.operands())
+                        if (namesShadowGlobal(op.get())) return true;
+            return false;
+        }
+
         bool copyable(const llvm::Function& f) {
             if (f.isDeclaration() || f.hasLocalLinkage() || f.isVarArg() || tooBig(f)) return false;
+            if (touchesShadow(f)) return false;
             if (f.hasFnAttribute(llvm::Attribute::NoInline) || f.hasFnAttribute(llvm::Attribute::OptimizeNone))
                 return false;
             if (f.hasPersonalityFn()) return false;

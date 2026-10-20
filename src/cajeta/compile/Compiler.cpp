@@ -2583,8 +2583,10 @@ namespace cajeta {
                     return;
                 }
 
-                inlineLineFrames(*module->getLlvmModule());
+                bool lateFrames = flags.opt != OptLevel::O0 && deferLineFrames(*module->getLlvmModule());
+                if (!lateFrames) inlineLineFrames(*module->getLlvmModule());
                 optimizeModule(*module->getLlvmModule(), targetMachine, flags.opt);
+                if (lateFrames) coalesceLineFrames(*module->getLlvmModule(), targetMachine);
 
                 // CAJETA_DUMP_CODEGEN_BC=<dir>: write each module exactly as it goes
                 // into host codegen (after --opt), so a backend crash reproduces under
