@@ -1,6 +1,6 @@
 # cajeta-cloud adapters: Cognito, S3, and the local object store (spec)
 
-Status: draft, 2026-10-21, scoped at Julian's "do those"; awaiting approval.
+Status: active; approved by Julian 2026-10-21 (scoped the same day at his "do those").
 Parent specs: `cajeta-cloud-spec.md` (§1.4, §1.5, §9, §10, §13.3 to §13.5, §14)
 and `archive/cajeta-cloud-identity-spec.md` (§8 capabilities, §9 selection).
 This spec adds only what those leave open; it restates nothing they decide.
@@ -43,18 +43,25 @@ primavera waits on; the S3 adapter is the first real deployment target
   account.
 - **2.3 Cognito.** `CognitoUserPool` implements `UserPool`, `Authenticator`,
   `Account` and `TokenVerifier` over the `cognito-idp` JSON API
-  (`X-Amz-Target: AWSCognitoIdentityProviderService.<Op>`). Sign-in uses
-  `USER_PASSWORD_AUTH` on an app client that permits it (SRP is not offered;
-  the flow is a client-side proof the port does not model); TOTP enrollment
-  and challenge map to `AssociateSoftwareToken`, `VerifySoftwareToken` and
-  `SOFTWARE_TOKEN_MFA`; refresh to `REFRESH_TOKEN_AUTH`; revocation to
-  `RevokeToken`; registration to `SignUp` and `ConfirmSignUp`; attributes and
-  groups to the admin operations, which are SigV4-signed, while the user-facing
-  operations are unsigned as the API defines. Tokens verify against the pool's
-  JWKS (`/.well-known/jwks.json`, RS256) through the port's existing
-  verifier, cached for the document's `Cache-Control` lifetime and refetched
-  on an unknown `kid`. The adapter declares exactly the capabilities the pool
+  (`X-Amz-Target: AWSCognitoIdentityProviderService.<Op>`). Sign-in uses the
+  pool's default **SRP** flow (`USER_SRP_AUTH` then `PASSWORD_VERIFIER`: the
+  client's ephemeral `A`, the server's `B` and salt, the password-derived
+  key through HKDF-SHA256 over the 3072-bit group Cognito fixes, the HMAC
+  claim), decided by Julian 2026-10-21 so a pool that forbids the password
+  flow still works; `USER_PASSWORD_AUTH` is used only when the pool reports
+  SRP unavailable. TOTP enrollment and challenge map to
+  `AssociateSoftwareToken`, `VerifySoftwareToken` and `SOFTWARE_TOKEN_MFA`;
+  refresh to `REFRESH_TOKEN_AUTH`; revocation to `RevokeToken`; registration
+  to `SignUp` and `ConfirmSignUp`; attributes and groups to the admin
+  operations, which are SigV4-signed, while the user-facing operations are
+  unsigned as the API defines. Tokens verify against the pool's JWKS
+  (`/.well-known/jwks.json`, RS256) through the port's existing verifier,
+  cached for the document's `Cache-Control` lifetime and refetched on an
+  unknown `kid`. The adapter declares exactly the capabilities the pool
   configuration grants (identity §8); the selection name is `cognito` (§9.2).
+  The SRP arithmetic (modular exponentiation in a 3072-bit group) is a
+  cajeta-crypto addition, `dev.cajeta.crypto.Srp`, proven against the RFC 5054
+  test vectors and a recorded Cognito exchange.
 - **2.4 S3.** `S3ObjectStore` implements the object-store port over the REST
   API: `PutObject` with `If-None-Match: *` and `If-Match` for conditional
   writes (parent §9.2), `GetObject` with `Range`, `ListObjectsV2` with
@@ -102,8 +109,7 @@ primavera waits on; the S3 adapter is the first real deployment target
 
 ## 5. Open questions
 
-- **5.1** The AWS test account: whose, and how its keys reach the opt-in
-  workflow and a developer's shell (2.5).
-- **5.2** Whether `USER_PASSWORD_AUTH` alone is acceptable for Cognito sign-in
-  in the first release, or SRP is required for pools that forbid the password
-  flow.
+- **5.1** *(decided 2026-10-21: later.)* Julian provisions the account, pool,
+  client and bucket later. Until then the adapters ship on the SigV4 vectors
+  and recorded fixtures, and the real-service acceptance items stay open.
+- **5.2** *(decided 2026-10-21: SRP required.)* See 2.3.
