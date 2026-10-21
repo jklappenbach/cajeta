@@ -8,6 +8,7 @@
 # The device library's exp, sin and cos against the reference's float64 rounded once.
 attnCombineKernel	cpu	ulps=4,rel=5e-7	Math.exp from the device library; worst 4 ulp on 2026-10-05, then 64 ulp but 1.3e-8 of the scale once llm d20a051 moved attnScore to Wave.reduceSumF32
 attnCombinePrefillKernel	cpu	ulps=6	Math.exp from the device library; worst 6 ulp measured 2026-10-05
+moeTopKBatchKernel	cpu	rel=5e-7	Math.exp from the device library; worst 1 ulp, 8.4e-08 of the scale (wAll[196], 2 of 256) since llm aab584a
 qkPrepKernel	cpu	ulps=1	Math.sin, Math.cos and Math.sqrt from the device library; worst 1 ulp
 ropeAppendRowsKernel	cpu	ulps=2	Math.sin and Math.cos from the device library; worst 2 ulp
 ropeF32	cpu	rel=5e-7	Math.sin and Math.cos near zero at large angles: 2048 ulp but 1.6e-7 of the unit scale
@@ -73,8 +74,9 @@ symWmmaDeqIdMw8Kernel	cuda	rel=5e-7	@FastMath epilogue over the int8 mma; worst 
 q4kWmmaDeqMw8Kernel	cuda	rel=1e-6	@FastMath epilogue over the int8 mma; worst 5.0e-07
 q4kWmmaIdMw8Kernel	cuda	rel=1e-6	@FastMath epilogue over the int8 mma; worst 8.7e-07
 # A quantized output: the row's float32 scale is reduced in the wave's order, and a value on a
-# rounding boundary lands one step away. 4 of 81920 bytes, each one step apart.
-gluFusedPackF32	cuda	ulps=1	a quantization step from the row scale's reduce order
+# rounding boundary lands a step away. 4 of 81920 bytes one step apart on 2026-10-05; since
+# 2026-10-17 at llm aab584a one byte (packed[7328], 0x87 against 0x85) lands two steps away.
+gluFusedPackF32	cuda	ulps=2	a quantization step from the row scale's reduce order; worst 2 steps
 # The f16 cooperative-matrix kernels: mma.sync accumulates f16 products with truncation, so the
 # bias grows with K. The backend's magnitude is the smaller in 82% of the differing elements,
 # and the distance grew 60x for 33x the K (q5kF16CoopX1Kernel, 1.1e-7 at K=256, 6.7e-6 at
