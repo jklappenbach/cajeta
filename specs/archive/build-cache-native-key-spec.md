@@ -43,6 +43,10 @@ Release CI starts clean and is not affected.
   native directories are untouched between two runs hits on the second.
 - **2.3** A `--emit=exe` build that cannot find a native library names only
   the places it searched.
+- **2.4** A library whose checkout holds `native/<platform>/lib<name>.a`
+  bakes it with a plain `cajeta build` or `cajeta install`, no environment
+  variable set; a consumer's `--emit=exe` build through the build tool links
+  its own project's `native/` the same way.
 
 ## 3. Decisions (approved 2026-10-21)
 
@@ -62,8 +66,16 @@ Release CI starts clean and is not affected.
   library's live natives come from its `@Native` declarations, not from that
   block (cajeta-crypto declares none), and a first build cannot read the
   live set before it compiles.
-- **3.2 The `--emit=exe` message.** The message names "the project native/
-  dir", which `nativeLinkSearchDirs()` never searches. The message is
-  corrected to name `CAJETA_NATIVE_PATH` and `~/.cajeta/native/` only. A
-  working-directory-relative search is not added: a build's inputs would then
-  depend on where the command ran, which the cache key could not see.
+- **3.2 The project's `native/` directory.** Decided with Julian 2026-10-21,
+  revising the first proposal (fix the message only). Every library checkout
+  already keeps its shim sources and `native/build.sh` under `native/`, whose
+  output is `native/<platform>/lib<name>.a`, and each one's `run-tests.sh` and
+  release workflow set `CAJETA_NATIVE_PATH` to that directory by hand. The
+  build tool now passes `<project root>/native` to the compiler as an explicit
+  search directory (`--native-dir=`), searched after the classpath's staged
+  archives and before `CAJETA_NATIVE_PATH` and `~/.cajeta/native`, and the
+  cache key folds it like any search dir. The project root comes from the
+  manifest, never from the working directory, so a build's inputs do not
+  depend on where the command ran; the bare compiler CLI without a manifest
+  keeps today's two sources. The `--emit=exe` not-found message names the
+  three places that are searched.

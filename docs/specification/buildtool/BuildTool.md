@@ -2549,6 +2549,26 @@ one source file's content only forces a recompile of that file
 and its dependents (the dependents detect the change through
 the transitive-imports-digest).
 
+### The whole-artifact cache
+
+In front of the IR cache sits a whole-artifact cache under
+`.cajeta/cache/artifact/<sha256>/`: when nothing a build embeds has
+changed, the previous artifact is re-published without spawning the
+compiler (`[cache] hit`). Its key folds the compiler's cache
+discriminator (flags, emit, target, profile, classpath), the entry
+method, every source digest, every embedded resource digest (`skills/`),
+and every native input the build could bake or link: each search
+directory's path, in search order, and the content digest of every file
+directly under its platform subdirectories and of every shared library or
+static archive directly under it. The search directories are the
+project's own `native/` (passed to the compiler as `--native-dir`, from
+the manifest's root), `CAJETA_NATIVE_PATH`, then `~/.cajeta/native`. A
+shim provided, rebuilt, removed or added for another platform re-keys the
+artifact; a shim reverted to earlier bytes lands on its earlier slot.
+The live `@Native` set is not known before compiling, so everything
+findable counts, which over-invalidates only when some unrelated native
+file on the machine changes.
+
 ### Compared to Gradle's build cache
 
 Gradle's build cache works on task-level inputs / outputs and

@@ -10,6 +10,7 @@
 #include <llvm/TargetParser/Host.h>
 #include <llvm/TargetParser/Triple.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -49,8 +50,24 @@ namespace cajeta {
         return os + "-" + arch;
     }
 
+    namespace {
+        std::string& projectNativeDirSlot() {
+            static std::string dir;
+            return dir;
+        }
+    }
+
+    void setProjectNativeDir(const std::string& dir) {
+        projectNativeDirSlot() = dir;
+    }
+
+    const std::string& projectNativeDir() {
+        return projectNativeDirSlot();
+    }
+
     std::vector<std::string> nativeLinkSearchDirs() {
         std::vector<std::string> dirs;
+        if (!projectNativeDirSlot().empty()) dirs.push_back(projectNativeDirSlot());
         if (const char* p = std::getenv("CAJETA_NATIVE_PATH")) {
             // ';' on Windows — a ':' split would cut "C:\..." at the drive.
 #ifdef _WIN32
@@ -72,6 +89,48 @@ namespace cajeta {
         if (const char* home = std::getenv("HOME"))
             dirs.push_back(std::string(home) + "/.cajeta/native");
         return dirs;
+    }
+
+    std::vector<NativeInputFile> nativeInputFiles(
+            const std::vector<std::string>& searchDirs) {
+        std::vector<NativeInputFile> out;
+        for (const auto& dir : searchDirs) {
+            out.push_back({"dir=" + dir, ""});
+            std::error_code ec;
+            std::filesystem::directory_iterator it(dir, ec), end;
+            if (ec) continue;
+            std::vector<NativeInputFile> here;
+            for (; it != end; it.increment(ec)) {
+                if (ec) break;
+                std::error_code e2;
+                const std::string name = it->path().filename().string();
+                if (it->is_directory(e2) && !e2) {
+                    if (name == "include") continue;
+                    std::filesystem::directory_iterator pit(it->path(), e2), pend;
+                    if (e2) continue;
+                    for (; pit != pend; pit.increment(e2)) {
+                        if (e2) break;
+                        std::error_code e3;
+                        if (!pit->is_regular_file(e3) || e3) continue;
+                        here.push_back({dir + "|" + name + "/"
+                                            + pit->path().filename().string(),
+                                        pit->path().string()});
+                    }
+                } else if (it->is_regular_file(e2) && !e2) {
+                    const std::string ext = it->path().extension().string();
+                    if (ext == ".so" || ext == ".dylib" || ext == ".dll"
+                        || ext == ".a") {
+                        here.push_back({dir + "|" + name, it->path().string()});
+                    }
+                }
+            }
+            std::sort(here.begin(), here.end(),
+                      [](const NativeInputFile& a, const NativeInputFile& b) {
+                          return a.label < b.label;
+                      });
+            out.insert(out.end(), here.begin(), here.end());
+        }
+        return out;
     }
 
     namespace {
@@ -168,8 +227,9 @@ namespace cajeta {
                     llvm::inconvertibleErrorCode(),
                     "native library '" + lib + "' (" + platform +
                     ") not found; searched: " + searched +
-                    ". Provide it via CAJETA_NATIVE_PATH, the project native/ "
-                    "dir, or ~/.cajeta/native/.");
+                    ". Provide it under the project's native/ (the build tool "
+                    "passes it as --native-dir), via CAJETA_NATIVE_PATH, or "
+                    "under ~/.cajeta/native/.");
             }
             out.push_back(found);
         }

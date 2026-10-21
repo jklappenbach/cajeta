@@ -21,8 +21,31 @@ namespace cajeta {
 
     std::string hostNativePlatform();   // native/ convention, e.g. "linux-x64"
 
-    // The colon-separated `CAJETA_NATIVE_PATH`, then `~/.cajeta/native`.
+    // The project's own `native/`, when the build tool passed one
+    // (`--native-dir`), then the colon-separated `CAJETA_NATIVE_PATH`, then
+    // `~/.cajeta/native`. The project dir comes from the manifest's root,
+    // never from the working directory, so a build's inputs do not depend on
+    // where the command ran (build-cache-native-key spec 3.2).
     std::vector<std::string> nativeLinkSearchDirs();
+
+    // Records the project `native/` dir for this process; empty clears it.
+    void setProjectNativeDir(const std::string& dir);
+    const std::string& projectNativeDir();
+
+    // Every file a bake or link could pick up under `searchDirs`, labelled
+    // for a cache key: each dir contributes `dir=<path>`, then one entry per
+    // regular file directly under each `<dir>/<platform>/` but `include`,
+    // then each `.so`, `.dylib`, `.dll` and `.a` directly under `<dir>` (the
+    // shared-library fallback's places). Sorted within a dir, dirs in search
+    // order. A missing dir contributes its `dir=` line only. The build tool
+    // digests the paths; this only says what the bake would see
+    // (build-cache-native-key spec 3.1).
+    struct NativeInputFile {
+        std::string label;   // "dir=<dir>" or "<dir>|<platform>/<file>"
+        std::string path;    // empty for a dir line
+    };
+    std::vector<NativeInputFile> nativeInputFiles(
+        const std::vector<std::string>& searchDirs);
 
     // Explode `native/<platform>/…` out of each classpath archive under
     // `<stageRoot>/native/<platform>/`, returning `<stageRoot>/native` when

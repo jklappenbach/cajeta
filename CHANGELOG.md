@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **The build cache sees native archives.** The whole-artifact cache key (`.cajeta/cache/artifact`) folds every native file a build could bake or link: a shim provided after a cached build, rebuilt from edited C, removed, or added for another platform now re-keys the artifact, where 0.45.0 re-published the stale `.cja` until `.cajeta/cache` was cleared. The project's own `native/` directory is now searched for `@Native` archives ahead of `CAJETA_NATIVE_PATH` and `~/.cajeta/native`: the build tool passes it to the compiler as `--native-dir`, so a library checkout bakes its shim with no environment variable set.
+
 ## 0.45.0 (2026-10-20)
 
 - **Dependencies are verified by default** (publisher-trust spec 4.1, 5.3 to 5.5). Every repository a manifest declares now checks an archive before it is stored or loaded: `cajeta build`, `deps`, plugins, melts and a notebook's `Packages.install` run the same check. The repository must serve release metadata signed through its root (olla's ships in the toolchain), the bytes must hash to it, and when that metadata names an organization the archive must carry a signature that verifies against the organization's key document. A repository that signs nothing, such as a local or vendored one, is refused until its `settings.repositories` entry says `"verification": "checksum"`; that relaxes that repository only, and a melt cannot relax the repositories it contributes. A present envelope that does not verify is refused under either policy. `~/.olla` keeps the envelope beside each mirrored archive, and the machine's own `cajeta install` builds still resolve. `settings.require-signatures` is retired: it is still read, has no effect, and warns.

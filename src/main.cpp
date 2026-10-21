@@ -12,6 +12,7 @@
 #include <llvm/Config/llvm-config.h>
 #include <llvm/TargetParser/Host.h>
 #include "cajeta/compile/IrTools.h"
+#include "cajeta/compile/NativeLink.h"
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/prof/TraceSummary.h"
 #include "cajeta/compile/CompilerMode.h"
@@ -183,6 +184,8 @@ void printUsage(const char* progname) {
               << "                                       OpenSSL). report: print the strip analysis. off: opt out.\n"
               << "  --classpath=a.cja,b.cja              Cajeta archives to ingest as dependencies\n"
               << "                                       (repeatable; comma-separates inside each occurrence).\n"
+              << "  --native-dir=<dir>                   Project native/ dir searched first for @Native archives\n"
+              << "                                       (the build tool passes <project root>/native).\n"
               << "  --skill-root=<dir>                   Package root holding skills/ to embed in the .cja\n"
               << "                                       (defaults to the source root; build tool passes project root).\n"
               << "  --cache-manifest=<path>              Incremental-compilation manifest (cache-manifest-v1):\n"
@@ -694,6 +697,11 @@ int main(int argc, const char* argv[]) {
             compiler.setCacheManifestPath(value);
         } else if (arg == "--print-cache-discriminator") {
             printCacheDiscriminator = true;
+        } else if (match(arg, "native-dir", value)) {
+            // The project's own native/ (build-cache-native-key spec 3.2):
+            // searched for @Native archives before CAJETA_NATIVE_PATH and
+            // ~/.cajeta/native. The build tool passes <project root>/native.
+            cajeta::setProjectNativeDir(value);
         } else if (match(arg, "skill-root", value)) {
             // Where the package's hand-authored skills/ dir lives (skill-
             // discovery D.3). The build tool passes the PROJECT root here so

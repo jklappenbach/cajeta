@@ -15,6 +15,7 @@
 #include "cajeta/buildtool/Reproducibility.h"
 #include "cajeta/buildtool/Resolver.h"
 #include "cajeta/buildtool/SourceDigest.h"
+#include "cajeta/compile/NativeLink.h"
 #include "cajeta/util/SelfPath.h"
 
 #include <algorithm>
@@ -298,6 +299,20 @@ namespace cajeta::buildtool {
                 argv.push_back("--skill-root=" +
                                projectRootFromManifest(*ctx.manifest()));
             }
+            // The project's own native/ is a search dir for @Native archives
+            // (build-cache-native-key spec 3.2): passed explicitly, from the
+            // manifest's root, so neither the compiler nor the cache key
+            // depends on the working directory.
+            fs::path projectNativeDir;
+            if (ctx.manifest()) {
+                fs::path cand = fs::path(projectRootFromManifest(*ctx.manifest()))
+                              / "native";
+                std::error_code nec;
+                if (fs::is_directory(cand, nec) && !nec) {
+                    projectNativeDir = fs::absolute(cand, nec);
+                    argv.push_back("--native-dir=" + projectNativeDir.string());
+                }
+            }
 
             // Two layers: a whole-artifact cache in front of the per-source IR
             // cache. The discriminator is probed from the compiler itself, so
@@ -386,6 +401,29 @@ namespace cajeta::buildtool {
                 }
                 std::sort(perResource.begin(), perResource.end());
 
+                // Native inputs: every archive the bake could copy into the
+                // artifact, from the dirs the compiler will search in order
+                // (build-cache-native-key spec 3.1). The live @Native set is
+                // unknown before compiling, so everything findable counts; a
+                // search dir's path alone counts when it is missing.
+                std::vector<std::string> nativeLines;
+                {
+                    std::vector<std::string> nativeDirs;
+                    if (!projectNativeDir.empty())
+                        nativeDirs.push_back(projectNativeDir.string());
+                    for (const auto& d : cajeta::nativeLinkSearchDirs())
+                        nativeDirs.push_back(d);
+                    for (const auto& f : cajeta::nativeInputFiles(nativeDirs)) {
+                        if (f.path.empty()) {
+                            nativeLines.push_back(f.label);
+                            continue;
+                        }
+                        std::string d = ArtifactCache::sha256OfFile(f.path);
+                        if (d.empty()) continue;
+                        nativeLines.push_back(f.label + "=" + d);
+                    }
+                }
+
                 // Key = discriminator ⊕ entry ⊕ every (path, digest): the
                 // discriminator folds flags/emit/target/profile/classpath, but
                 // not the positional entry method and not what gets embedded.
@@ -401,6 +439,10 @@ namespace cajeta::buildtool {
                     wholeInput.push_back('\0');
                     for (auto& [rel, digest] : perResource) {
                         wholeInput += rel + "=" + digest + "\n";
+                    }
+                    wholeInput.push_back('\0');
+                    for (const auto& line : nativeLines) {
+                        wholeInput += line + "\n";
                     }
                     std::string wholeDigest = sha256Hex(wholeInput);
                     const std::string pre = "sha256:";
