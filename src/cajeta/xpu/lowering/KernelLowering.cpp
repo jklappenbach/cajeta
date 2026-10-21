@@ -53,6 +53,7 @@
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/Support/Error.h"
 
+#include <cmath>
 #include <algorithm>
 #include <fstream>
 #include <cstdlib>
@@ -5395,6 +5396,34 @@ private:
 
     // Resolve a CooperativeMatrix.mma operand (a bare identifier naming a
     // CooperativeMatrix local) to its slot.
+    // acc.addScaledPow2(src, e): the source tile, checked against the receiver (spec 2.4).
+    CoopMatrixSlot addScaledSource(const CoopMatrixSlot& slot,
+                                   const std::vector<MethodCallParameter>& args) {
+        if (args.size() != 2)
+            unsupported("CooperativeMatrix.addScaledPow2 expects (src, e)");
+        CoopMatrixSlot src = resolveCoopMatrixArg(args[0].expression);
+        if (src.rows != slot.rows || src.cols != slot.cols)
+            unsupported("CooperativeMatrix.addScaledPow2: receiver and src must share Rows/Cols");
+        if (slot.use != 2 || src.use != 2)
+            unsupported("CooperativeMatrix.addScaledPow2: accumulator tiles (Use=2) only");
+        if (!slot.elemType->isFloatTy() || !src.elemType->isFloatTy())
+            unsupported("CooperativeMatrix.addScaledPow2: float32 tiles only");
+        if (src.software != slot.software || src.distributed != slot.distributed)
+            unsupported("CooperativeMatrix.addScaledPow2: src must share the receiver's tier");
+        return src;
+    }
+
+    // 2^e for addScaledPow2's exponent, which must be a constant in [-126, 127].
+    llvm::Value* addScaledFactor(const std::vector<MethodCallParameter>& args, llvm::Type* elem) {
+        auto* c = llvm::dyn_cast<llvm::ConstantInt>(lowerExpr(args[1].expression));
+        if (!c)
+            unsupported("CooperativeMatrix.addScaledPow2: the exponent must be a constant");
+        int64_t e = c->getSExtValue();
+        if (e < -126 || e > 127)
+            unsupported("CooperativeMatrix.addScaledPow2: the exponent must be in [-126, 127]");
+        return llvm::ConstantFP::get(elem, std::ldexp(1.0, (int) e));
+    }
+
     CoopMatrixSlot resolveCoopMatrixArg(const ExpressionPtr& e) {
         if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
             auto it = coopMatrixSlots.find(id->getTextValue());
@@ -5537,6 +5566,15 @@ private:
             llvm::Value* v =
                 target.coopMatrixSplat(builder, mod, val, slot.matrixType);
             builder.CreateStore(v, slot.alloca);
+            return llvm::ConstantInt::get(i32, 0);
+        }
+        if (name == "addScaledPow2") {
+            CoopMatrixSlot src = addScaledSource(slot, args);
+            llvm::Value* s = addScaledFactor(args, slot.elemType);
+            llvm::Value* accV = builder.CreateLoad(slot.matrixType, slot.alloca, recv + ".val");
+            llvm::Value* srcV = builder.CreateLoad(src.matrixType, src.alloca, "as.src");
+            builder.CreateStore(target.coopMatrixAddScaled(builder, mod, accV, srcV, s),
+                                slot.alloca);
             return llvm::ConstantInt::get(i32, 0);
         }
         if (name == "elements" || name == "get" || name == "set" ||
@@ -5918,6 +5956,19 @@ private:
             llvm::Value* val = coerceTo(lowerExpr(args[0].expression), elem);
             emitCountedLoop(slot.perLane, [&](llvm::Value* i) {
                 builder.CreateStore(val, distElemPtr(slot, i));
+            });
+            return true;
+        }
+        if (name == "addScaledPow2") {
+            CoopMatrixSlot src = addScaledSource(slot, args);
+            llvm::Value* s = addScaledFactor(args, elem);
+            llvm::IRBuilderBase::FastMathFlagGuard guard(builder);
+            builder.setFastMathFlags(llvm::FastMathFlags());
+            emitCountedLoop(slot.perLane, [&](llvm::Value* i) {
+                llvm::Value* a = builder.CreateLoad(elem, distElemPtr(slot, i), "as.a");
+                llvm::Value* x = builder.CreateLoad(elem, distElemPtr(src, i), "as.x");
+                builder.CreateStore(builder.CreateFAdd(a, builder.CreateFMul(s, x, "as.m"), "as"),
+                                    distElemPtr(slot, i));
             });
             return true;
         }
@@ -6304,6 +6355,19 @@ private:
             llvm::Value* val = coerceTo(lowerExpr(args[0].expression), elem);
             emitCountedLoop(R * C, [&](llvm::Value* lin) {
                 builder.CreateStore(val, coopElemPtr(slot, lin));
+            });
+            return llvm::ConstantInt::get(i32, 0);
+        }
+        if (name == "addScaledPow2") {
+            CoopMatrixSlot src = addScaledSource(slot, args);
+            llvm::Value* s = addScaledFactor(args, elem);
+            llvm::IRBuilderBase::FastMathFlagGuard guard(builder);
+            builder.setFastMathFlags(llvm::FastMathFlags());
+            emitCountedLoop(R * C, [&](llvm::Value* lin) {
+                llvm::Value* a = builder.CreateLoad(elem, coopElemPtr(slot, lin), "as.a");
+                llvm::Value* x = builder.CreateLoad(elem, coopElemPtr(src, lin), "as.x");
+                builder.CreateStore(builder.CreateFAdd(a, builder.CreateFMul(s, x, "as.m"), "as"),
+                                    coopElemPtr(slot, lin));
             });
             return llvm::ConstantInt::get(i32, 0);
         }
@@ -8613,6 +8677,32 @@ llvm::Value* LoweringTarget::coopMatrixSplat(
     llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*value*/,
     llvm::Type* /*matrixType*/) {
     throw coopMatrixUnsupported(name());
+}
+
+llvm::Value* LoweringTarget::coopMatrixAddScaled(
+    llvm::IRBuilderBase& b, llvm::Module& /*m*/, llvm::Value* acc, llvm::Value* src,
+    llvm::Value* s) {
+    llvm::IRBuilderBase::FastMathFlagGuard guard(b);
+    b.setFastMathFlags(llvm::FastMathFlags());
+    std::function<llvm::Value*(llvm::Value*, llvm::Value*)> one =
+        [&](llvm::Value* x, llvm::Value* y) -> llvm::Value* {
+            llvm::Type* t = x->getType();
+            unsigned n = 0;
+            if (auto* st = llvm::dyn_cast<llvm::StructType>(t)) n = st->getNumElements();
+            else if (auto* at = llvm::dyn_cast<llvm::ArrayType>(t)) n = (unsigned) at->getNumElements();
+            if (n) {
+                llvm::Value* out = llvm::UndefValue::get(t);
+                for (unsigned i = 0; i < n; ++i)
+                    out = b.CreateInsertValue(
+                        out, one(b.CreateExtractValue(x, i), b.CreateExtractValue(y, i)), i);
+                return out;
+            }
+            llvm::Value* sv = s;
+            if (auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(t))
+                sv = b.CreateVectorSplat(vt->getNumElements(), s);
+            return b.CreateFAdd(x, b.CreateFMul(sv, y, "cm.as.m"), "cm.as");
+        };
+    return one(acc, src);
 }
 
 llvm::Value* LoweringTarget::coopMatrixFromWords(

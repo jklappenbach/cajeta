@@ -595,6 +595,12 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* value,
             llvm::Type* matrixType);
 
+        // acc.addScaledPow2(src, e) on native fragments: acc + (s * src) with s = 2^e, so
+        // the product is exact. The default works on a vector or struct fragment elementwise.
+        virtual llvm::Value* coopMatrixAddScaled(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* acc,
+            llvm::Value* src, llvm::Value* s);
+
         // Whether this backend lowers the fused GEMM-epilogue verbs on its NATIVE
         // tier; when false the tier scan demotes the kernel to the portable tile, so
         // coopMatrixEpilogueAccum is only ever called where this returned true.

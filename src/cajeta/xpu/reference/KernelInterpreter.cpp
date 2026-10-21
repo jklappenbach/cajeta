@@ -762,7 +762,7 @@ const std::map<LocalKind, std::set<std::string>>& memberBuiltins() {
                              "asBytes", "widenLo", "widenHi", "narrow", "toF32", "toF16",
                              "toBF16", "toI32", "toF64", "toI8", "bitcastF32", "bitcastI32",
                              "lut4"}},
-        {LocalKind::Tile, {"splat", "load", "store", "mma", "fromWords", "scaledAccumInto",
+        {LocalKind::Tile, {"splat", "load", "store", "mma", "addScaledPow2", "fromWords", "scaledAccumInto",
                            "scaledAccumInto2", "rank1Accum", "scaledAccumI32",
                            "elements", "get", "set", "row", "col"}},
         {LocalKind::WaveVec, {}},
@@ -2820,6 +2820,32 @@ private:
                         size_t k = (size_t) r * t.cols + c;
                         if (fl) d->f[k] = x.f; else d->i[k] = x.i;
                     }
+                return std::shared_ptr<const TileData>(d);
+            });
+            return Val();
+        }
+        if (nm == "addScaledPow2") {
+            // acc + src * 2^e: an exact product, then one rounding for the sum.
+            if (a.size() != 2 || a[0].k != Val::TileRef)
+                refuse("`addScaledPow2` takes (src, e) (" + where + ")");
+            const Tile& S = *a[0].tile;
+            if (S.rows != t.rows || S.cols != t.cols || t.use != 2 || S.use != 2 ||
+                t.elem.prim != Prim::F32 || S.elem.prim != Prim::F32)
+                refuse("`addScaledPow2` between tiles that are not float32 accumulators of one shape (" +
+                       where + ")");
+            const double e = asDouble(a[1]);
+            if (e < -126 || e > 127 || e != (double) (int) e)
+                refuse("`addScaledPow2` with an exponent outside [-126, 127] (" + where + ")");
+            const float s = std::ldexp(1.0f, (int) e);
+            uint32_t sbits;
+            std::memcpy(&sbits, &s, 4);
+            Group::TileKey key{10, t.data.get(), S.data.get(), nullptr, sbits, 0, 0, 0};
+            t.data = memo(key, {t.data, S.data}, [&] {
+                auto d = std::make_shared<TileData>(*t.data);
+                for (size_t k = 0; k < n; ++k) {
+                    float m = s * (float) S.data->f[k];
+                    d->f[k] = (double) ((float) d->f[k] + m);
+                }
                 return std::shared_ptr<const TileData>(d);
             });
             return Val();

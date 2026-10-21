@@ -23,7 +23,7 @@ map: a tile scaled by a scalar and added to another tile.
   broadcast(2^-10))`, which is `sacc += 2^-10 * sres`.
 
 ### 1.3 Scope
-- A new `CooperativeMatrix` verb for "add a scalar multiple of a tile".
+- A new `CooperativeMatrix` verb for "add a power-of-two multiple of a tile".
 - Its lowering on every tier, native on Vulkan.
 - The LLVM fork support the SPIR-V lowering needs.
 - The Vulkan device setup cooperative-matrix kernels need.
@@ -37,21 +37,25 @@ map: a tile scaled by a scalar and added to another tile.
 
 ## 2. The verb
 
-- **2.1** When `acc.addScaled(src, s)` runs on two float32 accumulator tiles of
-  the same shape and a float32 scalar, every element becomes
-  `acc[r][c] + (s * src[r][c])`, rounded after the multiply and after the add.
+- **2.1** When `acc.addScaledPow2(src, e)` runs on two float32 accumulator
+  tiles of the same shape, every element becomes `acc[r][c] + src[r][c] * 2^e`.
+  `e` is a compile-time constant in [-126, 127], so the product is exact and
+  only the sum rounds. *(Revised 2026-10-20, Julian: the first draft took any
+  float `s` with two roundings, and RADV fuses `OpMatrixTimesScalar` and
+  `OpFAdd` despite `NoContraction`, which put Vulkan one ulp off the other
+  tiers at s = 3.)*
 - **2.2** When the same kernel runs on any tier (native, distributed,
   replicated, cpu, the reference interpreter), the results agree bit for bit.
-  No tier contracts the multiply and add into an fma.
-- **2.3** When a kernel uses only `addScaled` and no other epilogue verb, its
-  tiles are not demoted on a backend without epilogue support.
-- **2.4** When `addScaled` is given tiles of different shape, a non-accumulator
-  tile, or a non-float32 element type, compilation fails with a diagnostic
-  that names the verb.
+- **2.3** When a kernel uses only `addScaledPow2` and no other epilogue verb,
+  its tiles are not demoted on a backend without epilogue support.
+- **2.4** When `addScaledPow2` is given tiles of different shape, a
+  non-accumulator tile, a non-float32 element type, a non-constant exponent or
+  one outside [-126, 127], the kernel is not lowered and the diagnostic names
+  the verb and the defect.
 
 ## 3. SPIR-V lowering
 
-- **3.1** When `addScaled` lowers for Vulkan, it emits
+- **3.1** When `addScaledPow2` lowers for Vulkan, it emits
   `OpMatrixTimesScalar` and `OpFAdd` on `OpTypeCooperativeMatrixKHR` values,
   both decorated `NoContraction`, and the module passes `spirv-val`.
 - **3.2** When a Vulkan kernel's tiles are all native, its manifest records

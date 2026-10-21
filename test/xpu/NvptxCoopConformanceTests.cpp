@@ -253,6 +253,20 @@ const std::vector<VerbCase>& cases() {
             false,
             [](unsigned r, unsigned c) { return 2.0 * (1.0 + r) * (1.0 + c); }});
 
+        // facc[r][c] += src[r][c] * 2^e, with src = rowF[r] * colF[c] and facc
+        // splatted to 1: a cell-dependent source, so a scrambled fragment shows.
+        cs.push_back({"addScaledPow2", "aSp2",
+            kernelFor("aSp2",
+                "        CooperativeMatrix<float32,16,16,2> src;\n"
+                "        src.splat(0.0f);\n"
+                "        src.rank1Accum(rowF, colF);\n"
+                "        CooperativeMatrix<float32,16,16,2> facc;\n"
+                "        facc.splat(1.0f);\n",
+                "        facc.addScaledPow2(src, -1);\n"
+                "        facc.store(out, 0, 0, 16);\n", false),
+            false,
+            [](unsigned r, unsigned c) { return 1.0 + 0.5 * (1.0 + r) * (1.0 + c); }});
+
         return cs;
     }();
     return v;

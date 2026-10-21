@@ -890,6 +890,19 @@ public:
             {matrixType, value->getType()});
         return b.CreateCall(f, {value}, "cm.splat");
     }
+    // acc + (s * src) with s = 2^e: OpMatrixTimesScalar then OpFAdd.
+    llvm::Value* coopMatrixAddScaled(llvm::IRBuilderBase& b, llvm::Module& m,
+                                     llvm::Value* acc, llvm::Value* src,
+                                     llvm::Value* s) override {
+        llvm::Function* fm = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_cooperative_matrix_times_scalar,
+            {src->getType(), s->getType()});
+        llvm::Value* p = b.CreateCall(fm, {src, s}, "cm.as.m");
+        llvm::Function* fa = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_cooperative_matrix_fadd, {acc->getType()});
+        cajeta::xpu::recordNativeOp(b, "addScaledPow2", "spirv.OpMatrixTimesScalar+OpFAdd");
+        return b.CreateCall(fa, {acc, p}, "cm.as");
+    }
 #else
     // Stock-LLVM build: the cooperative-matrix ops need the fork intrinsics.
     llvm::Value* coopMatrixLoad(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*,
@@ -907,6 +920,10 @@ public:
     }
     llvm::Value* coopMatrixSplat(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*,
                                  llvm::Type*) override {
+        coopMatrixNoForkToolchain();
+    }
+    llvm::Value* coopMatrixAddScaled(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*,
+                                     llvm::Value*, llvm::Value*) override {
         coopMatrixNoForkToolchain();
     }
 #endif

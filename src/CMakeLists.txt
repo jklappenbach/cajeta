@@ -478,6 +478,23 @@ set(CMAKE_REQUIRED_INCLUDES "${_CAJETA_CM_INCLUDES}")
 set(CMAKE_REQUIRED_FLAGS "${_CAJETA_CM_FLAGS}")
 set(CMAKE_TRY_COMPILE_TARGET_TYPE "${_CAJETA_CM_TTYPE}")
 if(CAJETA_HAS_SPV_COOP_MATRIX)
+    unset(CAJETA_HAS_SPV_COOP_SCALE CACHE)
+    set(CMAKE_REQUIRED_INCLUDES ${LLVM_INCLUDE_DIRS})
+    set(CMAKE_REQUIRED_FLAGS "-std=c++17 ${LLVM_DEFINITIONS}")
+    set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+    check_cxx_source_compiles("
+#include <llvm/IR/Intrinsics.h>
+#include <llvm/IR/IntrinsicsSPIRV.h>
+int probe() { return (int) llvm::Intrinsic::spv_cooperative_matrix_fadd
+                   + (int) llvm::Intrinsic::spv_cooperative_matrix_times_scalar; }
+" CAJETA_HAS_SPV_COOP_SCALE)
+    set(CMAKE_REQUIRED_INCLUDES "${_CAJETA_CM_INCLUDES}")
+    set(CMAKE_REQUIRED_FLAGS "${_CAJETA_CM_FLAGS}")
+    set(CMAKE_TRY_COMPILE_TARGET_TYPE "${_CAJETA_CM_TTYPE}")
+    if(NOT CAJETA_HAS_SPV_COOP_SCALE)
+        message(FATAL_ERROR "cajeta: the cajeta-llvm fork predates the cooperative-matrix scale and add "
+                            "intrinsics (CooperativeMatrix.addScaled on Vulkan); use cajeta-llvm-23-r11 or later")
+    endif()
     message(STATUS "cajeta: LLVM has SPV_KHR_cooperative_matrix intrinsics (fork toolchain) -- cooperative matrix ENABLED")
 else()
     message(STATUS "cajeta: LLVM lacks SPV_KHR_cooperative_matrix intrinsics (stock LLVM) -- cooperative matrix DISABLED (clean XPU-N03 diagnostic)")

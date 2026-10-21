@@ -232,6 +232,14 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
                                 Shared<float32> rowF, Shared<float32> colF);
 
     /**
+     * Device-only intrinsic: on float32 accumulator tiles (`Use = 2`) of one
+     * shape, `this[r][c] = this[r][c] + src[r][c] * 2^e`, for a constant `e` in
+     * [-126, 127]. The product is exact, so every tier agrees bit for bit.
+     */
+    @Intrinsic
+    public final void addScaledPow2(CooperativeMatrix<float32, Rows, Cols, 2> src, int32 e);
+
+    /**
      * Device-only intrinsic — the rank-1 epilogue accumulate
      * (xpu-coopmatrix-epilogue, Option B): on a `float32` accumulator
      * tile (`Use = 2`),

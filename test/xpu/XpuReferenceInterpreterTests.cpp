@@ -1239,6 +1239,40 @@ TEST(XpuReferenceInterpreter, theEpilogueVerbsMatchTheCpuBackend) {
     }
 }
 
+// addScaledPow2: acc + src * 2^e, an exact product and one rounding for the sum
+// (vulkan-native-coop-epilogue 2.1).
+TEST(XpuReferenceInterpreter, addScaledPow2MatchesTheCpuBackend) {
+    Pair p(R"CJ(
+    @Kernel
+    @Wave(width = 32)
+    public static void refAddScaled(KernelBuffer<float32> out, KernelBuffer<float32> a,
+                                    KernelBuffer<float32> b) {
+        CooperativeMatrix<float32,16,16,2> acc;
+        CooperativeMatrix<float32,16,16,2> src;
+        acc.load(a, 0, 0, 16);
+        src.load(b, 0, 0, 16);
+        acc.addScaledPow2(src, -10);
+        acc.store(out, 0, 0, 16);
+    }
+)CJ", "refAddScaled");
+    ASSERT_EQ(p.failure, "");
+    std::vector<float> a(256), b(256);
+    for (int i = 0; i < 256; ++i) {
+        a[i] = 0.75f * (float) (i % 13) - 4.0f;
+        b[i] = 0.3125f * (float) (i % 7) + 0.1f;
+    }
+    a[0] = -1.00048828125f;
+    b[0] = 1.000244140625f;
+    std::vector<In> ins = {buffer(std::vector<float>(256)), buffer(a), buffer(b)};
+    std::vector<In> r = ins;
+    ASSERT_EQ(runRef(p.kernel, r, shape(1, 32), 32), "");
+    for (int i = 0; i < 256; ++i) {
+        float want = a[i] + b[i] * 0.0009765625f;
+        EXPECT_EQ(as<float>(r[0].buf)[i], want) << i;
+    }
+    EXPECT_EQ(compareOn<float>(p, ins, 0, shape(1, 32), 0, 32), "");
+}
+
 // A tile operation that reads memory is a wave collective: it reads once
 // every lane of the wave has arrived, so what the lanes wrote to shared
 // memory just before it, with no barrier between, is there. The lanes stage

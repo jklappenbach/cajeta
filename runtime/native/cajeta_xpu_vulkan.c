@@ -87,6 +87,7 @@ struct cajeta_vk {
     // Kernels are authored wave32; RADV's gfx11 wave64 default HANGS the device.
     int subgroupCtl;                 // feature enabled + 32 within [min,max]
     int sizeCtlFeature;              // subgroupSizeControl, whatever the range
+    int fullSubgroupsFeature;        // computeFullSubgroups (enabled when supported)
     uint32_t minSubgroupSize;
     uint32_t maxSubgroupSize;
     uint32_t defaultSubgroupSize;    // 0 when the device did not say
@@ -383,7 +384,7 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     // Ray query needs three extensions AND their feature bits; the atomic float/
     // int64 ones back Buffer<T>.atomic* (NVIDIA faults with DEVICE_LOST without
     // them). Enabling an unsupported extension fails vkCreateDevice outright.
-    int wantRayQuery = 0, wantAtomicFloat = 0, wantAtomicFloat2 = 0;
+    int wantRayQuery = 0, wantAtomicFloat = 0, wantAtomicFloat2 = 0, wantCoopMat = 0;
     int wantAtomicInt64 = 0;
     if (enumDevExt && getFeatures2) {
         uint32_t extCount = 0;
@@ -394,7 +395,7 @@ static int cajeta_xpu_vulkan_init_locked(void) {
             if (exts) {
                 enumDevExt(g_xpu_vk.phys, NULL, &extCount, exts);
                 int hasAccel = 0, hasRayQ = 0, hasDefer = 0, hasBDA = 0;
-                int hasAtomicFloat = 0, hasAtomicFloat2 = 0, hasAtomicInt64 = 0;
+                int hasAtomicFloat = 0, hasAtomicFloat2 = 0, hasAtomicInt64 = 0, hasCoopMat = 0;
                 for (uint32_t i = 0; i < extCount; ++i) {
                     const char* en = exts[i].extensionName;
                     if (!strcmp(en, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME)) hasAccel = 1;
@@ -404,9 +405,26 @@ static int cajeta_xpu_vulkan_init_locked(void) {
                     else if (!strcmp(en, VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME)) hasAtomicFloat = 1;
                     else if (!strcmp(en, VK_EXT_SHADER_ATOMIC_FLOAT_2_EXTENSION_NAME)) hasAtomicFloat2 = 1;
                     else if (!strcmp(en, VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME)) hasAtomicInt64 = 1;
+#if defined(VK_KHR_cooperative_matrix)
+                    else if (!strcmp(en, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME)) hasCoopMat = 1;
+#endif
                 }
                 free(exts);
 
+#if defined(VK_KHR_cooperative_matrix)
+                // Shaders that declare CooperativeMatrixKHR need the extension and its feature.
+                if (hasCoopMat) {
+                    VkPhysicalDeviceCooperativeMatrixFeaturesKHR cmf;
+                    memset(&cmf, 0, sizeof(cmf));
+                    cmf.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR;
+                    VkPhysicalDeviceFeatures2 cf2;
+                    memset(&cf2, 0, sizeof(cf2));
+                    cf2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+                    cf2.pNext = &cmf;
+                    getFeatures2(g_xpu_vk.phys, &cf2);
+                    if (cmf.cooperativeMatrix) wantCoopMat = 1;
+                }
+#endif
                 if (hasAtomicInt64) {
                     VkPhysicalDeviceShaderAtomicInt64Features ai64;
                     memset(&ai64, 0, sizeof(ai64));
@@ -530,6 +548,7 @@ static int cajeta_xpu_vulkan_init_locked(void) {
             g_xpu_vk.maxSubgroupSize = pssc.maxSubgroupSize;
             g_xpu_vk.defaultSubgroupSize = psg.subgroupSize;
             g_xpu_vk.sizeCtlFeature = qssc.subgroupSizeControl ? 1 : 0;
+            g_xpu_vk.fullSubgroupsFeature = qssc.computeFullSubgroups ? 1 : 0;
             g_xpu_vk.subgroupCtl = (qssc.subgroupSizeControl
                                     && pssc.minSubgroupSize <= 32u
                                     && pssc.maxSubgroupSize >= 32u) ? 1 : 0;
@@ -689,10 +708,11 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     }
 #if defined(VK_VERSION_1_3)
     VkPhysicalDeviceSubgroupSizeControlFeatures enSsc;
-    if (g_xpu_vk.subgroupCtl) {
+    if (g_xpu_vk.sizeCtlFeature || g_xpu_vk.fullSubgroupsFeature) {
         memset(&enSsc, 0, sizeof(enSsc));
         enSsc.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES;
-        enSsc.subgroupSizeControl = VK_TRUE;
+        enSsc.subgroupSizeControl = g_xpu_vk.sizeCtlFeature ? VK_TRUE : VK_FALSE;
+        enSsc.computeFullSubgroups = g_xpu_vk.fullSubgroupsFeature ? VK_TRUE : VK_FALSE;
         enSsc.pNext = (void*) dci.pNext;
         dci.pNext = &enSsc;
     }
@@ -737,6 +757,17 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     }
 #endif
     if (wantPortSubset) devExts[nDevExts++] = "VK_KHR_portability_subset";
+#if defined(VK_KHR_cooperative_matrix)
+    VkPhysicalDeviceCooperativeMatrixFeaturesKHR enCm;
+    if (wantCoopMat) {
+        devExts[nDevExts++] = VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME;
+        memset(&enCm, 0, sizeof(enCm));
+        enCm.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR;
+        enCm.cooperativeMatrix = VK_TRUE;
+        enCm.pNext = (void*) dci.pNext;
+        dci.pNext = &enCm;
+    }
+#endif
 #if defined(VK_VERSION_1_2)
     VkPhysicalDeviceVulkanMemoryModelFeatures enVmm;
     if (wantVmm) {
@@ -2731,7 +2762,7 @@ static struct caj_vk_pipe* caj_vk_pipe_get(
             rss.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO;
             rss.requiredSubgroupSize = want;
             cpci.stage.pNext = &rss;
-            if (((uint64_t) bx * by * bz) % want == 0u)
+            if (g_xpu_vk.fullSubgroupsFeature && ((uint64_t) bx * by * bz) % want == 0u)
                 cpci.stage.flags |=
                     VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT;
         }
