@@ -80,6 +80,13 @@ namespace {
         o << js.str();
     }
 
+    // The planner resolves its baseline through the olla store, so a test
+    // must not share the developer's ~/.olla: a fixture package written
+    // through by an earlier run would resolve from the store and hide a
+    // refusal of the fixture repository (the v0.45.0 release legs failed
+    // exactly so, on fresh homes).
+    std::string freshHome() { return makeTempDir("home").string(); }
+
     cajeta::buildtool::Manifest mustLoad(const std::string& src) {
         auto m = loadManifestString(src);
         if (!m) {
@@ -100,7 +107,8 @@ namespace {
   "settings": {
     "repositories": [
       { "name": "local", "type": "filesystem", "path": ")"
-            << repoRoot.generic_string() << R"(" }
+            << repoRoot.generic_string() << R"(",
+        "verification": "checksum" }
     ],
     "dependencies": {)";
         for (size_t i = 0; i < deps.size(); ++i) {
@@ -125,7 +133,7 @@ TEST(UpgraderTests, errorsWhenNoDepsDeclared) {
             { "name": "l", "type": "filesystem", "path": "/tmp" }
         ]}
     })");
-    auto plan = planUpgrade(m, proj.string(), {}, {});
+    auto plan = planUpgrade(m, proj.string(), {}, {}, freshHome());
     ASSERT_FALSE(static_cast<bool>(plan));
     EXPECT_NE(errorText(plan.takeError()).find("nothing to upgrade"),
               std::string::npos);
@@ -146,7 +154,7 @@ TEST(UpgraderTests, picksHighestAvailableVersion) {
     auto src = makeManifestSrc(repoRoot, {{"acme.lib", "1.0.0"}});
     auto m = mustLoad(src);
     auto proj = makeTempDir("plan-single");
-    auto plan = planUpgrade(m, proj.string(), {}, {});
+    auto plan = planUpgrade(m, proj.string(), {}, {}, freshHome());
     ASSERT_TRUE(static_cast<bool>(plan)) << errorText(plan.takeError());
     ASSERT_EQ(plan->entries.size(), 1u);
     EXPECT_EQ(plan->entries[0].name, "acme.lib");
@@ -176,7 +184,7 @@ TEST(UpgraderTests, honorsExplicitTargetVersion) {
     auto proj = makeTempDir("plan-explicit");
     std::map<std::string, std::string> explicits = {{"acme.lib", "1.2.0"}};
     auto plan = planUpgrade(m, proj.string(),
-                             {"acme.lib"}, explicits);
+                             {"acme.lib"}, explicits, freshHome());
     ASSERT_TRUE(static_cast<bool>(plan)) << errorText(plan.takeError());
     ASSERT_EQ(plan->entries.size(), 1u);
     EXPECT_EQ(plan->entries[0].newVersion, "1.2.0");
@@ -198,7 +206,7 @@ TEST(UpgraderTests, errorsWhenExplicitVersionMissing) {
     auto proj = makeTempDir("plan-missing");
     std::map<std::string, std::string> explicits = {{"acme.lib", "9.9.9"}};
     auto plan = planUpgrade(m, proj.string(),
-                             {"acme.lib"}, explicits);
+                             {"acme.lib"}, explicits, freshHome());
     ASSERT_FALSE(static_cast<bool>(plan));
     EXPECT_NE(errorText(plan.takeError()).find("no repository carries"),
               std::string::npos);
@@ -214,7 +222,7 @@ TEST(UpgraderTests, errorsWhenDepNotDeclared) {
     auto m = mustLoad(src);
     auto proj = makeTempDir("plan-undecl");
     auto plan = planUpgrade(m, proj.string(),
-                             {"not.declared"}, {});
+                             {"not.declared"}, {}, freshHome());
     ASSERT_FALSE(static_cast<bool>(plan));
     EXPECT_NE(errorText(plan.takeError()).find("not declared"),
               std::string::npos);
@@ -233,7 +241,7 @@ TEST(UpgraderTests, marksAlreadyAtHighest) {
     auto src = makeManifestSrc(repoRoot, {{"acme.lib", "1.5.3"}});
     auto m = mustLoad(src);
     auto proj = makeTempDir("plan-noop");
-    auto plan = planUpgrade(m, proj.string(), {}, {});
+    auto plan = planUpgrade(m, proj.string(), {}, {}, freshHome());
     ASSERT_TRUE(static_cast<bool>(plan)) << errorText(plan.takeError());
     ASSERT_EQ(plan->entries.size(), 1u);
     EXPECT_FALSE(plan->entries[0].changed);
@@ -261,7 +269,7 @@ TEST(UpgraderTests, planMultipleDepsAtOnce) {
     });
     auto m = mustLoad(src);
     auto proj = makeTempDir("plan-multi");
-    auto plan = planUpgrade(m, proj.string(), {}, {});
+    auto plan = planUpgrade(m, proj.string(), {}, {}, freshHome());
     ASSERT_TRUE(static_cast<bool>(plan)) << errorText(plan.takeError());
     ASSERT_EQ(plan->entries.size(), 2u);
     // Both upgrade.
@@ -283,7 +291,7 @@ TEST(UpgraderTests, flagsAddedCapabilities) {
     auto src = makeManifestSrc(repoRoot, {{"acme.lib", "1.0.0"}});
     auto m = mustLoad(src);
     auto proj = makeTempDir("plan-capadd");
-    auto plan = planUpgrade(m, proj.string(), {}, {});
+    auto plan = planUpgrade(m, proj.string(), {}, {}, freshHome());
     ASSERT_TRUE(static_cast<bool>(plan)) << errorText(plan.takeError());
     ASSERT_EQ(plan->entries.size(), 1u);
     EXPECT_TRUE(plan->entries[0].changed);
@@ -307,7 +315,7 @@ TEST(UpgraderTests, flagsRemovedCapabilities) {
     auto src = makeManifestSrc(repoRoot, {{"acme.lib", "1.0.0"}});
     auto m = mustLoad(src);
     auto proj = makeTempDir("plan-caprem");
-    auto plan = planUpgrade(m, proj.string(), {}, {});
+    auto plan = planUpgrade(m, proj.string(), {}, {}, freshHome());
     ASSERT_TRUE(static_cast<bool>(plan)) << errorText(plan.takeError());
     ASSERT_EQ(plan->entries.size(), 1u);
     EXPECT_TRUE(plan->entries[0].capDelta.added.empty());
@@ -329,7 +337,7 @@ TEST(UpgraderTests, applyRewritesConstraintInSource) {
     auto src = makeManifestSrc(repoRoot, {{"acme.lib", "1.0.0"}});
     auto m = mustLoad(src);
     auto proj = makeTempDir("apply");
-    auto plan = planUpgrade(m, proj.string(), {}, {});
+    auto plan = planUpgrade(m, proj.string(), {}, {}, freshHome());
     ASSERT_TRUE(static_cast<bool>(plan)) << errorText(plan.takeError());
     auto rewritten = applyUpgradePlan(src, *plan);
     ASSERT_TRUE(static_cast<bool>(rewritten))
@@ -349,7 +357,7 @@ TEST(UpgraderTests, applyNoopWhenNothingChanged) {
     auto src = makeManifestSrc(repoRoot, {{"acme.lib", "1.0.0"}});
     auto m = mustLoad(src);
     auto proj = makeTempDir("apply-noop");
-    auto plan = planUpgrade(m, proj.string(), {}, {});
+    auto plan = planUpgrade(m, proj.string(), {}, {}, freshHome());
     ASSERT_TRUE(static_cast<bool>(plan)) << errorText(plan.takeError());
     auto rewritten = applyUpgradePlan(src, *plan);
     ASSERT_TRUE(static_cast<bool>(rewritten))
@@ -366,7 +374,7 @@ TEST(UpgraderTests, errorsWhenRepoLacksThePackage) {
     auto src = makeManifestSrc(repoRoot, {{"acme.lib", "1.0.0"}});
     auto m = mustLoad(src);
     auto proj = makeTempDir("plan-missingpkg");
-    auto plan = planUpgrade(m, proj.string(), {}, {});
+    auto plan = planUpgrade(m, proj.string(), {}, {}, freshHome());
     ASSERT_FALSE(static_cast<bool>(plan));
     EXPECT_NE(errorText(plan.takeError()).find(
                   "no repository has any version"),
@@ -384,7 +392,7 @@ TEST(UpgraderTests, errorsWhenNoRepositoriesConfigured) {
     })";
     auto m = mustLoad(src);
     auto proj = makeTempDir("plan-norepos");
-    auto plan = planUpgrade(m, proj.string(), {}, {});
+    auto plan = planUpgrade(m, proj.string(), {}, {}, freshHome());
     ASSERT_FALSE(static_cast<bool>(plan));
     EXPECT_NE(errorText(plan.takeError()).find(
                   "settings.repositories is empty"),
