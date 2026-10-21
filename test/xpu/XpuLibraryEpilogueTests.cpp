@@ -22,7 +22,12 @@
 
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/xpu/XpuTarget.h"
+#include "cajeta/xpu/amd/AmdgpuBackend.h"
+#include "cajeta/xpu/amd/AmdgpuKernelLowering.h"
 #include "cajeta/xpu/reference/Conformance.h"
+
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -122,14 +127,16 @@ public class M {
     // One program entry: mode 0 is a checksum of y, 1 the element at `at`,
     // 2 the device-timed nanoseconds of `launches` back-to-back launches
     // (-1 when the timer has no device clock).
-    public static int64 go(uint32 grid, uint32 slices, uint32 launches, int32 mode, int32 at) {
+    // Scale i is sgn * ((i * 13) % 63 + 1) + hi.
+    public static int64 go(uint32 grid, uint32 slices, uint32 launches, int32 mode, int32 at,
+                           int32 hi, int32 sgn) {
         int32 n = (int32) grid * 8192;
         int8[] ha = heap int8[2048];
         for (int32 i = 0; i < 2048; i = i + 1) { ha[i] = (int8) ((i * 7 + 3) % 16 - 8); }
         int8[] hb = heap int8[8192];
         for (int32 i = 0; i < 8192; i = i + 1) { hb[i] = (int8) ((i * 7 + 5) % 16 - 8); }
         int32[] hs = heap int32[2048];
-        for (int32 i = 0; i < 2048; i = i + 1) { hs[i] = (i * 13) % 63 + 1; }
+        for (int32 i = 0; i < 2048; i = i + 1) { hs[i] = sgn * ((i * 13) % 63 + 1) + hi; }
         KernelBuffer<int8> a = heap KernelBuffer<int8>(2048);
         KernelBuffer<int8> b = heap KernelBuffer<int8>(8192);
         KernelBuffer<int32> sc = heap KernelBuffer<int32>(2048);
@@ -166,12 +173,14 @@ public class M {
 
 struct Variant {
     std::unique_ptr<CajetaJit> jit;
-    using Go = int64_t (*)(unsigned, unsigned, unsigned, int32_t, int32_t);
+    using Go = int64_t (*)(unsigned, unsigned, unsigned, int32_t, int32_t, int32_t, int32_t);
     Go go = nullptr;
-    int64_t sum(unsigned grid, unsigned slices) { return go(grid, slices, 0, 0, 0); }
-    int64_t at(unsigned grid, unsigned slices, int32_t i) { return go(grid, slices, 0, 1, i); }
+    int64_t sum(unsigned grid, unsigned slices, int32_t hi = 0, int32_t sgn = 1) {
+        return go(grid, slices, 0, 0, 0, hi, sgn);
+    }
+    int64_t at(unsigned grid, unsigned slices, int32_t i) { return go(grid, slices, 0, 1, i, 0, 1); }
     int64_t timeNs(unsigned grid, unsigned slices, unsigned launches) {
-        return go(grid, slices, launches, 2, 0);
+        return go(grid, slices, launches, 2, 0, 0, 1);
     }
     Variant(cajeta::xpu::Backend be, const char* which) {
         CajetaJit::Options o;
@@ -206,6 +215,68 @@ TEST(XpuLibraryEpilogue, theLibraryFoldAgreesWithTheBuiltInOnNvptx) {
     agreeBitForBit(cajeta::xpu::Backend::Nvptx, "nvptx");
 }
 
+TEST(XpuLibraryEpilogue, theLibraryFoldAgreesWithTheBuiltInOnAmdgpu) {
+    if (!cajeta::xpu::test::hipAvailable()) GTEST_SKIP() << "no HIP device";
+    agreeBitForBit(cajeta::xpu::Backend::Amdgpu, "amdgpu");
+}
+
+namespace {
+// The library fold reads each operand as its low 24 bits, sign-extended: a
+// scale and the same scale offset by 2^24 fold alike, and so do negatives.
+void foldsTheLowTwentyFourBits(cajeta::xpu::Backend be, const char* backend) {
+    Variant builtin(be, "builtin"), library(be, "library");
+    ASSERT_TRUE(builtin.go && library.go);
+    // Every slice repeats one product, so an even count can wrap the 2^24 term away.
+    int64_t pos = library.sum(6, 63), neg = library.sum(6, 63, 0, -1);
+    EXPECT_NE(pos, neg) << backend;
+    EXPECT_EQ(neg, builtin.sum(6, 63, 0, -1)) << backend;
+    EXPECT_EQ(pos, library.sum(6, 63, 1 << 24)) << backend;
+    EXPECT_EQ(pos, library.sum(6, 63, -(1 << 24))) << backend;
+    EXPECT_EQ(neg, library.sum(6, 63, 1 << 24, -1)) << backend;
+}
+
+std::string amdgpuIsaOf(const std::string& source, const char* kernel) {
+    cajeta::Compiler compiler;
+    auto module = cajeta::xpu::probe::compileForInspection(compiler, source);
+    auto method = findKernel(module, "test.M", kernel);
+    if (!method) return {};
+    auto tm = cajeta::xpu::amd::createAmdgpuTargetMachine("gfx1151");
+    if (!tm) return {};
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_library_fold_isa", ctx);
+    cajeta::xpu::amd::configureDeviceModule(dev, *tm);
+    if (!cajeta::xpu::amd::lowerKernel(method, dev)) return {};
+    return cajeta::xpu::amd::emitIsa(dev, *tm);
+}
+} // namespace
+
+TEST(XpuLibraryEpilogue, theLibraryFoldTakesTheLowTwentyFourBitsOnCpu) {
+    foldsTheLowTwentyFourBits(cajeta::xpu::Backend::Cpu, "cpu");
+}
+
+TEST(XpuLibraryEpilogue, theLibraryFoldTakesTheLowTwentyFourBitsOnAmdgpu) {
+    if (!cajeta::xpu::test::hipAvailable()) GTEST_SKIP() << "no HIP device";
+    foldsTheLowTwentyFourBits(cajeta::xpu::Backend::Amdgpu, "amdgpu");
+}
+
+// On gfx1151 the library fold is the built-in's full-rate 24-bit multiply,
+// not the quarter-rate 32-bit one (cajeta-llm 15.2.16.2.5).
+TEST(XpuLibraryEpilogue, theLibraryFoldIsTheFullRateMultiplyOnAmdgpu) {
+    using cajeta::xpu::probe::countOf;
+    std::string b = amdgpuIsaOf(program("builtin"), "fold");
+    std::string l = amdgpuIsaOf(program("library"), "fold");
+    ASSERT_FALSE(b.empty() || l.empty()) << "the fold kernels failed to emit gfx1151 ISA";
+    auto i24 = [&](const std::string& isa) {
+        return countOf(isa, "v_mad_i32_i24") + countOf(isa, "v_mul_i32_i24");
+    };
+    auto wide = [&](const std::string& isa) {
+        return countOf(isa, "v_mad_u64_u32") + countOf(isa, "v_mul_lo_u32");
+    };
+    EXPECT_GE(i24(b), 32u) << b;
+    EXPECT_GE(i24(l), i24(b)) << l;
+    EXPECT_LE(wide(l), wide(b)) << "built-in " << wide(b) << ", library " << wide(l) << ":\n" << l;
+}
+
 // The library helper, with its fragment and Shared parameters, is defined in
 // the reference too: both kernels recorded on cpu replay and pass.
 TEST(XpuLibraryEpilogue, bothFoldsPassTheCorpus) {
@@ -220,7 +291,8 @@ TEST(XpuLibraryEpilogue, bothFoldsPassTheCorpus) {
         auto fn = jit->lookup<Variant::Go>("go");
         ASSERT_NE(fn, nullptr);
         setenv("CAJETA_XPU_RECORD", (dir / which).string().c_str(), 1);
-        fn(1, 4, 0, 0, 0);
+        fn(1, 4, 0, 0, 0, 0, 1);
+        if (std::string(which) == "library") fn(1, 4, 0, 0, 0, 1 << 24, -1);
         unsetenv("CAJETA_XPU_RECORD");
         cajeta::Compiler compiler;
         auto module = cajeta::xpu::probe::compileForInspection(compiler, program(which));

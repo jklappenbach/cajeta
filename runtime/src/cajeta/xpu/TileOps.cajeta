@@ -26,8 +26,10 @@ public final class TileOps {
      *
      *     iacc[r][c] += acc[r][c] * colS[base + c * stride]
      *
-     * wrapping at 32 bits. `colS` is a `Shared<int32>` panel and the
-     * column's factor is read at `base + c * stride`, the
+     * with both factors taken as their low 24 bits, sign-extended, and the
+     * sum wrapping at 32 bits. The 24 bits are the built-in's contract and
+     * let AMD use its full-rate multiply. `colS` is a `Shared<int32>` panel
+     * and the column's factor is read at `base + c * stride`, the
      * `WaveVector.ofSlice(colS, base, stride)` form of the built-in. The
      * loop is over this lane's elements with their columns from the lane
      * map, so it is the same loop on every backend's fragment layout. The
@@ -39,7 +41,9 @@ public final class TileOps {
                                       CooperativeMatrix<int32, 16, 16, 2> iacc,
                                       Shared<int32> colS, uint32 base, uint32 stride) {
         for (uint32 i = 0; i < acc.elements(); i = i + 1) {
-            iacc.set(i, iacc.get(i) + acc.get(i) * colS[base + acc.col(i) * stride]);
+            int32 a = (acc.get(i) << 8) >> 8;
+            int32 s = (colS[base + acc.col(i) * stride] << 8) >> 8;
+            iacc.set(i, iacc.get(i) + a * s);
         }
     }
 }
