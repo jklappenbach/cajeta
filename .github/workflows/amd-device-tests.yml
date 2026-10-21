@@ -81,7 +81,7 @@ jobs:
       # lockstep with release.yml and device-tests.yml.
       - name: Fetch prebuilt LLVM toolchain (cajeta-llvm fork)
         env:
-          LLVM_RELEASE_TAG: cajeta-llvm-23-r10
+          LLVM_RELEASE_TAG: cajeta-llvm-23-r11
         run: |
           set -euo pipefail
           ASSET="${LLVM_RELEASE_TAG}-linux-x64.tar.zst"

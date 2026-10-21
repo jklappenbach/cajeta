@@ -15,7 +15,7 @@
 - Xcode + command line tools.
 - `brew install cmake ninja antlr4-cpp-runtime openjdk@21 googletest glog zstd
   zeromq xxhash coreutils vulkan-headers vulkan-loader molten-vk mesa`
-- The `cajeta-llvm-23-r10-macos-arm64.tar.zst` fork toolchain.
+- The `cajeta-llvm-23-r11-macos-arm64.tar.zst` fork toolchain.
 
 ## Phase 0 — does the build even come up
 
