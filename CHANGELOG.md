@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.45.0 (2026-10-20)
+
+- **Dependencies are verified by default** (publisher-trust spec 4.1, 5.3 to 5.5). Every repository a manifest declares now checks an archive before it is stored or loaded: `cajeta build`, `deps`, plugins, melts and a notebook's `Packages.install` run the same check. The repository must serve release metadata signed through its root (olla's ships in the toolchain), the bytes must hash to it, and when that metadata names an organization the archive must carry a signature that verifies against the organization's key document. A repository that signs nothing, such as a local or vendored one, is refused until its `settings.repositories` entry says `"verification": "checksum"`; that relaxes that repository only, and a melt cannot relax the repositories it contributes. A present envelope that does not verify is refused under either policy. `~/.olla` keeps the envelope beside each mirrored archive, and the machine's own `cajeta install` builds still resolve. `settings.require-signatures` is retired: it is still read, has no effect, and warns.
+
+  Migration: add `"verification": "checksum"` to any filesystem, git or private HTTP repository that does not sign its releases. Olla's 49 releases published before it signed metadata (2026-07-19 to 2026-09-03, all superseded) are admitted on their exact bytes, which this toolchain lists by sha256.
+- The client read olla's capability document wrong: olla nests its flags under `"capabilities"` with `"ttl-seconds"`, and the client looked only for `"protocol-versions"`, so it never saw v2 on olla and never read a signed release envelope. Both forms are read now.
+- **A lambda's owned locals are dropped.** A lambda body had no drop frames, so every owned local in it leaked, the drop chain's head was left in the dead lambda frame, and a loop-body local re-pushed its own slot into a self-loop. A throw that later unwound past it spun forever at 100% of one core. Libraries ship precompiled bitcode, so their lambdas pick this up when rebuilt on 0.45.0.
+- **A local changed inside a `try` keeps its value after a throw** at O1 and above, `--release` included. `try` is setjmp/longjmp and the optimizer kept such locals in registers, so the catch and the code after it read the value from `try` entry; 0.43.1 and 0.44.0 did the same. Each local written in the try body and read after the second return now stays in memory.
+- `--release` executables run element access several times faster: line frames are pushed and popped inline and coalesced into one stack-top update per run, small methods inline across modules without LTO, a virtual call whose every vtable entry is one function is called directly, and a method that only throws no longer allocates a scope frame. `CAJETA_INLINE_LINE_FRAMES=0`, `CAJETA_LINE_FRAME_COALESCE=0`, `CAJETA_XMODULE_INLINE=0` and `CAJETA_DEVIRT=0` turn each off. ElementAccessBench `flatGet` went from about 14 ns to 1 ns per element.
+- `Npy` encodes and decodes through the host buffer: decoding 2^23 int32 values went from 123 ms to 7 ms.
+- xpu: a kernel whose workgroup memory exceeds the device's limit is unavailable (`Device.kernelAvailable` answers false) and a launch is refused by name before the driver, reason 7 in `Device.checkLaunch`. On Vulkan such a kernel reached the driver and RADV divided by zero.
+- Windows: `Path.mkdirs` treats a drive prefix as a root, so a nested directory on another drive is created.
+
 ## 0.44.0 (2026-10-18)
 
 - **Cryptography leaves the stdlib for the `dev.cajeta.crypto` library** (cajeta-crypto spec 6.3; [cajeta-crypto](https://github.com/jklappenbach/cajeta-crypto) 0.1.0). Each type keeps its name and API; add `"dev.cajeta.crypto": "0.1.0"` to `dependencies` and change the import:
