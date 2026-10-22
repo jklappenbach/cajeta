@@ -1267,6 +1267,7 @@ struct cajeta_xpu_manifest {
     char arch[64];
     const char* json;
     uint64_t len;
+    uint64_t lds;   // footprint.ldsStaticBytes, read at registration; 0 when absent
 };
 // Two per module slot: a multi-arch bundle registers one manifest per arch.
 #define CAJETA_XPU_MAX_MANIFESTS (2 * CAJETA_XPU_MAX_MODULES)
@@ -1276,6 +1277,21 @@ static uint32_t g_xpu_manifest_gen;   // bumped on every registration
 
 void* __cajeta_new_array_header(uint64_t header_size, uint64_t elem_size,
                                 uint64_t count);
+
+// The unsigned number after `"ldsStaticBytes":` in `json`, or 0 when it is absent.
+static uint64_t caj_xpu_json_lds(const char* json, uint64_t len) {
+    static const char key[] = "\"ldsStaticBytes\":";
+    const size_t kl = sizeof(key) - 1;
+    for (uint64_t j = 0; j + kl < len; j++) {
+        if (memcmp(json + j, key, kl) != 0) continue;
+        uint64_t v = 0, k = j + kl;
+        while (k < len && (json[k] == ' ' || json[k] == '\n' || json[k] == '\r' || json[k] == '\t')) k++;
+        for (; k < len && json[k] >= '0' && json[k] <= '9'; k++)
+            v = v * 10 + (uint64_t) (json[k] - '0');
+        return v;
+    }
+    return 0;
+}
 
 // Record one kernel's manifest JSON under (name, backend, arch), overwriting a repeat.
 void __cajeta_xpu_register_kernel_manifest(const char* kernelName,
@@ -1311,6 +1327,7 @@ void __cajeta_xpu_register_kernel_manifest(const char* kernelName,
     } else {
         e->json = (const char*) json;
         e->len = len;
+        e->lds = caj_xpu_json_lds(e->json, len);
     }
     __atomic_add_fetch(&g_xpu_manifest_gen, 1, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&g_xpu_cuda_lock);
@@ -1391,28 +1408,47 @@ static int caj_xpu_pinned_block(const char* name, int backend, int32_t out[3]) {
     return has;
 }
 
+#define CAJ_XPU_LDS_SLOTS 1024
+struct caj_xpu_lds_slot {
+    uint64_t hash;      // FNV-1a of (backend, base name)
+    uint32_t gen;       // g_xpu_manifest_gen when filled
+    int filled;
+    uint64_t lds;
+};
+static struct caj_xpu_lds_slot g_xpu_lds_slots[CAJ_XPU_LDS_SLOTS];
+
 // The static shared-memory bytes `name`'s manifest records on `backend`, or 0; a virtual
-// variant ("k$v64") reads its kernel's record.
+// variant ("k$v64") reads its kernel's record. Cached by name until the next registration.
 static uint64_t caj_xpu_manifest_lds(const char* name, int backend) {
-    char base[256];
     size_t n = strcspn(name, "$");
-    if (n >= sizeof base) return 0;
-    memcpy(base, name, n);
-    base[n] = 0;
+    if (n >= sizeof(g_xpu_manifests[0].name)) return 0;
+    uint64_t h = 1469598103934665603ULL ^ (uint64_t) (uint32_t) backend;
+    for (size_t i = 0; i < n; i++) h = (h ^ (unsigned char) name[i]) * 1099511628211ULL;
+    struct caj_xpu_lds_slot* slot = &g_xpu_lds_slots[h % CAJ_XPU_LDS_SLOTS];
     uint64_t v = 0;
-    const char* key = "\"ldsStaticBytes\":";
-    size_t kl = strlen(key);
     pthread_mutex_lock(&g_xpu_cuda_lock);
-    for (int i = 0; i < g_xpu_manifest_count; i++) {
-        struct cajeta_xpu_manifest* e = &g_xpu_manifests[i];
-        if (e->backend != backend || strncmp(e->name, base, sizeof(e->name)) != 0 || !e->json)
-            continue;
-        for (uint64_t j = 0; j + kl < e->len; j++)
-            if (memcmp(e->json + j, key, kl) == 0) { v = strtoull(e->json + j + kl, NULL, 10); break; }
-        break;
+    if (slot->filled && slot->hash == h && slot->gen == g_xpu_manifest_gen) {
+        v = slot->lds;
+    } else {
+        for (int i = 0; i < g_xpu_manifest_count; i++) {
+            const struct cajeta_xpu_manifest* e = &g_xpu_manifests[i];
+            if (e->backend != backend || !e->json || strncmp(e->name, name, n) != 0 || e->name[n])
+                continue;
+            v = e->lds;
+            break;
+        }
+        slot->hash = h;
+        slot->gen = g_xpu_manifest_gen;
+        slot->filled = 1;
+        slot->lds = v;
     }
     pthread_mutex_unlock(&g_xpu_cuda_lock);
     return v;
+}
+
+// The static shared-memory bytes `kernelName`'s manifest records on `backend`, or 0.
+uint64_t __cajeta_xpu_kernel_manifest_lds(const char* kernelName, int32_t backend) {
+    return kernelName ? caj_xpu_manifest_lds(kernelName, (int) backend) : 0;
 }
 
 // The most shared memory one block may use on the active device (the opt-in ceiling where
