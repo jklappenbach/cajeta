@@ -1,7 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.46.0 (2026-10-21)
 
+- **`CooperativeMatrix.addScaledPow2(src, e)`** adds `src * 2^e` to a float32 accumulator tile of the same shape, for a constant `e` in [-126, 127]. The product is exact, so every backend and the reference interpreter agree bit for bit. It is not an epilogue verb, so a Vulkan kernel that uses it keeps its native cooperative-matrix tiles instead of falling back to the software tile; on Vulkan it lowers to `OpMatrixTimesScalar` and `OpFAdd`. A wrong shape, a non-accumulator tile, int32 elements, or a non-constant or out-of-range exponent is a named diagnostic.
+- The Vulkan device enables `VK_KHR_cooperative_matrix` and its feature, and creates cooperative-matrix pipelines with full subgroups at the declared wave width. It declared cooperative matrices and requested full subgroups without enabling either; RADV ran the shaders anyway, and the validation layer reported them.
+- The toolchain builds against the cajeta LLVM fork's `cajeta-llvm-23-r11`, which adds the two SPIR-V cooperative-matrix intrinsics `addScaledPow2` lowers to.
+- **`TileOps.scaledAccumI32` takes both factors as their low 24 bits**, sign-extended, with the sum wrapping at 32 bits, which is the contract of the built-in it replaces. On AMD that is the full-rate 24-bit multiply-add (`v_mad_i32_i24`) where it was a quarter-rate 64-bit one: cajeta-llm's quantized prefill tiles went from 244 to 212 VGPRs and its 8B prefill on gfx1151 from 1134 to 1237 tok/s. A caller passing factors wider than 24 bits now gets the built-in's answer rather than the full product.
 - **The build cache sees native archives.** The whole-artifact cache key (`.cajeta/cache/artifact`) folds every native file a build could bake or link: a shim provided after a cached build, rebuilt from edited C, removed, or added for another platform now re-keys the artifact, where 0.45.0 re-published the stale `.cja` until `.cajeta/cache` was cleared. The project's own `native/` directory is now searched for `@Native` archives ahead of `CAJETA_NATIVE_PATH` and `~/.cajeta/native`: the build tool passes it to the compiler as `--native-dir`, so a library checkout bakes its shim with no environment variable set.
 
 ## 0.45.0 (2026-10-20)
