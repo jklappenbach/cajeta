@@ -221,8 +221,8 @@ TEST(XpuLibraryEpilogue, theLibraryFoldAgreesWithTheBuiltInOnAmdgpu) {
 }
 
 namespace {
-// The library fold reads each operand as its low 24 bits, sign-extended: a
-// scale and the same scale offset by 2^24 fold alike, and so do negatives.
+// On AMD the library fold reads each operand as its low 24 bits, sign-extended
+// (Bits.mulInt24): a scale and the same scale offset by 2^24 fold alike.
 void foldsTheLowTwentyFourBits(cajeta::xpu::Backend be, const char* backend) {
     Variant builtin(be, "builtin"), library(be, "library");
     ASSERT_TRUE(builtin.go && library.go);
@@ -249,10 +249,6 @@ std::string amdgpuIsaOf(const std::string& source, const char* kernel) {
     return cajeta::xpu::amd::emitIsa(dev, *tm);
 }
 } // namespace
-
-TEST(XpuLibraryEpilogue, theLibraryFoldTakesTheLowTwentyFourBitsOnCpu) {
-    foldsTheLowTwentyFourBits(cajeta::xpu::Backend::Cpu, "cpu");
-}
 
 TEST(XpuLibraryEpilogue, theLibraryFoldTakesTheLowTwentyFourBitsOnAmdgpu) {
     if (!cajeta::xpu::test::hipAvailable()) GTEST_SKIP() << "no HIP device";
@@ -292,7 +288,6 @@ TEST(XpuLibraryEpilogue, bothFoldsPassTheCorpus) {
         ASSERT_NE(fn, nullptr);
         setenv("CAJETA_XPU_RECORD", (dir / which).string().c_str(), 1);
         fn(1, 4, 0, 0, 0, 0, 1);
-        if (std::string(which) == "library") fn(1, 4, 0, 0, 0, 1 << 24, -1);
         unsetenv("CAJETA_XPU_RECORD");
         cajeta::Compiler compiler;
         auto module = cajeta::xpu::probe::compileForInspection(compiler, program(which));
@@ -305,6 +300,42 @@ TEST(XpuLibraryEpilogue, bothFoldsPassTheCorpus) {
             EXPECT_EQ(r.outcome, "pass") << which << ": " << r.kernel << ": " << r.detail;
     }
     fs::remove_all(dir);
+}
+
+// A factor outside 24 bits is undefined (Bits.mulInt24), so the reference
+// reports the launch instead of choosing one backend's answer.
+TEST(XpuLibraryEpilogue, aFactorOutsideTwentyFourBitsIsUndefinedInTheCorpus) {
+    fs::path dir = fs::temp_directory_path() / "cajeta-library-epilogue-wide";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
+    auto jit = CajetaJit::compile(program("library"), "test.M", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<Variant::Go>("go");
+    ASSERT_NE(fn, nullptr);
+    setenv("CAJETA_XPU_RECORD", dir.string().c_str(), 1);
+    fn(1, 4, 0, 0, 0, 1 << 24, -1);
+    unsetenv("CAJETA_XPU_RECORD");
+    cajeta::Compiler compiler;
+    auto module = cajeta::xpu::probe::compileForInspection(compiler, program("library"));
+    auto k = findKernel(module, "test.M", "fold");
+    ASSERT_NE(k, nullptr);
+    ref::CorpusRun run = ref::runCorpus({k}, dir.string(), "");
+    ASSERT_EQ(run.results.size(), 1u);
+    EXPECT_EQ(run.results[0].outcome, "undefined") << run.results[0].detail;
+    EXPECT_NE(run.results[0].detail.find("24 bits"), std::string::npos) << run.results[0].detail;
+    fs::remove_all(dir);
+}
+
+// NVIDIA has no fast 24-bit multiply, so the fold there is the plain 32-bit
+// one: no sign extension per factor (cajeta-llm 15.2.16.2.7.2).
+TEST(XpuLibraryEpilogue, theLibraryFoldDoesNotSignExtendOnNvptx) {
+    using cajeta::xpu::probe::countOf;
+    auto l = cajeta::xpu::probe::lowerForNvptx(program("library"), "fold");
+    ASSERT_TRUE(l.ok) << l.why;
+    EXPECT_EQ(countOf(l.ptx, ", 0, 24;"), 0u) << l.ptx;
+    EXPECT_GE(countOf(l.ptx, "mad.lo.s32"), 1u) << l.ptx;
 }
 
 // 4.10.1.2: within 3% of the built-in on sm_89, interleaved: fifteen rounds

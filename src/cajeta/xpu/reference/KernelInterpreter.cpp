@@ -700,6 +700,7 @@ const std::set<std::string>& staticBuiltins() {
         "Group.mac",
         "WaveVector.ofSlice", "WaveVector.broadcast", "WaveVector.ofLane",
         "Bits.reverse", "Bits.count", "Bits.rotateLeft", "Bits.rotateRight", "Bits.permute",
+        "Bits.mulInt24",
         "Bits.trailingZeros", "Bits.leadingZeros",
         "AsyncCopy.copy", "AsyncCopy.commit", "AsyncCopy.wait",
         "Cajeta.bitsToF32", "Cajeta.f32ToBits", "Cajeta.bitsToF64", "Cajeta.f64ToBits",
@@ -2977,6 +2978,15 @@ private:
         if (startsWith(q, "Bits.")) {
             std::vector<Val> a = args(mc);
             if (a.empty()) refuse("`" + q + "` without its value (" + where + ")");
+            if (q == "Bits.mulInt24") {
+                if (a.size() != 2) refuse("`Bits.mulInt24` takes (a, b) (" + where + ")");
+                int64_t x = convert(a[0], {Prim::I32, true}).s64(), y = convert(a[1], {Prim::I32, true}).s64();
+                for (int64_t f : {x, y})
+                    if (f < -(INT64_C(1) << 23) || f >= (INT64_C(1) << 23))
+                        undefined("`Bits.mulInt24` factor " + std::to_string(f) +
+                                  " does not fit 24 bits (" + where + ")");
+                return mkInt({Prim::I32, true}, (uint64_t) (uint32_t) ((uint32_t) x * (uint32_t) y));
+            }
             if (a[0].t.prim == Prim::I64 && !a[0].t.sgn) {
                 uint64_t v = (uint64_t) a[0].i;
                 uint32_t k = a.size() > 1 ? (uint32_t) convert(a[1], {Prim::I32, false}).i & 63 : 0;

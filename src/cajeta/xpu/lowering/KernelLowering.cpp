@@ -3958,6 +3958,11 @@ private:
                     builder.CreateICmpNE(first, builder.getInt32(0)), zeros(id, first),
                     builder.CreateAdd(builder.getInt32(32), zeros(id, second)), "bits.zeros64");
             }
+            if (name == "mulInt24") {
+                if (args.size() != 2) unsupported("Bits.mulInt24 arity");
+                return target.mulInt24(builder, builder.CreateSExtOrTrunc(first, i32),
+                                       builder.CreateSExtOrTrunc(lowerExpr(args[1].expression), i32));
+            }
             if (name == "permute") {
                 if (args.size() != 3) unsupported("Bits.permute arity");
                 return target.bytePermute(builder, mod, builder.CreateZExtOrTrunc(first, i32),
@@ -8623,6 +8628,10 @@ bool LoweringTarget::asmConstraintAdmits(const std::string&, llvm::Type*,
     why = "inline assembly has no " + std::string(name()) + " form; give the "
           "helper a body as its portable arm";
     return false;
+}
+
+llvm::Value* LoweringTarget::mulInt24(llvm::IRBuilderBase& b, llvm::Value* a, llvm::Value* c) {
+    return b.CreateMul(a, c, "mul24");
 }
 
 llvm::Value* LoweringTarget::bytePermute(llvm::IRBuilderBase& b, llvm::Module& m,

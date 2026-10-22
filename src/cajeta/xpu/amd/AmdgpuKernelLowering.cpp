@@ -1042,6 +1042,15 @@ public:
         return false;
     }
 
+    // Every GCN subtarget has HasMulI24 (AMDGPUSubtarget.h), so the sign-extended
+    // factors select v_mul_i32_i24 / v_mad_i32_i24, full rate, with the extension free.
+    llvm::Value* mulInt24(llvm::IRBuilderBase& b, llvm::Value* a, llvm::Value* c) override {
+        llvm::Value* eight = llvm::ConstantInt::get(a->getType(), 8);
+        llvm::Value* a24 = b.CreateAShr(b.CreateShl(a, eight), eight, "mul24.a");
+        llvm::Value* c24 = b.CreateAShr(b.CreateShl(c, eight), eight, "mul24.c");
+        return b.CreateMul(a24, c24, "mul24");
+    }
+
     llvm::Value* bytePermute(llvm::IRBuilderBase& b, llvm::Module& m,
                              llvm::Value* lo, llvm::Value* hi,
                              llvm::Value* selector) override {

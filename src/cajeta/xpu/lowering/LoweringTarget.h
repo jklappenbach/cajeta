@@ -397,6 +397,10 @@ namespace xpu {
                                          llvm::Value* lo, llvm::Value* hi,
                                          llvm::Value* selector);
 
+        // `Bits.mulInt24(a, c)`: the product of two factors that fit 24 bits, wrapping at 32.
+        // DEFAULT: the 32-bit multiply; a target with a full-rate 24-bit multiply overrides it.
+        virtual llvm::Value* mulInt24(llvm::IRBuilderBase& b, llvm::Value* a, llvm::Value* c);
+
         // Whether `Bits` lowers its 64-bit forms to one 64-bit intrinsic and counts zeros of 0
         // natively. SPIR-V's bit instructions take 32-bit operands and its backend cannot lower
         // cttz or ctlz, so it combines two halves and counts zeros through ctpop.

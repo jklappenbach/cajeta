@@ -234,6 +234,9 @@ uint32_t __cajeta_xpu_bits_count_u32(uint32_t value) {
     while (value) { value &= value - 1u; ++c; }
     return c;
 }
+int32_t __cajeta_xpu_bits_mul_i24(int32_t a, int32_t b) {
+    return (int32_t) ((uint32_t) a * (uint32_t) b);
+}
 uint32_t __cajeta_xpu_bits_rotate_left_u32(uint32_t value, uint32_t amount) {
     amount &= 31u;
     return amount == 0u ? value : ((value << amount) | (value >> (32u - amount)));

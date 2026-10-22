@@ -86,6 +86,13 @@ public final class Bits {
     @Native("__cajeta_xpu_bits_trailing_zeros_u64")
     public static uint32 trailingZeros(uint64 value);
 
+    /**
+     * `a * b` wrapping at 32 bits, for factors that fit in 24 bits signed; undefined when either
+     * does not. AMD uses its full-rate 24-bit multiply, the other backends the 32-bit one.
+     */
+    @Native("__cajeta_xpu_bits_mul_i24")
+    public static int32 mulInt24(int32 a, int32 b);
+
     /** The number of zero bits above the highest set bit of `value`; 32 when `value` is 0. */
     @Native("__cajeta_xpu_bits_leading_zeros_u32")
     public static uint32 leadingZeros(uint32 value);
