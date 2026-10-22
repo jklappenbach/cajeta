@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.46.2 (2026-10-22)
+
+- **NVIDIA prefill is back to 0.43.1's speed.** 0.46.0 made `TileOps.scaledAccumI32` sign-extend both factors from 24 bits on every backend so AMD could use its 24-bit multiply. On NVIDIA that added one instruction per factor and saved nothing: cajeta-llm's 8B prefill on an RTX 4090 fell to 0.87x at chunk 512 and 0.84x at 128. The new `Bits.mulInt24(a, b)` multiplies two factors that fit 24 bits signed; AMD sign-extends and keeps the full-rate `v_mad_i32_i24`, and NVIDIA, cpu and Vulkan use the plain 32-bit multiply. `scaledAccumI32` uses it. A factor wider than 24 bits is now undefined (0.46.0 defined it as the low 24 bits); the reference interpreter reports it as undefined behaviour, so the conformance corpus catches a caller that relies on it.
+
 ## 0.46.1 (2026-10-22)
 
 - **A dependency's skills are found.** `cajeta build` now writes `cajeta.lock` with every resolved package, as the build-tool spec says it does; before, no command wrote packages into it, so `search-skill`, `list-skills`, `get-skills` and the MCP server saw only the stdlib's skills and never a dependency's. `cajeta info --write-lockfile` records the packages too. An unchanged graph leaves the file byte-identical, and a workspace member's build does not write one. A build that would leave skills unpacked now warns and names them: a `skills/` directory inside the source tree, or the project's `skills/` when the bare compiler is given only a source root (pass `--skill-root=<project root>`, which `cajeta build` does). dev.cajeta.codec 0.9.0, crypto 0.1.0 and cloud 0.4.0 all shipped without their skills this way.
