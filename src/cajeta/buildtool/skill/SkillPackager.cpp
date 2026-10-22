@@ -108,4 +108,68 @@ namespace cajeta::buildtool::skill {
         }
     }
 
+    namespace {
+        bool hasSkillFiles(const std::filesystem::path& dir) {
+            std::error_code ec;
+            if (!std::filesystem::is_directory(dir, ec)) return false;
+            for (std::filesystem::directory_iterator it(dir, ec), end;
+                 !ec && it != end; it.increment(ec)) {
+                if (it->is_regular_file(ec) && it->path().extension() == ".md")
+                    return true;
+            }
+            return false;
+        }
+
+        std::filesystem::path normal(llvm::StringRef p) {
+            std::error_code ec;
+            auto a = std::filesystem::absolute(std::filesystem::path(p.str()), ec);
+            return std::filesystem::weakly_canonical(ec ? std::filesystem::path(p.str()) : a, ec);
+        }
+    } // namespace
+
+    std::vector<std::string> misplacedSkillWarnings(llvm::StringRef skillRoot,
+                                                    llvm::StringRef sourceRoot) {
+        namespace fs = std::filesystem;
+        std::vector<std::string> out;
+        fs::path skills = normal(skillRoot) / "skills";
+        fs::path src = normal(sourceRoot);
+        std::error_code ec;
+
+        // A skills/ directory inside the source tree, other than the one packed.
+        std::vector<fs::path> nested;
+        if (fs::is_directory(src, ec)) {
+            for (fs::recursive_directory_iterator it(src, ec), end;
+                 !ec && it != end; it.increment(ec)) {
+                if (!it->is_directory(ec) || it->path().filename() != "skills") continue;
+                if (normal(it->path().string()) == skills) continue;
+                if (hasSkillFiles(it->path())) nested.push_back(it->path());
+            }
+        }
+        std::sort(nested.begin(), nested.end());
+        for (const auto& d : nested) {
+            out.push_back("skills in " + d.generic_string() +
+                          " are not packed: the packager reads only " +
+                          skills.generic_string() +
+                          "/*.md, so move them to the project's skills/");
+        }
+
+        // The project's own skills/, beside the nearest cajeta.json at or
+        // above the source root, when the skill root is elsewhere.
+        for (fs::path cur = src; !cur.empty(); cur = cur.parent_path()) {
+            if (fs::exists(cur / "cajeta.json", ec)) {
+                fs::path project = cur / "skills";
+                if (normal(project.string()) != skills && hasSkillFiles(project)) {
+                    out.push_back(project.generic_string() +
+                                  " is not packed: the skill root is " +
+                                  normal(skillRoot).generic_string() +
+                                  "; pass --skill-root=" + cur.generic_string() +
+                                  " (cajeta build passes the project root)");
+                }
+                break;
+            }
+            if (cur == cur.parent_path()) break;
+        }
+        return out;
+    }
+
 } // namespace cajeta::buildtool::skill

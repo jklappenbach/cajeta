@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <chrono>
 #include <ctime>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -138,6 +139,51 @@ namespace cajeta::buildtool {
             lf.pluginsTyped.push_back(std::move(pe));
         }
         return lf;
+    }
+
+    llvm::Error updateProjectLockfile(
+        const Manifest& manifest,
+        const std::string& manifestSource,
+        const ResolvedProperties& props,
+        const std::vector<ResolvedDependency>& resolvedDeps,
+        const std::string& lockPath,
+        const std::string& nowIso) {
+        Lockfile lf = composeLockfileWithResolution(
+            manifest, manifestSource, props, resolvedDeps, MeltResolution{},
+            {}, {}, nowIso);
+        std::error_code ec;
+        if (std::filesystem::exists(lockPath, ec)) {
+            auto existing = readLockfile(lockPath);
+            if (existing) {
+                // `resolved-from` is left out: it names where this run
+                // fetched from, and a rebuild reads the archive back from the
+                // ~/.olla write-through ("olla") that the first fetch from the
+                // declared repository filled. The bytes are the checksum's.
+                auto samePackage = [](const ResolvedPackageEntry& a,
+                                      const ResolvedPackageEntry& b) {
+                    return a.name == b.name && a.version == b.version &&
+                           a.checksum == b.checksum &&
+                           a.providedBy == b.providedBy &&
+                           a.memberOwner == b.memberOwner;
+                };
+                bool same =
+                    existing->manifestChecksum == lf.manifestChecksum &&
+                    existing->properties == lf.properties &&
+                    existing->packagesTyped.size() == lf.packagesTyped.size() &&
+                    std::equal(lf.packagesTyped.begin(), lf.packagesTyped.end(),
+                               existing->packagesTyped.begin(), samePackage);
+                if (same) return llvm::Error::success();
+                lf.meltsTyped = std::move(existing->meltsTyped);
+                lf.pluginsTyped = std::move(existing->pluginsTyped);
+                lf.meltsRaw = std::move(existing->meltsRaw);
+                lf.pluginsRaw = std::move(existing->pluginsRaw);
+                lf.overrides = std::move(existing->overrides);
+            } else {
+                // An unreadable lockfile is replaced, not merged.
+                llvm::consumeError(existing.takeError());
+            }
+        }
+        return writeLockfile(lockPath, lf);
     }
 
     Lockfile composeWorkspaceLockfile(

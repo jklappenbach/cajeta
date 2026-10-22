@@ -132,6 +132,20 @@ namespace cajeta::buildtool {
         const std::vector<ResolvedPlugin>& resolvedPlugins,
         const std::string& nowIso);
 
+    // Records a single project's resolved packages in `lockPath`, the
+    // cajeta.lock that `search-skill` and the MCP server read. A file that
+    // already records the same manifest checksum, properties and packages
+    // (name, version, checksum; not where this run fetched them from) is left
+    // untouched, so rebuilding an unchanged graph never rewrites it; melts
+    // and plugins an existing file records are carried over.
+    llvm::Error updateProjectLockfile(
+        const Manifest& manifest,
+        const std::string& manifestSource,
+        const ResolvedProperties& props,
+        const std::vector<ResolvedDependency>& resolvedDeps,
+        const std::string& lockPath,
+        const std::string& nowIso);
+
     // Compares the recorded manifest checksum against the current source;
     // `changed` is false when they agree.
     struct DriftReport {

@@ -1211,6 +1211,13 @@ machine-only, comments would just create merge conflicts).
 }
 ```
 
+`cajeta build` rewrites the file only when the manifest checksum, the
+properties or a package's name, version or checksum changed, so rebuilding an
+unchanged graph leaves it byte-identical; `resolved-from` records the
+repository of the first fetch and is not a reason to rewrite. A workspace
+member's build leaves it to the workspace root's single lockfile. The skill
+search reads dependencies from it (`docs/specification/mcp/Skills.md`).
+
 `manifest-checksum` lets `cajeta build` detect whether the
 manifest changed since the lockfile was generated; mismatch
 triggers an automatic `cajeta upgrade` (or warns, depending on

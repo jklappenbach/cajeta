@@ -154,6 +154,8 @@ namespace cajeta {
 
         // Source root (trailing-slash normalized) so emitArchive can find `skills/`.
         string skillSourceRoot;
+        // The positional source root, scanned for skills the packager would miss.
+        string skillScanSourceRoot;
 
         // Override for where `skills/` lives: the PROJECT root, not the compile source root.
         string skillRootOverride;

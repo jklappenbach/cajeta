@@ -2064,6 +2064,7 @@ namespace cajeta {
         this->skillSourceRoot =
             this->skillRootOverride.empty() ? sourceRootPath
                                             : this->skillRootOverride;
+        this->skillScanSourceRoot = sourceRootPath;
 
 
         ensureStdlibModule();
@@ -4179,6 +4180,12 @@ namespace cajeta {
         // Embed the package's hand-authored skills: a no-op when there is no skills/
         // dir, and a clear error on an invalid one. Uber archives carry the consuming
         // project's own skills only — each dependency ships its own inside its .cja.
+        // Skills it would leave behind are named, never silently dropped: three
+        // libraries shipped without theirs before this said so (2026-10-21).
+        for (const auto& w : buildtool::skill::misplacedSkillWarnings(
+                 skillSourceRoot, skillScanSourceRoot)) {
+            llvm::errs() << "warning: " << w << "\n";
+        }
         buildtool::skill::addSkillMembersToArchiveOrThrow(arc, skillSourceRoot);
 
         // Bundle the resolved native artifacts for the live @Native libs into the

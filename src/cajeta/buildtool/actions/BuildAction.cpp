@@ -15,6 +15,7 @@
 #include "cajeta/buildtool/Reproducibility.h"
 #include "cajeta/buildtool/Resolver.h"
 #include "cajeta/buildtool/SourceDigest.h"
+#include "cajeta/buildtool/Workspace.h"
 #include "cajeta/compile/NativeLink.h"
 #include "cajeta/util/SelfPath.h"
 
@@ -29,6 +30,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -273,6 +275,29 @@ namespace cajeta::buildtool {
                         joined += r.artifactPath;
                     }
                     argv.push_back("--classpath=" + joined);
+                }
+                // cajeta.lock records what resolved (BuildTool.md, Lockfile);
+                // search-skill and the MCP server find a dependency's skills
+                // through it. A workspace keeps one lockfile at its root, so a
+                // member's build leaves it alone. A lockfile that cannot be
+                // written warns: it never fails the build.
+                const Manifest& man = *ctx.manifest();
+                // discoverWorkspaceRoot answers only for a manifest carrying a
+                // workspace block; this one carries none, so a hit is an
+                // enclosing workspace.
+                bool member = discoverWorkspaceRoot(projectRoot).has_value();
+                if (!man.sourcePath.empty() && !man.hasWorkspace && !member) {
+                    std::ifstream in(man.sourcePath, std::ios::binary);
+                    std::stringstream src;
+                    src << in.rdbuf();
+                    std::string lockPath =
+                        (std::filesystem::path(projectRoot) / "cajeta.lock").string();
+                    if (auto e = updateProjectLockfile(
+                            man, src.str(), ctx.properties(), resolved,
+                            lockPath, nowIsoUtc())) {
+                        llvm::errs() << "warning: cajeta.lock not written: "
+                                     << llvm::toString(std::move(e)) << "\n";
+                    }
                 }
             }
 

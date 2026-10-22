@@ -31,4 +31,12 @@ namespace cajeta::buildtool::skill {
     void addSkillMembersToArchiveOrThrow(CajetaArchive& archive,
                                          llvm::StringRef packageRoot);
 
+    // Skills the packager will not pack, one message each: a `skills/` holding
+    // `.md` files anywhere under `sourceRoot` other than `<skillRoot>/skills`,
+    // and a project's `skills/` beside the nearest cajeta.json above
+    // `sourceRoot` when `skillRoot` is somewhere else (the bare-compiler
+    // form, whose skill root is the source root). Empty when nothing is missed.
+    std::vector<std::string> misplacedSkillWarnings(llvm::StringRef skillRoot,
+                                                    llvm::StringRef sourceRoot);
+
 } // namespace cajeta::buildtool::skill

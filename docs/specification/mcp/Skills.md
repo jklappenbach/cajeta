@@ -114,6 +114,13 @@ mylib.cja
 └── skills/retry-policy.md
 ```
 
+The package root is the directory holding `cajeta.json`, and only
+`<root>/skills/*.md` is read: a `skills/` directory inside a package's source
+tree is not packed. `cajeta build` passes the project root; the bare compiler
+form (`cajeta --emit=cja … src/main/cajeta …`) reads skills from its source root
+unless given `--skill-root=<project root>`. Either way, a build that would leave
+skills behind warns and names them.
+
 A package with no `skills/` directory is not an error — it simply ships no
 guidance. An invalid skill or a duplicate `id` **is** an error and fails the
 build. Members are emitted sorted by path, so packaging is reproducible.
@@ -159,7 +166,10 @@ e.g.  cja-skill://cajeta.io@1.4.2/file-open
 
 The URI is *logical*, not a network location: it names a library coordinate, a
 version, and a skill id, and is resolved against the locally-resolved archive
-via the lockfile. Authors write the `id` and `applies-to`; the
+via the lockfile. `cajeta build` writes the project's `cajeta.lock` with every
+resolved package (and `cajeta info --write-lockfile` does the same without
+compiling); `search-skill`, `list-skills`, `get-skills` and the MCP server read a
+dependency's skills from the archive that lockfile names. Authors write the `id` and `applies-to`; the
 `<library>@<version>` prefix is supplied at resolution.
 
 The version is the **resolved** version, not a declared range, which makes a URI

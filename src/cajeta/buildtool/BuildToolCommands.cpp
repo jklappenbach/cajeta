@@ -259,9 +259,21 @@ namespace cajeta::buildtool {
                     }
 
                     if (writeLock) {
-                        Lockfile lf = composeLockfile(
-                            m, manifestSource, *resolvedProps, nowIsoUtc());
-                        if (auto e = writeLockfile(lockfilePath, lf)) {
+                        // The packages are the point of the lockfile: the
+                        // skill search reads them (BuildTool.md, Lockfile).
+                        std::string projectRoot =
+                            std::filesystem::path(manifestPath)
+                                .parent_path().string();
+                        if (projectRoot.empty()) projectRoot = ".";
+                        auto deps = resolveProjectDependencies(m, projectRoot);
+                        if (!deps) {
+                            std::cerr << "cajeta info: "
+                                      << llvm::toString(deps.takeError()) << "\n";
+                            return 1;
+                        }
+                        if (auto e = updateProjectLockfile(
+                                m, manifestSource, *resolvedProps, *deps,
+                                lockfilePath, nowIsoUtc())) {
                             std::string msg;
                             llvm::raw_string_ostream os(msg);
                             os << e;

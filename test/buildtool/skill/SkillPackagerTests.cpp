@@ -22,6 +22,7 @@
 using cajeta::CajetaArchive;
 using cajeta::buildtool::skill::addSkillMembersToArchive;
 using cajeta::buildtool::skill::buildSkillMembers;
+using cajeta::buildtool::skill::misplacedSkillWarnings;
 using cajeta::buildtool::skill::SkillIndex;
 using cajeta::buildtool::skill::SkillMember;
 
@@ -140,3 +141,55 @@ TEST(SkillPackagerTests, noSkillsIsEmpty) {
 }
 
 // D.3.3 — packaging is reproducible: identical member order + bytes across runs.
+
+// Skills the packager will never see are reported (2026-10-21: codec 0.9.0,
+// crypto 0.1.0 and cloud's identity skill all shipped without them).
+namespace {
+    const char* kSkill =
+        "---\nid: s\napplies-to: [a/B]\n---\n# S\n";
+
+    bool anyMentions(const std::vector<std::string>& ws, const std::string& needle) {
+        for (const auto& w : ws)
+            if (w.find(needle) != std::string::npos) return true;
+        return false;
+    }
+}
+
+TEST(SkillPackagerTests, skillsUnderAPackageDirectoryAreReported) {
+    TempPackage pkg;
+    pkg.write("cajeta.json", "{}\n");
+    pkg.write("src/main/cajeta/a/skills/s.md", kSkill);
+    auto ws = misplacedSkillWarnings(pkg.path(), pkg.path() + "/src/main/cajeta");
+    ASSERT_EQ(ws.size(), 1u);
+    EXPECT_TRUE(anyMentions(ws, "src/main/cajeta/a/skills")) << ws[0];
+    EXPECT_TRUE(anyMentions(ws, "not packed")) << ws[0];
+}
+
+TEST(SkillPackagerTests, projectSkillsMissedByASourceRootSkillRootAreReported) {
+    // The bare `cajeta --emit=cja ... src/main/cajeta` form: the skill root is
+    // the source root, and the project's skills/ sits two levels up.
+    TempPackage pkg;
+    pkg.write("cajeta.json", "{}\n");
+    pkg.write("skills/s.md", kSkill);
+    pkg.write("src/main/cajeta/a/B.cajeta", "package a;\n");
+    std::string src = pkg.path() + "/src/main/cajeta";
+    auto ws = misplacedSkillWarnings(src, src);
+    ASSERT_EQ(ws.size(), 1u);
+    EXPECT_TRUE(anyMentions(ws, "--skill-root=")) << ws[0];
+}
+
+TEST(SkillPackagerTests, correctlyPlacedSkillsReportNothing) {
+    TempPackage pkg;
+    pkg.write("cajeta.json", "{}\n");
+    pkg.write("skills/s.md", kSkill);
+    pkg.write("src/main/cajeta/a/B.cajeta", "package a;\n");
+    EXPECT_TRUE(misplacedSkillWarnings(pkg.path(), pkg.path() + "/src/main/cajeta").empty());
+
+    // A project with no skills anywhere reports nothing from either form.
+    TempPackage bare;
+    bare.write("cajeta.json", "{}\n");
+    bare.write("src/main/cajeta/a/B.cajeta", "package a;\n");
+    std::string src = bare.path() + "/src/main/cajeta";
+    EXPECT_TRUE(misplacedSkillWarnings(src, src).empty());
+    EXPECT_TRUE(misplacedSkillWarnings(bare.path(), src).empty());
+}
