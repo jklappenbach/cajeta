@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.46.1 (2026-10-22)
 
 - **A dependency's skills are found.** `cajeta build` now writes `cajeta.lock` with every resolved package, as the build-tool spec says it does; before, no command wrote packages into it, so `search-skill`, `list-skills`, `get-skills` and the MCP server saw only the stdlib's skills and never a dependency's. `cajeta info --write-lockfile` records the packages too. An unchanged graph leaves the file byte-identical, and a workspace member's build does not write one. A build that would leave skills unpacked now warns and names them: a `skills/` directory inside the source tree, or the project's `skills/` when the bare compiler is given only a source root (pass `--skill-root=<project root>`, which `cajeta build` does). dev.cajeta.codec 0.9.0, crypto 0.1.0 and cloud 0.4.0 all shipped without their skills this way.
 
