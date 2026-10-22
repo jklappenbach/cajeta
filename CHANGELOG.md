@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.46.3 (2026-10-22)
 
+- **A GPU launch no longer searches every kernel manifest.** 0.45.0's check that refuses a kernel over the device's shared-memory limit scanned all registered manifests and searched the kernel's JSON on every launch and every `Device.kernelAvailable`, about 1.5 µs a launch on an RTX 4090. A deferred prefill step enqueues before it replays, so that landed on wall time: cajeta-llm's 8B prefill ran at 0.94x of 0.43.1 at chunk 128 and 0.97x at 512 with identical device code. The figure is now read once when the manifest registers and cached by name, and prefill is back to 1.01x and 1.00x. The refusal itself is unchanged.
 - **A bare dependency version is a floor within its major.** `"dev.cajeta.codec": "0.9.0"` now means `>=0.9.0,<1.0.0`, so two libraries asking for different patch levels of one package resolve to the higher of the two instead of failing. Before, a bare version was an exact pin, and cajeta-cloud-aws could not depend on both cloud (codec 0.9.0) and http (codec 0.9.1) without forcing codec through `overrides`. `=1.2.3` is the exact pin. A bare version in `overrides` stays exact, and so does one in plugin resolution and the notebook kernel's loader, which take the highest match and would otherwise float to the newest release.
 
 ## 0.46.2 (2026-10-22)
