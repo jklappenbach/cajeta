@@ -724,7 +724,10 @@ Use cases:
 - **12.11** When resident memory is measured for a loaded model, it is no more than
   `llama.cpp`'s (**1.0×**, tightened from 1.25× 2026-10-20) for the same model,
   quantization and backend — throughput
-  parity bought with several times the memory is not parity.
+  parity bought with several times the memory is not parity. Resident
+  memory is the process's peak host RSS plus the device memory it holds
+  above the idle level, on every backend; on a unified-memory part both
+  count, since they share the same RAM.
 - **12.12** When a request is served from cached prefix blocks, its logits are
   identical to the same request computed from cold, within §12.1's tolerance.
   A prefix cache that returns subtly wrong blocks is worse than no cache, and
