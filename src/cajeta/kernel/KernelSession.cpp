@@ -106,10 +106,12 @@ namespace {
 
     // True when `version` satisfies `constraint`; empty or "*" accepts any.
     // Delegates to the buildtool's matcher: one implementation of the grammar.
+    // The session loads the HIGHEST match, so a bare version stays a pin here.
     bool versionSatisfies(const std::string& version,
                           const std::string& constraint) {
         if (constraint.empty() || constraint == "*") return true;
-        return cajeta::buildtool::versionSatisfies(version, constraint);
+        return cajeta::buildtool::versionSatisfies(
+            version, cajeta::buildtool::exactIfBare(constraint));
     }
 
     // Copy `text` into `out` (capacity `cap`), truncated and NUL-terminated.

@@ -262,7 +262,7 @@ namespace cajeta::buildtool {
                 e.resolvedFromRepo = pick->fromRepo;
             }
 
-            e.newConstraint = e.newVersion;  // exact pin
+            e.newConstraint = e.newVersion;  // a floor at the new version (MVS)
             e.changed = !e.oldVersion.empty() &&
                         e.oldVersion != e.newVersion;
             // An unresolvable baseline makes any valid new version a change.

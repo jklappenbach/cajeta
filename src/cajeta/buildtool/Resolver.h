@@ -35,7 +35,7 @@ namespace cajeta::buildtool {
 
     // Resolves the declared deps directly, without transitive expansion: one
     // ResolvedDependency per dep in declaration order. A constraint is exact
-    // ("1.2.3"), a wildcard ("1.2.*"), a range (">=1.2.0"), or a comma-AND.
+    // ("1.2.3" or "=1.2.3", the highest pick never floats), a wildcard ("1.2.*"), a range (">=1.2.0"), or a comma-AND.
     llvm::Expected<std::vector<ResolvedDependency>> resolveDirect(
         const std::vector<DependencySpec>& deps,
         const std::vector<RepositoryPtr>& repos,
@@ -69,8 +69,14 @@ namespace cajeta::buildtool {
     // catch an override dropping a package below the major a transitive needs.
     int compareMajor(const std::string& a, const std::string& b);
 
+    // A bare "1.2.3" is a floor within its major (>=1.2.3,<2.0.0); "=1.2.3" is exact.
     bool versionSatisfies(const std::string& version,
                           const std::string& constraint);
+
+    // "=1.2.3" for a bare "1.2.3", any other constraint unchanged. Callers that pick
+    // the HIGHEST match (plugins, resolveDirect, the kernel) and overrides read a
+    // bare version as a pin through this, so it never floats to a newer release.
+    std::string exactIfBare(const std::string& constraint);
 
     // Orders two semver-shape strings: numeric components as integers, other
     // prerelease tags lexicographically.

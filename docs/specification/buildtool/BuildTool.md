@@ -1266,6 +1266,32 @@ Transitive:    dev.cajeta.http via dep X requires "1.2.3+"
 Resolution:    1.2.3 (lowest 1.2.* satisfying 1.2.3+)
 ```
 
+### Version constraints
+
+A constraint is one form below, or several joined by commas, which all
+must hold (`">=1.2.5,1.2.*"`).
+
+| Form | Meaning | Example |
+|---|---|---|
+| `1.2.3` (bare) | At least `1.2.3` within major `1`: `>=1.2.3,<2.0.0`. Release versions only, unless the floor is itself a pre-release. The major is the first component at every version, so `0.1.0` accepts `0.9.1` and refuses `1.0.0`. | `"dev.cajeta.codec": "0.9.0"` |
+| `=1.2.3` | Exactly `1.2.3`. | `"=1.2.3"` |
+| `1.2.*`, `1.*`, `*` | Any version with that prefix. | `"1.2.*"` |
+| `>=`, `>`, `<=`, `<` | The ordinary comparison. | `">=1.2.0,<2.0.0"` |
+
+A bare version is a floor so that two libraries asking for different
+patch levels of one dependency resolve without either of them changing:
+`cloud` asking for `codec` `0.9.0` and `http` asking for `0.9.1` select
+`0.9.1`, the lowest version above both floors. Before this rule a bare
+version was an exact pin, and that diamond failed to resolve until the
+consumer dropped the shared package from `dependencies` and forced it
+through `overrides`.
+
+Three places read a bare version as `=` instead, because they force or
+pick rather than solve. An entry in `overrides` forces its version
+(below). Plugin resolution and the notebook kernel's dependency loader
+take the **highest** satisfying version, so a floor there would float to
+the newest release in the major.
+
 Constraint solver runs in O(N log N) for typical graphs; the
 worst case (large conflict surface) is exposed via `cajeta info
 --resolve-time` for debugging.
@@ -1294,9 +1320,10 @@ fork, pin away from a known-bad release). The manifest's
 
 ```jsonc
 "overrides": {
-    // Pin to an exact version. Every reference in the resolved
-    // graph — direct or transitive — uses 1.2.5, regardless of
-    // what the intermediate libraries asked for.
+    // Pin to an exact version. A bare version in `overrides` is
+    // exact, as if written "=1.2.5". Every reference in the
+    // resolved graph — direct or transitive — uses 1.2.5,
+    // regardless of what the intermediate libraries asked for.
     "acme.metrics": "1.2.5",
 
     // Constrain to a version range. The resolver picks within

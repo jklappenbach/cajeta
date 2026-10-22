@@ -119,13 +119,14 @@ namespace cajeta::buildtool {
             return s.substr(b, e - b);
         }
 
-        // One atomic piece of a comma-separated AND. Eq is release-only ("1.2.3"
-        // excludes "1.2.3-rc1"), and Wild holds the segment prefix of a "1.2.*" form.
-        enum class Op { Eq, Wild, Ge, Gt, Le, Lt };
+        // One atomic piece of a comma-separated AND. Eq is the "=1.2.3" pin. Min is a
+        // bare "1.2.3": at least that version within its major, release-only unless the
+        // floor is itself a pre-release. Wild holds the segment prefix of a "1.2.*" form.
+        enum class Op { Eq, Min, Wild, Ge, Gt, Le, Lt };
         struct Atom { Op op; std::string operand; };
 
         // Parses one comma-piece: a longest-match ">=", ">", "<=", "<" or "=" prefix,
-        // else Wild if the operand contains '*', else Eq.
+        // else Wild if the operand contains '*', else Min.
         llvm::Expected<Atom> parseAtom(const std::string& raw) {
             std::string s = trim(raw);
             if (s.empty()) {
@@ -135,7 +136,7 @@ namespace cajeta::buildtool {
                 size_t n = std::strlen(p);
                 return s.size() >= n && s.compare(0, n, p) == 0;
             };
-            Op op = Op::Eq;
+            Op op = Op::Min;
             size_t consume = 0;
             if (starts(">=")) { op = Op::Ge; consume = 2; }
             else if (starts("<=")) { op = Op::Le; consume = 2; }
@@ -146,7 +147,7 @@ namespace cajeta::buildtool {
             if (operand.empty()) {
                 return err("constraint atom '" + raw + "' has no version");
             }
-            if (op == Op::Eq && operand.find('*') != std::string::npos) {
+            if (op == Op::Min && operand.find('*') != std::string::npos) {
                 op = Op::Wild;
                 operand = operand.substr(0, operand.find('*'));
                 if (!operand.empty() && operand.back() == '.') {
@@ -160,6 +161,12 @@ namespace cajeta::buildtool {
             switch (a.op) {
                 case Op::Eq:
                     return version == a.operand;
+                case Op::Min: {
+                    if (compareMajor(version, a.operand) != 0) return false;
+                    bool floorPre = a.operand.find('-') != std::string::npos;
+                    if (!floorPre && version.find('-') != std::string::npos) return false;
+                    return compareVersions(version, a.operand) >= 0;
+                }
                 case Op::Wild: {
                     if (a.operand.empty()) return true;  // bare "*"
                     auto pParts = splitDots(a.operand);
@@ -191,6 +198,12 @@ namespace cajeta::buildtool {
 
     } // namespace
 
+    std::string exactIfBare(const std::string& constraint) {
+        std::string c = trim(constraint);
+        if (c.empty() || c.find_first_of("<>=*,") != std::string::npos) return c;
+        return "=" + c;
+    }
+
     bool versionSatisfies(const std::string& version,
                           const std::string& constraint) {
         if (constraint == "*") return true;
@@ -217,7 +230,7 @@ namespace cajeta::buildtool {
             const std::string& constraint) {
             std::string best;
             for (const auto& v : candidates) {
-                if (!versionSatisfies(v, constraint)) continue;
+                if (!versionSatisfies(v, exactIfBare(constraint))) continue;
                 if (best.empty() || compareVersions(v, best) > 0) {
                     best = v;
                 }
@@ -616,7 +629,8 @@ namespace cajeta::buildtool {
                 // Wire override metadata at first sight: which step found it is irrelevant.
                 auto it2 = overrideMap.find(name);
                 if (it2 != overrideMap.end()) {
-                    s.overrideConstraint = it2->second->versionConstraint;
+                    // An override forces its version, so a bare one is an exact pin.
+                    s.overrideConstraint = exactIfBare(it2->second->versionConstraint);
                     s.overrideAllowsMajorDowngrade =
                         it2->second->allowMajorDowngrade;
                 }

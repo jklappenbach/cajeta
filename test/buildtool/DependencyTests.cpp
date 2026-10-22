@@ -39,6 +39,7 @@ using cajeta::buildtool::ResolvedDependency;
 using cajeta::buildtool::resolveMvs;
 using cajeta::buildtool::resolveProjectDependencies;
 using cajeta::buildtool::versionSatisfies;
+using cajeta::buildtool::exactIfBare;
 
 namespace {
 
@@ -164,6 +165,33 @@ TEST(DependencyTests, versionSatisfiesRejectsMalformed) {
     EXPECT_FALSE(versionSatisfies("1.2.3", ">=1.0,,<2.0"));
     // Operator with no version.
     EXPECT_FALSE(versionSatisfies("1.2.3", ">="));
+}
+
+TEST(DependencyTests, versionSatisfiesBareIsMinimumWithinMajor) {
+    // A bare version is a floor inside its major: "1.2.3" means >=1.2.3,<2.
+    EXPECT_TRUE(versionSatisfies("1.2.3", "1.2.3"));
+    EXPECT_TRUE(versionSatisfies("1.2.4", "1.2.3"));
+    EXPECT_TRUE(versionSatisfies("1.9.0", "1.2.3"));
+    EXPECT_FALSE(versionSatisfies("1.2.2", "1.2.3"));
+    EXPECT_FALSE(versionSatisfies("2.0.0", "1.2.3"));
+    // The major is the first component even below 1.0.
+    EXPECT_TRUE(versionSatisfies("0.9.1", "0.1.0"));
+    EXPECT_FALSE(versionSatisfies("1.0.0", "0.1.0"));
+    // Release-only unless the floor itself is a pre-release.
+    EXPECT_FALSE(versionSatisfies("1.3.0-rc1", "1.2.3"));
+    EXPECT_TRUE(versionSatisfies("1.3.0-rc1", "1.3.0-rc1"));
+    // "=" is the exact pin.
+    EXPECT_FALSE(versionSatisfies("1.2.4", "=1.2.3"));
+}
+
+TEST(DependencyTests, exactIfBarePinsOnlyABareVersion) {
+    EXPECT_EQ(exactIfBare("1.2.3"), "=1.2.3");
+    EXPECT_EQ(exactIfBare(" 1.2.3 "), "=1.2.3");
+    EXPECT_EQ(exactIfBare("=1.2.3"), "=1.2.3");
+    EXPECT_EQ(exactIfBare(">=1.2.3"), ">=1.2.3");
+    EXPECT_EQ(exactIfBare("1.2.*"), "1.2.*");
+    EXPECT_EQ(exactIfBare("*"), "*");
+    EXPECT_EQ(exactIfBare(">=1.0.0,<2.0.0"), ">=1.0.0,<2.0.0");
 }
 
 TEST(DependencyTests, compareVersionsOrders) {
@@ -649,6 +677,143 @@ TEST(DependencyTests, mvsRejectsContradictoryExactRequirements) {
         << "error should cite both contributing constraints, got: " << msg;
 
     rmTree(root);
+    rmTree(projectDir);
+    rmTree(homeDir);
+}
+
+TEST(DependencyTests, mvsBareDiamondPicksHighestFloor) {
+    // foo asks for shared "1.2.0", baz for "1.5.0": two floors in one major,
+    // so MVS takes the lowest version above both, 1.5.0, not 1.9.0.
+    auto root = makeFsRepo({
+        {"bd.foo",    "1.0.0", "foo"},
+        {"bd.baz",    "1.0.0", "baz"},
+        {"bd.shared", "1.2.0", "s1.2.0"},
+        {"bd.shared", "1.5.0", "s1.5.0"},
+        {"bd.shared", "1.9.0", "s1.9.0"},
+    });
+    writeSidecarManifest(root, "bd.foo", "1.0.0", {{"bd.shared", "1.2.0"}});
+    writeSidecarManifest(root, "bd.baz", "1.0.0", {{"bd.shared", "1.5.0"}});
+    writeSidecarManifest(root, "bd.shared", "1.2.0", {});
+    writeSidecarManifest(root, "bd.shared", "1.5.0", {});
+    writeSidecarManifest(root, "bd.shared", "1.9.0", {});
+
+    auto projectDir = makeTempDir("mvs-bare-proj");
+    auto homeDir    = makeTempDir("mvs-bare-home");
+    std::vector<RepositoryPtr> repos = {
+        std::make_shared<FilesystemRepository>("test", root.string()),
+    };
+    std::vector<DependencySpec> deps;
+    DependencySpec a; a.name = "bd.foo"; a.versionConstraint = "1.0.0";
+    DependencySpec b; b.name = "bd.baz"; b.versionConstraint = "1.0.0";
+    deps.push_back(a); deps.push_back(b);
+
+    ArtifactCache cache(projectDir.string(), homeDir.string());
+    auto resolved = resolveMvs(deps, repos, cache);
+    ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
+    std::string sharedPick;
+    for (const auto& r : *resolved) {
+        if (r.name == "bd.shared") sharedPick = r.version;
+    }
+    EXPECT_EQ(sharedPick, "1.5.0");
+
+    rmTree(root);
+    rmTree(projectDir);
+    rmTree(homeDir);
+}
+
+TEST(DependencyTests, mvsBareDirectAndTransitiveFloorsMerge) {
+    // The cajeta-cloud-aws shape: the root names codec "0.9.0" and a dependency
+    // names codec "0.9.1". Both floors hold at 0.9.1.
+    auto root = makeFsRepo({
+        {"bm.http",  "1.0.0", "http"},
+        {"bm.codec", "0.9.0", "c0"},
+        {"bm.codec", "0.9.1", "c1"},
+    });
+    writeSidecarManifest(root, "bm.http", "1.0.0", {{"bm.codec", "0.9.1"}});
+    writeSidecarManifest(root, "bm.codec", "0.9.0", {});
+    writeSidecarManifest(root, "bm.codec", "0.9.1", {});
+
+    auto projectDir = makeTempDir("mvs-bm-proj");
+    auto homeDir    = makeTempDir("mvs-bm-home");
+    std::vector<RepositoryPtr> repos = {
+        std::make_shared<FilesystemRepository>("test", root.string()),
+    };
+    std::vector<DependencySpec> deps;
+    DependencySpec a; a.name = "bm.http";  a.versionConstraint = "1.0.0";
+    DependencySpec b; b.name = "bm.codec"; b.versionConstraint = "0.9.0";
+    deps.push_back(a); deps.push_back(b);
+
+    ArtifactCache cache(projectDir.string(), homeDir.string());
+    auto resolved = resolveMvs(deps, repos, cache);
+    ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
+    std::string codecPick;
+    for (const auto& r : *resolved) {
+        if (r.name == "bm.codec") codecPick = r.version;
+    }
+    EXPECT_EQ(codecPick, "0.9.1");
+
+    rmTree(root);
+    rmTree(projectDir);
+    rmTree(homeDir);
+}
+
+TEST(DependencyTests, mvsBareOverrideStaysExact) {
+    // An override forces a version: a bare override absent from the repo is an
+    // error, never a float to the next release.
+    auto root = makeFsRepo({
+        {"bo.foo", "1.0.0", "foo"},
+        {"bo.bar", "1.0.0", "b1"},
+        {"bo.bar", "1.5.0", "b2"},
+    });
+    writeSidecarManifest(root, "bo.foo", "1.0.0", {{"bo.bar", ">=1.0.0"}});
+    writeSidecarManifest(root, "bo.bar", "1.0.0", {});
+    writeSidecarManifest(root, "bo.bar", "1.5.0", {});
+
+    auto projectDir = makeTempDir("mvs-bo-proj");
+    auto homeDir    = makeTempDir("mvs-bo-home");
+    std::vector<RepositoryPtr> repos = {
+        std::make_shared<FilesystemRepository>("test", root.string()),
+    };
+    std::vector<DependencySpec> deps;
+    DependencySpec d; d.name = "bo.foo"; d.versionConstraint = "1.0.0";
+    deps.push_back(d);
+    std::vector<OverrideSpec> overrides;
+    OverrideSpec ov; ov.name = "bo.bar"; ov.versionConstraint = "1.4.0";
+    overrides.push_back(ov);
+
+    ArtifactCache cache(projectDir.string(), homeDir.string());
+    auto resolved = resolveMvs(deps, repos, cache, overrides);
+    ASSERT_FALSE((bool)resolved) << "a bare override must not float to 1.5.0";
+    auto msg = errorText(resolved.takeError());
+    EXPECT_NE(msg.find("bo.bar"), std::string::npos) << msg;
+
+    rmTree(root);
+    rmTree(projectDir);
+    rmTree(homeDir);
+}
+
+TEST(DependencyTests, resolveDirectBareStaysExact) {
+    // resolveDirect picks the highest match, so a bare version stays a pin there.
+    auto repoRoot = makeFsRepo({
+        {"rd.foo", "1.0.0", "v1.0.0"},
+        {"rd.foo", "1.0.7", "v1.0.7"},
+    });
+    auto projectDir = makeTempDir("rd-bare-proj");
+    auto homeDir    = makeTempDir("rd-bare-home");
+    std::vector<RepositoryPtr> repos = {
+        std::make_shared<FilesystemRepository>("test", repoRoot.string()),
+    };
+    std::vector<DependencySpec> deps;
+    DependencySpec d; d.name = "rd.foo"; d.versionConstraint = "1.0.0";
+    deps.push_back(d);
+
+    ArtifactCache cache(projectDir.string(), homeDir.string());
+    auto resolved = resolveDirect(deps, repos, cache);
+    ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
+    ASSERT_EQ(resolved->size(), 1u);
+    EXPECT_EQ((*resolved)[0].version, "1.0.0");
+
+    rmTree(repoRoot);
     rmTree(projectDir);
     rmTree(homeDir);
 }

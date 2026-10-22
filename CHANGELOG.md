@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **A bare dependency version is a floor within its major.** `"dev.cajeta.codec": "0.9.0"` now means `>=0.9.0,<1.0.0`, so two libraries asking for different patch levels of one package resolve to the higher of the two instead of failing. Before, a bare version was an exact pin, and cajeta-cloud-aws could not depend on both cloud (codec 0.9.0) and http (codec 0.9.1) without forcing codec through `overrides`. `=1.2.3` is the exact pin. A bare version in `overrides` stays exact, and so does one in plugin resolution and the notebook kernel's loader, which take the highest match and would otherwise float to the newest release.
+
 ## 0.46.2 (2026-10-22)
 
 - **NVIDIA prefill is back to 0.43.1's speed.** 0.46.0 made `TileOps.scaledAccumI32` sign-extend both factors from 24 bits on every backend so AMD could use its 24-bit multiply. On NVIDIA that added one instruction per factor and saved nothing: cajeta-llm's 8B prefill on an RTX 4090 fell to 0.87x at chunk 512 and 0.84x at 128. The new `Bits.mulInt24(a, b)` multiplies two factors that fit 24 bits signed; AMD sign-extends and keeps the full-rate `v_mad_i32_i24`, and NVIDIA, cpu and Vulkan use the plain 32-bit multiply. `scaledAccumI32` uses it. A factor wider than 24 bits is now undefined (0.46.0 defined it as the low 24 bits); the reference interpreter reports it as undefined behaviour, so the conformance corpus catches a caller that relies on it.

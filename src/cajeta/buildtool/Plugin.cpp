@@ -117,13 +117,14 @@ namespace cajeta::buildtool {
             std::string version;
         };
 
-        // Highest candidate version satisfying `constraint`; empty when none does.
+        // Highest candidate version satisfying `constraint`; empty when none does. A
+        // bare version is a pin here, or the plugin would float to the newest release.
         std::string highestSat(
             const std::vector<std::string>& candidates,
             const std::string& constraint) {
             std::string best;
             for (const auto& v : candidates) {
-                if (!versionSatisfies(v, constraint)) continue;
+                if (!versionSatisfies(v, exactIfBare(constraint))) continue;
                 if (best.empty() || compareVersions(v, best) > 0) {
                     best = v;
                 }
