@@ -1245,16 +1245,27 @@ static void cajeta_xpu_vk_note_host_access(int64_t handle) {
 
 // ---- Scalar-argument arena -------------------------------------------------
 // One persistent mapped arena, bump-allocated in 256-byte view slots, instead of a
-// VkBuffer + map per scalar argument; begin_launch() flushes when headroom is short.
+// VkBuffer + map per scalar argument; begin_launch() rewinds it when nothing reads it
+// (no open batch, since eager launches wait, and no launch between begin and end), and
+// flushes when headroom is short.
 #define CAJ_VK_SCALAR_ARENA_BYTES (16ull * 1024u * 1024u)
 #define CAJ_VK_SCALAR_SLOT 256u
-static struct { int64_t handle; uint64_t cur; } g_vk_scalar_arena;
+static struct { int64_t handle; uint64_t cur; int staging; } g_vk_scalar_arena;
 static void cajeta_xpu_vk_scalar_begin_launch(void) {
     pthread_mutex_lock(&g_xpu_vk_submit_mu);
-    if (g_vk_scalar_arena.handle &&
-        g_vk_scalar_arena.cur + 64ull * CAJ_VK_SCALAR_SLOT
-            > CAJ_VK_SCALAR_ARENA_BYTES)
+    if (!g_vk_batch.open && g_vk_scalar_arena.staging == 0)
+        g_vk_scalar_arena.cur = 0;
+    else if (g_vk_scalar_arena.handle &&
+             g_vk_scalar_arena.cur + 64ull * CAJ_VK_SCALAR_SLOT
+                 > CAJ_VK_SCALAR_ARENA_BYTES)
         cajeta_xpu_vk_flush();          // rewinds the cursor
+    g_vk_scalar_arena.staging++;
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+}
+// The launch begun by begin_launch() is recorded, dispatched or abandoned.
+static void cajeta_xpu_vk_scalar_end_launch(void) {
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);
+    if (g_vk_scalar_arena.staging > 0) g_vk_scalar_arena.staging--;
     pthread_mutex_unlock(&g_xpu_vk_submit_mu);
 }
 static int64_t cajeta_xpu_vk_scalar_push(const void* p, uint32_t sz) {
@@ -3767,6 +3778,7 @@ static int64_t cajeta_xpu_vk_alloc(uint64_t b) { (void) b; return 0; }
 static int64_t cajeta_xpu_vk_slice(int64_t p, uint64_t o) { (void) p; (void) o; return 0; }
 static void cajeta_xpu_vk_view_release(int64_t h) { (void) h; }
 static void cajeta_xpu_vk_scalar_begin_launch(void) {}
+static void cajeta_xpu_vk_scalar_end_launch(void) {}
 static int64_t cajeta_xpu_vk_scalar_push(const void* p, uint32_t sz) {
     (void) p; (void) sz; return 0;
 }

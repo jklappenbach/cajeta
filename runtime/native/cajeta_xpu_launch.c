@@ -944,8 +944,11 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
         }
         if (!built) break;
     }
-    if (!built)
+    if (!built) {
         cajeta_xpu_note_launch_refusal(launchName, CAJ_XPU_VULKAN);
+        fprintf(stderr, "cajeta.xpu: could not stage a scalar or sampler argument of "
+                "Vulkan kernel '%s'\n", launchName);
+    }
     if (built)
         cajeta_xpu_vk_launch(spirv, len, launchName, bindings, bkinds, n,
                              (unsigned) gridX, (unsigned) gridY, (unsigned) gridZ,
@@ -956,6 +959,7 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
                              (int) specCount, specValues);
     for (int i = 0; i < ntrans; ++i) cajeta_xpu_vk_free(transient[i]);
     for (int i = 0; i < nsamp; ++i) cajeta_xpu_vk_destroy_sampler(samplers[i]);
+    cajeta_xpu_vk_scalar_end_launch();
 }
 
 // Dispatch a launch to whatever backend is active, on its current device.
