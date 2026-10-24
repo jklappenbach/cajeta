@@ -190,8 +190,9 @@ token (§7.15).
   the power of two above, so a build holds at most a few entries per bank.
   The objection to buckets, that an edge can pick the wrong shape, is
   answered by the margin: a member that leads by less than the tie margin
-  at an edge is a tie by §7.12, and either member is acceptable (Julian,
-  2026-10-11, reversing the 2026-10-03 rejection for this case only).
+  at an edge is a tie by §7.12, and the tie goes to the first-listed member
+  within the margin (Julian, 2026-10-11, reversing the 2026-10-03 rejection
+  for this case only; the listing-order rule 2026-10-24).
 - Timing uses the deferred stream and the event tier with its calibrated
   clock (`KernelTimer`), and interleaves candidates, because the box's clock
   is bimodal and a single sequential sweep has read 2x off.
@@ -291,8 +292,13 @@ wins.
   change to any of them misses the cache, and the next first use times again. The
   rows-per-block knob keys on the build id alone today.
 - **Margin:** the entry records how far the winner led. A lead under about
-  3% is recorded as a TIE, and either shape is acceptable. Clocks are NOT
-  part of the key, since on Phoenix they move constantly. A clock or
+  3% is recorded as a TIE. A tie is decided by listing order: the
+  first-listed survivor within the margin of the fastest is taken, never the
+  one that happened to be fastest this run, so the same box makes the same
+  choice in every process (Julian, 2026-10-24: a different tile is a
+  different accumulation order, and cajeta-llm's hip output differed between
+  runs in 12% of processes on a 3% tie; cajeta-llm 15.2.12.2.1.1). Clocks are
+  NOT part of the key, since on Phoenix they move constantly. A clock or
   power-limit change can only reorder close candidates, and those are ties.
 - **Measurement guard:** the probe refuses to cache a measurement taken
   while another process uses the device (foreign compute apps, a busy CI

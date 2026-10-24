@@ -134,7 +134,9 @@ TEST(XpuShapeChoice, firstUseTimesInterleavedAndCachesTheWinner) {
 }
 
 // 4.6.1.6: the entry records the winner's margin over the runner-up, per
-// mille, and a lead under 3% is a tie. The cached answer keeps both.
+// mille, and a lead under 3% is a tie. The cached answer keeps both. A tie
+// resolves to the first-listed survivor within the margin (4.6.1.9), so "a"
+// is taken over the 2% faster "b".
 TEST(XpuShapeChoice, aLeadUnderThreePercentIsATie) {
     EXPECT_EQ(run(R"CJ(
         ShapeFilter f #= M.three(128);
@@ -142,9 +144,11 @@ TEST(XpuShapeChoice, aLeadUnderThreePercentIsATie) {
         ShapeResult r #= ShapeChoice.choose(dir, f, p);
         if (r.marginPerMille != 20) { return 1; }
         if (!r.tie) { return 2; }
+        if (!r.kernel.equals("a")) { return 5; }
         Fake q #= heap Fake(1L, 1L, 1L);
         ShapeResult s #= ShapeChoice.choose(dir, f, q);
         if (!s.fromCache || !s.tie || s.marginPerMille != 20) { return 3; }
+        if (!s.kernel.equals("a")) { return 6; }
         ShapeFilter g #= heap ShapeFilter("fam2", M.ada(), 512L, 4096L, 4096L);
         g.consider(#heap ShapeCandidate("a", 128, 128, 256, 256, 8),
                    #heap KernelFacts(200, 0, 34816));
@@ -153,6 +157,29 @@ TEST(XpuShapeChoice, aLeadUnderThreePercentIsATie) {
         Fake w #= heap Fake(100L, 80L, 0L);
         ShapeResult t #= ShapeChoice.choose(dir, g, w);
         if (t.marginPerMille != 200 || t.tie) { return 4; }
+        return 0;
+)CJ", freshDir()), 0);
+}
+
+// 4.6.1.9: a tie is decided by listing order, not by which candidate happened
+// to be fastest this run: the first-listed survivor within the margin of the
+// best wins, a survivor outside the margin never does, and a clear winner is
+// still the fastest. The same timings in any order give the same shape.
+TEST(XpuShapeChoice, aTieResolvesToTheFirstListedSurvivor) {
+    EXPECT_EQ(run(R"CJ(
+        ShapeFilter f #= M.three(128);
+        Fake p #= heap Fake(99L, 98L, 97L);
+        ShapeResult r #= ShapeChoice.choose(dir, f, p);
+        if (!r.tie || r.marginPerMille != 10) { return 1; }
+        if (!r.kernel.equals("a")) { return 2; }
+        ShapeFilter g #= M.three(136);
+        Fake q #= heap Fake(300L, 98L, 100L);
+        ShapeResult s #= ShapeChoice.choose(dir, g, q);
+        if (!s.tie || !s.kernel.equals("b")) { return 3; }
+        ShapeFilter h #= M.three(144);
+        Fake w #= heap Fake(100L, 90L, 300L);
+        ShapeResult t #= ShapeChoice.choose(dir, h, w);
+        if (t.tie || !t.kernel.equals("b") || t.marginPerMille != 100) { return 4; }
         return 0;
 )CJ", freshDir()), 0);
 }

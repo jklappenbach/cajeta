@@ -14,7 +14,8 @@ import cajeta.lang.System;
  * wins. The winner is cached in `Autotune`'s store under the family and the
  * exact M x N x K, against a build id made from every survivor's code, so a
  * rebuild that changes any candidate re-measures. The entry records the
- * winner's margin; a lead under 3% is a tie, and either shape is fine.
+ * winner's margin; a lead under 3% is a tie, which goes to the first-listed
+ * survivor within the margin, so the same box makes the same choice every run.
  *
  * ```cajeta
  * ShapeResult r #= ShapeChoice.choose(tuneDir, filter, probe);
@@ -177,11 +178,25 @@ public final class ShapeChoice {
             r.refusal #= all;
             return;
         }
-        ShapeChoice.pick(r, f, best);
         if (second > 0L) {
             r.marginPerMille = (int32) ((second - bestT) * 1000L / second);
             r.tie = r.marginPerMille < ShapeChoice.tiePerMille;
         }
+        if (r.tie) {
+            // A tie goes to the first-listed survivor within the margin (§7.12), so the choice reproduces.
+            int32 k = 0;
+            while (k < ns) {
+                if (!refused[k]) {
+                    int64 mk = ShapeChoice.median(samples, k * rn, rn);
+                    if ((mk - bestT) * 1000L < (int64) ShapeChoice.tiePerMille * mk) {
+                        best = k;
+                        k = ns;
+                    }
+                }
+                k = k + 1;
+            }
+        }
+        ShapeChoice.pick(r, f, best);
         return;
     }
 
