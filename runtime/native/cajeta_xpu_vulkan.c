@@ -3255,9 +3255,12 @@ static int caj_vk_launch_batched(struct caj_vk_pipe* P,
     g_vk_batch.chunkDispatches++;
     {
         static int s_chunk = -1;
-        if (s_chunk < 0)
+        if (s_chunk < 0) {
+            // CAJETA_XPU_VK_CHUNK=N overrides the dispatches per submit (an experiment knob).
+            const char* c = getenv("CAJETA_XPU_VK_CHUNK");
             s_chunk = getenv("CAJETA_XPU_VK_NOCHUNK")
-                          ? 0 : CAJ_VK_CHUNK_DISPATCHES;
+                          ? 0 : (c && atoi(c) > 0 ? atoi(c) : CAJ_VK_CHUNK_DISPATCHES);
+        }
         if (s_chunk > 0 && g_vk_batch.chunkDispatches >= (unsigned) s_chunk)
             caj_vk_batch_submit_chunk();
     }
