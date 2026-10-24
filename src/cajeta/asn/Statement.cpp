@@ -2616,6 +2616,27 @@ namespace cajeta {
         emitTryFinallyUnwind(module);
         emitScopeExitToWatermark(module);
         emitReturnDrops(module);
+        auto stringReturnResolves = [&](CajetaModulePtr mod, llvm::Value*& v,
+                                        llvm::Value*& flag) -> bool {
+            auto mM = mod->getCurrentMethod();
+            if (!mM || !mM->isReturnsOwnership() || modeCarrying || !expression
+                    || !v || !v->getType()->isPointerTy()) return false;
+            auto strCls = dynamic_pointer_cast<CajetaClass>(expression->getResolvedType());
+            if (!strCls || !strCls->getQName()
+                    || strCls->getQName()->getTypeName() != "String"
+                    || strCls->getQName()->getPackageName() != "cajeta.lang") return false;
+            llvm::Type* i64 = llvm::Type::getInt64Ty(*mod->getLlvmContext());
+            if (auto* c = llvm::dyn_cast_or_null<llvm::ConstantInt>(flag)) {
+                if (!c->isZero()) return false;   // a title: nothing to resolve
+            }
+            llvm::Function* orFn = mod->getRuntimeFunction("__cajeta_string_own_or_resolve");
+            if (!orFn) return false;
+            llvm::Value* f = flag ? flag : llvm::ConstantInt::get(i64, 0);
+            if (f->getType() != i64) f = builder->CreateZExtOrTrunc(f, i64, "ret_str_flag");
+            v = builder->CreateCall(orFn, {v, f}, "ret_str");
+            flag = llvm::ConstantInt::get(i64, 1);
+            return true;
+        };
         auto emitTitleContract = [&](llvm::Value* flag) {
             // A `#R` return is a CONTRACT: a runtime flag of 0 would hand the
             // caller a forged title, so panic TITLE_MISS instead. `return #= x`
@@ -2654,7 +2675,15 @@ namespace cajeta {
         if (rs.family == cajeta::ownership::TitleFamily::Move) {
             returnTitleFlag = cajeta::ownership::titleFlag(rs, module);
             via = cajeta::ownership::TitleVia::Move;
-            emitTitleContract(returnTitleFlag);
+            // A `#String` return of a String that holds no title hands out an
+            // owned copy rather than panicking TITLE_MISS: the String analogue
+            // of rule 5, where a lent String stored with `#=` resolves to a copy
+            // (decided with Julian 2026-10-23). It covers the compile-time miss
+            // (a literal-initialised local, flag 0) and the runtime one (a local
+            // a skipped `#=` left borrowing) alike.
+            if (!stringReturnResolves(module, val, returnTitleFlag)) {
+                emitTitleContract(returnTitleFlag);
+            }
         }
         if (auto mcRet = dynamic_pointer_cast<MethodCallExpression>(rs.leaf)) {
             if (llvm::Value* f = mcRet->getFlaggedTitleValue()) {

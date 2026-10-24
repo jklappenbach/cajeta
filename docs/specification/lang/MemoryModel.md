@@ -122,6 +122,16 @@ kept in a field with a plain `=` (see [Fields](#fields)).
 Stores (the first three rows) pass through with `#=`. Arguments and returns (the
 last two) pass through with `#x` — they are not assignments.
 
+A `#T` return promises the caller a title. When `return #x` finds `x` holding
+none, the general case panics `CAJETA_PANIC_TITLE_MISS` (code 3), since handing
+over a borrow as if owned would forge a title. A **`String`** is the
+exception: `return #s` of a String that holds no title (a literal-initialised
+local, or one a skipped `#=` left borrowing) returns an owned copy, through the
+same resolve a lent String stored with `#=` takes (a copy up to 256 B, a shared
+stake above, a fresh wrapper over a static literal). This holds whether the
+missing title is known at compile time or only at run time
+(`test/ownership/SkippedTryMoveTests.cpp`; decided 2026-10-23).
+
 **`#` is a passthrough, not an unconditional move.** It hands along the title
 the source *actually* holds. From an owner, that is a transfer. From a plain
 formal — whose mode is fixed at the **call site** (`f(x)` lends, `f(#x)`
