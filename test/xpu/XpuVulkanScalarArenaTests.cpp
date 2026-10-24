@@ -5,6 +5,7 @@
 
 #include "XpuDeviceTestUtil.h"
 #include "../jit/JitTestHelper.h"
+#include "../PortableEnv.h"
 #include "cajeta/xpu/XpuTarget.h"
 
 #include <cstdint>
