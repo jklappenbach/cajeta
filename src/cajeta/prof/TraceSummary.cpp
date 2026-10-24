@@ -550,7 +550,8 @@ namespace cajeta::prof {
                 std::printf("pending table: %" PRId64 " launches overflowed it and carry HOST "
                             "brackets, not device spans; %" PRId64 " parked and never matched — "
                             "the host ran that far ahead of the dispatch records, so "
-                            "those kernels' spans are NOT device time\n",
+                            "those kernels' spans are NOT device time; the table is bounded "
+                            "by CAJETA_PROFILER_GPU_PENDING\n",
                             sum.gpuPendingOverflow, sum.gpuPendingUnclaimed);
             }
         }

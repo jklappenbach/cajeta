@@ -14,6 +14,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <functional>
 #include <string>
 #include <set>
@@ -55,6 +56,16 @@ struct Seam {
     void    (*capture_disarm)(void) = nullptr;
     int64_t (*captured)(void) = nullptr;
     int64_t (*capture_dropped)(void) = nullptr;
+    // Unit 15: the pending table, driven directly.
+    int32_t (*park)(const CajetaGpuEvent*) = nullptr;
+    int32_t (*pending_capacity)(void) = nullptr;
+    int32_t (*set_pending_cap)(int32_t) = nullptr;
+    int32_t (*pending_count)(void) = nullptr;
+    void    (*pending_reset)(void) = nullptr;
+    int64_t (*pending_overflow)(void) = nullptr;
+    int64_t (*pending_unclaimed)(void) = nullptr;
+    int32_t (*resolve)(int64_t, int64_t, int64_t) = nullptr;
+    int32_t (*collect_all)(void) = nullptr;
 };
 
 Seam& seam() {
@@ -87,6 +98,15 @@ Seam& seam() {
         x.line_mark = reinterpret_cast<decltype(x.line_mark)>(sym("__cajeta_line_mark"));
         x.line_leave = reinterpret_cast<decltype(x.line_leave)>(sym("__cajeta_line_leave"));
         x.now_ns = reinterpret_cast<decltype(x.now_ns)>(sym("__cajeta_currentTimeNanos"));
+        x.park = reinterpret_cast<decltype(x.park)>(sym("__cajeta_prof_gpu_park_for_test"));
+        x.pending_capacity = reinterpret_cast<decltype(x.pending_capacity)>(sym("__cajeta_prof_gpu_pending_capacity"));
+        x.set_pending_cap = reinterpret_cast<decltype(x.set_pending_cap)>(sym("__cajeta_prof_gpu_set_pending_cap"));
+        x.pending_count = reinterpret_cast<decltype(x.pending_count)>(sym("__cajeta_prof_gpu_pending_count"));
+        x.pending_reset = reinterpret_cast<decltype(x.pending_reset)>(sym("__cajeta_prof_gpu_pending_reset"));
+        x.pending_overflow = reinterpret_cast<decltype(x.pending_overflow)>(sym("__cajeta_prof_gpu_pending_overflow"));
+        x.pending_unclaimed = reinterpret_cast<decltype(x.pending_unclaimed)>(sym("__cajeta_prof_gpu_pending_unclaimed"));
+        x.resolve = reinterpret_cast<decltype(x.resolve)>(sym("__cajeta_prof_gpu_resolve_dispatch"));
+        x.collect_all = reinterpret_cast<decltype(x.collect_all)>(sym("__cajeta_prof_gpu_collect_all"));
         return x;
     }();
     return s;
@@ -586,4 +606,118 @@ TEST(ProfilerGpuSeam, aRingLargerThanTheRunDropsNothing) {
     EXPECT_EQ(s.capture_dropped(), 0) << "a ring with room must drop nothing";
     EXPECT_EQ(s.captured(), 40);
     s.capture_disarm();
+}
+
+// ── Unit 15 — the pending table holds a long run ──────────────────────────────
+//
+// cajeta-llm 15.2.15.1.2: 96,750 of 115,444 launches overflowed a 16384-slot
+// table and carried host brackets. The table is driven here directly, through
+// the same park and resolve the CUDA and ROCm backends use, because a test
+// that needs a GPU to run 40,000 kernels would run nowhere a PR is checked.
+namespace {
+
+CajetaGpuEvent parkedEvent(int64_t id) {
+    CajetaGpuEvent ev;
+    std::memset(&ev, 0, sizeof(ev));
+    ev.launch_id = id;
+    ev.kernel_name = "k";
+    ev.backend = XPU_CPU;
+    ev.host_launch_ns = id * 10;
+    ev.host_return_ns = id * 10 + 5;
+    ev.dev_start_ns = ev.host_launch_ns;
+    ev.dev_end_ns = ev.host_return_ns;
+    ev.tier = CAJETA_PROF_TIER_HOST;
+    return ev;
+}
+
+} // namespace
+
+TEST(ProfilerGpuSeam, thePendingTableGrowsPastSixteenThousandParkedLaunches) {
+    auto& s = seam();
+    ASSERT_NE(s.park, nullptr) << "__cajeta_prof_gpu_park_for_test unresolved";
+    ASSERT_NE(s.pending_capacity, nullptr) << "__cajeta_prof_gpu_pending_capacity unresolved";
+    ASSERT_NE(s.resolve, nullptr);
+    s.pending_reset();
+    Collector c;
+    Sink sink(&c, CAJETA_GPU_SINK_BATCHED);
+    ASSERT_GE(sink.id, 0);
+
+    constexpr int64_t kParked = 40000;
+    int64_t parked = 0;
+    for (int64_t id = 1; id <= kParked; id++) {
+        CajetaGpuEvent ev = parkedEvent(id);
+        parked += s.park(&ev);
+    }
+    EXPECT_EQ(parked, kParked) << "a launch refused by the table loses its device span";
+    EXPECT_EQ(s.pending_overflow(), 0);
+    EXPECT_EQ(s.pending_count(), (int32_t) kParked);
+    EXPECT_GE(s.pending_capacity(), (int32_t) kParked) << "the table did not grow";
+
+    // Resolve in record order, which is not launch order on a device with
+    // several queues: every id must still find its own slot.
+    int64_t resolved = 0;
+    for (int64_t id = kParked; id >= 1; id--) resolved += s.resolve(id, id * 10 + 1, id * 10 + 4);
+    EXPECT_EQ(resolved, kParked);
+    EXPECT_EQ(s.pending_count(), 0);
+    s.flush();
+    // 40,000 resolves in one burst outrun a sink's queue, and the seam's
+    // contract is to count what it dropped rather than block the resolver.
+    // What arrived must be right, and every launch is accounted for.
+    EXPECT_EQ((int64_t) c.got.size() + s.sink_dropped(sink.id), kParked);
+    EXPECT_GT((int64_t) c.got.size(), 8000);
+    std::set<int64_t> ids;
+    for (const auto& e : c.got) {
+        ids.insert(e.launch_id);
+        EXPECT_EQ(e.tier, CAJETA_PROF_TIER_DEVICE);
+        EXPECT_EQ(e.dev_start_ns, e.launch_id * 10 + 1) << "a span landed on the wrong launch";
+    }
+    EXPECT_EQ(ids.size(), c.got.size()) << "a launch was published twice";
+    EXPECT_EQ(s.pending_unclaimed(), 0);
+}
+
+// The table is bounded by a cap, and the cap refuses rather than wraps: a
+// refused launch publishes at host tier and is counted, never mis-attributed.
+TEST(ProfilerGpuSeam, thePendingTableCapRefusesAndCounts) {
+    auto& s = seam();
+    if (!s.park || !s.set_pending_cap) GTEST_SKIP() << "pending table hooks unresolved";
+    s.pending_reset();
+    const int32_t before = s.set_pending_cap(0);   // 0 = report the one in force
+    ASSERT_GT(before, 0);
+    ASSERT_EQ(s.set_pending_cap(1000), 1000);
+    int64_t parked = 0;
+    for (int64_t id = 1; id <= 1500; id++) {
+        CajetaGpuEvent ev = parkedEvent(id);
+        parked += s.park(&ev);
+    }
+    EXPECT_EQ(parked, 1000);
+    EXPECT_EQ(s.pending_overflow(), 500);
+    EXPECT_EQ(s.pending_count(), 1000);
+    // Resolving a refused id finds nothing and invents nothing.
+    EXPECT_EQ(s.resolve(1500, 1, 2), 0);
+    EXPECT_EQ(s.resolve(1, 1, 2), 1);
+    s.set_pending_cap(before);
+    s.pending_reset();
+}
+
+// A drain of a large table must not live on the stack: 40,000 events is
+// several megabytes, more than a fiber has. Everything parked goes out at
+// host tier and is counted as unclaimed.
+TEST(ProfilerGpuSeam, collectAllPublishesEverythingStillParkedAtHostTier) {
+    auto& s = seam();
+    if (!s.park || !s.collect_all) GTEST_SKIP() << "__cajeta_prof_gpu_collect_all unresolved";
+    s.pending_reset();
+    Collector c;
+    Sink sink(&c, CAJETA_GPU_SINK_BATCHED);
+    constexpr int64_t kParked = 40000;
+    for (int64_t id = 1; id <= kParked; id++) {
+        CajetaGpuEvent ev = parkedEvent(id);
+        s.park(&ev);
+    }
+    std::thread([&] { s.collect_all(); }).join();   // a small-stack thread would show a stack drain
+    s.flush();
+    EXPECT_EQ((int64_t) c.got.size(), kParked);
+    EXPECT_EQ(s.pending_unclaimed(), kParked);
+    EXPECT_EQ(s.pending_count(), 0);
+    for (const auto& e : c.got) EXPECT_EQ(e.tier, CAJETA_PROF_TIER_HOST);
+    s.pending_reset();
 }

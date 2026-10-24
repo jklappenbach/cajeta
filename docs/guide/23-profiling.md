@@ -47,6 +47,7 @@ profile, or --debug-info=full to also get exact line numbers.
 | `CAJETA_PROFILER_HZ` | `1000` | Samples per second. |
 | `CAJETA_PROFILER_RING` | `4096` | Samples buffered between the sampler and the writer. |
 | `CAJETA_PROFILER_GPU_RING` | capture default (`8192`) | **Device** records buffered between the GPU capture layer and the writer. Separate ring, separate limit: a busy kernel loop overflows this long before the sampler's. |
+| `CAJETA_PROFILER_GPU_PENDING` | `262144` launches | How many launches may wait for their device record at once. The table grows with what is parked, so the default is a bound, not a size; a launch past it keeps its host bracket and is counted in `gpu_pending_overflow`. |
 | `CAJETA_PROFILER_OUT` | `cajeta.pftrace` | Where to write the trace. |
 | `CAJETA_PROFILER_GPU` | unset | `0` leaves device capture unarmed: host sampling only. Device capture attributes every launch as it is submitted, which turns a deferred stream (`KernelStream.setDeferred`) back into one submission per launch, so a host profile of a program that defers is only honest with capture off. |
 
@@ -96,6 +97,15 @@ and what is lost is the oldest — a truncated profile of the end of the run, no
 a thinned sample of all of it. Raise `CAJETA_PROFILER_GPU_RING` until
 `gpu_dropped_per_mille` reads zero; it costs one `CajetaGpuEvent` per slot and
 nothing at all when the profiler is off.
+
+A launch waits for its device record in a *pending table*, and a host that
+never syncs runs whole steps ahead of those records — a decode step is some
+hundreds of launches, a run over a hundred thousand. The table grows to hold
+what is parked (it was a fixed 16,384 slots, and a four-sequence decode run
+overflowed it with 96,750 launches), bounded by `CAJETA_PROFILER_GPU_PENDING`.
+`gpu_pending_overflow` counts launches refused at that bound, and
+`gpu_pending_unclaimed` launches whose record never arrived; both carry host
+brackets rather than device spans, and the summary says so.
 
 ### A per-kernel table without opening the IDE
 

@@ -552,3 +552,199 @@ TEST(ProfilerCudaDispatchDevice, twoStreamsAreNotSerializedByBeingMeasured) {
            "the first kernel only ran for " << span << " ns — the measurement "
            "serialized the program (§5.1.3)";
 }
+
+// ── Unit 15 — a long run attributes every launch, not the first thousand ──────
+//
+// cajeta-llm 15.2.15.1.2 (Proton, 2026-10-23): a GPU capture of a 4-sequence
+// decode kept device spans for 18,694 of 115,444 launches; the rest overflowed
+// the pending table and carried host brackets. Three fixed-size structures
+// between a launch and its record: the pending table (16384 slots, scanned
+// linearly), CUPTI's per-buffer correlation map (1024 entries, so every kernel
+// past the thousandth in a 1 MB buffer is "unmapped" and its launch stays
+// parked forever), and a settle that collected only the HIP backend. The tests
+// below are the shape of the failure at a size one GPU test can afford.
+namespace {
+
+// N launches on one stream with no sync between them: the host runs ahead of
+// the device, which is what every real program the profiler is for does.
+std::string manyLaunchesSource(int n) {
+    return std::string(
+    "package test;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
+    "public class Many {\n"
+    "    @Kernel\n"
+    "    public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,\n"
+    "                             float32 a, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        if (i < n) { y[i] = a * x[i] + y[i]; }\n"
+    "    }\n"
+    "    public static float32 run() {\n"
+    "        uint32 n = 1024;\n"
+    "        float32[] hx = heap float32[n];\n"
+    "        float32[] hy = heap float32[n];\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) { hx[i] = 1.0f; hy[i] = 0.0f; }\n"
+    "        KernelBuffer<float32> x = heap KernelBuffer<float32>(0, n);\n"
+    "        KernelBuffer<float32> y = heap KernelBuffer<float32>(0, n);\n"
+    "        x.allocate();\n"
+    "        y.allocate();\n"
+    "        x.upload(hx);\n"
+    "        y.upload(hy);\n"
+    "        KernelStream s #= KernelStream.current();\n"
+    "        for (int32 k = 0; k < ") + std::to_string(n) + std::string("; k = k + 1) {\n"
+    "            saxpy.launch(s, grid: [4], block: [256])(y, x, 1.0f, n);\n"
+    "        }\n"
+    "        s.sync();\n"
+    "        y.download(hy);\n"
+    "        x.free();\n"
+    "        y.free();\n"
+    "        return hy[0];\n"
+    "    }\n"
+    "}\n");
+}
+
+struct PendingSyms {
+    int64_t (*overflow)(void)  = nullptr;
+    int64_t (*unclaimed)(void) = nullptr;
+    int32_t (*count)(void)     = nullptr;
+    void    (*settle)(void)    = nullptr;
+    int64_t (*corrDropped)(void) = nullptr;
+};
+
+PendingSyms bindPending(CajetaJit* jit) {
+    auto sym = [&](const char* n) { return jit->lookupRawSymbol(n); };
+    PendingSyms p;
+    p.overflow  = reinterpret_cast<int64_t (*)(void)>(sym("__cajeta_prof_gpu_pending_overflow"));
+    p.unclaimed = reinterpret_cast<int64_t (*)(void)>(sym("__cajeta_prof_gpu_pending_unclaimed"));
+    p.count     = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_gpu_pending_count"));
+    p.settle    = reinterpret_cast<void (*)(void)>(sym("__cajeta_prof_gpu_capture_settle"));
+    p.corrDropped = reinterpret_cast<int64_t (*)(void)>(sym("__cajeta_prof_cupti_corr_dropped"));
+    return p;
+}
+
+// Arms CUPTI in the fresh child the way the first test does. Returns the skip
+// reason when the box cannot arm, or nullptr when it is tracing.
+const char* armInChild(const CuptiSyms& s) {
+    static std::string why;
+    s.init();
+    const int32_t configured = s.configure();
+    if (!::cajeta::xpu::test::cudaAvailable()) return "no CUDA device/driver available";
+    if (s.state() != CAJETA_CUPTI_READY) {
+        why = std::string("CUPTI did not bind here (") + (s.reason ? s.reason() : "no reason") + ")";
+        return why.c_str();
+    }
+    EXPECT_EQ(configured, 1) << (s.reason ? s.reason() : "no reason");
+    EXPECT_EQ(s.tracing(), 1);
+    return nullptr;
+}
+
+constexpr int kManyLaunches = 5000;
+
+} // namespace
+
+// Every one of 5000 launches comes back at DEVICE tier through the collect
+// path, with nothing unmapped, nothing overflowed and nothing left parked.
+TEST(ProfilerCudaDispatchDevice, aLongRunResolvesEveryLaunchAtDeviceTier) {
+    if (::getenv(kChildMarker) == nullptr) {
+        std::string out;
+        const int rc = runInFreshProcess(
+            "ProfilerCudaDispatchDevice.aLongRunResolvesEveryLaunchAtDeviceTier", out);
+        if (rc != 0) FAIL() << "the CUDA long-run child failed (exit " << rc << "):\n" << out;
+        if (out.find("[  SKIPPED ]") != std::string::npos) GTEST_SKIP() << "child skipped:\n" << out;
+        SUCCEED() << out;
+        return;
+    }
+    auto jit = CajetaJit::compile(manyLaunchesSource(kManyLaunches), "test.Many", cudaOptions());
+    ASSERT_NE(jit, nullptr);
+    const CuptiSyms s = bind(jit.get());
+    const PendingSyms p = bindPending(jit.get());
+    ASSERT_TRUE(s.init && s.configure && s.tracing && s.unmapped && s.records);
+    ASSERT_TRUE(p.overflow && p.unclaimed && p.count);
+    if (const char* skip = armInChild(s)) GTEST_SKIP() << skip;
+
+    g_caught.clear();
+    const int32_t sink = s.sinkReg(catchSink, nullptr, CAJETA_GPU_SINK_BATCHED);
+    ASSERT_GE(sink, 0);
+
+    auto run = jit->lookup<float (*)()>("run");
+    ASSERT_NE(run, nullptr);
+    EXPECT_FLOAT_EQ(run(), (float) kManyLaunches)
+        << "the kernels did not all run, so whatever was timed was not this computation";
+
+    // Records arrive by buffer; flush (never collect) until the count settles.
+    for (int i = 0; i < 400 && s.records() < kManyLaunches; ++i) {
+        s.flush();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    s.gpuCollect(CAJ_GPU_BACKEND_CUDA);
+    s.gpuFlush();
+    s.sinkUnreg(sink);
+
+    int64_t device = 0, host = 0, event = 0;
+    for (const auto& e : g_caught) {
+        if (e.tier == CAJETA_PROF_TIER_DEVICE) device++;
+        else if (e.tier == CAJETA_PROF_TIER_EVENT) event++;
+        else host++;
+    }
+    std::printf(" RESULT u15_launches=%d records=%lld device=%lld event=%lld host=%lld\n",
+                kManyLaunches, (long long) g_caught.size(), (long long) device,
+                (long long) event, (long long) host);
+    std::printf(" RESULT u15_cupti_records=%lld ext=%lld unmapped=%lld corr_dropped=%lld\n",
+                (long long) s.records(), (long long) s.extRecords(), (long long) s.unmapped(),
+                (long long) (p.corrDropped ? p.corrDropped() : -1));
+    std::printf(" RESULT u15_pending_overflow=%lld unclaimed=%lld still_parked=%d\n",
+                (long long) p.overflow(), (long long) p.unclaimed(), (int) p.count());
+
+    EXPECT_EQ((int64_t) g_caught.size(), (int64_t) kManyLaunches)
+        << "a launch that produces no record at all is a lost measurement";
+    EXPECT_EQ(s.unmapped(), 0)
+        << "kernel records arrived whose launch could not be found: the "
+           "correlation map lost mappings (it was a 1024-entry per-buffer table)";
+    EXPECT_EQ(p.overflow(), 0)
+        << "the pending table refused launches; those carry host brackets";
+    EXPECT_EQ(p.unclaimed(), 0)
+        << "launches were parked and never matched to their record";
+    EXPECT_EQ(device, (int64_t) kManyLaunches)
+        << "every launch must carry the device's span, not the first thousand";
+}
+
+// The capture path's settle — what the sampler's drain and a GPU-only trace
+// call — must collect the CUDA backend, not only HIP.
+TEST(ProfilerCudaDispatchDevice, captureSettleCollectsTheCudaBackend) {
+    if (::getenv(kChildMarker) == nullptr) {
+        std::string out;
+        const int rc = runInFreshProcess(
+            "ProfilerCudaDispatchDevice.captureSettleCollectsTheCudaBackend", out);
+        if (rc != 0) FAIL() << "the CUDA settle child failed (exit " << rc << "):\n" << out;
+        if (out.find("[  SKIPPED ]") != std::string::npos) GTEST_SKIP() << "child skipped:\n" << out;
+        SUCCEED() << out;
+        return;
+    }
+    auto jit = CajetaJit::compile(manyLaunchesSource(64), "test.Many", cudaOptions());
+    ASSERT_NE(jit, nullptr);
+    const CuptiSyms s = bind(jit.get());
+    const PendingSyms p = bindPending(jit.get());
+    ASSERT_TRUE(p.settle && p.count && p.unclaimed);
+    if (const char* skip = armInChild(s)) GTEST_SKIP() << skip;
+
+    g_caught.clear();
+    const int32_t sink = s.sinkReg(catchSink, nullptr, CAJETA_GPU_SINK_BATCHED);
+    ASSERT_GE(sink, 0);
+    auto run = jit->lookup<float (*)()>("run");
+    ASSERT_NE(run, nullptr);
+    EXPECT_FLOAT_EQ(run(), 64.0f);
+
+    // No explicit CUDA collect: settle alone has to bring the records in.
+    p.settle();
+    s.sinkUnreg(sink);
+
+    int64_t device = 0;
+    for (const auto& e : g_caught) if (e.tier == CAJETA_PROF_TIER_DEVICE) device++;
+    std::printf(" RESULT u15_settle_records=%lld device=%lld still_parked=%d\n",
+                (long long) g_caught.size(), (long long) device, (int) p.count());
+    EXPECT_EQ((int64_t) g_caught.size(), 64)
+        << "settle left launches parked: it never asked the CUDA backend to collect";
+    EXPECT_EQ(device, 64) << "settle published launches without their device spans";
+    EXPECT_EQ(p.count(), 0);
+}

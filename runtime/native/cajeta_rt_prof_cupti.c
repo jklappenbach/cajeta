@@ -390,49 +390,162 @@ int32_t __cajeta_prof_cupti_decode_external(const void* rec, int64_t bytes,
     return 1;
 }
 
-// FIXED SIZE in static storage: a buffer-complete callback runs on CUPTI's
-// thread and must not allocate. Overflow refuses; wrapping would mis-attribute.
-#define CAJ_CUPTI_CORR_CAP 1024
+// The map OUTLIVES a buffer and GROWS: it was a 1024-entry table reset per
+// buffer, and a 1 MB buffer holds ~2,500 launches, so every kernel past the
+// thousandth went "unmapped" and its launch stayed parked (cajeta-llm
+// 15.2.15.1.2: 3,978 of 5,000 in the first measurement). CUPTI's correlation
+// ids are monotonic, so the map is indexed by id directly, like the pending
+// table: a collision means the live window outgrew it, and it doubles up to a
+// cap; past the cap the stale occupant is dropped and counted. A mapping is
+// consumed by the kernel that matches it. A mapping record FOLLOWS its kernel
+// and may land in the NEXT buffer, so a kernel whose mapping has not arrived
+// waits as an orphan and is retried when the next buffer comes.
+#define CAJ_CUPTI_CORR_INITIAL 4096
+#define CAJ_CUPTI_CORR_CAP     (1 << 17)
+#define CAJ_CUPTI_ORPHAN_CAP   8192
 
 typedef struct {
-    int32_t corr;      /* CUPTI's correlationId; 0 means the slot is free */
-    int64_t external;  /* the launch id we pushed */
+    uint32_t corr;     /* CUPTI's correlationId; 0 means the slot is free */
+    int64_t  external; /* the launch id we pushed */
 } CajCuptiCorr;
 
-static CajCuptiCorr caj_cupti_corr[CAJ_CUPTI_CORR_CAP];
-static int32_t      caj_cupti_corr_used;
-static int64_t      caj_cupti_corr_dropped;
+typedef struct {
+    uint32_t corr;
+    int64_t  start, end;
+} CajCuptiOrphan;
 
-int32_t __cajeta_prof_cupti_corr_capacity(void) { return CAJ_CUPTI_CORR_CAP; }
+static CajCuptiCorr*   caj_cupti_corr = NULL;
+static int64_t         caj_cupti_corr_mask = -1;   /* capacity - 1; -1 = none yet */
+static int32_t         caj_cupti_corr_live;
+static int64_t         caj_cupti_corr_dropped;
+static CajCuptiOrphan* caj_cupti_orphans = NULL;
+static int32_t         caj_cupti_orphans_n, caj_cupti_orphans_cap;
+static pthread_mutex_t caj_cupti_corr_lock = PTHREAD_MUTEX_INITIALIZER;
+
+int32_t __cajeta_prof_cupti_corr_capacity(void) {
+    int32_t n;
+    pthread_mutex_lock(&caj_cupti_corr_lock);
+    n = caj_cupti_corr ? (int32_t) (caj_cupti_corr_mask + 1) : 0;
+    pthread_mutex_unlock(&caj_cupti_corr_lock);
+    return n;
+}
 int64_t __cajeta_prof_cupti_corr_dropped(void)  { return caj_cupti_corr_dropped; }
+int32_t __cajeta_prof_cupti_corr_live(void)     { return caj_cupti_corr_live; }
+int32_t __cajeta_prof_cupti_orphans(void)       { return caj_cupti_orphans_n; }
 
-void __cajeta_prof_cupti_corr_reset(void) {
-    memset(caj_cupti_corr, 0, sizeof(caj_cupti_corr));
-    caj_cupti_corr_used = 0;
+static void caj_cupti_corr_reset_locked(void) {
+    if (caj_cupti_corr)
+        memset(caj_cupti_corr, 0, (size_t) (caj_cupti_corr_mask + 1) * sizeof(CajCuptiCorr));
+    caj_cupti_corr_live = 0;
+    caj_cupti_orphans_n = 0;
 }
 
-// Record one correlationId → launch id mapping; 0 when the fixed map is full.
-int32_t __cajeta_prof_cupti_corr_note(int32_t correlationId, int64_t externalId) {
-    if (correlationId == 0) return 0;      /* 0 is the free marker, not an id */
-    if (caj_cupti_corr_used >= CAJ_CUPTI_CORR_CAP) {
-        __atomic_add_fetch(&caj_cupti_corr_dropped, 1, __ATOMIC_RELAXED);
-        return 0;
-    }
-    caj_cupti_corr[caj_cupti_corr_used].corr     = correlationId;
-    caj_cupti_corr[caj_cupti_corr_used].external = externalId;
-    caj_cupti_corr_used++;
+void __cajeta_prof_cupti_corr_reset(void) {
+    pthread_mutex_lock(&caj_cupti_corr_lock);
+    caj_cupti_corr_reset_locked();
+    pthread_mutex_unlock(&caj_cupti_corr_lock);
+}
+
+/* Allocate or double the map, re-seating the live mappings. 0 at the cap. */
+static int32_t caj_cupti_corr_grow_locked(void) {
+    const int64_t old = caj_cupti_corr ? caj_cupti_corr_mask + 1 : 0;
+    const int64_t cap = old ? old * 2 : CAJ_CUPTI_CORR_INITIAL;
+    if (cap > CAJ_CUPTI_CORR_CAP) return 0;
+    CajCuptiCorr* t = (CajCuptiCorr*) calloc((size_t) cap, sizeof(CajCuptiCorr));
+    if (!t) return 0;
+    for (int64_t i = 0; i < old; ++i)
+        if (caj_cupti_corr[i].corr) t[caj_cupti_corr[i].corr & (cap - 1)] = caj_cupti_corr[i];
+    free(caj_cupti_corr);
+    caj_cupti_corr = t;
+    caj_cupti_corr_mask = cap - 1;
     return 1;
 }
 
+static int32_t caj_cupti_corr_note_locked(uint32_t correlationId, int64_t externalId) {
+    if (correlationId == 0) return 0;      /* 0 is the free marker, not an id */
+    if (!caj_cupti_corr && !caj_cupti_corr_grow_locked()) {
+        __atomic_add_fetch(&caj_cupti_corr_dropped, 1, __ATOMIC_RELAXED);
+        return 0;
+    }
+    CajCuptiCorr* s = &caj_cupti_corr[correlationId & caj_cupti_corr_mask];
+    while (s->corr != 0 && s->corr != correlationId) {
+        if (!caj_cupti_corr_grow_locked()) {
+            /* The cap: the occupant is a mapping no kernel ever claimed. */
+            __atomic_add_fetch(&caj_cupti_corr_dropped, 1, __ATOMIC_RELAXED);
+            caj_cupti_corr_live--;
+            s->corr = 0;
+            break;
+        }
+        s = &caj_cupti_corr[correlationId & caj_cupti_corr_mask];
+    }
+    if (s->corr == 0) caj_cupti_corr_live++;
+    s->corr     = correlationId;
+    s->external = externalId;
+    return 1;
+}
+
+/* Take the mapping for a correlation id; 0 on a miss, which leaves `externalId`
+   alone — see the test for why. */
+static int32_t caj_cupti_corr_take_locked(uint32_t correlationId, int64_t* externalId) {
+    if (!caj_cupti_corr || correlationId == 0) return 0;
+    CajCuptiCorr* s = &caj_cupti_corr[correlationId & caj_cupti_corr_mask];
+    if (s->corr != correlationId) return 0;
+    if (externalId) *externalId = s->external;
+    s->corr = 0;
+    caj_cupti_corr_live--;
+    return 1;
+}
+
+// Record one correlationId → launch id mapping; 0 only when the cap refuses.
+int32_t __cajeta_prof_cupti_corr_note(int32_t correlationId, int64_t externalId) {
+    int32_t rc;
+    pthread_mutex_lock(&caj_cupti_corr_lock);
+    rc = caj_cupti_corr_note_locked((uint32_t) correlationId, externalId);
+    pthread_mutex_unlock(&caj_cupti_corr_lock);
+    return rc;
+}
+
+// Look a mapping up AND consume it: a kernel resolves through its mapping once.
 int32_t __cajeta_prof_cupti_corr_lookup(int32_t correlationId, int64_t* externalId) {
-    int32_t i;
-    for (i = 0; i < caj_cupti_corr_used; ++i) {
-        if (caj_cupti_corr[i].corr == correlationId) {
-            if (externalId) *externalId = caj_cupti_corr[i].external;
-            return 1;
+    int32_t rc;
+    pthread_mutex_lock(&caj_cupti_corr_lock);
+    rc = caj_cupti_corr_take_locked((uint32_t) correlationId, externalId);
+    pthread_mutex_unlock(&caj_cupti_corr_lock);
+    return rc;
+}
+
+/* A kernel record whose mapping has not arrived waits here. Bounded; past
+   the bound it is counted unmapped. Caller holds the lock. */
+static void caj_cupti_orphan_keep_locked(uint32_t corr, int64_t start, int64_t end) {
+    if (caj_cupti_orphans_n == caj_cupti_orphans_cap) {
+        int32_t cap = caj_cupti_orphans_cap ? caj_cupti_orphans_cap * 2 : 256;
+        if (cap > CAJ_CUPTI_ORPHAN_CAP) { caj_cupti.unmapped++; return; }
+        CajCuptiOrphan* o = (CajCuptiOrphan*) realloc(caj_cupti_orphans, (size_t) cap * sizeof(CajCuptiOrphan));
+        if (!o) { caj_cupti.unmapped++; return; }
+        caj_cupti_orphans = o;
+        caj_cupti_orphans_cap = cap;
+    }
+    caj_cupti_orphans[caj_cupti_orphans_n].corr  = corr;
+    caj_cupti_orphans[caj_cupti_orphans_n].start = start;
+    caj_cupti_orphans[caj_cupti_orphans_n].end   = end;
+    caj_cupti_orphans_n++;
+}
+
+/* Resolve the orphans whose mapping has since arrived; the rest keep waiting.
+   Caller holds the lock; the publish happens inside it, which is acceptable
+   because the pending table has its own lock and a sink never re-enters CUPTI. */
+static void caj_cupti_orphans_retry_locked(void) {
+    int32_t kept = 0;
+    for (int32_t i = 0; i < caj_cupti_orphans_n; ++i) {
+        int64_t ext = 0;
+        if (caj_cupti_corr_take_locked(caj_cupti_orphans[i].corr, &ext)) {
+            __cajeta_prof_gpu_resolve_dispatch(ext, caj_cupti_orphans[i].start,
+                                               caj_cupti_orphans[i].end);
+        } else {
+            caj_cupti_orphans[kept++] = caj_cupti_orphans[i];
         }
     }
-    return 0;   /* a MISS leaves the output alone - see the test for why */
+    caj_cupti_orphans_n = kept;
 }
 
 // ── the launch chokepoint ────────────────────────────────────────────────
@@ -462,25 +575,29 @@ int32_t __cajeta_prof_cupti_pop(void) {
                                       &popped) == 0;
 }
 
-// The two-pass walk itself; reachable only with a bound CUPTI.
+// The two-pass walk itself; reachable only with a bound CUPTI. Under the map's
+// lock: CUPTI may complete two buffers on two threads at once.
 static void caj_cupti_consume_buffer(uint8_t* buffer, size_t validSize) {
     void* rec;
     if (!caj_cupti.api.activity_get_next_record || validSize == 0) return;
 
-    __cajeta_prof_cupti_corr_reset();
+    pthread_mutex_lock(&caj_cupti_corr_lock);
 
-    /* pass 1 - the mapping records */
+    /* pass 1 - the mapping records, added to what earlier buffers left */
     rec = NULL;
     while (caj_cupti.api.activity_get_next_record(buffer, validSize, &rec) == 0) {
         int32_t corr = 0; int64_t ext = 0;
         if (__cajeta_prof_cupti_decode_external(rec, CAJ_CUPTI_XREC_BYTES,
                                                 &corr, &ext) == 1) {
-            __cajeta_prof_cupti_corr_note(corr, ext);
+            caj_cupti_corr_note_locked((uint32_t) corr, ext);
             caj_cupti.ext_records++;
         }
     }
 
-    /* pass 2 - the kernels, resolved through the map built above */
+    /* earlier kernels whose mapping was in this buffer */
+    caj_cupti_orphans_retry_locked();
+
+    /* pass 2 - the kernels, resolved through the map; the unmatched wait */
     rec = NULL;
     while (caj_cupti.api.activity_get_next_record(buffer, validSize, &rec) == 0) {
         int64_t start = 0, end = 0, ext = 0;
@@ -488,10 +605,12 @@ static void caj_cupti_consume_buffer(uint8_t* buffer, size_t validSize) {
         if (__cajeta_prof_cupti_decode_kernel(rec, CAJ_CUPTI_KREC_PREFIX,
                                               &start, &end, &corr) != 1)
             continue;
-        /* An unmapped kernel is one we did not launch; attributing it invents. */
-        if (!__cajeta_prof_cupti_corr_lookup(corr, &ext)) { caj_cupti.unmapped++; continue; }
-        __cajeta_prof_gpu_resolve_dispatch(ext, start, end);
+        if (caj_cupti_corr_take_locked((uint32_t) corr, &ext))
+            __cajeta_prof_gpu_resolve_dispatch(ext, start, end);
+        else
+            caj_cupti_orphan_keep_locked((uint32_t) corr, start, end);
     }
+    pthread_mutex_unlock(&caj_cupti_corr_lock);
 }
 
 // ── the host clock, on both platforms ────────────────────────────────────

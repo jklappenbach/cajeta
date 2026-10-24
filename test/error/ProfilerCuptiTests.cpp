@@ -748,3 +748,32 @@ TEST(ProfilerCupti, anOverheadSmallerThanItsSpreadIsNotAMeasurement) {
     EXPECT_NEAR(s.mean, 180.0, 0.01);
     EXPECT_NEAR(s.spread, 400.0, 0.01);
 }
+
+// ── Unit 15 — the correlation map outlives a buffer ───────────────────────────
+// cajeta-llm 15.2.15.1.2: a 1024-entry map, reset per buffer, lost 7,955 of
+// 10,003 mappings in a 5,000-launch run, and 3,978 kernels went unmapped. The
+// map now grows with the live window and a mapping is consumed by the kernel
+// that matches it, so the map holds mappings and not history.
+TEST(ProfilerCupti, theCorrelationMapGrowsPastAThousandAndConsumesOnMatch) {
+    ASSERT_NE(cu().corrNote, nullptr);
+    ASSERT_NE(cu().corrLookup, nullptr);
+    ASSERT_NE(cu().corrCapacity, nullptr);
+    cu().corrReset();
+    const int64_t droppedBefore = cu().corrDropped();
+    constexpr int32_t kMappings = 5000;
+    int32_t noted = 0;
+    for (int32_t corr = 1; corr <= kMappings; ++corr) noted += cu().corrNote(corr, 1000000LL + corr);
+    EXPECT_EQ(noted, kMappings) << "a refused mapping is a kernel that will never resolve";
+    EXPECT_EQ(cu().corrDropped(), droppedBefore);
+    EXPECT_GE(cu().corrCapacity(), kMappings) << "the map did not grow";
+
+    int32_t found = 0, consumed = 0;
+    for (int32_t corr = kMappings; corr >= 1; --corr) {
+        int64_t ext = -1;
+        if (cu().corrLookup(corr, &ext) == 1 && ext == 1000000LL + corr) found++;
+        if (cu().corrLookup(corr, &ext) == 0) consumed++;   // the second look finds nothing
+    }
+    EXPECT_EQ(found, kMappings) << "a mapping resolved to the wrong launch or was lost";
+    EXPECT_EQ(consumed, kMappings) << "a mapping must be consumed by the kernel that matched it";
+    cu().corrReset();
+}

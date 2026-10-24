@@ -289,40 +289,126 @@ static int32_t caj_gpu_rocm_init(void) { return __cajeta_prof_rocm_init(); }
 
 // ── the pending table ─────────────────────────────────────────────────────
 // A dispatch record arrives after the launch that caused it returned, so a
-// launch awaiting its span PARKS here; full publishes at host tier instead,
-// with the launch's HOST bracket standing in for a device span. A host that
-// never syncs enqueues a whole prefill step ahead of the records - a 32-layer
-// MoE step is ~1000 launches - so the table must hold a step, or the run's
-// second half reads as thousands of 60 us kernels. The overflow count rides
-// the trace metadata as gpu_pending_overflow; the summary prints it.
-#define CAJ_GPU_PENDING_MAX 16384
+// launch awaiting its span PARKS here; a launch the table refuses publishes at
+// host tier instead, with its HOST bracket standing in for a device span. A
+// host that never syncs enqueues whole steps ahead of the records — a 4-seq
+// decode step is ~900 launches, a run 115,000 — so the table GROWS to hold
+// what is parked, up to a cap (CAJETA_PROFILER_GPU_PENDING, default 262144
+// launches), and refuses only past it. It was a 16384-slot array scanned
+// linearly, and a long run overflowed it (cajeta-llm 15.2.15.1.2).
+//
+// Launch ids are monotonic, so the table is indexed by id directly: a slot
+// holds the one launch whose id maps there, and a collision means the parked
+// window is wider than the table, which doubles. The overflow count rides the
+// trace metadata as gpu_pending_overflow; the summary prints it.
+#define CAJ_GPU_PENDING_INITIAL     16384
+#define CAJ_GPU_PENDING_DEFAULT_CAP (1 << 18)
 
 typedef struct {
-    int32_t        in_use;
-    int64_t        launch_id;
+    int64_t        launch_id;   // 0 = empty
     CajetaGpuEvent ev;
 } CajGpuPending;
 
-static CajGpuPending   g_gpu_pending[CAJ_GPU_PENDING_MAX];
+static CajGpuPending*  g_gpu_pending = NULL;
+static int64_t         g_gpu_pending_mask = -1;   // capacity - 1; -1 = unallocated
+static int32_t         g_gpu_pending_live = 0;
+static int32_t         g_gpu_pending_cap = 0;     // live-entry bound; 0 = not read yet
 static pthread_mutex_t g_gpu_pending_lock = PTHREAD_MUTEX_INITIALIZER;
 static int64_t         g_gpu_pending_overflow = 0;   // published at host tier instead
 static int64_t         g_gpu_pending_unclaimed = 0;  // parked, never matched, flushed out
 
-// Park a launch awaiting its record. 1 = parked (do NOT publish), 0 = full.
-static int32_t caj_gpu_park(const CajetaGpuEvent* ev) {
-    int i;
-    pthread_mutex_lock(&g_gpu_pending_lock);
-    for (i = 0; i < CAJ_GPU_PENDING_MAX; ++i) {
-        if (g_gpu_pending[i].in_use) continue;
-        g_gpu_pending[i].in_use    = 1;
-        g_gpu_pending[i].launch_id = ev->launch_id;
-        g_gpu_pending[i].ev        = *ev;
-        pthread_mutex_unlock(&g_gpu_pending_lock);
-        return 1;
+// The live-entry bound, read once from the environment. Caller holds the lock.
+static int32_t caj_gpu_pending_cap_locked(void) {
+    if (g_gpu_pending_cap <= 0) {
+        const char* e = getenv("CAJETA_PROFILER_GPU_PENDING");
+        const int v = e ? atoi(e) : 0;
+        g_gpu_pending_cap = v > 0 ? v : CAJ_GPU_PENDING_DEFAULT_CAP;
     }
-    g_gpu_pending_overflow++;
+    return g_gpu_pending_cap;
+}
+
+static CajGpuPending* caj_gpu_pending_slot(int64_t id) {
+    return &g_gpu_pending[id & g_gpu_pending_mask];
+}
+
+// Allocate, or double, the table and re-seat what is parked. Two ids distinct
+// modulo the old size stay distinct modulo the new one, so re-seating never
+// collides. 0 when the table would exceed the cap or memory. Caller holds the lock.
+static int32_t caj_gpu_pending_grow_locked(void) {
+    const int64_t old = g_gpu_pending ? g_gpu_pending_mask + 1 : 0;
+    const int64_t cap = old ? old * 2 : CAJ_GPU_PENDING_INITIAL;
+    if (old && old >= caj_gpu_pow2(caj_gpu_pending_cap_locked())) return 0;
+    CajGpuPending* t = (CajGpuPending*) calloc((size_t) cap, sizeof(CajGpuPending));
+    if (!t) return 0;
+    for (int64_t i = 0; i < old; i++) {
+        if (g_gpu_pending[i].launch_id) t[g_gpu_pending[i].launch_id & (cap - 1)] = g_gpu_pending[i];
+    }
+    free(g_gpu_pending);
+    g_gpu_pending = t;
+    g_gpu_pending_mask = cap - 1;
+    return 1;
+}
+
+// Park a launch awaiting its record. 1 = parked (do NOT publish), 0 = refused.
+// A collision grows the table; at the cap, the stale occupant — a launch whose
+// record never came — is evicted into `evicted` for the caller to publish at
+// host tier, so a lost record costs that record and not every later one.
+static int32_t caj_gpu_park_evicting(const CajetaGpuEvent* ev, CajetaGpuEvent* evicted,
+                                     int32_t* didEvict) {
+    *didEvict = 0;
+    pthread_mutex_lock(&g_gpu_pending_lock);
+    if (!g_gpu_pending && !caj_gpu_pending_grow_locked()) {
+        g_gpu_pending_overflow++;
+        pthread_mutex_unlock(&g_gpu_pending_lock);
+        return 0;
+    }
+    if (g_gpu_pending_live >= caj_gpu_pending_cap_locked()) {
+        g_gpu_pending_overflow++;
+        pthread_mutex_unlock(&g_gpu_pending_lock);
+        return 0;
+    }
+    CajGpuPending* s = caj_gpu_pending_slot(ev->launch_id);
+    while (s->launch_id != 0 && s->launch_id != ev->launch_id) {
+        if (!caj_gpu_pending_grow_locked()) {
+            *evicted = s->ev;
+            *didEvict = 1;
+            g_gpu_pending_unclaimed++;
+            g_gpu_pending_live--;
+            s->launch_id = 0;
+            break;
+        }
+        s = caj_gpu_pending_slot(ev->launch_id);
+    }
+    if (s->launch_id == 0) g_gpu_pending_live++;
+    s->launch_id = ev->launch_id;
+    s->ev        = *ev;
     pthread_mutex_unlock(&g_gpu_pending_lock);
-    return 0;
+    return 1;
+}
+
+static int32_t caj_gpu_park(const CajetaGpuEvent* ev) {
+    CajetaGpuEvent evicted;
+    int32_t didEvict;
+    const int32_t rc = caj_gpu_park_evicting(ev, &evicted, &didEvict);
+    if (didEvict) __cajeta_prof_gpu_publish(&evicted);   // outside the lock: sinks run user code
+    return rc;
+}
+
+// The park, for the seam tests: a backend that parks needs a GPU, and the
+// table's growth is checked at 40,000 launches, which no PR lane can afford.
+int32_t __cajeta_prof_gpu_park_for_test(const CajetaGpuEvent* ev) {
+    return ev ? caj_gpu_park(ev) : 0;
+}
+
+// Take a parked launch out by id; 0 when it is not there. Caller holds the lock.
+static int32_t caj_gpu_pending_take_locked(int64_t launchId, CajetaGpuEvent* out) {
+    if (!g_gpu_pending || launchId == 0) return 0;
+    CajGpuPending* s = caj_gpu_pending_slot(launchId);
+    if (s->launch_id != launchId) return 0;
+    *out = s->ev;
+    s->launch_id = 0;
+    g_gpu_pending_live--;
+    return 1;
 }
 
 // Resolve a parked launch with the span its backend supplied. `tier` is the
@@ -333,17 +419,10 @@ int32_t __cajeta_prof_gpu_resolve_dispatch_flags(int64_t launchId,
                                                  int32_t tier,
                                                  int32_t integrityFlags) {
     CajetaGpuEvent ev;
-    int i;
-    int found = 0;
+    int found;
 
     pthread_mutex_lock(&g_gpu_pending_lock);
-    for (i = 0; i < CAJ_GPU_PENDING_MAX; ++i) {
-        if (!g_gpu_pending[i].in_use || g_gpu_pending[i].launch_id != launchId) continue;
-        ev = g_gpu_pending[i].ev;
-        g_gpu_pending[i].in_use = 0;
-        found = 1;
-        break;
-    }
+    found = caj_gpu_pending_take_locked(launchId, &ev);
     pthread_mutex_unlock(&g_gpu_pending_lock);
     if (!found) return 0;   // not ours, or already resolved — never invent one
 
@@ -375,22 +454,43 @@ int32_t __cajeta_prof_gpu_resolve_dispatch(int64_t launchId,
                                                    CAJETA_PROF_TIER_DEVICE);
 }
 
+// Publishing a drained table in one burst overruns a sink's queue (1024 slots
+// lost 2,973 of 3,978 records in the first long-run measurement), so the batch
+// goes out in chunks with a delivery between them. The caller's thread does
+// the delivering; a drain never happens on the dispatch path.
+#define CAJ_GPU_DRAIN_CHUNK 256
+
 // Publish everything still parked, at host tier; returns how many went out.
+// Heap, not stack: 40,000 events is several megabytes, more than a fiber has.
 static int32_t caj_gpu_drain_pending(void) {
-    CajetaGpuEvent batch[CAJ_GPU_PENDING_MAX];
+    CajetaGpuEvent* batch;
     int32_t n = 0;
-    int i;
+    int64_t i;
 
     pthread_mutex_lock(&g_gpu_pending_lock);
-    for (i = 0; i < CAJ_GPU_PENDING_MAX; ++i) {
-        if (!g_gpu_pending[i].in_use) continue;
-        batch[n++] = g_gpu_pending[i].ev;
-        g_gpu_pending[i].in_use = 0;
+    if (!g_gpu_pending || g_gpu_pending_live <= 0) {
+        pthread_mutex_unlock(&g_gpu_pending_lock);
+        return 0;
     }
+    batch = (CajetaGpuEvent*) malloc((size_t) g_gpu_pending_live * sizeof(CajetaGpuEvent));
+    if (!batch) {
+        pthread_mutex_unlock(&g_gpu_pending_lock);
+        return 0;
+    }
+    for (i = 0; i <= g_gpu_pending_mask && n < g_gpu_pending_live; ++i) {
+        if (!g_gpu_pending[i].launch_id) continue;
+        batch[n++] = g_gpu_pending[i].ev;
+        g_gpu_pending[i].launch_id = 0;
+    }
+    g_gpu_pending_live = 0;
     g_gpu_pending_unclaimed += n;
     pthread_mutex_unlock(&g_gpu_pending_lock);
 
-    for (i = 0; i < n; ++i) __cajeta_prof_gpu_publish(&batch[i]);
+    for (i = 0; i < n; ++i) {
+        __cajeta_prof_gpu_publish(&batch[i]);
+        if ((i + 1) % CAJ_GPU_DRAIN_CHUNK == 0) __cajeta_prof_gpu_flush();
+    }
+    free(batch);
     return n;
 }
 
@@ -398,17 +498,37 @@ int64_t __cajeta_prof_gpu_pending_overflow(void)  { return g_gpu_pending_overflo
 int64_t __cajeta_prof_gpu_pending_unclaimed(void) { return g_gpu_pending_unclaimed; }
 
 int32_t __cajeta_prof_gpu_pending_count(void) {
-    int i, n = 0;
+    int32_t n;
     pthread_mutex_lock(&g_gpu_pending_lock);
-    for (i = 0; i < CAJ_GPU_PENDING_MAX; ++i) if (g_gpu_pending[i].in_use) n++;
+    n = g_gpu_pending_live;
     pthread_mutex_unlock(&g_gpu_pending_lock);
     return n;
 }
 
-void __cajeta_prof_gpu_pending_reset(void) {
-    int i;
+// Slots in the table now; it grows with what is parked.
+int32_t __cajeta_prof_gpu_pending_capacity(void) {
+    int32_t n;
     pthread_mutex_lock(&g_gpu_pending_lock);
-    for (i = 0; i < CAJ_GPU_PENDING_MAX; ++i) g_gpu_pending[i].in_use = 0;
+    n = g_gpu_pending ? (int32_t) (g_gpu_pending_mask + 1) : 0;
+    pthread_mutex_unlock(&g_gpu_pending_lock);
+    return n;
+}
+
+// The live-entry bound; 0 asks for the one in force. Returns what is in force.
+int32_t __cajeta_prof_gpu_set_pending_cap(int32_t cap) {
+    int32_t v;
+    pthread_mutex_lock(&g_gpu_pending_lock);
+    if (cap > 0) g_gpu_pending_cap = cap;
+    v = caj_gpu_pending_cap_locked();
+    pthread_mutex_unlock(&g_gpu_pending_lock);
+    return v;
+}
+
+void __cajeta_prof_gpu_pending_reset(void) {
+    pthread_mutex_lock(&g_gpu_pending_lock);
+    if (g_gpu_pending)
+        memset(g_gpu_pending, 0, (size_t) (g_gpu_pending_mask + 1) * sizeof(CajGpuPending));
+    g_gpu_pending_live      = 0;
     g_gpu_pending_overflow  = 0;
     g_gpu_pending_unclaimed = 0;
     pthread_mutex_unlock(&g_gpu_pending_lock);
@@ -463,13 +583,10 @@ int64_t     __cajeta_prof_cuda_event_spans(void)   { return caj_gpu_cuda_event_s
 // The host instant a still-parked launch was issued at, or 0 if not parked.
 static int64_t caj_gpu_pending_host_launch(int64_t launchId) {
     int64_t v = 0;
-    int i;
     pthread_mutex_lock(&g_gpu_pending_lock);
-    for (i = 0; i < CAJ_GPU_PENDING_MAX; ++i) {
-        if (!g_gpu_pending[i].in_use || g_gpu_pending[i].launch_id != launchId)
-            continue;
-        v = g_gpu_pending[i].ev.host_launch_ns;
-        break;
+    if (g_gpu_pending && launchId != 0) {
+        const CajGpuPending* s = caj_gpu_pending_slot(launchId);
+        if (s->launch_id == launchId) v = s->ev.host_launch_ns;
     }
     pthread_mutex_unlock(&g_gpu_pending_lock);
     return v;
@@ -685,6 +802,16 @@ int32_t __cajeta_prof_gpu_collect(int32_t backend) {
     return (v && v->collect) ? v->collect() : 0;
 }
 
+// Flush EVERY vendor's buffered records, then publish what is still parked at
+// host tier, once. Settling per backend would drain the table after the first
+// vendor flushed and before the second did; and a settle that named one
+// backend (HIP, until cajeta-llm 15.2.15.1.2) left every CUDA launch parked.
+int32_t __cajeta_prof_gpu_collect_all(void) {
+    __cajeta_prof_rocm_flush();
+    __cajeta_prof_cupti_flush();
+    return caj_gpu_drain_pending();
+}
+
 // The tier a backend id would claim, probed through its own begin_launch.
 int32_t __cajeta_prof_gpu_backend_tier(int32_t backend) {
     CajetaGpuEvent probe;
@@ -829,7 +956,7 @@ int64_t __cajeta_prof_gpu_capture_dropped(void) {
 // Claim the device's outstanding records and deliver everything queued. Runs
 // BEFORE the metadata packet, which carries the backend's account of itself.
 void __cajeta_prof_gpu_capture_settle(void) {
-    __cajeta_prof_gpu_collect(CAJ_GPU_BACKEND_HIP);
+    __cajeta_prof_gpu_collect_all();
     __cajeta_prof_gpu_flush();
 }
 
@@ -892,7 +1019,7 @@ int32_t __cajeta_prof_gpu_trace_detach(void) {
     if (!g_gpu_writer_open) return 0;
 // Collect, THEN publish what is still parked at host tier, THEN deliver: a
 // launch whose record never came back is still a measurement.
-    __cajeta_prof_gpu_collect(CAJ_GPU_BACKEND_HIP);
+    __cajeta_prof_gpu_collect_all();
     __cajeta_prof_gpu_flush();
 // Written at detach, not attach: the counters it carries are final only here.
     __cajeta_prof_trace_metadata(&g_gpu_writer, 0, "gpu", 0, 0, 0, 0, 0);

@@ -48,7 +48,7 @@ typedef struct {
 #define CAJETA_GPU_SINK_PER_RECORD 1
 
 #define CAJETA_GPU_MAX_SINKS       8
-#define CAJETA_GPU_SINK_QUEUE      1024   // per sink; power of two (see the ring)
+#define CAJETA_GPU_SINK_QUEUE      8192   // per sink; power of two (see the ring)
 
 typedef struct {
     int64_t     launch_id;       // unique + monotonic across the process
@@ -241,6 +241,11 @@ int32_t     __cajeta_prof_gpu_pending_count(void);
 void        __cajeta_prof_gpu_pending_reset(void);
 int64_t     __cajeta_prof_gpu_pending_overflow(void);
 int64_t     __cajeta_prof_gpu_pending_unclaimed(void);
+// Unit 15: the table grows with what is parked; the cap bounds live entries.
+int32_t     __cajeta_prof_gpu_pending_capacity(void);
+int32_t     __cajeta_prof_gpu_set_pending_cap(int32_t cap);
+int32_t     __cajeta_prof_gpu_park_for_test(const CajetaGpuEvent* ev);
+int32_t     __cajeta_prof_gpu_collect_all(void);
 
 // ── Unit 9: clock correlation and integrity (spec §6, §11) ────────────────
 // A DOMAIN is one device clock mapped onto the host timeline, keyed by CAJ_XPU_* id.
