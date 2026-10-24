@@ -444,6 +444,34 @@ namespace cajeta {
             return false;
         }
 
+        // How many of this class's own fields take an ownership bit.
+        int ownershipBitCount() const {
+            int n = 0;
+            for (const auto& q : propertyList) {
+                if (!q->isStatic() && fieldHasOwnershipBit(q)) n++;
+            }
+            return n;
+        }
+
+        // The i64 words the bits occupy: one up to 64 fields, then one more per 64.
+        // The hidden slot stays ONE struct member (an `i64` or an `[N x i64]`), so a
+        // class under 64 keeps the layout it always had.
+        int ownershipWordCount() const {
+            return (ownershipBitCount() + 63) / 64;
+        }
+
+        // The word holding `bit` within the ownership slot at `wordsPtr`: the slot itself
+        // below 64, else the slot's `bit / 64`th i64. Callers shift by `bit % 64`.
+        // A dense index past 63 used to shift the one word by 64 or more — poison, and a
+        // release build corrupted itself (cajeta-llm CausalLM at 66 fields, 2026-10-24).
+        static llvm::Value* ownershipWordAt(llvm::IRBuilderBase& b, llvm::Value* wordsPtr,
+                                            int bit) {
+            if (bit < 64) return wordsPtr;
+            return b.CreateConstInBoundsGEP1_64(
+                llvm::Type::getInt64Ty(b.getContext()), wordsPtr,
+                (uint64_t) (bit / 64), "own_bits_word");
+        }
+
         // LLVM slot of this class's hidden ownership word in its own layout, or -1.
         int getOwnershipWordLlvmIndex() const {
             if (!needsOwnershipWord()) return -1;

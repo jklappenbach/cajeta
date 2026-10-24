@@ -2696,16 +2696,17 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
                             module->getLlvmModule()->getDataLayout();
                         const llvm::StructLayout* sl =
                             dl.getStructLayout(declTy);
+                        const int denseBit = xDecl->ownershipBitIndexOf(xProp);
                         int64_t delta =
                             (int64_t) sl->getElementOffset((unsigned) wordIdx)
                             - (int64_t) sl->getElementOffset(
-                                  (unsigned) fieldIdx);
+                                  (unsigned) fieldIdx)
+                            + 8 * (int64_t) (denseBit / 64);
                         llvm::Value* wordPtr = b->CreateInBoundsGEP(
                             i8Ty, slot,
                             llvm::ConstantInt::get(i64Ty, delta),
                             "xtract_bits_addr");
-                        uint64_t bitIdx =
-                            (uint64_t) xDecl->ownershipBitIndexOf(xProp);
+                        uint64_t bitIdx = (uint64_t) (denseBit % 64);
                         llvm::Value* w = b->CreateLoad(
                             i64Ty, wordPtr, "xtract_bits");
                         llvm::Value* bit = b->CreateAnd(

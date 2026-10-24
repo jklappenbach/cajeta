@@ -615,14 +615,19 @@ namespace cajeta {
         }
         const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
         const llvm::StructLayout* sl = dl.getStructLayout(declTy);
+        // The field's WORD of the ownership words (bit / 64), at a fixed byte
+        // delta from the field slot; the bit index returned is within that word.
+        const int denseBit = decl->ownershipBitIndexOf(prop);
+        if (denseBit < 0) return false;
         int64_t delta = (int64_t) sl->getElementOffset((unsigned) wordIdx)
-            - (int64_t) sl->getElementOffset((unsigned) fieldIdx);
+            - (int64_t) sl->getElementOffset((unsigned) fieldIdx)
+            + 8 * (int64_t) (denseBit / 64);
         auto& ctx = *module->getLlvmContext();
         *wordPtrOut = builder->CreateInBoundsGEP(
             llvm::Type::getInt8Ty(ctx), slotPtr,
             llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), delta),
             "own_bits_addr");
-        *bitIdxOut = decl->ownershipBitIndexOf(prop);
+        *bitIdxOut = denseBit % 64;
         if (propOut) *propOut = prop;
         return true;
     }

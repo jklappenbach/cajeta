@@ -957,7 +957,7 @@ namespace cajeta {
         if (!b || !thisPtr || !fieldHasOwnershipBit(prop)) return;
         int wordIdx = getOwnershipWordLlvmIndex();
         int bit = ownershipBitIndexOf(prop);
-        if (wordIdx < 0 || bit < 0 || bit >= 64) return;
+        if (wordIdx < 0 || bit < 0) return;
         auto vi = dynamic_pointer_cast<VariableInitializer>(init);
         ExpressionPtr e = vi && !vi->getChildren().empty()
             ? dynamic_pointer_cast<Expression>(vi->getChildren()[0]) : nullptr;
@@ -975,10 +975,11 @@ namespace cajeta {
         }
         llvm::Type* i64 = b->getInt64Ty();
         if (flag->getType() != i64) flag = b->CreateZExtOrTrunc(flag, i64);
-        llvm::Value* wordPtr = b->CreateStructGEP(getLlvmType(), thisPtr, (unsigned) wordIdx,
-                                                  "init.own_bits_addr");
+        llvm::Value* wordPtr = ownershipWordAt(*b,
+            b->CreateStructGEP(getLlvmType(), thisPtr, (unsigned) wordIdx, "init.own_bits_addr"),
+            bit);
         llvm::Value* w = b->CreateLoad(i64, wordPtr, "init.own_bits");
-        llvm::Value* set = b->CreateShl(b->CreateAnd(flag, b->getInt64(1)), b->getInt64((uint64_t) bit));
+        llvm::Value* set = b->CreateShl(b->CreateAnd(flag, b->getInt64(1)), b->getInt64((uint64_t) (bit % 64)));
         b->CreateStore(b->CreateOr(w, set), wordPtr);
     }
 
@@ -1166,13 +1167,6 @@ namespace cajeta {
             b.CreateAdd(llvm::ConstantInt::get(i64, headerBytes),
                         b.CreateMul(i, llvm::ConstantInt::get(
                             i64, elemStride))), "slot_base");
-        llvm::Value* wordPtr = nullptr;
-        llvm::Value* word = nullptr;
-        if (anyBitGuarded) {
-            wordPtr = b.CreateInBoundsGEP(i8, slotBase,
-                llvm::ConstantInt::get(i64, wordOff), "word_ptr");
-            word = b.CreateLoad(i64, wordPtr, "word");
-        }
         for (const auto& mr : members) {
             llvm::Value* mp = b.CreateInBoundsGEP(i8, slotBase,
                 llvm::ConstantInt::get(i64, mr.off), "member_ptr");
@@ -1193,8 +1187,12 @@ namespace cajeta {
                 b.CreateStore(llvm::ConstantPointerNull::get(ptrTy), mp);
                 continue;
             }
+            // The member's own word of the slot's ownership words, bit % 64 of it.
+            llvm::Value* wordPtr = b.CreateInBoundsGEP(i8, slotBase,
+                llvm::ConstantInt::get(i64, wordOff + 8 * (uint64_t) (mr.bit / 64)), "word_ptr");
+            llvm::Value* word = b.CreateLoad(i64, wordPtr, "word");
             llvm::Value* bit = b.CreateAnd(
-                b.CreateLShr(word, llvm::ConstantInt::get(i64, mr.bit)),
+                b.CreateLShr(word, llvm::ConstantInt::get(i64, mr.bit % 64)),
                 llvm::ConstantInt::get(i64, 1));
             llvm::Function* fn = b.GetInsertBlock()->getParent();
             auto* relBB = llvm::BasicBlock::Create(ctx, "member_rel", fn);
@@ -1208,10 +1206,15 @@ namespace cajeta {
             b.CreateBr(contBB);
             b.SetInsertPoint(contBB);
         }
-        // Zero the word so a second pass (dtor plus auto field drop) cannot
+        // Zero the words so a second pass (dtor plus auto field drop) cannot
         // re-release these members.
-        if (wordPtr) {
-            b.CreateStore(llvm::ConstantInt::get(i64, 0), wordPtr);
+        if (anyBitGuarded) {
+            const int words = elemCls->ownershipWordCount();
+            for (int wk = 0; wk < words; ++wk) {
+                b.CreateStore(llvm::ConstantInt::get(i64, 0),
+                    b.CreateInBoundsGEP(i8, slotBase,
+                        llvm::ConstantInt::get(i64, wordOff + 8 * (uint64_t) wk), "word_ptr"));
+            }
         }
         b.CreateBr(next);
 
@@ -1330,7 +1333,11 @@ namespace cajeta {
                     }
                 }
                 if (wantsWord) {
-                    llvmMembers.push_back(llvm::Type::getInt64Ty(*lctx));
+                    // One i64 up to 64 bit-carrying fields; [N x i64] past that.
+                    int words = cls->ownershipWordCount();
+                    llvmMembers.push_back(words > 1
+                        ? (llvm::Type*) llvm::ArrayType::get(llvm::Type::getInt64Ty(*lctx), (uint64_t) words)
+                        : (llvm::Type*) llvm::Type::getInt64Ty(*lctx));
                 }
             }
             // One vbase pointer per transitive non-self ancestor, after cls's own
@@ -3150,12 +3157,12 @@ namespace cajeta {
                     if (bitIdx >= 0 && wordIdx >= 0 && b.GetInsertBlock()) {
                         llvm::Type* gi64 = llvm::Type::getInt64Ty(ctx);
                         llvm::Function* fn = b.GetInsertBlock()->getParent();
-                        llvm::Value* wordSlot = b.CreateStructGEP(
+                        llvm::Value* wordSlot = ownershipWordAt(b, b.CreateStructGEP(
                             rawLlvmType(), instance, (unsigned) wordIdx,
-                            "own_bits_slot");
+                            "own_bits_slot"), bitIdx);
                         llvm::Value* w = b.CreateLoad(gi64, wordSlot);
                         llvm::Value* bit = b.CreateAnd(
-                            b.CreateLShr(w, llvm::ConstantInt::get(gi64, bitIdx)),
+                            b.CreateLShr(w, llvm::ConstantInt::get(gi64, bitIdx % 64)),
                             llvm::ConstantInt::get(gi64, 1));
                         llvm::Value* owned = b.CreateICmpNE(
                             bit, llvm::ConstantInt::get(gi64, 0));
@@ -3272,12 +3279,12 @@ namespace cajeta {
                     if (bitIdx >= 0 && wordIdx >= 0 && b.GetInsertBlock()) {
                         llvm::Type* gi64 = llvm::Type::getInt64Ty(ctx);
                         llvm::Function* fn = b.GetInsertBlock()->getParent();
-                        llvm::Value* wordSlot = b.CreateStructGEP(
+                        llvm::Value* wordSlot = ownershipWordAt(b, b.CreateStructGEP(
                             rawLlvmType(), instance, (unsigned) wordIdx,
-                            "own_bits_slot");
+                            "own_bits_slot"), bitIdx);
                         llvm::Value* w = b.CreateLoad(gi64, wordSlot);
                         llvm::Value* bit = b.CreateAnd(
-                            b.CreateLShr(w, llvm::ConstantInt::get(gi64, bitIdx)),
+                            b.CreateLShr(w, llvm::ConstantInt::get(gi64, bitIdx % 64)),
                             llvm::ConstantInt::get(gi64, 1));
                         llvm::Value* owned = b.CreateICmpNE(
                             bit, llvm::ConstantInt::get(gi64, 0));
@@ -3310,11 +3317,11 @@ namespace cajeta {
                 if (bitIdx < 0 || wordIdx < 0 || !b.GetInsertBlock()) continue;
                 llvm::Type* gi64 = llvm::Type::getInt64Ty(ctx);
                 llvm::Function* fn = b.GetInsertBlock()->getParent();
-                llvm::Value* wordSlot = b.CreateStructGEP(
-                    rawLlvmType(), instance, (unsigned) wordIdx, "own_bits_slot");
+                llvm::Value* wordSlot = ownershipWordAt(b, b.CreateStructGEP(
+                    rawLlvmType(), instance, (unsigned) wordIdx, "own_bits_slot"), bitIdx);
                 llvm::Value* w = b.CreateLoad(gi64, wordSlot);
                 llvm::Value* bit = b.CreateAnd(
-                    b.CreateLShr(w, llvm::ConstantInt::get(gi64, bitIdx)),
+                    b.CreateLShr(w, llvm::ConstantInt::get(gi64, bitIdx % 64)),
                     llvm::ConstantInt::get(gi64, 1));
                 llvm::Value* owned = b.CreateICmpNE(bit, llvm::ConstantInt::get(gi64, 0));
                 llvm::BasicBlock* dropBB = llvm::BasicBlock::Create(ctx, "own_drop_fn", fn);

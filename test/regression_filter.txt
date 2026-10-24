@@ -402,6 +402,13 @@ ReturnTitleAuditTests.ownedReturnIsNotEnumerated
 ReturnTitleAuditTests.returnedFormalIsEnumerated
 ReturnTitleAuditTests.moveReturnUnderPlainTypeIsEnumerated
 ReturnTitleAuditTests.disabledAuditRecordsNothing
+# Added 2026-10-24. The hidden per-instance ownership word was one i64 and a
+# class with 66 class-reference fields (cajeta-llm CausalLM) shifted past it:
+# a release-only corruption two calls later, no diagnostic. The words are
+# [N x i64] now; the 64-field control pins that the common layout is unchanged.
+WideOwnershipWordTests.aTitlePastBit63IsNotFieldZerosBit
+WideOwnershipWordTests.seventyOwnedFieldsAllFreeOnDrop
+WideOwnershipWordTests.sixtyFourFieldsStillFreeOnDrop
 
 # --- expression — expression codegen, ownership/transfer, net + uri + utf8 ---
 ArrayTests.instanceFieldAsArrayDimension

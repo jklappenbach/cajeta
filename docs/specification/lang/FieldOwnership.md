@@ -401,3 +401,12 @@ mechanism:
   chain-walk (that helper, from an earlier draft, was never built).
 - `@Borrow` annotation experiment reverted (Solution A).
 - Pinned by `test/parser/AutoFieldDropTests.cpp`; stdlib regressions resolved.
+- The per-instance ownership bits live in ONE hidden struct member after the
+  class's own fields: an `i64` for up to 64 bit-carrying fields (class
+  references, arrays, closures), an `[N x i64]` past that, with field `k`'s
+  bit at word `k / 64`, bit `k % 64`. Until 2026-10-24 the member was always
+  one `i64` and the 65th field's shift was poison: a release build of a class
+  with 66 such fields corrupted itself two calls later, with no diagnostic
+  (cajeta-llm `CausalLM`). Pinned by `test/ownership/WideOwnershipWordTests.cpp`.
+  A class under 64 keeps the layout it always had, so archives built before
+  the change still agree with code built after it.
