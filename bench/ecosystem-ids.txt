@@ -1,0 +1,10 @@
+# Ids registered in another repo's bench/ that sit on a page of a package this
+# repo's catalog covers, one '<package>/<slug>  <repo>' per line. bench.sh
+# publish collects their rows from <repo>/bench/results/ (spec §9.4). The
+# ecosystem packages themselves (llm, ml, http, primavera) are whole packages
+# and are not listed. Read by test/coverage_smoke.sh and the site
+# (site/scripts/lib/bench-results.mjs; BENCH_ECOSYSTEM_IDS overrides).
+codec/deflate-oneshot  cajeta-codec
+codec/deflate-stream  cajeta-codec
+codec/inflate-oneshot  cajeta-codec
+codec/inflate-stream  cajeta-codec

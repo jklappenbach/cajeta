@@ -16,6 +16,9 @@
 #   ./bench.sh --area collection/hashmap-int   # one catalog path
 #   ./bench.sh --bench saxpy           # one benchmark by name
 #   ./bench.sh --list                  # list benchmarks under their catalog paths (no run)
+#   ./bench.sh --registered-ids        # the ids of every build (registered-ids.txt's body):
+#                                      # --list of the release build, plus the ids only the
+#                                      # release-live-set-off build names (lang/alloc-live-set-off)
 #   ./bench.sh --competitors           # also run other-language competitors
 #   ./bench.sh --machine phoenix ...   # record the machine (default: the hostname, lowercased)
 #   ./bench.sh --no-gpu ...            # CAJETA_BENCH_NO_GPU=1: no driver probe, no GPU check
@@ -80,6 +83,7 @@ HARNESS_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --list) LIST=1; shift ;;
+        --registered-ids) LIST=2; shift ;;
         --dry-run) DRY=1; shift ;;
         --force) FORCE=1; shift ;;
         --no-gpu) NO_GPU=1; shift ;;
@@ -156,7 +160,7 @@ quiet_gate() {
     exit 3
 }
 Q_STATE="skipped (smoke)"; Q_LOAD=""; Q_CI=""; Q_GPU_UTIL=""; Q_GPU_PROCS=""
-[[ "$LIST" == "1" ]] || quiet_gate "start"
+[[ "$LIST" != "0" ]] || quiet_gate "start"
 
 # ---------------------------------------------------------------- datasets
 # Which generators this run needs: a full run all of them, a filtered one its
@@ -198,6 +202,15 @@ fi
 if [[ "$LIST" == "1" ]]; then
     "$CAJETA" release >/dev/null
     exec ./build/bench --list
+fi
+# --registered-ids: a benchmark whose id follows the build it is in
+# (AllocLiveSetBench names alloc-live-set-on or -off from the live-set mode)
+# lists under one id per binary, so take the union, first-seen order.
+if [[ "$LIST" == "2" ]]; then
+    "$CAJETA" release >/dev/null
+    "$CAJETA" release-live-set-off >/dev/null
+    { ./build/bench --list; ./build/bench-live-set-off --list; } | awk '!seen[$1]++'
+    exit 0
 fi
 
 TS="$(date +%Y%m%d-%H%M%S)"

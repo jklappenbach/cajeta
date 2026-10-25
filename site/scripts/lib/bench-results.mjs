@@ -278,9 +278,12 @@ export function parseRegisteredList(text) {
     const line = raw.trim();
     if (!line || line.startsWith('#')) continue;
     const path = line.split(/\s+/)[0];
-    const i = path.lastIndexOf('/');
-    if (i <= 0) continue;
-    const id = benchIdFor(path.slice(0, i), path.slice(i + 1));
+    const parts = path.split('/');
+    if (parts.length < 2 || parts.some((p) => !p)) continue;
+    // `<package>/<slug>` is already a catalog id (no old-area mapping: math/
+    // is a package, not the old flat area); the pre-0.1.5 `<area>/<slug>/<slug>`
+    // form collapses its doubled slug.
+    const id = parts.length === 3 && parts[1] === parts[2] ? `${parts[0]}/${parts[1]}` : path;
     if (!ids.includes(id)) ids.push(id);
   }
   return ids;
@@ -290,13 +293,25 @@ export function parseRegisteredList(text) {
  * The ids a block may name. Until the harness's registered list exists:
  * every id some page names, plus every id in the results. With a registered
  * list: the registered ids and the result ids, plus the page ids of packages
- * the list does not cover (the ecosystem libraries register in their repos).
+ * the list does not cover (the ecosystem libraries register in their repos),
+ * plus `ecosystem`: ids another repo's bench/ registers that sit on a page of a
+ * package the list does cover (bench/ecosystem-ids.txt; cajeta-codec's
+ * deflate rows on codec/Deflate.md).
  */
-export function knownIdSet({ pageIds = [], results = {}, registered = null }) {
+export function knownIdSet({ pageIds = [], results = {}, registered = null, ecosystem = [] }) {
   const resultIds = Object.values(results).flatMap((byId) => Object.keys(byId));
   if (!registered) return new Set([...pageIds, ...resultIds]);
   const covered = new Set(registered.map((id) => id.split('/')[0]));
-  return new Set([...registered, ...resultIds, ...pageIds.filter((id) => !covered.has(id.split('/')[0]))]);
+  return new Set([...registered, ...ecosystem, ...resultIds, ...pageIds.filter((id) => !covered.has(id.split('/')[0]))]);
+}
+
+/** bench/ecosystem-ids.txt: one `<package>/<slug>  <repo>` per line, `#` comments. */
+export function parseEcosystemList(text) {
+  return String(text)
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('#'))
+    .map((l) => l.split(/\s+/)[0]);
 }
 
 /** Every fenced bench block in a markdown file, parsed. Throws naming the page. */
@@ -373,11 +388,13 @@ export function buildBenchData(benchRoot, { env = process.env } = {}) {
   const pageIds = Object.keys(idMeta);
   const registeredFile = env.BENCH_REGISTERED_IDS || join(benchRoot, 'registered-ids.txt');
   const registered = existsSync(registeredFile) ? parseRegisteredList(readFileSync(registeredFile, 'utf8')) : null;
+  const ecosystemFile = env.BENCH_ECOSYSTEM_IDS || join(benchRoot, 'ecosystem-ids.txt');
+  const ecosystem = existsSync(ecosystemFile) ? parseEcosystemList(readFileSync(ecosystemFile, 'utf8')) : [];
   const { machines, results } = loadResults(join(benchRoot, 'results'), {
-    knownIds: new Set([...pageIds, ...(registered ?? [])]),
+    knownIds: new Set([...pageIds, ...(registered ?? []), ...ecosystem]),
     keepSmoke: env.BENCH_KEEP_SMOKE === '1',
   });
-  const knownIds = [...knownIdSet({ pageIds, results, registered })].sort();
+  const knownIds = [...knownIdSet({ pageIds, results, registered, ecosystem })].sort();
   return { machines, results, pages, idMeta, packages: packageOrder(benchRoot), knownIds, registered: registered !== null };
 }
 

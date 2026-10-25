@@ -14,7 +14,11 @@
 #      lives in) and name() its <slug>, so the id <area>/<name> is unique, and
 #      it is registered in its package's Registry;
 #  (4) every <package> has a page directory bench/<package>/ and one of its
-#      pages carries the benchmark's id (`id: <area>/<name>` or it in backticks) (skip with LAYOUT_PAGES=0 while the pages are written).
+#      pages carries the benchmark's id (`id: <area>/<name>` or it in backticks) (skip with LAYOUT_PAGES=0 while the pages are written);
+#  (5) the device build tasks are gpu-nvptx, gpu-vulkan and gpu-amdgpu, and
+#      the retired amdgpu-only `gpu` task is gone;
+#  (6) bench/registered-ids.txt (the site's registered-id hook, written from
+#      `./bench.sh --list`) holds exactly the catalog's ids.
 set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
@@ -64,47 +68,145 @@ if [[ -f "$ENTRY" ]]; then
     [[ "$GOT_CALLS" == "$WANT_CALLS" ]] || fail "Bench.cajeta registry calls are not selftest + the seventeen packages in catalog order: [$GOT_CALLS]"
 fi
 
-# (2) every file inside a package directory
 NB=0
 IDS=""
-while IFS= read -r f; do
-    rel="${f#$SRC/}"
-    if [[ "$rel" != */* ]]; then
-        [[ "$rel" == "Bench.cajeta" ]] || fail "$rel is outside a <package>/ directory"
+# (2) every file inside a package directory; (3) and (4) for every benchmark
+# class. A benchmark class is one that extends Benchmark, ExternalBenchmark or
+# ServiceBenchmark, directly or through a class in this tree (XpuBench,
+# ToolchainExternal); a class another benchmark class extends is a base and is
+# not itself registered. A class may be constructed with arguments and name
+# several ids (ChannelBench(1, 1) is channel-spsc): every literal its name()
+# returns is an id. Prints "FAIL <msg>" lines, then "ID <id>" lines, then
+# "NB <count>".
+SCAN="$(PACKAGES="$PACKAGES" NONCATALOG="$NONCATALOG" LAYOUT_PAGES="${LAYOUT_PAGES:-1}" python3 - "$SRC" "$PROJ" <<'EOF'
+import os, re, sys
+src, proj = sys.argv[1], sys.argv[2]
+packages = os.environ["PACKAGES"].split()
+noncat = os.environ["NONCATALOG"].split()
+pages_on = os.environ["LAYOUT_PAGES"] != "0"
+ROOTS = {"Benchmark", "ExternalBenchmark", "ServiceBenchmark"}
+fails, files = [], []
+for d, _, fs in os.walk(src):
+    for f in fs:
+        if f.endswith(".cajeta"):
+            files.append(os.path.join(d, f))
+files.sort()
+cls = {}   # "pkg.Name" -> (rel, pkg, parent key or root name, text)
+for f in files:
+    rel = os.path.relpath(f, src)
+    if "/" not in rel:
+        if rel != "Bench.cajeta":
+            fails.append(f"{rel} is outside a <package>/ directory")
         continue
-    fi
-    pkg="${rel%%/*}"
-    if is_in "$pkg" "$NONCATALOG"; then continue; fi
-    is_in "$pkg" "$PACKAGES" || { fail "$rel: '$pkg' is not a catalog package ($PACKAGES)"; continue; }
-
-    # (3) area() = "<package>" and name() = "<slug>": the id is <area>/<name>
-    grep -q 'extends Benchmark' "$f" || continue
-    grep -q '^import dev\.cajeta\.bench\.Benchmark;' "$f" || fail "$rel: Benchmark is not dev.cajeta.bench.Benchmark"
-    NB=$((NB+1))
-    cls="$(basename "$f" .cajeta)"
-    area="$(grep -A2 'String area()' "$f" | grep -oE 'return "[^"]*"' | head -1 | sed 's/return "//; s/"$//')"
-    name="$(grep -A2 'String name()' "$f" | grep -oE 'return "[^"]*"' | head -1 | sed 's/return "//; s/"$//')"
-    [[ -n "$area" ]] || { fail "$rel: no literal area()"; continue; }
-    [[ -n "$name" ]] || { fail "$rel: no literal name()"; continue; }
-    [[ "$area" == "$pkg" ]] || { fail "$rel: area() '$area' != its package '$pkg' (area is the package only)"; continue; }
-    [[ "$name" =~ ^[a-z0-9][a-z0-9_.-]*$ ]] || fail "$rel: name() '$name' is not a lower-kebab slug"
-    id="$area/$name"
-    if is_in "$id" "$IDS"; then fail "$rel: duplicate id $id"; fi
-    IDS="$IDS $id"
-    REG="$SRC/$pkg/$(regname "$pkg").cajeta"
-    grep -q "^ *b\.add(heap ${cls}());" "$REG" 2>/dev/null || fail "$rel: not registered in $pkg/$(regname "$pkg").cajeta"
-
-    # (4) the page directory mentions the slug
-    if [[ "${LAYOUT_PAGES:-1}" != "0" ]]; then
-        if [[ ! -d "$PROJ/$pkg" ]] || ! ls "$PROJ/$pkg"/*.md >/dev/null 2>&1; then
-            fail "$id: no pages under bench/$pkg/"
-        elif ! grep -rqF --include="*.md" -e "id: $id" -e "\`$id\`" "$PROJ/$pkg"; then
-            fail "$id: no page under bench/$pkg/ carries the id '$id'"
-        fi
-    fi
-done < <(find "$SRC" -name '*.cajeta' | sort)
+    pkg = rel.split("/")[0]
+    if pkg in noncat:
+        continue
+    if pkg not in packages:
+        fails.append(f"{rel}: '{pkg}' is not a catalog package ({' '.join(packages)})")
+        continue
+    text = open(f, encoding="utf-8").read()
+    for m in re.finditer(r"^public\s+(?:final\s+)?class\s+(\w+)(?:<[^>]*>)?(?:\s+extends\s+(\w+))?", text, re.M):
+        cls[pkg + "." + m.group(1)] = (rel, pkg, m.group(2), text)
+# A parent resolves in the class's own package first (two packages each have a
+# SaxpyBench), then in any package; a root stays its bare name.
+def resolve(pkg, name):
+    if name is None or name in ROOTS: return name
+    if pkg + "." + name in cls: return pkg + "." + name
+    for k in cls:
+        if k.endswith("." + name): return k
+    return name
+cls = {k: (r, p, resolve(p, par), t) for k, (r, p, par, t) in cls.items()}
+def is_bench(c, seen=()):
+    p = cls[c][2]
+    if p in ROOTS: return True
+    return p in cls and p not in seen and is_bench(p, seen + (c,))
+bench = [c for c in cls if is_bench(c)]
+bases = {cls[c][2] for c in bench if cls[c][2] in cls}
+def method_body(text, sig):
+    i = text.find(sig)
+    if i < 0: return None
+    j = text.find("{", i); depth = 0
+    for k in range(j, len(text)):
+        if text[k] == "{": depth += 1
+        elif text[k] == "}":
+            depth -= 1
+            if depth == 0: return text[j:k]
+    return None
+def literals(body):
+    return re.findall(r'return\s+"([^"]*)"\s*;', body or "")
+def inherited(c, sig):
+    while c in cls:
+        b = method_body(cls[c][3], sig)
+        if b is not None: return b
+        c = cls[c][2]
+    return None
+ids, nb = [], 0
+for c in sorted(bench, key=lambda c: cls[c][0]):
+    if c in bases: continue
+    rel, pkg, parent, text = cls[c]
+    if parent == "Benchmark" and not re.search(r"^import dev\.cajeta\.bench\.Benchmark;", text, re.M):
+        fails.append(f"{rel}: Benchmark is not dev.cajeta.bench.Benchmark")
+    nb += 1
+    areas = literals(inherited(c, "String area()"))
+    names = literals(method_body(text, "String name()") if "String name()" in text else inherited(c, "String name()"))
+    for dn, da in re.findall(r'this\.describe\("([^"]+)",\s*"([^"]+)"\)', text):   # ExternalBenchmark
+        names = names or [dn]; areas = areas or [da]
+    if not areas: fails.append(f"{rel}: no literal area()"); continue
+    if not names: fails.append(f"{rel}: no literal name()"); continue
+    if any(a != pkg for a in areas):
+        fails.append(f"{rel}: area() {areas} != its package '{pkg}' (area is the package only)"); continue
+    reg = os.path.join(src, pkg, pkg[0].upper() + pkg[1:] + "Registry.cajeta")
+    regtext = open(reg, encoding="utf-8").read() if os.path.exists(reg) else ""
+    if not re.search(r"^\s*b\.add\(heap " + c.split(".")[1] + r"\(", regtext, re.M):
+        fails.append(f"{rel}: not registered in {pkg}/{os.path.basename(reg)}")
+    for n in dict.fromkeys(names):
+        if not re.match(r"^[a-z0-9][a-z0-9_.-]*$", n):
+            fails.append(f"{rel}: name() '{n}' is not a lower-kebab slug")
+        i = f"{pkg}/{n}"
+        if i in ids: fails.append(f"{rel}: duplicate id {i}")
+        ids.append(i)
+        if pages_on:
+            pd = os.path.join(proj, pkg)
+            mds = [os.path.join(d, f) for d, _, fs in os.walk(pd) for f in fs if f.endswith(".md")] if os.path.isdir(pd) else []
+            if not mds:
+                fails.append(f"{i}: no pages under bench/{pkg}/")
+            elif not any(("id: " + i) in open(m, encoding="utf-8").read() or ("`" + i + "`") in open(m, encoding="utf-8").read() for m in mds):
+                fails.append(f"{i}: no page under bench/{pkg}/ carries the id '{i}'")
+for f in fails: print("FAIL " + f)
+for i in ids: print("ID " + i)
+print(f"NB {nb}")
+EOF
+)"
+while IFS= read -r line; do
+    case "$line" in
+        "FAIL "*) fail "${line#FAIL }" ;;
+        "ID "*) IDS="$IDS ${line#ID }" ;;
+        "NB "*) NB="${line#NB }" ;;
+    esac
+done <<< "$SCAN"
 
 [[ "$NB" -gt 0 ]] || fail "no catalog benchmarks found"
+
+# (5) the device builds: one task per GPU backend, each with cpu beside it;
+# the retired amdgpu-only `gpu` task is gone (gpu-amdgpu replaces it).
+for t in gpu-nvptx gpu-vulkan gpu-amdgpu; do
+    grep -q "^        \"$t\": {" "$PROJ/cajeta.json" || fail "cajeta.json has no $t task"
+done
+grep -q '^        "gpu": {' "$PROJ/cajeta.json" && fail "cajeta.json still has the retired gpu task (gpu-amdgpu replaces it)"
+grep -q '"xpu-backend": "amdgpu,cpu", "xpu-arch": "gfx1151"' "$PROJ/cajeta.json" || fail "gpu-amdgpu is not amdgpu,cpu on gfx1151"
+
+# (6) the registered-id list (bench/registered-ids.txt, the site's hook) is
+# `bench.sh --list` as built: every catalog id above, no other, in its order.
+REGF="$PROJ/registered-ids.txt"
+if [[ ! -f "$REGF" ]]; then
+    fail "no bench/registered-ids.txt (write it from ./bench.sh --list)"
+else
+    GOT="$(grep -vE '^\s*(#|$)' "$REGF" | awk '{print $1}' | sort)"
+    WANT="$(printf '%s\n' $IDS | sort)"
+    [[ "$GOT" == "$WANT" ]] || fail "registered-ids.txt differs from the catalog's ids: $(diff <(printf '%s\n' "$WANT") <(printf '%s\n' "$GOT") | grep '^[<>]' | head -40 | tr '\n' ' ')"
+    DUP="$(grep -vE '^\s*(#|$)' "$REGF" | awk '{print $1}' | sort | uniq -d | head -3 | tr '\n' ' ')"
+    [[ -z "$DUP" ]] || fail "registered-ids.txt repeats ids: $DUP"
+fi
 
 if [[ "$FAILS" -gt 0 ]]; then
     echo "LAYOUT FAILED ($FAILS problems, $NB benchmarks)"

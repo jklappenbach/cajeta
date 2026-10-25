@@ -12,6 +12,7 @@ import {
   loadResults,
   parseRegisteredList,
   knownIdSet,
+  buildBenchData,
 } from './bench-results.mjs';
 
 const V1 =
@@ -183,6 +184,13 @@ test('parseRegisteredList reads `bench.sh --list` lines into catalog ids', () =>
   assert.deepEqual(parseRegisteredList(text), ['collection/hashmap-int', 'xpu/gemm-f32', 'hash/xxhash3']);
 });
 
+test('parseRegisteredList keeps a catalog id as listed: no old-area mapping (math/ stays math/)', () => {
+  // dev.cajeta.bench 0.1.5 lists `<package>/<slug>`; `math` and `string` are
+  // also old flat area names, which must not be remapped to lang/ here.
+  const text = '  math/matmul  [cpu]\n  lang/saxpy  [cpu]\n  math/fft-1d  [cpu]\n  collection/sort-int64  [cpu]\n';
+  assert.deepEqual(parseRegisteredList(text), ['math/matmul', 'lang/saxpy', 'math/fft-1d', 'collection/sort-int64']);
+});
+
 test('knownIdSet: page ids plus result ids, or the registered list when there is one', () => {
   const pageIds = ['collection/hashmap-int', 'llm/decode-1seq', 'collection/typo'];
   const results = { phoenix: { 'hash/xxhash3': {} } };
@@ -195,4 +203,26 @@ test('knownIdSet: page ids plus result ids, or the registered list when there is
   assert.ok(!strict.has('collection/typo'));
   assert.ok(strict.has('llm/decode-1seq'));
   assert.ok(strict.has('hash/xxhash3'));
+});
+
+test('knownIdSet: ecosystem ids on a covered package\'s page are known (cajeta-codec\'s deflate rows)', () => {
+  const pageIds = ['codec/base64-encode', 'codec/deflate-oneshot', 'codec/typo'];
+  const known = knownIdSet({ pageIds, registered: ['codec/base64-encode'], ecosystem: ['codec/deflate-oneshot'] });
+  assert.ok(known.has('codec/base64-encode'));
+  assert.ok(known.has('codec/deflate-oneshot'));
+  assert.ok(!known.has('codec/typo'));
+});
+
+test('buildBenchData reads bench/registered-ids.txt and bench/ecosystem-ids.txt', () => {
+  const root = tree({
+    'codec/Deflate.md': '# Deflate\n\n```bench\nid: codec/deflate-oneshot\n```\n',
+    'codec/Base64.md': '# Base64\n\n```bench\nid: codec/base64-encode\n```\n',
+    'math/Fft.md': '# Fft\n\n```bench\nid: math/fft-1d\n```\n',
+    'registered-ids.txt': '# header\n  codec/base64-encode  [cpu]\n  math/fft-1d  [cpu]\n',
+    'ecosystem-ids.txt': '# header\ncodec/deflate-oneshot  cajeta-codec\n',
+  });
+  const data = buildBenchData(root, { env: {} });
+  assert.ok(data.registered);
+  for (const id of ['codec/base64-encode', 'codec/deflate-oneshot', 'math/fft-1d']) assert.ok(data.knownIds.includes(id), id);
+  assert.ok(!data.knownIds.includes('lang/fft-1d'));
 });

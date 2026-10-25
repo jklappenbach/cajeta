@@ -7,7 +7,8 @@
 #     trials (3) in short mode, checkResult once, and teardown once, last —
 #     on the selftest/ scaffold, registered only under CAJETA_BENCH_SCAFFOLD=1;
 # (3) `--list` prints each benchmark as its id <package>/<slug>, and the scaffold is
-#     absent from the catalog listing without CAJETA_BENCH_SCAFFOLD.
+#     absent from the catalog listing without CAJETA_BENCH_SCAFFOLD;
+# (4) bench/registered-ids.txt is ./bench.sh --registered-ids, id for id.
 #
 # Override the compiler with CAJETA=/path/to/cajeta.
 set -euo pipefail
@@ -54,5 +55,13 @@ CAT="$("$PROJ/build/bench" --list)" || fail "--list exited non-zero"
 printf '%s\n' "$CAT" | grep -q "selftest/" && fail "scaffold benchmarks listed without CAJETA_BENCH_SCAFFOLD"
 printf '%s\n' "$CAT" | grep -qE "^  collection/hashmap-int  " || fail "--list missing collection/hashmap-int"
 printf '%s\n' "$CAT" | grep -qE "^  [a-z]+/([a-z0-9_.-]+)/\1  " && fail "a --list line doubles its name (area must be the package only)"
+
+# (4) bench/registered-ids.txt (the site's registered-id hook) is what the
+#     builds register: ./bench.sh --registered-ids, the union of every build's
+#     --list, id for id.
+REG="$(CAJETA="$CAJETA" bash "$PROJ/bench.sh" --registered-ids 2>/dev/null | awk '{print $1}')" || fail "bench.sh --registered-ids failed"
+FILE_IDS="$(grep -vE '^\s*(#|$)' "$PROJ/registered-ids.txt" | awk '{print $1}')"
+[[ "$REG" == "$FILE_IDS" ]] || fail "registered-ids.txt is stale against the builds: $(diff <(printf '%s\n' "$FILE_IDS") <(printf '%s\n' "$REG") | grep '^[<>]' | head -10 | tr '\n' ' ')"
+echo "[smoke] registered-ids.txt matches the builds ($(printf '%s\n' "$REG" | wc -l) ids)"
 
 echo "SMOKE OK"
