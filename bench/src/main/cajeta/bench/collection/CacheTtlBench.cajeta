@@ -1,0 +1,76 @@
+package bench.collection;
+
+import cajeta.collection.Cache;
+import cajeta.concurrent.Fiber;
+import cajeta.lang.Optional;
+import cajeta.time.Duration;
+
+import dev.cajeta.bench.Benchmark;
+
+// collection/cache-ttl: put() 1e6 keys (key(i)) into a fresh
+// Cache<int64,int64> of capacity 1e6 with a 1 ms max age, sleep 2 ms, then
+// get() every key back. Each get finds its entry expired and drops it. The
+// 2 ms sleep is inside the time, as it is for every competitor. Check: 1e6
+// expired reads and an empty cache after the read-back.
+public class CacheTtlBench extends Benchmark {
+
+    public int64[] keys;
+    public int64 expired;
+    public int64 left;
+
+    public String name() {
+        return "cache-ttl";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public int64 inputSize() {
+        return (int64) 1000000;
+    }
+
+    public String competitorNote() {
+        return "includes a 2 ms sleep between the inserts and the read-back";
+    }
+
+    public void setup() {
+        int64[] k #= CollGen.keys(1000000);
+        this.keys #= k;
+    }
+
+    public void run(int32 iterations) {
+        int64[] ks = this.keys;
+        Cache<int64, int64> c = heap Cache<int64, int64>(1000000);
+        c.setMaxAge(Duration.ofMillis((int64) 1));
+        int32 j = 0;
+        while (j < 1000000) {
+            c.put(ks[j], (int64) j);
+            j = j + 1;
+        }
+        Fiber.sleep(Duration.ofMillis((int64) 2));
+        int64 e = 0;
+        j = 0;
+        while (j < 1000000) {
+            Optional<int64> o = c.get(ks[j]);
+            if (!o.isPresent()) {
+                e = e + 1;
+            }
+            j = j + 1;
+        }
+        this.expired = e;
+        this.left = (int64) c.count();
+    }
+
+    public boolean checkResult() {
+        return this.expired == (int64) 1000000 && this.left == (int64) 0;
+    }
+}

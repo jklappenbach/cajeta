@@ -1,0 +1,74 @@
+package bench.collection;
+
+import cajeta.collection.ArrayList;
+import cajeta.collection.ImmutableList;
+
+import dev.cajeta.bench.Benchmark;
+
+// collection/immutablelist-build: snapshot a 1e6-element ArrayList<int32> into
+// an ImmutableList 100 times. ImmutableList's only constructors consume their
+// source (#ArrayList, #T[]), and there is no copy-from-a-borrowed-list factory
+// (Java's List.copyOf), so each build copies the live list into a fresh one
+// (appendAll) and hands that over: two copies where List.copyOf makes one.
+// Check: every snapshot holds 1e6 elements and the last ends in 999999.
+public class ImmutableListBuildBench extends Benchmark {
+
+    public ArrayList<int32> src;
+    public int64 total;
+    public int32 lastTail;
+
+    public String name() {
+        return "immutablelist-build";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public int64 inputSize() {
+        return (int64) 100000000;
+    }
+
+    public String competitorNote() {
+        return "two copies per build: no copy-from-borrowed-list constructor (List.copyOf)";
+    }
+
+    public void setup() {
+        ArrayList<int32> l = heap ArrayList<int32>();
+        int32 i = 0;
+        while (i < 1000000) {
+            l.add(i);
+            i = i + 1;
+        }
+        this.src #= l;
+    }
+
+    public void run(int32 iterations) {
+        ArrayList<int32> s = this.src;
+        int64 t = 0;
+        int32 tail = 0;
+        int32 r = 0;
+        while (r < 100) {
+            ArrayList<int32> c = heap ArrayList<int32>();
+            c.appendAll(s);
+            ImmutableList<int32> il = heap ImmutableList<int32>(#c);
+            t = t + il.count();
+            tail = il.get(999999);
+            r = r + 1;
+        }
+        this.total = t;
+        this.lastTail = tail;
+    }
+
+    public boolean checkResult() {
+        return this.total == (int64) 100000000 && this.lastTail == 999999;
+    }
+}

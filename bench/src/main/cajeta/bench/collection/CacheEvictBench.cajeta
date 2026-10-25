@@ -1,0 +1,54 @@
+package bench.collection;
+
+import cajeta.collection.Cache;
+
+import dev.cajeta.bench.Benchmark;
+
+// collection/cache-evict: put() 1e7 distinct keys (key(i), precomputed
+// untimed) into a fresh Cache<int64,int64> of capacity 1e5 per trial, so
+// every put past the first 1e5 evicts the LRU tail. Check: final size 1e5.
+public class CacheEvictBench extends Benchmark {
+
+    public int64[] keys;
+    public int64 size;
+
+    public String name() {
+        return "cache-evict";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public int64 inputSize() {
+        return (int64) 10000000;
+    }
+
+    public void setup() {
+        int64[] k #= CollGen.keys(10000000);
+        this.keys #= k;
+    }
+
+    public void run(int32 iterations) {
+        int64[] ks = this.keys;
+        Cache<int64, int64> c = heap Cache<int64, int64>(100000);
+        int32 j = 0;
+        while (j < 10000000) {
+            c.put(ks[j], (int64) j);
+            j = j + 1;
+        }
+        this.size = (int64) c.count();
+    }
+
+    public boolean checkResult() {
+        return this.size == (int64) 100000;
+    }
+}

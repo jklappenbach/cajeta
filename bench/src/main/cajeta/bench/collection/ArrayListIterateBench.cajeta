@@ -1,0 +1,72 @@
+package bench.collection;
+
+import cajeta.collection.ArrayList;
+
+import dev.cajeta.bench.Benchmark;
+
+// collection/arraylist-iterate: walk a 1e7-element ArrayList<int32> (a[i] = i)
+// ten times, summing. The page asks for `foreach`; `for (int32 v : list)` over
+// an ArrayList compiles and runs zero iterations today (measured: the loop
+// body never executes, for a list and for list.stream()), so the walk is the
+// index loop over get(i) a foreach would lower to. Check: 10 x n(n-1)/2.
+public class ArrayListIterateBench extends Benchmark {
+
+    public ArrayList<int32> list;
+    public int64 sum;
+
+    public String name() {
+        return "arraylist-iterate";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public int64 inputSize() {
+        return (int64) 100000000;
+    }
+
+
+    public String competitorNote() {
+        return "index loop over get(i): foreach over an ArrayList runs zero iterations today";
+    }
+
+    public void setup() {
+        ArrayList<int32> l = heap ArrayList<int32>();
+        int32 i = 0;
+        while (i < 10000000) {
+            l.add(i);
+            i = i + 1;
+        }
+        this.list #= l;
+    }
+
+    public void run(int32 iterations) {
+        ArrayList<int32> l = this.list;
+        int64 s = 0;
+        int32 p = 0;
+        while (p < 10) {
+            int32 n = l.count();
+            int32 i = 0;
+            while (i < n) {
+                s = s + (int64) l.get(i);
+                i = i + 1;
+            }
+            p = p + 1;
+        }
+        this.sum = s;
+    }
+
+    public boolean checkResult() {
+        int64 n = (int64) 10000000;
+        return this.sum == (int64) 10 * (n * (n - 1) / 2);
+    }
+}

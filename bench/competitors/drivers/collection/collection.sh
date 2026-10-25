@@ -16,8 +16,14 @@ set -uo pipefail
 
 DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )/../.." &> /dev/null && pwd )"   # competitors/ (this file is drivers/collection/collection.sh)
 BUILD="${DIR}/.build"; mkdir -p "$BUILD"
-VENDOR="${DIR}/vendor"
+# Pinned C++ headers: competitors/setup.sh provisions them under third_party/
+# (pins.tsv, vendorlock); vendor.sh clones land under vendor/. Either serves.
+VENDOR="${DIR}/third_party"
+for _v in "${DIR}/third_party" "${DIR}/vendor"; do
+    [[ -e "$_v/unordered_dense/include/ankerl/unordered_dense.h" ]] && { VENDOR="$_v"; break; }
+done
 LANGS="${PROFILE_LANGS:-rust cpp go python java}"
+export PATH="$HOME/.cargo/bin:$PATH"   # setup.sh installs Rust there (rustup)
 strip() { tr -d ',"'; }
 
 skip_lang() {
@@ -60,7 +66,7 @@ if want cpp; then
             skip_lang cpp cpp "g++ build failed (see /tmp/profile-coll-cpp.log)"
         fi
     else
-        skip_lang cpp cpp "g++ or vendored unordered_dense missing (run vendor.sh unordered_dense)"
+        skip_lang cpp cpp "g++ or vendored unordered_dense missing (run competitors/setup.sh)"
     fi
 fi
 

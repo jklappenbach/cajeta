@@ -1,0 +1,71 @@
+package bench.collection;
+
+import cajeta.collection.Heap;
+
+import dev.cajeta.bench.Benchmark;
+
+// collection/heap-push-pop: a min-heap seeded with 1e3 draws, then 1e7 rounds
+// of push(draw) and pop(), summing the popped values. Every competitor runs
+// the same min-heap (C++ priority_queue with greater, Rust Reverse, Java's
+// default order, heapq, container/heap with <). Check: the checksum equals the
+// cross-language known answer 10738394301026345 (heapq.heappushpop over the
+// same draws).
+public class HeapPushPopBench extends Benchmark {
+
+    public int32[] vals;
+    public int64 checksum;
+
+    public String name() {
+        return "heap-push-pop";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public int64 inputSize() {
+        return (int64) 10000000;
+    }
+
+
+    public void setup() {
+        CollGen g = heap CollGen();
+        int32[] v = heap int32[10001000];
+        int32 i = 0;
+        while (i < 10001000) {
+            v[i] = g.next();
+            i = i + 1;
+        }
+        this.vals #= v;
+    }
+
+    public void run(int32 iterations) {
+        int32[] v = this.vals;
+        Heap<int32> h = heap Heap<int32>();
+        int32 i = 0;
+        while (i < 1000) {
+            h.push(v[i]);
+            i = i + 1;
+        }
+        int64 c = 0;
+        int32 j = 1000;
+        while (j < 10001000) {
+            h.push(v[j]);
+            c = c + (int64) h.pop();
+            j = j + 1;
+        }
+        this.checksum = c;
+    }
+
+    public boolean checkResult() {
+        return this.checksum == 10738394301026345;
+    }
+}

@@ -1,0 +1,77 @@
+package bench.collection;
+
+import cajeta.collection.ArrayList;
+import cajeta.collection.HashMap;
+import cajeta.collection.ImmutableMap;
+import cajeta.lang.Pair;
+
+import dev.cajeta.bench.Benchmark;
+
+// collection/immutablemap-build: freeze a 1e6-entry HashMap<int64,int64>
+// (key(i) -> i) into an ImmutableMap ten times. ImmutableMap is built from an
+// owned pair list, so each freeze walks the map's entries() into fresh pairs
+// and hands the list over (collecting entries() with toList and building from
+// that throws today: the collected pairs are borrows of the stream's
+// temporaries). Check: every snapshot holds 1e6 entries and maps key(7) to 7.
+public class ImmutableMapBuildBench extends Benchmark {
+
+    public HashMap<int64, int64> map;
+    public int64 total;
+    public int64 probe;
+
+    public String name() {
+        return "immutablemap-build";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 1;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public int64 inputSize() {
+        return (int64) 10000000;
+    }
+
+    public String competitorNote() {
+        return "entries() walked into an owned pair list per freeze";
+    }
+
+    public void setup() {
+        HashMap<int64, int64> m = heap HashMap<int64, int64>();
+        int32 i = 0;
+        while (i < 1000000) {
+            m.put(CollGen.key((int64) i), (int64) i);
+            i = i + 1;
+        }
+        this.map #= m;
+    }
+
+    public void run(int32 iterations) {
+        HashMap<int64, int64> m = this.map;
+        int64 t = 0;
+        int64 pr = 0;
+        int64 k7 = CollGen.key((int64) 7);
+        int32 r = 0;
+        while (r < 10) {
+            ArrayList<Pair<int64, int64>> ps = heap ArrayList<Pair<int64, int64>>();
+            m.entries().forEach((p) -> { ps.add(heap Pair<int64, int64>(p.first(), p.second())); });
+            ImmutableMap<int64, int64> im = heap ImmutableMap<int64, int64>(#ps);
+            t = t + im.count();
+            pr = im.get(k7);
+            r = r + 1;
+        }
+        this.total = t;
+        this.probe = pr;
+    }
+
+    public boolean checkResult() {
+        return this.total == (int64) 10000000 && this.probe == (int64) 7;
+    }
+}

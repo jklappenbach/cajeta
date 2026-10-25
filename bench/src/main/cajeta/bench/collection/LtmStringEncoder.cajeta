@@ -1,0 +1,27 @@
+package bench.collection;
+
+import cajeta.wire.Encoder;
+
+// The ltm/ benchmarks' key and value codec: a String's UTF-8 bytes, as is
+// (the pager length-prefixes each entry).
+public final class LtmStringEncoder implements Encoder<String> {
+
+    public LtmStringEncoder() {
+    }
+
+    public #int8[] encode(String value) {
+        int8[] b #= value.toBytes();
+        return #b;
+    }
+
+    public #String decode(int8[] bytes) {
+        int32 n = (int32) bytes.count();
+        int8[] cp = heap int8[n];
+        int32 i = 0;
+        while (i < n) {
+            cp[i] = bytes[i];
+            i = i + 1;
+        }
+        return heap String(#cp, n);
+    }
+}

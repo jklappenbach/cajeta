@@ -1,0 +1,149 @@
+package bench.collection;
+
+import cajeta.io.file.Path;
+
+import dev.cajeta.bench.detect.Sys;
+
+// The ltm/ benchmarks' disk budget, workload size and storage record, read the
+// same way by the Rust and Java competitors (competitors/drivers/collection/ltm.sh):
+//
+//   CAJETA_BENCH_LTM_DIR          where the index files go (default build/ltm)
+//   CAJETA_BENCH_LTM_MIN_FREE_MB  free space the run needs there (default 4096);
+//                                 less, or a directory that cannot be made, is a skip
+//   CAJETA_BENCH_LTM_N            keys inserted (default 1e6; the page says 1e7)
+//   CAJETA_BENCH_LTM_LOOKUPS      point lookups (default 1e5; the page says 1e6)
+//   CAJETA_BENCH_LTM_BUDGET_MB    resident page budget (default 16; the page says 256)
+//
+// Why the defaults are a tenth of the page: LtmPager finds a frame by a linear
+// scan of its frame table (findFrame, acquireFrame), several times per put, so a
+// put costs O(frames). Measured on Phoenix (200k inserts): 44 us/insert at 4096
+// frames, 61 at 1024; a 65536-frame (256 MB) pool under 1e7 inserts would run
+// for hours per trial. Set the variables to the page's numbers to run it as written.
+public final class LtmEnv {
+
+    public String dir;
+    public int64 n;
+    public int64 lookups;
+    public int64 budgetMb;
+    public int64 minFreeMb;
+    public int64 freeMb;
+    public String storage;
+    public String why;
+    public boolean ok;
+
+    public LtmEnv() {
+        String d = System.env.get("CAJETA_BENCH_LTM_DIR");
+        if (d == null || d.byteLength() == 0) {
+            this.dir = "build/ltm";
+        } else {
+            this.dir = "" + d;
+        }
+        this.n = CollGen.envInt("CAJETA_BENCH_LTM_N", (int64) 1000000);
+        this.lookups = CollGen.envInt("CAJETA_BENCH_LTM_LOOKUPS", (int64) 100000);
+        this.budgetMb = CollGen.envInt("CAJETA_BENCH_LTM_BUDGET_MB", (int64) 16);
+        this.minFreeMb = CollGen.envInt("CAJETA_BENCH_LTM_MIN_FREE_MB", (int64) 4096);
+        this.freeMb = (int64) -1;
+        this.storage = "unknown";
+        this.why = "";
+        this.ok = false;
+        this.probe();
+    }
+
+    // Pages of 4 KiB the budget holds.
+    public int32 pages() {
+        return (int32) (this.budgetMb * 256);
+    }
+
+    public #String path(String file) {
+        return this.dir + "/" + file;
+    }
+
+    public void probe() {
+        Path p #= Path.of(this.dir);
+        p.mkdirs();
+        if (!p.isDir()) {
+            this.why = "disk budget unavailable: cannot create " + this.dir;
+            return;
+        }
+        String dfk #= Sys.run2("df", "-Pk", this.dir);
+        String avail #= LtmEnv.field(dfk, 3);
+        if (avail.byteLength() == 0) {
+            this.why = "disk budget unavailable: df -Pk " + this.dir + " gave no answer";
+            return;
+        }
+        this.freeMb = LtmEnv.digits(avail) / 1024;
+        String dfs #= Sys.run2("df", "--output=source,fstype", this.dir);
+        String src #= LtmEnv.field(dfs, 0);
+        String fst #= LtmEnv.field(dfs, 1);
+        this.storage = src + " " + fst;
+        if (this.freeMb < this.minFreeMb) {
+            this.why = "disk budget unavailable: " + this.freeMb + " MB free at " + this.dir
+                + " (" + this.storage + ") is under CAJETA_BENCH_LTM_MIN_FREE_MB=" + this.minFreeMb;
+            return;
+        }
+        this.ok = true;
+    }
+
+    public #String note() {
+        return "storage=" + this.storage + " dir=" + this.dir + " n=" + this.n + " lookups=" + this.lookups
+            + " budget=" + this.budgetMb + "MB (page: 1e7 / 1e6 / 256MB; LtmPager frame lookup is O(frames))";
+    }
+
+    // The whitespace-separated token `col` of the second line of `text`, or "".
+    public static #String field(String text, int32 col) {
+        int32 n = text.byteLength();
+        int32 i = 0;
+        while (i < n && text.byteAt(i) != (int8) 10) {
+            i = i + 1;
+        }
+        i = i + 1;
+        int32 c = 0;
+        while (i < n) {
+            while (i < n && (text.byteAt(i) == (int8) 32 || text.byteAt(i) == (int8) 9)) {
+                i = i + 1;
+            }
+            int32 b = i;
+            while (i < n && text.byteAt(i) != (int8) 32 && text.byteAt(i) != (int8) 9 && text.byteAt(i) != (int8) 10) {
+                i = i + 1;
+            }
+            if (b == i) {
+                return "";
+            }
+            if (c == col) {
+                return text.substring(b, i);
+            }
+            c = c + 1;
+        }
+        return "";
+    }
+
+    public static int64 digits(String s) {
+        int32 n = s.byteLength();
+        int64 r = 0;
+        int32 i = 0;
+        while (i < n) {
+            int32 c = ((int32) s.byteAt(i)) & 0xFF;
+            if (c >= 48 && c <= 57) {
+                r = r * 10 + (int64) (c - 48);
+            }
+            i = i + 1;
+        }
+        return r;
+    }
+
+    // 16 lowercase hex digits of v: the 16-byte key.
+    public static #String hex16(int64 v) {
+        int8[] b = heap int8[16];
+        int32 i = 0;
+        while (i < 16) {
+            int64 d = (v >>> (60 - 4 * i)) & 15;
+            if (d < 10) {
+                b[i] = (int8) (48 + d);
+            } else {
+                b[i] = (int8) (87 + d);
+            }
+            i = i + 1;
+        }
+        return heap String(#b, 16);
+    }
+}

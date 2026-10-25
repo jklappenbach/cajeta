@@ -1,0 +1,21 @@
+[package]
+name = "collection-ltm"
+version = "0.1.0"
+edition = "2021"
+
+# collection/ ltm ids (LtmBPlusTree.md): RocksDB through the `rocksdb` crate
+# (librocksdb-sys builds RocksDB from source; bindgen needs libclang, see
+# drivers/collection/ltm.sh) and LMDB through `heed` (bundled lmdb). No
+# compression libraries: both stores run uncompressed, like LtmBPlusTree.
+[dependencies]
+rocksdb = { version = "=0.25.0", default-features = false, features = ["bindgen-runtime"] }
+heed = "=0.22.1"
+
+[[bin]]
+name = "collection-ltm"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

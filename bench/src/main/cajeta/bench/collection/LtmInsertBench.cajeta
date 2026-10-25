@@ -1,0 +1,107 @@
+package bench.collection;
+
+import cajeta.collection.ltm.LtmBPlusTree;
+import cajeta.io.file.Path;
+import cajeta.wire.Encoder;
+
+import dev.cajeta.bench.Benchmark;
+
+// collection/ltm-insert: put() N random 16-byte keys (16 hex digits of key(i))
+// with 64-byte values (the key four times) into a fresh disk-backed
+// LtmBPlusTree<String,String> per trial (order 40, so 41 entries fit one 4 KiB
+// page), under a resident page budget, then close() (flush + fsync). Keys and
+// values are built untimed. N, the budget and the directory come from LtmEnv
+// (defaults a tenth of the page; see there). Skips with a reason when the disk
+// budget is unavailable; competitorNote records the storage device.
+// Check: count() == N before the close.
+public class LtmInsertBench extends Benchmark {
+
+    public LtmEnv env;
+    public String[] keys;
+    public String[] vals;
+    public int64 count;
+
+    public String name() {
+        return "ltm-insert";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 1;
+    }
+
+    public int32 measuredIters() {
+        return 3;
+    }
+
+    public int64 inputSize() {
+        return this.env.n;
+    }
+
+    public String competitorNote() {
+        return this.env.note();
+    }
+
+    public boolean supportsVariant(String variant) {
+        return this.env.ok;
+    }
+
+    public String skipReason() {
+        return this.env.why;
+    }
+
+    public void setup() {
+        LtmEnv e = heap LtmEnv();
+        this.env #= e;
+        if (!this.env.ok) {
+            return;
+        }
+        int32 n = (int32) this.env.n;
+        String[] ks = heap String[n];
+        String[] vs = heap String[n];
+        int32 i = 0;
+        while (i < n) {
+            String k #= LtmEnv.hex16(CollGen.key((int64) i));
+            String v = k + k + k + k;
+            vs[i] #= v;
+            ks[i] #= k;
+            i = i + 1;
+        }
+        this.keys #= ks;
+        this.vals #= vs;
+    }
+
+    public void run(int32 iterations) {
+        String path #= this.env.path("ltm-insert.idx");
+        Path stale #= Path.of(path);
+        stale.delete();
+        Encoder<String> ke = heap LtmStringEncoder();
+        Encoder<String> ve = heap LtmStringEncoder();
+        LtmBPlusTree<String, String> t = heap LtmBPlusTree<String, String>(path, ke, ve, 40, this.env.pages());
+        String[] ks = this.keys;
+        String[] vs = this.vals;
+        int32 n = (int32) this.env.n;
+        int32 i = 0;
+        while (i < n) {
+            t.put(ks[i], vs[i]);
+            i = i + 1;
+        }
+        this.count = t.count();
+        t.close();
+    }
+
+    public void teardown() {
+        if (this.env.ok) {
+            String path #= this.env.path("ltm-insert.idx");
+            Path p #= Path.of(path);
+            p.delete();
+        }
+    }
+
+    public boolean checkResult() {
+        return this.count == this.env.n;
+    }
+}

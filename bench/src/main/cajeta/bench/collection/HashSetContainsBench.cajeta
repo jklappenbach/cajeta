@@ -1,0 +1,69 @@
+package bench.collection;
+
+import cajeta.collection.HashSet;
+
+import dev.cajeta.bench.Benchmark;
+
+// collection/hashset-contains: 1e7 contains() on a 1e6-element HashSet<int64>
+// holding key(i) for i < 1e6. Queries are key(draw % 2e6), so about half are
+// present. Check: the hit count equals the number of draws below 1e6.
+public class HashSetContainsBench extends Benchmark {
+
+    public HashSet<int64> set;
+    public int64[] q;
+    public int64 expected;
+    public int64 hits;
+
+    public String name() {
+        return "hashset-contains";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public int64 inputSize() {
+        return (int64) 10000000;
+    }
+
+    public void setup() {
+        HashSet<int64> s = heap HashSet<int64>();
+        int32 i = 0;
+        while (i < 1000000) {
+            s.add(CollGen.key((int64) i));
+            i = i + 1;
+        }
+        this.set #= s;
+        CollGen g = heap CollGen();
+        int32[] idx #= g.indices(10000000, 2000000);
+        this.expected = CollGen.below(idx, 1000000);
+        int64[] qs #= CollGen.keysAt(idx, 0);
+        this.q #= qs;
+    }
+
+    public void run(int32 iterations) {
+        HashSet<int64> s = this.set;
+        int64[] qs = this.q;
+        int64 c = 0;
+        int32 j = 0;
+        while (j < 10000000) {
+            if (s.contains(qs[j])) {
+                c = c + 1;
+            }
+            j = j + 1;
+        }
+        this.hits = c;
+    }
+
+    public boolean checkResult() {
+        return this.hits == this.expected;
+    }
+}

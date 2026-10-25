@@ -1,0 +1,67 @@
+package bench.collection;
+
+import cajeta.collection.HashMap;
+
+import dev.cajeta.bench.Benchmark;
+
+// collection/hashmap-lookup-hit: 1e7 get() that hit on a 1e6-entry
+// HashMap<int64,int64> holding key(i) -> i. Queries are key(draw % 1e6),
+// drawn untimed. Check: the value sum equals the sum of the drawn indices.
+public class HashMapLookupHitBench extends Benchmark {
+
+    public HashMap<int64, int64> map;
+    public int64[] q;
+    public int64 expected;
+    public int64 sum;
+
+    public String name() {
+        return "hashmap-lookup-hit";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public int64 inputSize() {
+        return (int64) 10000000;
+    }
+
+    public void setup() {
+        HashMap<int64, int64> m = heap HashMap<int64, int64>();
+        int32 i = 0;
+        while (i < 1000000) {
+            m.put(CollGen.key((int64) i), (int64) i);
+            i = i + 1;
+        }
+        this.map #= m;
+        CollGen g = heap CollGen();
+        int32[] idx #= g.indices(10000000, 1000000);
+        this.expected = CollGen.sum(idx);
+        int64[] qs #= CollGen.keysAt(idx, 0);
+        this.q #= qs;
+    }
+
+    public void run(int32 iterations) {
+        HashMap<int64, int64> m = this.map;
+        int64[] qs = this.q;
+        int64 s = 0;
+        int32 j = 0;
+        while (j < 10000000) {
+            s = s + m.get(qs[j]);
+            j = j + 1;
+        }
+        this.sum = s;
+    }
+
+    public boolean checkResult() {
+        return this.sum == this.expected;
+    }
+}

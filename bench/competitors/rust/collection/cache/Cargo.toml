@@ -1,0 +1,19 @@
+[package]
+name = "collection-cache"
+version = "0.1.0"
+edition = "2021"
+
+# collection/ Cache ids: moka (sync::Cache, TinyLFU admission + LRU eviction,
+# TTL) and lru (LruCache, plain LRU, no TTL).
+[dependencies]
+moka = { version = "=0.12.16", features = ["sync"] }
+lru = "=0.18.2"
+
+[[bin]]
+name = "collection-cache"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

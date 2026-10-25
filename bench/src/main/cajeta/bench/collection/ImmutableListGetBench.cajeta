@@ -1,0 +1,72 @@
+package bench.collection;
+
+import cajeta.collection.ArrayList;
+import cajeta.collection.ImmutableList;
+
+import dev.cajeta.bench.Benchmark;
+
+// collection/immutablelist-get: 1e8 random get() on a 1e6-element
+// ImmutableList<int32> holding a[i] = i; the same 1e6-entry index table as
+// arraylist-get walked 100 times. Check: 100 x the sum of the drawn indices.
+public class ImmutableListGetBench extends Benchmark {
+
+    public ImmutableList<int32> list;
+    public int32[] idx;
+    public int64 expected;
+    public int64 sum;
+
+    public String name() {
+        return "immutablelist-get";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public int64 inputSize() {
+        return (int64) 100000000;
+    }
+
+    public void setup() {
+        ArrayList<int32> l = heap ArrayList<int32>();
+        int32 i = 0;
+        while (i < 1000000) {
+            l.add(i);
+            i = i + 1;
+        }
+        ImmutableList<int32> il = heap ImmutableList<int32>(#l);
+        this.list #= il;
+        CollGen g = heap CollGen();
+        int32[] t #= g.indices(1000000, 1000000);
+        this.expected = CollGen.sum(t) * 100;
+        this.idx #= t;
+    }
+
+    public void run(int32 iterations) {
+        ImmutableList<int32> l = this.list;
+        int32[] t = this.idx;
+        int64 s = 0;
+        int32 p = 0;
+        while (p < 100) {
+            int32 j = 0;
+            while (j < 1000000) {
+                s = s + (int64) l.get(t[j]);
+                j = j + 1;
+            }
+            p = p + 1;
+        }
+        this.sum = s;
+    }
+
+    public boolean checkResult() {
+        return this.sum == this.expected;
+    }
+}

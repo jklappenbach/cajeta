@@ -1,0 +1,124 @@
+package bench.collection;
+
+// The deterministic inputs every collection/ benchmark added in unit 6 shares
+// with its competitors (bench/competitors/<lang>/collection/{lists,maps,ordered,
+// cache,ltm}): the same draws in the same order give the same keys, queries and
+// expected checks in all six languages. Shifts and xors only, so no step can
+// overflow (int64 `*` traps on signed overflow in cajeta).
+//
+//   next():  s ^= s << 13; s ^= s >>> 7; s ^= s << 17; return s >>> 33
+//            (xorshift64, seed 88172645463325252; a 31-bit draw)
+//   key(i):  three xorshift64 rounds of i ^ 0x5851F42D4C957F2D, as a signed
+//            int64. Each round is a bijection, so distinct i give distinct keys.
+public final class CollGen {
+
+    public int64 s;
+
+    public CollGen() {
+        this.s = 88172645463325252;
+    }
+
+    public static int64 xs(int64 x0) {
+        int64 x = x0;
+        x = x ^ (x << 13);
+        x = x ^ (x >>> 7);
+        x = x ^ (x << 17);
+        return x;
+    }
+
+    public static int64 key(int64 i) {
+        int64 x = i ^ 0x5851F42D4C957F2D;
+        x = CollGen.xs(x);
+        x = CollGen.xs(x);
+        x = CollGen.xs(x);
+        return x;
+    }
+
+    // One 31-bit draw.
+    public int32 next() {
+        this.s = CollGen.xs(this.s);
+        return (int32) (this.s >>> 33);
+    }
+
+    // `count` draws reduced into [0, range).
+    public #int32[] indices(int32 count, int32 range) {
+        int32[] out = heap int32[count];
+        int32 i = 0;
+        while (i < count) {
+            out[i] = this.next() % range;
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    // key(i) for i in [0, n).
+    public static #int64[] keys(int32 n) {
+        int64[] out = heap int64[n];
+        int32 i = 0;
+        while (i < n) {
+            out[i] = CollGen.key((int64) i);
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    // key(offset + idx[j]) for every j.
+    public static #int64[] keysAt(int32[] idx, int32 offset) {
+        int32 n = (int32) idx.count();
+        int64[] out = heap int64[n];
+        int32 i = 0;
+        while (i < n) {
+            out[i] = CollGen.key((int64) (offset + idx[i]));
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    public static int64 sum(int32[] a) {
+        int32 n = (int32) a.count();
+        int64 s = 0;
+        int32 i = 0;
+        while (i < n) {
+            s = s + (int64) a[i];
+            i = i + 1;
+        }
+        return s;
+    }
+
+    // How many of `idx` fall below `bound` (the present half of a half-present query set).
+    public static int64 below(int32[] idx, int32 bound) {
+        int32 n = (int32) idx.count();
+        int64 c = 0;
+        int32 i = 0;
+        while (i < n) {
+            if (idx[i] < bound) {
+                c = c + 1;
+            }
+            i = i + 1;
+        }
+        return c;
+    }
+
+    // A decimal environment integer, or `dflt` when unset or not a number.
+    public static int64 envInt(String name, int64 dflt) {
+        String v = System.env.get(name);
+        if (v == null) {
+            return dflt;
+        }
+        int32 n = v.byteLength();
+        if (n == 0) {
+            return dflt;
+        }
+        int64 r = 0;
+        int32 i = 0;
+        while (i < n) {
+            int32 c = ((int32) v.byteAt(i)) & 0xFF;
+            if (c < 48 || c > 57) {
+                return dflt;
+            }
+            r = r * 10 + (int64) (c - 48);
+            i = i + 1;
+        }
+        return r;
+    }
+}

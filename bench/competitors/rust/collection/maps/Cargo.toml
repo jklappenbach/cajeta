@@ -1,0 +1,19 @@
+[package]
+name = "collection-maps"
+version = "0.1.0"
+edition = "2021"
+
+# collection/ hash ids: HashMap lookups and iteration, HashSet contains, the
+# ImmutableMap/ImmutableSet ids. std HashMap/HashSet (SipHash) and hashbrown
+# (foldhash, the crate's default hasher), each frozen behind Arc.
+[dependencies]
+hashbrown = "=0.17.1"
+
+[[bin]]
+name = "collection-maps"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

@@ -1,0 +1,74 @@
+package bench.collection;
+
+import cajeta.collection.ArrayList;
+import cajeta.collection.Collectors;
+import cajeta.collection.HashSet;
+import cajeta.collection.ImmutableSet;
+
+import dev.cajeta.bench.Benchmark;
+
+// collection/immutableset-build: freeze a 1e6-element HashSet<int64> (key(i))
+// into an ImmutableSet ten times: stream().collect(toList()) then the
+// consuming ImmutableSet(#list) constructor. Check: every snapshot holds 1e6
+// elements and contains key(7).
+public class ImmutableSetBuildBench extends Benchmark {
+
+    public HashSet<int64> set;
+    public int64 total;
+    public boolean probe;
+
+    public String name() {
+        return "immutableset-build";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 1;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public int64 inputSize() {
+        return (int64) 10000000;
+    }
+
+    public String competitorNote() {
+        return "stream().collect(toList()) then ImmutableSet(#list)";
+    }
+
+    public void setup() {
+        HashSet<int64> s = heap HashSet<int64>();
+        int32 i = 0;
+        while (i < 1000000) {
+            s.add(CollGen.key((int64) i));
+            i = i + 1;
+        }
+        this.set #= s;
+    }
+
+    public void run(int32 iterations) {
+        HashSet<int64> s = this.set;
+        int64 t = 0;
+        boolean pr = false;
+        int64 k7 = CollGen.key((int64) 7);
+        int32 r = 0;
+        while (r < 10) {
+            ArrayList<int64> l #= s.stream().collect(Collectors.toList<int64>());
+            ImmutableSet<int64> is = heap ImmutableSet<int64>(#l);
+            t = t + is.count();
+            pr = is.contains(k7);
+            r = r + 1;
+        }
+        this.total = t;
+        this.probe = pr;
+    }
+
+    public boolean checkResult() {
+        return this.total == (int64) 10000000 && this.probe;
+    }
+}

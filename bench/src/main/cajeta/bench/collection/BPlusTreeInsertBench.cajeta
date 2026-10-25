@@ -1,0 +1,56 @@
+package bench.collection;
+
+import cajeta.collection.BPlusTree;
+
+import dev.cajeta.bench.Benchmark;
+
+// collection/bplustree-insert: put() 1e6 distinct pseudo-random int64 keys
+// (key(i) -> i, precomputed untimed) into a fresh BPlusTree<int64,int64>
+// (order 32) per trial. Check: count() == 1e6 and get(key(7)) == 7.
+public class BPlusTreeInsertBench extends Benchmark {
+
+    public int64[] keys;
+    public int64 count;
+    public int64 probe;
+
+    public String name() {
+        return "bplustree-insert";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public int64 inputSize() {
+        return (int64) 1000000;
+    }
+
+    public void setup() {
+        int64[] k #= CollGen.keys(1000000);
+        this.keys #= k;
+    }
+
+    public void run(int32 iterations) {
+        int64[] ks = this.keys;
+        BPlusTree<int64, int64> t = heap BPlusTree<int64, int64>();
+        int32 i = 0;
+        while (i < 1000000) {
+            t.put(ks[i], (int64) i);
+            i = i + 1;
+        }
+        this.count = t.count();
+        this.probe = t.get(ks[7]);
+    }
+
+    public boolean checkResult() {
+        return this.count == (int64) 1000000 && this.probe == (int64) 7;
+    }
+}

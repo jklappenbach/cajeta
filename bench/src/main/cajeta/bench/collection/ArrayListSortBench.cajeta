@@ -1,0 +1,79 @@
+package bench.collection;
+
+import cajeta.collection.ArrayList;
+
+import dev.cajeta.bench.Benchmark;
+
+// collection/arraylist-sort: ArrayList<int32>.sort() of 1e6 random 31-bit
+// draws. Each trial copies the drawn values into a fresh list (add, so the
+// copy is in the time, as it is for every competitor) and sorts it. Check
+// (untimed): the last sorted list is non-decreasing with 1e6 elements.
+public class ArrayListSortBench extends Benchmark {
+
+    public int32[] src;
+    public ArrayList<int32> last;
+
+    public String name() {
+        return "arraylist-sort";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 3;
+    }
+
+    public int32 measuredIters() {
+        return 20;
+    }
+
+    public int64 inputSize() {
+        return (int64) 1000000;
+    }
+
+
+    public String competitorNote() {
+        return "time includes copying the 1e6 inputs into a fresh list";
+    }
+
+    public void setup() {
+        CollGen g = heap CollGen();
+        int32[] v = heap int32[1000000];
+        int32 i = 0;
+        while (i < 1000000) {
+            v[i] = g.next();
+            i = i + 1;
+        }
+        this.src #= v;
+    }
+
+    public void run(int32 iterations) {
+        int32[] v = this.src;
+        ArrayList<int32> l = heap ArrayList<int32>();
+        int32 i = 0;
+        while (i < 1000000) {
+            l.add(v[i]);
+            i = i + 1;
+        }
+        l.sort();
+        this.last #= l;
+    }
+
+    public boolean checkResult() {
+        ArrayList<int32> l = this.last;
+        int32 n = l.count();
+        if (n != 1000000) {
+            return false;
+        }
+        int32 i = 1;
+        while (i < n) {
+            if (l.get(i) < l.get(i - 1)) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+}

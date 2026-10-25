@@ -1,0 +1,64 @@
+package bench.collection;
+
+import cajeta.collection.HashMap;
+
+import dev.cajeta.bench.Benchmark;
+
+// collection/hashmap-iterate: walk every value of a 1e6-entry
+// HashMap<int64,int64> (key(i) -> i) ten times, summing, through the map's
+// values() stream. Check: 10 x n(n-1)/2.
+public class HashMapIterateBench extends Benchmark {
+
+    public HashMap<int64, int64> map;
+    public int64 sum;
+
+    public String name() {
+        return "hashmap-iterate";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public int64 inputSize() {
+        return (int64) 10000000;
+    }
+
+    public String competitorNote() {
+        return "values().reduce";
+    }
+
+    public void setup() {
+        HashMap<int64, int64> m = heap HashMap<int64, int64>();
+        int32 i = 0;
+        while (i < 1000000) {
+            m.put(CollGen.key((int64) i), (int64) i);
+            i = i + 1;
+        }
+        this.map #= m;
+    }
+
+    public void run(int32 iterations) {
+        HashMap<int64, int64> m = this.map;
+        int64 s = 0;
+        int32 p = 0;
+        while (p < 10) {
+            s = s + m.values().reduce((int64) 0, (a, b) -> a + b);
+            p = p + 1;
+        }
+        this.sum = s;
+    }
+
+    public boolean checkResult() {
+        int64 n = (int64) 1000000;
+        return this.sum == (int64) 10 * (n * (n - 1) / 2);
+    }
+}

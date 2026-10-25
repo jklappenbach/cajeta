@@ -1,0 +1,71 @@
+package bench.collection;
+
+import cajeta.collection.ArrayList;
+import cajeta.collection.ImmutableSet;
+
+import dev.cajeta.bench.Benchmark;
+
+// collection/immutableset-contains: 1e7 contains() on a 1e6-element
+// ImmutableSet<int64> (key(i)), the hashset-contains queries (about half
+// present). Check: the hit count equals the number of draws below 1e6.
+public class ImmutableSetContainsBench extends Benchmark {
+
+    public ImmutableSet<int64> set;
+    public int64[] q;
+    public int64 expected;
+    public int64 hits;
+
+    public String name() {
+        return "immutableset-contains";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public int64 inputSize() {
+        return (int64) 10000000;
+    }
+
+    public void setup() {
+        ArrayList<int64> l = heap ArrayList<int64>();
+        int32 i = 0;
+        while (i < 1000000) {
+            l.add(CollGen.key((int64) i));
+            i = i + 1;
+        }
+        ImmutableSet<int64> is = heap ImmutableSet<int64>(#l);
+        this.set #= is;
+        CollGen g = heap CollGen();
+        int32[] idx #= g.indices(10000000, 2000000);
+        this.expected = CollGen.below(idx, 1000000);
+        int64[] qs #= CollGen.keysAt(idx, 0);
+        this.q #= qs;
+    }
+
+    public void run(int32 iterations) {
+        ImmutableSet<int64> s = this.set;
+        int64[] qs = this.q;
+        int64 c = 0;
+        int32 j = 0;
+        while (j < 10000000) {
+            if (s.contains(qs[j])) {
+                c = c + 1;
+            }
+            j = j + 1;
+        }
+        this.hits = c;
+    }
+
+    public boolean checkResult() {
+        return this.hits == this.expected;
+    }
+}

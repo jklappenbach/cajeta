@@ -1,0 +1,79 @@
+package bench.collection;
+
+import cajeta.collection.ArrayList;
+import cajeta.collection.Collector;
+import cajeta.collection.HashMap;
+
+import dev.cajeta.bench.Benchmark;
+
+// collection/collectors-group-by: group a 1e7-element ArrayList<int32>
+// (a[i] = i) by x % 1000 into HashMap<int32, ArrayList<int32>> through
+// stream().collect. Collectors has no groupingBy today (toList is its only
+// factory), so the collector is built by hand from Collector's
+// (supplier, accumulator, combiner) constructor, which is what a groupingBy
+// factory would return. Check: 1000 groups, group 0 holding 1e4 elements.
+public class CollectorsGroupByBench extends Benchmark {
+
+    public ArrayList<int32> src;
+    public int64 groups;
+    public int64 g0;
+
+    public String name() {
+        return "collectors-group-by";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public int64 inputSize() {
+        return (int64) 10000000;
+    }
+
+    public String competitorNote() {
+        return "hand-built Collector: Collectors has no groupingBy";
+    }
+
+    public void setup() {
+        ArrayList<int32> l = heap ArrayList<int32>();
+        int32 i = 0;
+        while (i < 10000000) {
+            l.add(i);
+            i = i + 1;
+        }
+        this.src #= l;
+    }
+
+    public void run(int32 iterations) {
+        ArrayList<int32> s = this.src;
+        HashMap<int32, ArrayList<int32>> g #= s.stream().collect(heap Collector<int32, HashMap<int32, ArrayList<int32>>>(
+            () -> heap HashMap<int32, ArrayList<int32>>(),
+            (acc, v) -> {
+                int32 k = v % 1000;
+                ArrayList<int32> l = acc.get(k);
+                if (l == null) {
+                    ArrayList<int32> nl = heap ArrayList<int32>();
+                    nl.add(v);
+                    acc.put(k, #nl);
+                } else {
+                    l.add(v);
+                }
+                return acc;
+            },
+            (left, right) -> { return left; }));
+        this.groups = g.count();
+        this.g0 = (int64) g.get(0).count();
+    }
+
+    public boolean checkResult() {
+        return this.groups == (int64) 1000 && this.g0 == (int64) 10000;
+    }
+}

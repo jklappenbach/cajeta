@@ -1,0 +1,120 @@
+package bench.collection;
+
+import cajeta.collection.ltm.LtmBPlusTree;
+import cajeta.io.file.Path;
+import cajeta.wire.Encoder;
+
+import dev.cajeta.bench.Benchmark;
+
+// collection/ltm-lookup: get() of LOOKUPS random keys (key(draw % N) as 16 hex
+// digits) from a disk-backed LtmBPlusTree<String,String> holding the
+// ltm-insert data, built untimed in setup, closed and reopened so the trials
+// start from a cold pool. Same LtmEnv sizes, skip and storage record as
+// ltm-insert. Check: the summed value lengths equal 64 x LOOKUPS.
+public class LtmLookupBench extends Benchmark {
+
+    public LtmEnv env;
+    public Encoder<String> ke;
+    public Encoder<String> ve;
+    public LtmBPlusTree<String, String> tree;
+    public String[] q;
+    public int64 sum;
+
+    public String name() {
+        return "ltm-lookup";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 1;
+    }
+
+    public int32 measuredIters() {
+        return 5;
+    }
+
+    public int64 inputSize() {
+        return this.env.lookups;
+    }
+
+    public String competitorNote() {
+        return this.env.note();
+    }
+
+    public boolean supportsVariant(String variant) {
+        return this.env.ok;
+    }
+
+    public String skipReason() {
+        return this.env.why;
+    }
+
+    public void setup() {
+        LtmEnv e = heap LtmEnv();
+        this.env #= e;
+        if (!this.env.ok) {
+            return;
+        }
+        String path #= this.env.path("ltm-lookup.idx");
+        Path stale #= Path.of(path);
+        stale.delete();
+        Encoder<String> k1 = heap LtmStringEncoder();
+        Encoder<String> v1 = heap LtmStringEncoder();
+        LtmBPlusTree<String, String> b = heap LtmBPlusTree<String, String>(path, k1, v1, 40, this.env.pages());
+        int32 n = (int32) this.env.n;
+        int32 i = 0;
+        while (i < n) {
+            String k #= LtmEnv.hex16(CollGen.key((int64) i));
+            String v = k + k + k + k;
+            b.put(k, v);
+            i = i + 1;
+        }
+        b.close();
+        Encoder<String> k2 = heap LtmStringEncoder();
+        Encoder<String> v2 = heap LtmStringEncoder();
+        this.ke #= k2;
+        this.ve #= v2;
+        LtmBPlusTree<String, String> t = heap LtmBPlusTree<String, String>(path, this.ke, this.ve, 40, this.env.pages());
+        this.tree #= t;
+        CollGen g = heap CollGen();
+        int32 m = (int32) this.env.lookups;
+        String[] qs = heap String[m];
+        int32 j = 0;
+        while (j < m) {
+            String k #= LtmEnv.hex16(CollGen.key((int64) (g.next() % n)));
+            qs[j] #= k;
+            j = j + 1;
+        }
+        this.q #= qs;
+    }
+
+    public void run(int32 iterations) {
+        LtmBPlusTree<String, String> t = this.tree;
+        String[] qs = this.q;
+        int32 m = (int32) this.env.lookups;
+        int64 s = 0;
+        int32 j = 0;
+        while (j < m) {
+            String v = t.get(qs[j]);
+            s = s + (int64) v.byteLength();
+            j = j + 1;
+        }
+        this.sum = s;
+    }
+
+    public void teardown() {
+        if (this.env.ok) {
+            this.tree.close();
+            String path #= this.env.path("ltm-lookup.idx");
+            Path p #= Path.of(path);
+            p.delete();
+        }
+    }
+
+    public boolean checkResult() {
+        return this.sum == (int64) 64 * this.env.lookups;
+    }
+}

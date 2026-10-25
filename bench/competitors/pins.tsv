@@ -88,3 +88,20 @@ kotlin-stdlib	library	jar	org/jetbrains/kotlin/kotlin-stdlib/1.4.21/kotlin-stdli
 # --- Java jars for hash/ (unit 8): XXH3 for the xxhash3 rows, SipHash-2-4 for siphash ---
 zero-allocation-hashing	library	jar	net/openhft/zero-allocation-hashing/2026.0/zero-allocation-hashing-2026.0.jar	2026.0	22b4328b4cd751790ba3222320c7aae3f7927e6cdd064cd8a60d2a179be4ada3
 guava	library	jar	com/google/guava/guava/33.7.2-jre/guava-33.7.2-jre.jar	33.7.2-jre	b530942257fb935f8b2cfaa5f8eb5bd59c555fd8e8d01b8ce98912e077ea606c
+# --- collection/ Cache and ltm (unit 6): Caffeine; RocksJava; lmdbjava with its jnr-ffi closure (Maven 3.8.7, 2026-10-25) ---
+caffeine	library	jar	com/github/ben-manes/caffeine/caffeine/3.3.1/caffeine-3.3.1.jar	3.3.1	1f916d052a3f8c0c10951f343f043f176ff2d3c2f9e380e15f0be673c5e67c48
+jspecify	library	jar	org/jspecify/jspecify/1.0.1/jspecify-1.0.1.jar	1.0.1	070d75f261fe4c5b8202508366715f7f2d4660f88c8ef7e6d3575e48c9683b66
+rocksdbjni	library	jar	org/rocksdb/rocksdbjni/11.8.1/rocksdbjni-11.8.1-linux64.jar	11.8.1	826c39c35f6a59b7ec9833dd0a813188f310506129ef5e19518611ddbc67ad2d
+lmdbjava	library	jar	org/lmdbjava/lmdbjava/0.9.3/lmdbjava-0.9.3.jar	0.9.3	7547128c12775ab7d2634b9cc8f4126127cd1e699cfbd8597759746b59f08f21
+lmdbjava-native	library	jar	org/lmdbjava/native/0.9.33-5/native-0.9.33-5.jar	0.9.33-5	fd61203a14f6a3e4004124692752f1229a62c18c9c81ab598f9f46e1fdb82809
+jnr-ffi	library	jar	com/github/jnr/jnr-ffi/2.2.18/jnr-ffi-2.2.18.jar	2.2.18	d64ad9007fe01b3c5a2fe65a8a9873714e2d6ce4f32f2d45296a8f7e15c8ad74
+jnr-constants	library	jar	com/github/jnr/jnr-constants/0.10.4/jnr-constants-0.10.4.jar	0.10.4	9a5b8cf9798d9d0331b8d8966c5235a22c4307676e35803a24659e6d76096f78
+jffi	library	jar	com/github/jnr/jffi/1.3.14/jffi-1.3.14.jar	1.3.14	fe61cec21b07feec6191c0c7ff240f4b5048789d53ced4b2e06df0f7fad3df42
+jffi-native	library	jar	com/github/jnr/jffi/1.3.14/jffi-1.3.14-native.jar	1.3.14	d432bbd8b0773749cbec8bb59fd6963fedc6491163669196eb4108e4abc8cfd0
+jnr-a64asm	library	jar	com/github/jnr/jnr-a64asm/1.0.0/jnr-a64asm-1.0.0.jar	1.0.0	53ae5ea7fa5c284e8279aa348e7b9de4548b0cae10bfd058fa217c791875e4cf
+jnr-x86asm	library	jar	com/github/jnr/jnr-x86asm/1.0.2/jnr-x86asm-1.0.2.jar	1.0.2	39f3675b910e6e9b93825f8284bec9f4ad3044cd20a6f7c8ff9e2f8695ebf21e
+asm	library	jar	org/ow2/asm/asm/9.7.1/asm-9.7.1.jar	9.7.1	8cadd43ac5eb6d09de05faecca38b917a040bb9139c7edeb4cc81c740b713281
+asm-commons	library	jar	org/ow2/asm/asm-commons/9.7.1/asm-commons-9.7.1.jar	9.7.1	9a579b54d292ad9be171d4313fd4739c635592c2b5ac3a459bbd1049cddec6a0
+asm-analysis	library	jar	org/ow2/asm/asm-analysis/9.7.1/asm-analysis-9.7.1.jar	9.7.1	85b29371884ba31bb76edf22323c2c24e172c3267a67152eba3d1ccc2e041ef2
+asm-tree	library	jar	org/ow2/asm/asm-tree/9.7.1/asm-tree-9.7.1.jar	9.7.1	9929881f59eb6b840e86d54570c77b59ce721d104e6dfd7a40978991c2d3b41f
+asm-util	library	jar	org/ow2/asm/asm-util/9.7.1/asm-util-9.7.1.jar	9.7.1	f885be71b5c90556f5f1ad1c4f9276b29b96057c497d46666fe4ddbec3cb43c6

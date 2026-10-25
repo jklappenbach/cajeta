@@ -1,0 +1,56 @@
+package bench.collection;
+
+import cajeta.collection.ArrayList;
+import cajeta.collection.Collectors;
+
+import dev.cajeta.bench.Benchmark;
+
+// collection/collectors-to-list: stream().collect(Collectors.toList()) over a
+// 1e7-element ArrayList<int32> (a[i] = i). Check: 1e7 elements, the last 9999999.
+public class CollectorsToListBench extends Benchmark {
+
+    public ArrayList<int32> src;
+    public int64 count;
+    public int32 tail;
+
+    public String name() {
+        return "collectors-to-list";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public int64 inputSize() {
+        return (int64) 10000000;
+    }
+
+    public void setup() {
+        ArrayList<int32> l = heap ArrayList<int32>();
+        int32 i = 0;
+        while (i < 10000000) {
+            l.add(i);
+            i = i + 1;
+        }
+        this.src #= l;
+    }
+
+    public void run(int32 iterations) {
+        ArrayList<int32> s = this.src;
+        ArrayList<int32> out #= s.stream().collect(Collectors.toList<int32>());
+        this.count = (int64) out.count();
+        this.tail = out.get(9999999);
+    }
+
+    public boolean checkResult() {
+        return this.count == (int64) 10000000 && this.tail == 9999999;
+    }
+}

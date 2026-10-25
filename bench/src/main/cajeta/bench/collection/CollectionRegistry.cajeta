@@ -4,22 +4,61 @@ import cajeta.collection.ArrayList;
 
 import dev.cajeta.bench.Benchmark;
 
-// Registers every collection/ benchmark, in catalog order. A unit adds a collection/
-// benchmark by writing the class in this directory and one `b.add(heap X());`
-// line here; Bench.cajeta calls this and is never edited for it.
+// Registers every collection/ benchmark, in catalog order (the order of
+// bench/collection/README.md's pages). A unit adds a collection/ benchmark by
+// writing the class in this directory and one `b.add(heap X());` line here;
+// Bench.cajeta calls this and is never edited for it.
 public final class CollectionRegistry {
 
     public static void register(ArrayList<Benchmark> b) {
+        // ArrayList.md
         b.add(heap ArrayListAppendBench());
+        b.add(heap ArrayListGetBench());
+        b.add(heap ArrayListIterateBench());
+        b.add(heap ArrayListSortBench());
+        // LinkedList.md
+        b.add(heap LinkedListBench());
+        // HashMap.md
         b.add(heap HashMapIntBench());
         b.add(heap HashMapStringBench());
+        b.add(heap HashMapLookupHitBench());
+        b.add(heap HashMapLookupMissBench());
+        b.add(heap HashMapIterateBench());
+        // HashSet.md
         b.add(heap HashSetDedupBench());
-        b.add(heap LinkedListBench());
+        b.add(heap HashSetContainsBench());
+        // Heap.md
         b.add(heap HeapSortBench());
+        b.add(heap HeapPushPopBench());
+        // RedBlackTree.md
         b.add(heap RedBlackTreeBench());
+        b.add(heap RedBlackTreeRangeBench());
+        // BPlusTree.md
+        b.add(heap BPlusTreeInsertBench());
+        b.add(heap BPlusTreePointLookupBench());
+        b.add(heap BPlusTreeRangeBench());
+        // Cache.md
+        b.add(heap CacheHitBench());
+        b.add(heap CacheMissBench());
+        b.add(heap CacheEvictBench());
+        b.add(heap CacheTtlBench());
+        // ImmutableList.md, ImmutableMap.md, ImmutableSet.md
+        b.add(heap ImmutableListBuildBench());
+        b.add(heap ImmutableListGetBench());
+        b.add(heap ImmutableMapBuildBench());
+        b.add(heap ImmutableMapLookupBench());
+        b.add(heap ImmutableSetBuildBench());
+        b.add(heap ImmutableSetContainsBench());
+        // Collectors.md
+        b.add(heap CollectorsToListBench());
+        b.add(heap CollectorsGroupByBench());
+        // Sort.md
         b.add(heap SortInt64Bench());
         b.add(heap SortF64Bench());
         b.add(heap SortStableBench());
         b.add(heap BinarySearchBench());
+        // ltm/LtmBPlusTree.md
+        b.add(heap LtmInsertBench());
+        b.add(heap LtmLookupBench());
     }
 }

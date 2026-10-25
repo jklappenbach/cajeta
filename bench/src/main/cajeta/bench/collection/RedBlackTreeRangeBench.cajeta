@@ -1,0 +1,33 @@
+package bench.collection;
+
+import dev.cajeta.bench.Benchmark;
+
+// collection/redblacktree-range: 1e4 range scans of 1e3 keys each over 1e6 entries
+// (key(i) -> i), the scan starting at the first key >= key(draw % 1e6) and
+// summing the values it visits. cajeta.collection.RedBlackTree has no range scan, cursor or
+// lower-bound today (its surface is put/get/containsKey/min/max/keysInOrder/count/isEmpty), and
+// keysInOrder() copies every key, so a scan would cost O(n) and measure
+// something else. The row is skipped with that reason; the competitors
+// measure the page's workload.
+public class RedBlackTreeRangeBench extends Benchmark {
+
+    public String name() {
+        return "redblacktree-range";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int64 inputSize() {
+        return (int64) 10000000;
+    }
+
+    public boolean supportsVariant(String variant) {
+        return false;
+    }
+
+    public String skipReason() {
+        return "cajeta.collection.RedBlackTree has no range scan or cursor API today (put/get/containsKey/min/max/keysInOrder/count/isEmpty); keysInOrder copies all n keys";
+    }
+}

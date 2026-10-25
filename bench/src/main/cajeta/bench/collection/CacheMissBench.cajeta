@@ -1,0 +1,64 @@
+package bench.collection;
+
+import cajeta.collection.Cache;
+import cajeta.lang.Optional;
+
+import dev.cajeta.bench.Benchmark;
+
+// collection/cache-miss: 1e7 get() that miss, each followed by put(), on a
+// fresh Cache<int64,int64> of capacity 1e5 per trial; keys key(i) for
+// i < 1e7, all distinct, precomputed untimed. Past 1e5 every put evicts the
+// LRU tail. Check: 1e7 misses and a final size of 1e5.
+public class CacheMissBench extends Benchmark {
+
+    public int64[] keys;
+    public int64 misses;
+    public int64 size;
+
+    public String name() {
+        return "cache-miss";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public int64 inputSize() {
+        return (int64) 10000000;
+    }
+
+    public void setup() {
+        int64[] k #= CollGen.keys(10000000);
+        this.keys #= k;
+    }
+
+    public void run(int32 iterations) {
+        int64[] ks = this.keys;
+        Cache<int64, int64> c = heap Cache<int64, int64>(100000);
+        int64 m = 0;
+        int32 j = 0;
+        while (j < 10000000) {
+            int64 k = ks[j];
+            Optional<int64> o = c.get(k);
+            if (!o.isPresent()) {
+                m = m + 1;
+                c.put(k, (int64) j);
+            }
+            j = j + 1;
+        }
+        this.misses = m;
+        this.size = (int64) c.count();
+    }
+
+    public boolean checkResult() {
+        return this.misses == (int64) 10000000 && this.size == (int64) 100000;
+    }
+}

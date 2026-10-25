@@ -1,0 +1,70 @@
+package bench.collection;
+
+import cajeta.collection.Cache;
+import cajeta.lang.Optional;
+
+import dev.cajeta.bench.Benchmark;
+
+// collection/cache-hit: 1e7 get() that hit on a Cache<int64,int64> of capacity
+// 1e5 filled (untimed) with key(i) -> i for i < 1e5. Queries are
+// key(draw % 1e5). Every get moves its entry to the LRU head and reads the
+// clock (the TTL check). Check: 1e7 hits.
+public class CacheHitBench extends Benchmark {
+
+    public Cache<int64, int64> cache;
+    public int64[] q;
+    public int64 hits;
+
+    public String name() {
+        return "cache-hit";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public int64 inputSize() {
+        return (int64) 10000000;
+    }
+
+    public void setup() {
+        Cache<int64, int64> c = heap Cache<int64, int64>(100000);
+        int32 i = 0;
+        while (i < 100000) {
+            c.put(CollGen.key((int64) i), (int64) i);
+            i = i + 1;
+        }
+        this.cache #= c;
+        CollGen g = heap CollGen();
+        int32[] idx #= g.indices(10000000, 100000);
+        int64[] qs #= CollGen.keysAt(idx, 0);
+        this.q #= qs;
+    }
+
+    public void run(int32 iterations) {
+        Cache<int64, int64> c = this.cache;
+        int64[] qs = this.q;
+        int64 h = 0;
+        int32 j = 0;
+        while (j < 10000000) {
+            Optional<int64> o = c.get(qs[j]);
+            if (o.isPresent()) {
+                h = h + 1;
+            }
+            j = j + 1;
+        }
+        this.hits = h;
+    }
+
+    public boolean checkResult() {
+        return this.hits == (int64) 10000000;
+    }
+}

@@ -1,0 +1,72 @@
+package bench.collection;
+
+import cajeta.collection.HashMap;
+
+import dev.cajeta.bench.Benchmark;
+
+// collection/hashmap-lookup-miss: 1e7 lookups that miss on a 1e6-entry
+// HashMap<int64,int64> holding key(i) -> i for i < 1e6. Queries are
+// key(1e6 + draw % 1e6), absent because key() is a bijection. containsKey,
+// since get() answers a miss with the zero value. Check: 1e7 misses.
+public class HashMapLookupMissBench extends Benchmark {
+
+    public HashMap<int64, int64> map;
+    public int64[] q;
+    public int64 misses;
+
+    public String name() {
+        return "hashmap-lookup-miss";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public int64 inputSize() {
+        return (int64) 10000000;
+    }
+
+    public String competitorNote() {
+        return "containsKey (get answers a miss with the zero value)";
+    }
+
+    public void setup() {
+        HashMap<int64, int64> m = heap HashMap<int64, int64>();
+        int32 i = 0;
+        while (i < 1000000) {
+            m.put(CollGen.key((int64) i), (int64) i);
+            i = i + 1;
+        }
+        this.map #= m;
+        CollGen g = heap CollGen();
+        int32[] idx #= g.indices(10000000, 1000000);
+        int64[] qs #= CollGen.keysAt(idx, 1000000);
+        this.q #= qs;
+    }
+
+    public void run(int32 iterations) {
+        HashMap<int64, int64> m = this.map;
+        int64[] qs = this.q;
+        int64 c = 0;
+        int32 j = 0;
+        while (j < 10000000) {
+            if (!m.containsKey(qs[j])) {
+                c = c + 1;
+            }
+            j = j + 1;
+        }
+        this.misses = c;
+    }
+
+    public boolean checkResult() {
+        return this.misses == (int64) 10000000;
+    }
+}
