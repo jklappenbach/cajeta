@@ -131,3 +131,30 @@ sequences decoding, `cajeta-llm` bench):
 - **4.3** The llm 4-seq step profiled in-stream yields per-kernel spans
   comparable to llama.cpp's per-op logger; the re-attribution is
   cajeta-llm 15.2.12.3.9.
+
+## 5. Events inside the batch (added 2026-10-24, for cajeta-llm 15.2.12.3.9.5)
+
+The Vulkan `KernelEvent` is a sentinel today: recording it lands the whole
+batch and waits, so nothing recorded after it can overlap the wait. A
+pipelined decode (step N+1 recorded before step N's tokens are read) needs
+an event the host can wait on while the device runs what follows it.
+
+- **5.1** When an event is recorded on the batched path, a `VkEvent` is set
+  in the batch's command buffer at that point (all prior commands complete),
+  and the event remembers the batch's dispatch count at the record.
+- **5.2** When the host waits on such an event, the chunk holding it is
+  submitted if it is still open, and the host polls the event's status
+  without flushing the batch; dispatches recorded after it keep running.
+- **5.3** When the host reads a buffer after waiting on an event, the read
+  flushes the batch only if a dispatch recorded after that event writes the
+  buffer; a buffer whose last write precedes the awaited event is read
+  directly (the batch tracks each bound buffer's last write index).
+- **5.4** When an event is re-recorded, it is reset in-stream before the set,
+  so a stale signal is never read.
+- **5.5** When the device cannot provide events (an ICD without them), the
+  sentinel behaviour remains: record lands the batch, wait returns.
+- **5.6** Tests: an event recorded between two dispatch groups lets the host
+  read the first group's output while the second runs (the second group's
+  completion is observed only at the flush); results are bit-identical; the
+  sentinel path still works under a fault switch.
+
