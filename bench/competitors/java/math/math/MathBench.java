@@ -6,7 +6,7 @@
 // jdk.incubator.vector). numpy (BLAS) is the Python competitor.
 //
 // One schema-conformant CSV row per benchmark (competitors/columns.txt order),
-// mirroring competitors/go/math/main.go column-for-column (language→java,
+// mirroring competitors/go/math/math/main.go column-for-column (language→java,
 // flags→-server, alloc_bytes from the HotSpot com.sun.management.ThreadMXBean —
 // the Java-native analog of Go's TotalAlloc delta). A volatile sink defeats
 // dead-code elimination the way Go's checksum reuse does.

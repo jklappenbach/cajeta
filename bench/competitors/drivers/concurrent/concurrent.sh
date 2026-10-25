@@ -14,7 +14,7 @@
 #      PROFILE_LANGS (space-list filter).
 set -uo pipefail
 
-DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )/../.." &> /dev/null && pwd )"   # competitors/ (this file is drivers/concurrent/concurrent.sh)
 BUILD="${DIR}/.build"; mkdir -p "$BUILD"
 LANGS="${PROFILE_LANGS:-rust cpp go python java}"
 strip() { tr -d ',"'; }
@@ -33,8 +33,8 @@ want() { case " $LANGS " in *" $1 "*) return 0;; *) return 1;; esac; }
 # ---- rust (AtomicI64 + std::thread) ----
 if want rust; then
     if command -v cargo >/dev/null 2>&1; then
-        if ( cd "$DIR/rust/concurrent" && cargo build --release >/tmp/profile-conc-rust.log 2>&1 ); then
-            PROFILE_LANG_VERSION="$(rustc --version | strip)" "$DIR/rust/concurrent/target/release/profile-concurrent" \
+        if ( cd "$DIR/rust/concurrent/concurrent" && cargo build --release >/tmp/profile-conc-rust.log 2>&1 ); then
+            PROFILE_LANG_VERSION="$(rustc --version | strip)" "$DIR/rust/concurrent/concurrent/target/release/profile-concurrent" \
                 || skip_lang rust rust "rust concurrent runner crashed"
         else
             skip_lang rust rust "cargo build failed (see /tmp/profile-conc-rust.log)"
@@ -48,8 +48,8 @@ fi
 if want cpp; then
     if command -v g++ >/dev/null 2>&1; then
         BIN="$BUILD/cpp-concurrent"
-        if [[ ! -x "$BIN" || "$DIR/cpp/concurrent/concurrent_bench.cpp" -nt "$BIN" ]]; then
-            g++ -O3 -march=native -pthread -DNDEBUG "$DIR/cpp/concurrent/concurrent_bench.cpp" \
+        if [[ ! -x "$BIN" || "$DIR/cpp/concurrent/concurrent/concurrent_bench.cpp" -nt "$BIN" ]]; then
+            g++ -O3 -march=native -pthread -DNDEBUG "$DIR/cpp/concurrent/concurrent/concurrent_bench.cpp" \
                 -o "$BIN" >/tmp/profile-conc-cpp.log 2>&1 || true
         fi
         if [[ -x "$BIN" ]]; then
@@ -66,7 +66,7 @@ fi
 # ---- go (atomic.Int64 + goroutines) ----
 if want go; then
     if command -v go >/dev/null 2>&1; then
-        ( cd "$DIR/go/concurrent" && GOAMD64=v4 PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-conc-go.log ) \
+        ( cd "$DIR/go/concurrent/concurrent" && GOAMD64="${GOAMD64:-v4}" PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-conc-go.log ) \
             || skip_lang go go "go build/run failed (see /tmp/profile-conc-go.log)"
     else
         skip_lang go go "go not installed"
@@ -78,7 +78,7 @@ if want python; then
     PY="$DIR/python/.venv/bin/python"
     [[ -x "$PY" ]] || PY="$(command -v python3 || true)"
     if [[ -n "$PY" ]]; then
-        PROFILE_LANG_VERSION="$("$PY" --version 2>&1 | strip)" "$PY" "$DIR/python/concurrent/concurrent_bench.py" \
+        PROFILE_LANG_VERSION="$("$PY" --version 2>&1 | strip)" "$PY" "$DIR/python/concurrent/concurrent/concurrent_bench.py" \
             || skip_lang python python "python concurrent runner crashed"
     else
         skip_lang python python "python3 not installed"
@@ -88,7 +88,7 @@ fi
 # ---- java (AtomicLong + virtual threads / Loom) ----
 if want java; then
     if command -v javac >/dev/null 2>&1; then
-        OUT="$BUILD/java-concurrent"; SRC="$DIR/java/concurrent/ConcurrentBench.java"
+        OUT="$BUILD/java-concurrent"; SRC="$DIR/java/concurrent/concurrent/ConcurrentBench.java"
         if [[ ! -f "$OUT/ConcurrentBench.class" || "$SRC" -nt "$OUT/ConcurrentBench.class" ]]; then
             mkdir -p "$OUT"; javac -d "$OUT" "$SRC" >/tmp/profile-concurrent-java.log 2>&1 || true
         fi

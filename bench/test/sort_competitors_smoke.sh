@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Phase B sort smoke test — cross-language sort competitors over an identical
-# splitmix64-generated 50K array. Asserts competitors/sort.sh emits schema-
+# splitmix64-generated 50K array. Asserts competitors/collection.sh sort emits schema-
 # conformant sort-int64/sort-f64/sort-stable-int64 rows for the present languages
 # (rust std-unstable/std-stable, cpp std::sort/pdqsort/std::stable_sort, go
 # slices.Sort, python Timsort), that every measured row passes its
@@ -11,13 +11,13 @@ set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
-RUNNER="${PROJ}/competitors/sort.sh"
+RUNNER="${PROJ}/competitors/collection.sh"   # program sort of package collection
 NCOLS="$(awk -F, '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
 
 fail() { echo "SORT-COMP FAIL: $1" >&2; exit 1; }
 
 echo "[sort-comp] building + running sort competitors (compiles cargo/g++/go on first run)…"
-OUT="$(PROFILE_RUN_ID=sort-comp PROFILE_RUN_TS=0 PROFILE_TRIALS=3 bash "$RUNNER" 2>/tmp/sort-comp.err)" \
+OUT="$(PROFILE_RUN_ID=sort-comp PROFILE_RUN_TS=0 PROFILE_TRIALS=3 bash "$RUNNER" sort 2>/tmp/sort-comp.err)" \
     || fail "sort.sh exited non-zero"
 [[ -n "$OUT" ]] || fail "sort.sh produced no rows"
 
@@ -26,9 +26,12 @@ while IFS= read -r row; do
     [[ -z "$row" ]] && continue
     N="$(printf '%s' "$row" | awk -F, '{print NF}')"
     [[ "$N" == "$NCOLS" ]] || fail "row has $N cols, expected $NCOLS: $row"
+    [[ "$(printf '%s' "$row" | awk -F, '{print $1}')" == "2" ]] || fail "row is not schema_version 2: $row"
+    printf '%s' "$row" | awk -F, '$33=="" || $34=="" || $37=="" || $37!=$10 {exit 1}' \
+        || fail "row lacks machine/os/platform (platform must be the language): $row"
     bench="$(printf '%s' "$row" | awk -F, '{print $4}')"; area="$(printf '%s' "$row" | awk -F, '{print $5}')"
     case "$bench" in sort-int64|sort-f64|sort-stable-int64) ;; *) fail "unexpected benchmark: $bench" ;; esac
-    [[ "$area" == "sort" ]] || fail "unexpected area: $area"
+    [[ "$area" == "collection" ]] || fail "unexpected area: $area"
     status="$(printf '%s' "$row" | awk -F, '{print $28}')"
     if [[ "$status" == "ok" ]]; then
         min="$(printf '%s' "$row" | awk -F, '{print $17}')"
@@ -61,5 +64,5 @@ done
 
 
 NLANGS="$(echo "$OUT" | awk -F, '$28=="ok"{print $10}' | sort -u | tr '\n' ' ')"
-echo "[sort-comp] measured langs: [$NLANGS]; adversarial variants completed (Cajeta skips them)"
+echo "[sort-comp] measured langs: [$NLANGS]; adversarial variants completed"
 echo "SORT-COMP OK"

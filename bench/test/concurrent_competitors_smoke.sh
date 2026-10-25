@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Phase B concurrency smoke test — cross-language atomic-fetchadd (1M) +
 # task-spawn-await (20K) at the same sizes as the Cajeta side. Asserts
-# competitors/concurrent.sh emits schema-conformant rows for the present
+# competitors/concurrent.sh concurrent emits schema-conformant rows for the present
 # languages (rust/cpp std::thread, go goroutine, python asyncio), that every
 # measured row passes its exact closed-form cross-check, that python's atomic-
 # fetchadd is a `skipped` row with a reason (no lock-free atomic in CPython), and
@@ -10,13 +10,13 @@ set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
-RUNNER="${PROJ}/competitors/concurrent.sh"
+RUNNER="${PROJ}/competitors/concurrent.sh"   # program concurrent of package concurrent
 NCOLS="$(awk -F, '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
 
 fail() { echo "CONC-COMP FAIL: $1" >&2; exit 1; }
 
 echo "[conc-comp] building + running concurrency competitors (compiles cargo/g++/go on first run)…"
-OUT="$(PROFILE_RUN_ID=conc-comp PROFILE_RUN_TS=0 PROFILE_TRIALS=3 bash "$RUNNER" 2>/tmp/conc-comp.err)" \
+OUT="$(PROFILE_RUN_ID=conc-comp PROFILE_RUN_TS=0 PROFILE_TRIALS=3 bash "$RUNNER" concurrent 2>/tmp/conc-comp.err)" \
     || fail "concurrent.sh exited non-zero"
 [[ -n "$OUT" ]] || fail "concurrent.sh produced no rows"
 
@@ -25,6 +25,9 @@ while IFS= read -r row; do
     [[ -z "$row" ]] && continue
     N="$(printf '%s' "$row" | awk -F, '{print NF}')"
     [[ "$N" == "$NCOLS" ]] || fail "row has $N cols, expected $NCOLS: $row"
+    [[ "$(printf '%s' "$row" | awk -F, '{print $1}')" == "2" ]] || fail "row is not schema_version 2: $row"
+    printf '%s' "$row" | awk -F, '$33=="" || $34=="" || $37=="" || $37!=$10 {exit 1}' \
+        || fail "row lacks machine/os/platform (platform must be the language): $row"
     bench="$(printf '%s' "$row" | awk -F, '{print $4}')"; area="$(printf '%s' "$row" | awk -F, '{print $5}')"
     case "$bench" in atomic-fetchadd|task-spawn-await) ;; *) fail "unexpected benchmark: $bench" ;; esac
     [[ "$area" == "concurrent" ]] || fail "unexpected area: $area"

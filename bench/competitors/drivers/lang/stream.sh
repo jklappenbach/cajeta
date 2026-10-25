@@ -12,7 +12,7 @@
 #      PROFILE_LANGS (space-list filter).
 set -uo pipefail
 
-DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )/../.." &> /dev/null && pwd )"   # competitors/ (this file is drivers/lang/stream.sh)
 BUILD="${DIR}/.build"; mkdir -p "$BUILD"
 LANGS="${PROFILE_LANGS:-rust cpp go python java}"
 strip() { tr -d ',"'; }
@@ -30,8 +30,8 @@ want() { case " $LANGS " in *" $1 "*) return 0;; *) return 1;; esac; }
 # ---- rust (Iterator + rayon) ----
 if want rust; then
     if command -v cargo >/dev/null 2>&1; then
-        if ( cd "$DIR/rust/stream" && cargo build --release >/tmp/profile-stream-rust.log 2>&1 ); then
-            PROFILE_LANG_VERSION="$(rustc --version | strip)" "$DIR/rust/stream/target/release/profile-stream" \
+        if ( cd "$DIR/rust/lang/stream" && cargo build --release >/tmp/profile-stream-rust.log 2>&1 ); then
+            PROFILE_LANG_VERSION="$(rustc --version | strip)" "$DIR/rust/lang/stream/target/release/profile-stream" \
                 || skip_lang rust rust "rust stream runner crashed"
         else
             skip_lang rust rust "cargo build failed (see /tmp/profile-stream-rust.log)"
@@ -45,7 +45,7 @@ fi
 if want cpp; then
     if command -v g++ >/dev/null 2>&1; then
         BIN="$BUILD/cpp-stream"
-        if [[ ! -x "$BIN" || "$DIR/cpp/stream/stream_bench.cpp" -nt "$BIN" ]]; then
+        if [[ ! -x "$BIN" || "$DIR/cpp/lang/stream/stream_bench.cpp" -nt "$BIN" ]]; then
             # std::reduce(execution::par) needs the TBB backend. Prefer the dev
             # symlink (-ltbb); fall back to the versioned soname when the -dev
             # package isn't installed (only libtbb.so.12 present).
@@ -53,7 +53,7 @@ if want cpp; then
             if ! echo 'int main(){}' | g++ -x c++ - -ltbb -o /dev/null 2>/dev/null; then
                 TBB="-l:libtbb.so.12"
             fi
-            g++ -O3 -march=native -std=c++23 -DNDEBUG "$DIR/cpp/stream/stream_bench.cpp" \
+            g++ -O3 -march=native -std=c++23 -DNDEBUG "$DIR/cpp/lang/stream/stream_bench.cpp" \
                 $TBB -o "$BIN" >/tmp/profile-stream-cpp.log 2>&1 || true
         fi
         if [[ -x "$BIN" ]]; then
@@ -70,7 +70,7 @@ fi
 # ---- go ----
 if want go; then
     if command -v go >/dev/null 2>&1; then
-        ( cd "$DIR/go/stream" && GOAMD64=v4 PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-stream-go.log ) \
+        ( cd "$DIR/go/lang/stream" && GOAMD64="${GOAMD64:-v4}" PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-stream-go.log ) \
             || skip_lang go go "go build/run failed (see /tmp/profile-stream-go.log)"
     else
         skip_lang go go "go not installed"
@@ -82,7 +82,7 @@ if want python; then
     PY="$DIR/python/.venv/bin/python"
     [[ -x "$PY" ]] || PY="$(command -v python3 || true)"
     if [[ -n "$PY" ]]; then
-        PROFILE_LANG_VERSION="$("$PY" --version 2>&1 | strip)" "$PY" "$DIR/python/stream/stream_bench.py" \
+        PROFILE_LANG_VERSION="$("$PY" --version 2>&1 | strip)" "$PY" "$DIR/python/lang/stream/stream_bench.py" \
             || skip_lang python python "python stream runner crashed"
     else
         skip_lang python python "python3 not installed"
@@ -92,7 +92,7 @@ fi
 # ---- java: java.util.stream (sequential LongStream filter→map→sum + .parallel() reduce) ----
 if want java; then
     if command -v javac >/dev/null 2>&1; then
-        OUT="$BUILD/java-stream"; SRC="$DIR/java/stream/StreamBench.java"
+        OUT="$BUILD/java-stream"; SRC="$DIR/java/lang/stream/StreamBench.java"
         if [[ ! -f "$OUT/StreamBench.class" || "$SRC" -nt "$OUT/StreamBench.class" ]]; then
             mkdir -p "$OUT"; javac -d "$OUT" "$SRC" >/tmp/profile-stream-java.log 2>&1 || true
         fi

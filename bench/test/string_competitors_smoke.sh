@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Phase B string smoke test — cross-language string competitors over the same
-# ~360 KB ASCII text the Cajeta side uses. Asserts competitors/string.sh emits
+# ~360 KB ASCII text the Cajeta side uses. Asserts competitors/lang.sh string emits
 # schema-conformant string-search/string-replace/string-uppercase/string-build-
 # concat rows for the present languages (rust stdlib + memchr, cpp std::string,
 # go strings, python str), that every measured row passes its cross-check, and
@@ -9,13 +9,13 @@ set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
-RUNNER="${PROJ}/competitors/string.sh"
+RUNNER="${PROJ}/competitors/lang.sh"   # program string of package lang
 NCOLS="$(awk -F, '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
 
 fail() { echo "STRING-COMP FAIL: $1" >&2; exit 1; }
 
 echo "[string-comp] building + running string competitors (compiles cargo/g++/go on first run)…"
-OUT="$(PROFILE_RUN_ID=string-comp PROFILE_RUN_TS=0 PROFILE_TRIALS=3 bash "$RUNNER" 2>/tmp/string-comp.err)" \
+OUT="$(PROFILE_RUN_ID=string-comp PROFILE_RUN_TS=0 PROFILE_TRIALS=3 bash "$RUNNER" string 2>/tmp/string-comp.err)" \
     || fail "string.sh exited non-zero"
 [[ -n "$OUT" ]] || fail "string.sh produced no rows"
 
@@ -24,9 +24,12 @@ while IFS= read -r row; do
     [[ -z "$row" ]] && continue
     N="$(printf '%s' "$row" | awk -F, '{print NF}')"
     [[ "$N" == "$NCOLS" ]] || fail "row has $N cols, expected $NCOLS: $row"
+    [[ "$(printf '%s' "$row" | awk -F, '{print $1}')" == "2" ]] || fail "row is not schema_version 2: $row"
+    printf '%s' "$row" | awk -F, '$33=="" || $34=="" || $37=="" || $37!=$10 {exit 1}' \
+        || fail "row lacks machine/os/platform (platform must be the language): $row"
     bench="$(printf '%s' "$row" | awk -F, '{print $4}')"; area="$(printf '%s' "$row" | awk -F, '{print $5}')"
     case "$bench" in string-search|string-replace|string-uppercase|string-build-concat) ;; *) fail "unexpected benchmark: $bench" ;; esac
-    [[ "$area" == "string" ]] || fail "unexpected area: $area"
+    [[ "$area" == "lang" ]] || fail "unexpected area: $area"
     status="$(printf '%s' "$row" | awk -F, '{print $28}')"
     if [[ "$status" == "ok" ]]; then
         min="$(printf '%s' "$row" | awk -F, '{print $17}')"

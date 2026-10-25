@@ -1,3 +1,3 @@
 module profile-time
 
-go 1.26
+go 1.22

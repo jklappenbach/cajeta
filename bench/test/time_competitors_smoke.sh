@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Phase B time smoke test — cross-language time-instant-arith (1M) /
 # time-localdate-arith (100K) over the same sizes + math as the Cajeta side.
-# Asserts competitors/time.sh emits schema-conformant rows for the present
+# Asserts competitors/time.sh time emits schema-conformant rows for the present
 # languages (rust chrono, cpp std::chrono, go time, python datetime), that every
 # measured row passes its exact closed-form epoch-sum cross-check, and — guarding
 # a real bug we hit — that the C++ rows aren't constant-folded away (a 1M-op loop
@@ -10,13 +10,13 @@ set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
-RUNNER="${PROJ}/competitors/time.sh"
+RUNNER="${PROJ}/competitors/time.sh"   # program time of package time
 NCOLS="$(awk -F, '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
 
 fail() { echo "TIME-COMP FAIL: $1" >&2; exit 1; }
 
 echo "[time-comp] building + running time competitors (compiles cargo/g++/go on first run)…"
-OUT="$(PROFILE_RUN_ID=time-comp PROFILE_RUN_TS=0 PROFILE_TRIALS=3 bash "$RUNNER" 2>/tmp/time-comp.err)" \
+OUT="$(PROFILE_RUN_ID=time-comp PROFILE_RUN_TS=0 PROFILE_TRIALS=3 bash "$RUNNER" time 2>/tmp/time-comp.err)" \
     || fail "time.sh exited non-zero"
 [[ -n "$OUT" ]] || fail "time.sh produced no rows"
 
@@ -25,6 +25,9 @@ while IFS= read -r row; do
     [[ -z "$row" ]] && continue
     N="$(printf '%s' "$row" | awk -F, '{print NF}')"
     [[ "$N" == "$NCOLS" ]] || fail "row has $N cols, expected $NCOLS: $row"
+    [[ "$(printf '%s' "$row" | awk -F, '{print $1}')" == "2" ]] || fail "row is not schema_version 2: $row"
+    printf '%s' "$row" | awk -F, '$33=="" || $34=="" || $37=="" || $37!=$10 {exit 1}' \
+        || fail "row lacks machine/os/platform (platform must be the language): $row"
     bench="$(printf '%s' "$row" | awk -F, '{print $4}')"; area="$(printf '%s' "$row" | awk -F, '{print $5}')"
     case "$bench" in time-instant-arith|time-localdate-arith) ;; *) fail "unexpected benchmark: $bench" ;; esac
     [[ "$area" == "time" ]] || fail "unexpected area: $area"

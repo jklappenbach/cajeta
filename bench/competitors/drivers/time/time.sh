@@ -12,7 +12,7 @@
 #      PROFILE_LANGS (space-list filter).
 set -uo pipefail
 
-DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )/../.." &> /dev/null && pwd )"   # competitors/ (this file is drivers/time/time.sh)
 BUILD="${DIR}/.build"; mkdir -p "$BUILD"
 LANGS="${PROFILE_LANGS:-rust cpp go python java}"
 strip() { tr -d ',"'; }
@@ -31,8 +31,8 @@ want() { case " $LANGS " in *" $1 "*) return 0;; *) return 1;; esac; }
 # ---- rust (chrono) ----
 if want rust; then
     if command -v cargo >/dev/null 2>&1; then
-        if ( cd "$DIR/rust/time" && cargo build --release >/tmp/profile-time-rust.log 2>&1 ); then
-            PROFILE_LANG_VERSION="$(rustc --version | strip)" "$DIR/rust/time/target/release/profile-time" \
+        if ( cd "$DIR/rust/time/time" && cargo build --release >/tmp/profile-time-rust.log 2>&1 ); then
+            PROFILE_LANG_VERSION="$(rustc --version | strip)" "$DIR/rust/time/time/target/release/profile-time" \
                 || skip_lang rust chrono "rust time runner crashed"
         else
             skip_lang rust chrono "cargo build failed (see /tmp/profile-time-rust.log)"
@@ -46,8 +46,8 @@ fi
 if want cpp; then
     if command -v g++ >/dev/null 2>&1; then
         BIN="$BUILD/cpp-time"
-        if [[ ! -x "$BIN" || "$DIR/cpp/time/time_bench.cpp" -nt "$BIN" ]]; then
-            g++ -O3 -march=native -std=c++20 -DNDEBUG "$DIR/cpp/time/time_bench.cpp" \
+        if [[ ! -x "$BIN" || "$DIR/cpp/time/time/time_bench.cpp" -nt "$BIN" ]]; then
+            g++ -O3 -march=native -std=c++20 -DNDEBUG "$DIR/cpp/time/time/time_bench.cpp" \
                 -o "$BIN" >/tmp/profile-time-cpp.log 2>&1 || true
         fi
         if [[ -x "$BIN" ]]; then
@@ -64,7 +64,7 @@ fi
 # ---- go ----
 if want go; then
     if command -v go >/dev/null 2>&1; then
-        ( cd "$DIR/go/time" && GOAMD64=v4 PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-time-go.log ) \
+        ( cd "$DIR/go/time/time" && GOAMD64="${GOAMD64:-v4}" PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-time-go.log ) \
             || skip_lang go time "go build/run failed (see /tmp/profile-time-go.log)"
     else
         skip_lang go time "go not installed"
@@ -76,7 +76,7 @@ if want python; then
     PY="$DIR/python/.venv/bin/python"
     [[ -x "$PY" ]] || PY="$(command -v python3 || true)"
     if [[ -n "$PY" ]]; then
-        PROFILE_LANG_VERSION="$("$PY" --version 2>&1 | strip)" "$PY" "$DIR/python/time/time_bench.py" \
+        PROFILE_LANG_VERSION="$("$PY" --version 2>&1 | strip)" "$PY" "$DIR/python/time/time/time_bench.py" \
             || skip_lang python datetime "python time runner crashed"
     else
         skip_lang python datetime "python3 not installed"
@@ -86,7 +86,7 @@ fi
 # ---- java: java.time (Instant/LocalDate immutable value objects, JDK stdlib) ----
 if want java; then
     if command -v javac >/dev/null 2>&1; then
-        OUT="$BUILD/java-time"; SRC="$DIR/java/time/TimeBench.java"
+        OUT="$BUILD/java-time"; SRC="$DIR/java/time/time/TimeBench.java"
         if [[ ! -f "$OUT/TimeBench.class" || "$SRC" -nt "$OUT/TimeBench.class" ]]; then
             mkdir -p "$OUT"; javac -d "$OUT" "$SRC" >/tmp/profile-time-java.log 2>&1 || true
         fi

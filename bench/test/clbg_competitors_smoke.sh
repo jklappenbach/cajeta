@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Phase B CLBG smoke test — cross-language Computer Language Benchmarks Game
 # classics (mandelbrot 800² / fannkuch-redux N=10 / spectral-norm N=100) at the
-# same sizes as the Cajeta side. Asserts competitors/clbg.sh emits schema-
+# same sizes as the Cajeta side. Asserts competitors/lang.sh clbg emits schema-
 # conformant rows for the present languages (rust/cpp/go scalar, python numpy+
 # CPython), and that every measured row passes its canonical-checksum cross-check
 # (in-set 254099 / 38+73196 / ≈1.274224). Uses a tiny warmup/trials because pure-
@@ -10,13 +10,13 @@ set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
-RUNNER="${PROJ}/competitors/clbg.sh"
+RUNNER="${PROJ}/competitors/lang.sh"   # program clbg of package lang
 NCOLS="$(awk -F, '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
 
 fail() { echo "CLBG-COMP FAIL: $1" >&2; exit 1; }
 
 echo "[clbg-comp] building + running clbg competitors (compiles cargo/g++/go; pure-CPython fannkuch is slow)…"
-OUT="$(PROFILE_RUN_ID=clbg-comp PROFILE_RUN_TS=0 PROFILE_WARMUP=1 PROFILE_TRIALS=2 bash "$RUNNER" 2>/tmp/clbg-comp.err)" \
+OUT="$(PROFILE_RUN_ID=clbg-comp PROFILE_RUN_TS=0 PROFILE_WARMUP=1 PROFILE_TRIALS=2 bash "$RUNNER" clbg 2>/tmp/clbg-comp.err)" \
     || fail "clbg.sh exited non-zero"
 [[ -n "$OUT" ]] || fail "clbg.sh produced no rows"
 
@@ -25,9 +25,12 @@ while IFS= read -r row; do
     [[ -z "$row" ]] && continue
     N="$(printf '%s' "$row" | awk -F, '{print NF}')"
     [[ "$N" == "$NCOLS" ]] || fail "row has $N cols, expected $NCOLS: $row"
+    [[ "$(printf '%s' "$row" | awk -F, '{print $1}')" == "2" ]] || fail "row is not schema_version 2: $row"
+    printf '%s' "$row" | awk -F, '$33=="" || $34=="" || $37=="" || $37!=$10 {exit 1}' \
+        || fail "row lacks machine/os/platform (platform must be the language): $row"
     bench="$(printf '%s' "$row" | awk -F, '{print $4}')"; area="$(printf '%s' "$row" | awk -F, '{print $5}')"
     case "$bench" in clbg-mandelbrot|clbg-fannkuch-redux|clbg-spectral-norm) ;; *) fail "unexpected benchmark: $bench" ;; esac
-    [[ "$area" == "clbg" ]] || fail "unexpected area: $area"
+    [[ "$area" == "lang" ]] || fail "unexpected area: $area"
     status="$(printf '%s' "$row" | awk -F, '{print $28}')"
     if [[ "$status" == "ok" ]]; then
         min="$(printf '%s' "$row" | awk -F, '{print $17}')"

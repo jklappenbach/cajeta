@@ -34,19 +34,12 @@ if [[ "${1:-}" == "publish" ]]; then
     exit 2
 fi
 
-# Competitor runners (competitors/<runner>.sh) by catalog package. The runners
-# still carry the profile-era area names; the mapping says which ones a
-# package's --area selects.
-competitor_runners() {
-    case "$1" in
-        "")         echo "codec hash sort string math collection clbg time stream concurrent gpu" ;;
-        lang)       echo "string stream clbg math" ;;
-        collection) echo "collection sort" ;;
-        math)       echo "math" ;;
-        xpu)        echo "gpu" ;;
-        codec|hash|time|concurrent) echo "$1" ;;
-        *)          echo "" ;;
-    esac
+# Competitor rows come from competitors/<package>.sh, one per catalog package
+# (schema v2, catalog ids; see competitors/run.sh). A filtered run runs its
+# package's; an unfiltered run runs all of them.
+PACKAGES="lang collection concurrent time hash codec io math nucleo wire search process reflect aot xpu gfx toolchain"
+competitor_packages() {
+    if [[ -z "$1" ]]; then echo "$PACKAGES"; else echo "$1"; fi
 }
 
 [[ -x "$CAJETA" ]] || { echo "error: cajeta not found at $CAJETA (build ./build.sh or set CAJETA=)" >&2; exit 1; }
@@ -67,7 +60,8 @@ while [[ $# -gt 0 ]]; do
         *) HARNESS_ARGS+=("$1"); shift ;;
     esac
 done
-[[ -n "$MACHINE" ]] || MACHINE="$(hostname -s 2>/dev/null || hostname)"
+[[ -n "$MACHINE" ]] || MACHINE="$(cat /proc/sys/kernel/hostname 2>/dev/null || hostname)"
+MACHINE="$(printf '%s' "$MACHINE" | tr -d '[:space:]' | tr 'A-Z' 'a-z')"
 export CAJETA_BENCH_MACHINE="$MACHINE"
 
 # --list short-circuits (build + list, no run). dev.cajeta.bench prints each
@@ -102,12 +96,12 @@ PROFILE_DATA_DIR="$DATA" CAJETA_BENCH_RUN_ID="$TS" CAJETA_BENCH_RUN_TS="$RUN_TS"
 
 if [[ "$RUN_COMPETITORS" == "1" ]]; then
     echo "[bench] (3b) competitors (cross-language; builds cargo/cmake/go on first run)"
-    for runner_name in $(competitor_runners "${AREA_FILTER%%/*}"); do
-        runner="competitors/$runner_name.sh"
+    for pkg in $(competitor_packages "${AREA_FILTER%%/*}"); do
+        runner="competitors/$pkg.sh"
         [[ -f "$runner" ]] || continue
-        echo "  [competitors] $runner_name"
+        echo "  [competitors] $pkg"
         PROFILE_DATA_DIR="$DATA" PROFILE_RUN_ID="$TS" PROFILE_RUN_TS="$RUN_TS" \
-            bash "$runner" >> "$OUT/results.csv" || echo "    note: $runner_name competitors failed (recorded as skips)"
+            bash "$runner" >> "$OUT/results.csv" || echo "    note: $pkg competitors failed (recorded as skips)"
     done
 fi
 

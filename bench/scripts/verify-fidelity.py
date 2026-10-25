@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-# Copy of cajeta-bench tools/verify-fidelity.py at cajeta-bench 56fa740 (dev.cajeta.bench 0.1.0),
+# Copy of cajeta-bench tools/verify-fidelity.py as of dev.cajeta.bench 0.1.1,
 # the source of truth; refresh it when the library moves. bench.sh runs it.
-# Local change: the matmul check matches the id math/matmul, not the name (send upstream).
+# Matches 0.1.1 exactly (0.1.1 took this copy's math/matmul-by-id change and
+# added the `external`-row exemption to the allocation check).
 # Verification gate over a benchmark results.csv, schema 1 or 2.
 #
 # Two layers:
@@ -17,9 +18,10 @@
 #  2. FIDELITY (benchmark-fidelity Unit 11.a.1). The outcomes of the fidelity
 #     plan, each checked when its benchmark is in the file:
 #       * Memory tab populated  — no measured Cajeta row has alloc_bytes == -1
+#                                  (rows tagged `external` excepted)
 #       * string-build fairness — every language reports input_size == 4000
 #       * JSON float parsing     — Cajeta json-dom/serialize/roundtrip rows are ok
-#       * matmul kernel-pool     — Cajeta matmul median in the kernel-pool band
+#       * matmul kernel-pool     — Cajeta math/matmul median in the kernel-pool band
 #       * SIMD compute kernels    — dot/saxpy/spectral improved vs the scalar baselines
 #     A benchmark absent from the file is reported SKIP, so a consumer repo's
 #     one-benchmark CSV passes. `--require-suite` restores the profile gate's
@@ -135,7 +137,13 @@ def main(argv):
             skip(name, "not in this file")
 
     # 1. Memory tab — no measured Cajeta row emits the -1 alloc_bytes sentinel.
-    bad_alloc = [r for r in measured if (num(r["alloc_bytes"]) is None or num(r["alloc_bytes"]) < 0)]
+    #    Except an ExternalBenchmark row (notes tag `external`, dev.cajeta.bench
+    #    0.1.1): its work runs in a child process, its memory is the child's
+    #    peak_rss_kb, and the harness has no allocator count to give.
+    def is_external(r):
+        return "external" in [p.strip() for p in (r.get("notes") or "").split(";")]
+    bad_alloc = [r for r in measured if not is_external(r)
+                 and (num(r["alloc_bytes"]) is None or num(r["alloc_bytes"]) < 0)]
     check("memory: no measured Cajeta alloc_bytes == -1", not bad_alloc,
           "" if not bad_alloc else f"{len(bad_alloc)} offenders, e.g. "
           + ", ".join(sorted({r["benchmark"] for r in bad_alloc})[:5]))

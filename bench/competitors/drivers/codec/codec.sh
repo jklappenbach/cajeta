@@ -14,7 +14,7 @@
 #      PROFILE_WARMUP (3), PROFILE_TRIALS (10), PROFILE_LANGS (space list filter).
 set -uo pipefail
 
-DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )/../.." &> /dev/null && pwd )"   # competitors/ (this file is drivers/codec/codec.sh)
 PROFILE="$( cd -- "${DIR}/.." &> /dev/null && pwd )"
 DATA_DIR="${PROFILE_DATA_DIR:-${PROFILE}/datasets/cache}"
 BUILD="${DIR}/.build"; mkdir -p "$BUILD"
@@ -42,8 +42,8 @@ want() { case " $LANGS " in *" $1 "*) return 0;; *) return 1;; esac; }
 # ---- rust: serde_json + simd-json (cargo) ----
 if want rust; then
     if command -v cargo >/dev/null 2>&1; then
-        if ( cd "$DIR/rust/codec" && cargo build --release >/tmp/profile-codec-rust.log 2>&1 ); then
-            PROFILE_LANG_VERSION="$(rustc --version | strip)" "$DIR/rust/codec/target/release/profile-codec" \
+        if ( cd "$DIR/rust/codec/codec" && cargo build --release >/tmp/profile-codec-rust.log 2>&1 ); then
+            PROFILE_LANG_VERSION="$(rustc --version | strip)" "$DIR/rust/codec/codec/target/release/profile-codec" \
                 || skip_lang rust rust "rust codec runner crashed"
         else
             skip_lang rust rust "cargo build failed (see /tmp/profile-codec-rust.log)"
@@ -57,10 +57,10 @@ fi
 if want cpp; then
     if command -v g++ >/dev/null 2>&1 && [[ -f "$VENDOR/simdjson/singleheader/simdjson.cpp" && -f "$VENDOR/yyjson/src/yyjson.c" ]]; then
         BIN="$BUILD/cpp-codec"
-        if [[ ! -x "$BIN" || "$DIR/cpp/codec/json_dom.cpp" -nt "$BIN" ]]; then
+        if [[ ! -x "$BIN" || "$DIR/cpp/codec/codec/json_dom.cpp" -nt "$BIN" ]]; then
             g++ -O3 -march=native -DNDEBUG \
                 -I "$VENDOR/simdjson/singleheader" -I "$VENDOR/yyjson/src" \
-                "$DIR/cpp/codec/json_dom.cpp" \
+                "$DIR/cpp/codec/codec/json_dom.cpp" \
                 "$VENDOR/simdjson/singleheader/simdjson.cpp" \
                 "$VENDOR/yyjson/src/yyjson.c" \
                 -o "$BIN" >/tmp/profile-codec-cpp.log 2>&1 || true
@@ -79,8 +79,8 @@ fi
 # ---- go: encoding/json + goccy/go-json ----
 if want go; then
     if command -v go >/dev/null 2>&1; then
-        if ( cd "$DIR/go/codec" && go mod tidy >/tmp/profile-codec-go.log 2>&1 && \
-             GOAMD64=v4 PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>>/tmp/profile-codec-go.log ); then
+        if ( cd "$DIR/go/codec/codec" && go mod tidy >/tmp/profile-codec-go.log 2>&1 && \
+             GOAMD64="${GOAMD64:-v4}" PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>>/tmp/profile-codec-go.log ); then
             :
         else
             skip_lang go go "go build/run failed (see /tmp/profile-codec-go.log)"
@@ -95,7 +95,7 @@ if want python; then
     PY="$DIR/python/.venv/bin/python"
     [[ -x "$PY" ]] || PY="$(command -v python3 || true)"
     if [[ -n "$PY" ]]; then
-        PROFILE_LANG_VERSION="$("$PY" --version 2>&1 | strip)" "$PY" "$DIR/python/codec/json_dom.py" \
+        PROFILE_LANG_VERSION="$("$PY" --version 2>&1 | strip)" "$PY" "$DIR/python/codec/codec/json_dom.py" \
             || skip_lang python python "python codec runner crashed"
     else
         skip_lang python python "python3 not installed"
@@ -110,7 +110,7 @@ if want java; then
     JCP="$JM/jackson-databind/2.22.0/jackson-databind-2.22.0.jar:$JM/jackson-core/2.22.0/jackson-core-2.22.0.jar:$JM/jackson-annotations/2.22/jackson-annotations-2.22.jar"
     JJARS="$JM/jackson-databind/2.22.0"
     if command -v javac >/dev/null 2>&1 && [[ -f "$JJARS/jackson-databind-2.22.0.jar" ]]; then
-        OUT="$BUILD/java-codec"; SRC="$DIR/java/codec/JsonDom.java"
+        OUT="$BUILD/java-codec"; SRC="$DIR/java/codec/codec/JsonDom.java"
         if [[ ! -f "$OUT/JsonDom.class" || "$SRC" -nt "$OUT/JsonDom.class" ]]; then
             mkdir -p "$OUT"; javac -cp "$JCP" -d "$OUT" "$SRC" >/tmp/profile-codec-java.log 2>&1 || true
         fi

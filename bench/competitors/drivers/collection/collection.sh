@@ -14,7 +14,7 @@
 #      PROFILE_LANGS (space-list filter).
 set -uo pipefail
 
-DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )/../.." &> /dev/null && pwd )"   # competitors/ (this file is drivers/collection/collection.sh)
 BUILD="${DIR}/.build"; mkdir -p "$BUILD"
 VENDOR="${DIR}/vendor"
 LANGS="${PROFILE_LANGS:-rust cpp go python java}"
@@ -34,8 +34,8 @@ want() { case " $LANGS " in *" $1 "*) return 0;; *) return 1;; esac; }
 # ---- rust (std + ahash) ----
 if want rust; then
     if command -v cargo >/dev/null 2>&1; then
-        if ( cd "$DIR/rust/collection" && cargo build --release >/tmp/profile-coll-rust.log 2>&1 ); then
-            PROFILE_LANG_VERSION="$(rustc --version | strip)" "$DIR/rust/collection/target/release/profile-collection" \
+        if ( cd "$DIR/rust/collection/collection" && cargo build --release >/tmp/profile-coll-rust.log 2>&1 ); then
+            PROFILE_LANG_VERSION="$(rustc --version | strip)" "$DIR/rust/collection/collection/target/release/profile-collection" \
                 || skip_lang rust rust "rust collection runner crashed"
         else
             skip_lang rust rust "cargo build failed (see /tmp/profile-coll-rust.log)"
@@ -49,9 +49,9 @@ fi
 if want cpp; then
     if command -v g++ >/dev/null 2>&1 && [[ -f "$VENDOR/unordered_dense/include/ankerl/unordered_dense.h" ]]; then
         BIN="$BUILD/cpp-collection"
-        if [[ ! -x "$BIN" || "$DIR/cpp/collection/collection_bench.cpp" -nt "$BIN" ]]; then
+        if [[ ! -x "$BIN" || "$DIR/cpp/collection/collection/collection_bench.cpp" -nt "$BIN" ]]; then
             g++ -O3 -march=native -std=c++17 -DNDEBUG -I "$VENDOR/unordered_dense/include" \
-                "$DIR/cpp/collection/collection_bench.cpp" -o "$BIN" >/tmp/profile-coll-cpp.log 2>&1 || true
+                "$DIR/cpp/collection/collection/collection_bench.cpp" -o "$BIN" >/tmp/profile-coll-cpp.log 2>&1 || true
         fi
         if [[ -x "$BIN" ]]; then
             PROFILE_LANG_VERSION="$(g++ --version | head -1 | strip)" "$BIN" \
@@ -67,7 +67,7 @@ fi
 # ---- go ----
 if want go; then
     if command -v go >/dev/null 2>&1; then
-        ( cd "$DIR/go/collection" && GOAMD64=v4 PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-coll-go.log ) \
+        ( cd "$DIR/go/collection/collection" && GOAMD64="${GOAMD64:-v4}" PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-coll-go.log ) \
             || skip_lang go go "go build/run failed (see /tmp/profile-coll-go.log)"
     else
         skip_lang go go "go not installed"
@@ -79,7 +79,7 @@ if want python; then
     PY="$DIR/python/.venv/bin/python"
     [[ -x "$PY" ]] || PY="$(command -v python3 || true)"
     if [[ -n "$PY" ]]; then
-        PROFILE_LANG_VERSION="$("$PY" --version 2>&1 | strip)" "$PY" "$DIR/python/collection/collection_bench.py" \
+        PROFILE_LANG_VERSION="$("$PY" --version 2>&1 | strip)" "$PY" "$DIR/python/collection/collection/collection_bench.py" \
             || skip_lang python python "python collection runner crashed"
     else
         skip_lang python python "python3 not installed"
@@ -89,7 +89,7 @@ fi
 # ---- java: java.util.HashMap / HashSet / ArrayList (JDK stdlib) ----
 if want java; then
     if command -v javac >/dev/null 2>&1; then
-        OUT="$BUILD/java-collection"; SRC="$DIR/java/collection/CollectionBench.java"
+        OUT="$BUILD/java-collection"; SRC="$DIR/java/collection/collection/CollectionBench.java"
         if [[ ! -f "$OUT/CollectionBench.class" || "$SRC" -nt "$OUT/CollectionBench.class" ]]; then
             mkdir -p "$OUT"; javac -d "$OUT" "$SRC" >/tmp/profile-collection-java.log 2>&1 || true
         fi

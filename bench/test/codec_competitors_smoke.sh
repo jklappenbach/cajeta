@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Phase B codec smoke test — the cross-language JSON parse-to-DOM competitors.
-# Asserts competitors/codec.sh emits schema-conformant `json-dom` rows for the
+# Asserts competitors/codec.sh codec emits schema-conformant `json-dom` rows for the
 # present languages (serde_json/simd-json, simdjson/yyjson, encoding-json/goccy,
 # json/orjson/msgspec/ujson), that every measured row passes its element-count
 # cross-check (check_ok=true), and that a missing toolchain/library is recorded
@@ -10,7 +10,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
-RUNNER="${PROJ}/competitors/codec.sh"
+RUNNER="${PROJ}/competitors/codec.sh"   # program codec of package codec
 DATA="${PROFILE_DATA_DIR:-${PROJ}/datasets/cache}"
 NCOLS="$(awk -F, '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
 
@@ -24,7 +24,7 @@ if [[ ! -f "$DATA/twitter.json" ]]; then
 fi
 
 echo "[codec-comp] building + running codec competitors (compiles cargo/cmake/go on first run)…"
-OUT="$(PROFILE_RUN_ID=codec-comp PROFILE_RUN_TS=0 PROFILE_TRIALS=3 PROFILE_DATA_DIR="$DATA" bash "$RUNNER" 2>/tmp/codec-comp.err)" \
+OUT="$(PROFILE_RUN_ID=codec-comp PROFILE_RUN_TS=0 PROFILE_TRIALS=3 PROFILE_DATA_DIR="$DATA" bash "$RUNNER" codec 2>/tmp/codec-comp.err)" \
     || fail "codec.sh exited non-zero"
 [[ -n "$OUT" ]] || fail "codec.sh produced no rows"
 
@@ -33,6 +33,9 @@ while IFS= read -r row; do
     [[ -z "$row" ]] && continue
     N="$(printf '%s' "$row" | awk -F, '{print NF}')"
     [[ "$N" == "$NCOLS" ]] || fail "row has $N cols, expected $NCOLS: $row"
+    [[ "$(printf '%s' "$row" | awk -F, '{print $1}')" == "2" ]] || fail "row is not schema_version 2: $row"
+    printf '%s' "$row" | awk -F, '$33=="" || $34=="" || $37=="" || $37!=$10 {exit 1}' \
+        || fail "row lacks machine/os/platform (platform must be the language): $row"
     bench="$(printf '%s' "$row" | awk -F, '{print $4}')"; area="$(printf '%s' "$row" | awk -F, '{print $5}')"
     [[ "$bench" == "json-dom" ]] || fail "unexpected benchmark: $bench"
     [[ "$area" == "codec" ]]     || fail "unexpected area: $area"

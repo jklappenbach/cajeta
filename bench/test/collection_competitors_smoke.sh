@@ -10,13 +10,13 @@ set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
-RUNNER="${PROJ}/competitors/collection.sh"
+RUNNER="${PROJ}/competitors/collection.sh"   # program collection of package collection
 NCOLS="$(awk -F, '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
 
 fail() { echo "COLL-COMP FAIL: $1" >&2; exit 1; }
 
 echo "[coll-comp] building + running collection competitors (compiles cargo/g++/go on first run)…"
-OUT="$(PROFILE_RUN_ID=coll-comp PROFILE_RUN_TS=0 PROFILE_TRIALS=3 bash "$RUNNER" 2>/tmp/coll-comp.err)" \
+OUT="$(PROFILE_RUN_ID=coll-comp PROFILE_RUN_TS=0 PROFILE_TRIALS=3 bash "$RUNNER" collection 2>/tmp/coll-comp.err)" \
     || fail "collection.sh exited non-zero"
 [[ -n "$OUT" ]] || fail "collection.sh produced no rows"
 
@@ -25,6 +25,9 @@ while IFS= read -r row; do
     [[ -z "$row" ]] && continue
     N="$(printf '%s' "$row" | awk -F, '{print NF}')"
     [[ "$N" == "$NCOLS" ]] || fail "row has $N cols, expected $NCOLS: $row"
+    [[ "$(printf '%s' "$row" | awk -F, '{print $1}')" == "2" ]] || fail "row is not schema_version 2: $row"
+    printf '%s' "$row" | awk -F, '$33=="" || $34=="" || $37=="" || $37!=$10 {exit 1}' \
+        || fail "row lacks machine/os/platform (platform must be the language): $row"
     bench="$(printf '%s' "$row" | awk -F, '{print $4}')"; area="$(printf '%s' "$row" | awk -F, '{print $5}')"
     case "$bench" in hashmap-int|hashmap-string|hashset-dedup|arraylist-append) ;; *) fail "unexpected benchmark: $bench" ;; esac
     [[ "$area" == "collection" ]] || fail "unexpected area: $area"

@@ -14,7 +14,7 @@
 #      PROFILE_LANGS (space-list filter).
 set -uo pipefail
 
-DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )/../.." &> /dev/null && pwd )"   # competitors/ (this file is drivers/lang/string.sh)
 BUILD="${DIR}/.build"; mkdir -p "$BUILD"
 LANGS="${PROFILE_LANGS:-rust cpp go python java}"
 strip() { tr -d ',"'; }
@@ -36,8 +36,8 @@ want() { case " $LANGS " in *" $1 "*) return 0;; *) return 1;; esac; }
 # ---- rust (stdlib + memchr) ----
 if want rust; then
     if command -v cargo >/dev/null 2>&1; then
-        if ( cd "$DIR/rust/string" && cargo build --release >/tmp/profile-string-rust.log 2>&1 ); then
-            PROFILE_LANG_VERSION="$(rustc --version | strip)" "$DIR/rust/string/target/release/profile-string" \
+        if ( cd "$DIR/rust/lang/string" && cargo build --release >/tmp/profile-string-rust.log 2>&1 ); then
+            PROFILE_LANG_VERSION="$(rustc --version | strip)" "$DIR/rust/lang/string/target/release/profile-string" \
                 || skip_lang rust rust "rust string runner crashed"
         else
             skip_lang rust rust "cargo build failed (see /tmp/profile-string-rust.log)"
@@ -51,8 +51,8 @@ fi
 if want cpp; then
     if command -v g++ >/dev/null 2>&1; then
         BIN="$BUILD/cpp-string"
-        if [[ ! -x "$BIN" || "$DIR/cpp/string/string_bench.cpp" -nt "$BIN" ]]; then
-            g++ -O3 -march=native -DNDEBUG "$DIR/cpp/string/string_bench.cpp" \
+        if [[ ! -x "$BIN" || "$DIR/cpp/lang/string/string_bench.cpp" -nt "$BIN" ]]; then
+            g++ -O3 -march=native -DNDEBUG "$DIR/cpp/lang/string/string_bench.cpp" \
                 -o "$BIN" >/tmp/profile-string-cpp.log 2>&1 || true
         fi
         if [[ -x "$BIN" ]]; then
@@ -69,7 +69,7 @@ fi
 # ---- go ----
 if want go; then
     if command -v go >/dev/null 2>&1; then
-        ( cd "$DIR/go/string" && GOAMD64=v4 PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-string-go.log ) \
+        ( cd "$DIR/go/lang/string" && GOAMD64="${GOAMD64:-v4}" PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-string-go.log ) \
             || skip_lang go go "go build/run failed (see /tmp/profile-string-go.log)"
     else
         skip_lang go go "go not installed"
@@ -81,7 +81,7 @@ if want python; then
     PY="$DIR/python/.venv/bin/python"
     [[ -x "$PY" ]] || PY="$(command -v python3 || true)"
     if [[ -n "$PY" ]]; then
-        PROFILE_LANG_VERSION="$("$PY" --version 2>&1 | strip)" "$PY" "$DIR/python/string/string_bench.py" \
+        PROFILE_LANG_VERSION="$("$PY" --version 2>&1 | strip)" "$PY" "$DIR/python/lang/string/string_bench.py" \
             || skip_lang python python "python string runner crashed"
     else
         skip_lang python python "python3 not installed"
@@ -91,7 +91,7 @@ fi
 # ---- java: String idioms (indexOf / replace / toUpperCase / StringBuilder, JDK stdlib) ----
 if want java; then
     if command -v javac >/dev/null 2>&1; then
-        OUT="$BUILD/java-string"; SRC="$DIR/java/string/StringBench.java"
+        OUT="$BUILD/java-string"; SRC="$DIR/java/lang/string/StringBench.java"
         if [[ ! -f "$OUT/StringBench.class" || "$SRC" -nt "$OUT/StringBench.class" ]]; then
             mkdir -p "$OUT"; javac -d "$OUT" "$SRC" >/tmp/profile-string-java.log 2>&1 || true
         fi

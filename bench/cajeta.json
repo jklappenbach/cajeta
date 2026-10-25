@@ -32,7 +32,7 @@
         "capabilities": ["filesystem", "clock", "env", "process"],
         // The harness: Benchmark, Harness, the CSV schema (v2) and BenchMain,
         // the shared --list / --run / --area / --bench / --out command line.
-        "dependencies": { "dev.cajeta.bench": "0.1.0" },
+        "dependencies": { "dev.cajeta.bench": "0.1.1" },
 
         "build": {
             "source-root":  "src/main/cajeta",

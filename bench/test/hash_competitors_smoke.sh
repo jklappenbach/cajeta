@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Phase B hash smoke test — cross-language bulk-throughput competitors over a
-# deterministic 1 MiB buffer. Asserts competitors/hash.sh emits schema-conformant
+# deterministic 1 MiB buffer. Asserts competitors/hash.sh hash emits schema-conformant
 # xxhash3/sha256/md5 rows for the present languages (rust xxhash-rust/sha2/md-5,
 # cpp xxHash+OpenSSL, go zeebo+crypto, python xxhash+hashlib), that every
 # measured row matches the cross-language reference digest (check_ok=true), and
@@ -10,13 +10,13 @@ set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
-RUNNER="${PROJ}/competitors/hash.sh"
+RUNNER="${PROJ}/competitors/hash.sh"   # program hash of package hash
 NCOLS="$(awk -F, '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
 
 fail() { echo "HASH-COMP FAIL: $1" >&2; exit 1; }
 
 echo "[hash-comp] building + running hash competitors (compiles cargo/cmake/go on first run)…"
-OUT="$(PROFILE_RUN_ID=hash-comp PROFILE_RUN_TS=0 PROFILE_TRIALS=3 bash "$RUNNER" 2>/tmp/hash-comp.err)" \
+OUT="$(PROFILE_RUN_ID=hash-comp PROFILE_RUN_TS=0 PROFILE_TRIALS=3 bash "$RUNNER" hash 2>/tmp/hash-comp.err)" \
     || fail "hash.sh exited non-zero"
 [[ -n "$OUT" ]] || fail "hash.sh produced no rows"
 
@@ -25,8 +25,13 @@ while IFS= read -r row; do
     [[ -z "$row" ]] && continue
     N="$(printf '%s' "$row" | awk -F, '{print NF}')"
     [[ "$N" == "$NCOLS" ]] || fail "row has $N cols, expected $NCOLS: $row"
+    [[ "$(printf '%s' "$row" | awk -F, '{print $1}')" == "2" ]] || fail "row is not schema_version 2: $row"
+    printf '%s' "$row" | awk -F, '$33=="" || $34=="" || $37=="" || $37!=$10 {exit 1}' \
+        || fail "row lacks machine/os/platform (platform must be the language): $row"
     bench="$(printf '%s' "$row" | awk -F, '{print $4}')"; area="$(printf '%s' "$row" | awk -F, '{print $5}')"
-    case "$bench" in xxhash3|sha256|md5|siphash) ;; *) fail "unexpected benchmark: $bench" ;; esac
+    # the catalog ids (hash/xxhash3*, hash/siphash) plus three competitor-only
+    # digests the catalog has no Cajeta row for yet (sha256, md5, blake3)
+    case "$bench" in xxhash3|xxhash3-256k|xxhash3_128|xxhash3_128-256k|siphash|sha256|md5|blake3) ;; *) fail "unexpected benchmark: $bench" ;; esac
     [[ "$area" == "hash" ]] || fail "unexpected area: $area"
     status="$(printf '%s' "$row" | awk -F, '{print $28}')"
     if [[ "$status" == "ok" ]]; then
@@ -47,9 +52,9 @@ echo "$OUT" | awk -F, '$4=="siphash"' | grep -q . || fail "no siphash rows emitt
 echo "$OUT" | awk -F, '$4=="siphash" && $28!="skipped"' | grep -q . && fail "siphash should be skip-only"
 
 # (3) the always-present languages (rust + python) produced measured, cross-checked rows
-#     for all three real algorithms.
+#     for every xxhash3 variant and the two digests.
 for lang in rust python; do
-    for b in xxhash3 sha256 md5; do
+    for b in xxhash3 xxhash3-256k xxhash3_128 xxhash3_128-256k sha256 md5; do
         echo "$OUT" | awk -F, -v l="$lang" -v b="$b" '$10==l && $4==b && $28=="ok" && $29=="true"' | grep -q . \
             || fail "no ok $lang $b row"
     done

@@ -14,7 +14,7 @@
 #      PROFILE_LANGS (space-list filter).
 set -uo pipefail
 
-DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )/../.." &> /dev/null && pwd )"   # competitors/ (this file is drivers/math/math.sh)
 BUILD="${DIR}/.build"; mkdir -p "$BUILD"
 LANGS="${PROFILE_LANGS:-rust cpp go python java}"
 strip() { tr -d ',"'; }
@@ -33,8 +33,8 @@ want() { case " $LANGS " in *" $1 "*) return 0;; *) return 1;; esac; }
 # ---- rust (scalar) ----
 if want rust; then
     if command -v cargo >/dev/null 2>&1; then
-        if ( cd "$DIR/rust/math" && cargo build --release >/tmp/profile-math-rust.log 2>&1 ); then
-            PROFILE_LANG_VERSION="$(rustc --version | strip)" "$DIR/rust/math/target/release/profile-math" \
+        if ( cd "$DIR/rust/math/math" && cargo build --release >/tmp/profile-math-rust.log 2>&1 ); then
+            PROFILE_LANG_VERSION="$(rustc --version | strip)" "$DIR/rust/math/math/target/release/profile-math" \
                 || skip_lang rust scalar "rust math runner crashed"
         else
             skip_lang rust scalar "cargo build failed (see /tmp/profile-math-rust.log)"
@@ -48,8 +48,8 @@ fi
 if want cpp; then
     if command -v g++ >/dev/null 2>&1; then
         BIN="$BUILD/cpp-math"
-        if [[ ! -x "$BIN" || "$DIR/cpp/math/math_bench.cpp" -nt "$BIN" ]]; then
-            g++ -O3 -march=native -DNDEBUG "$DIR/cpp/math/math_bench.cpp" \
+        if [[ ! -x "$BIN" || "$DIR/cpp/math/math/math_bench.cpp" -nt "$BIN" ]]; then
+            g++ -O3 -march=native -DNDEBUG "$DIR/cpp/math/math/math_bench.cpp" \
                 -o "$BIN" >/tmp/profile-math-cpp.log 2>&1 || true
         fi
         if [[ -x "$BIN" ]]; then
@@ -66,7 +66,7 @@ fi
 # ---- go (scalar) ----
 if want go; then
     if command -v go >/dev/null 2>&1; then
-        ( cd "$DIR/go/math" && GOAMD64=v4 PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-math-go.log ) \
+        ( cd "$DIR/go/math/math" && GOAMD64="${GOAMD64:-v4}" PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-math-go.log ) \
             || skip_lang go scalar "go build/run failed (see /tmp/profile-math-go.log)"
     else
         skip_lang go scalar "go not installed"
@@ -78,7 +78,7 @@ if want python; then
     PY="$DIR/python/.venv/bin/python"
     [[ -x "$PY" ]] || PY="$(command -v python3 || true)"
     if [[ -n "$PY" ]]; then
-        PROFILE_LANG_VERSION="$("$PY" --version 2>&1 | strip)" "$PY" "$DIR/python/math/math_bench.py" \
+        PROFILE_LANG_VERSION="$("$PY" --version 2>&1 | strip)" "$PY" "$DIR/python/math/math/math_bench.py" \
             || skip_lang python numpy "python math runner crashed"
     else
         skip_lang python numpy "python3 not installed"
@@ -88,7 +88,7 @@ fi
 # ---- java (scalar; JIT auto-vectorized double[] loops, JDK stdlib) ----
 if want java; then
     if command -v javac >/dev/null 2>&1; then
-        OUT="$BUILD/java-math"; SRC="$DIR/java/math/MathBench.java"
+        OUT="$BUILD/java-math"; SRC="$DIR/java/math/math/MathBench.java"
         if [[ ! -f "$OUT/MathBench.class" || "$SRC" -nt "$OUT/MathBench.class" ]]; then
             mkdir -p "$OUT"; javac -d "$OUT" "$SRC" >/tmp/profile-math-java.log 2>&1 || true
         fi

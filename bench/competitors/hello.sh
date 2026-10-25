@@ -3,6 +3,8 @@
 # schema-conformant CSV row (the cross-language CSV contract every area unit
 # builds on). Detects the toolchain version and passes it in via
 # PROFILE_LANG_VERSION. Usage: hello.sh <rust|cpp|java|python|go>
+# The row goes through lib/rows.sh, so it is schema v2 (id selftest/hello,
+# the toolchain probe's scaffold row, not a catalog benchmark).
 set -euo pipefail
 
 DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
@@ -10,7 +12,10 @@ lang="${1:?usage: hello.sh <lang>}"
 TMP="${TMPDIR:-/tmp}/profile-hello"
 mkdir -p "$TMP"
 strip() { tr -d ',"'; }
+# shellcheck source=lib/rows.sh
+source "$DIR/lib/rows.sh"
 
+hello_run() {
 case "$lang" in
   rust)
     rustc -O -o "$TMP/hello-rust" "$DIR/rust/hello.rs" >/dev/null 2>&1
@@ -28,3 +33,6 @@ case "$lang" in
   *)
     echo "unknown lang: $lang" >&2; exit 2 ;;
 esac
+}
+
+hello_run | rows_v2

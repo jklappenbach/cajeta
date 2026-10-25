@@ -11,7 +11,7 @@
 #      PROFILE_LANGS (space-list filter).
 set -uo pipefail
 
-DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )/../.." &> /dev/null && pwd )"   # competitors/ (this file is drivers/lang/clbg.sh)
 BUILD="${DIR}/.build"; mkdir -p "$BUILD"
 LANGS="${PROFILE_LANGS:-rust cpp go python java}"
 strip() { tr -d ',"'; }
@@ -30,8 +30,8 @@ want() { case " $LANGS " in *" $1 "*) return 0;; *) return 1;; esac; }
 # ---- rust ----
 if want rust; then
     if command -v cargo >/dev/null 2>&1; then
-        if ( cd "$DIR/rust/clbg" && cargo build --release >/tmp/profile-clbg-rust.log 2>&1 ); then
-            PROFILE_LANG_VERSION="$(rustc --version | strip)" "$DIR/rust/clbg/target/release/profile-clbg" \
+        if ( cd "$DIR/rust/lang/clbg" && cargo build --release >/tmp/profile-clbg-rust.log 2>&1 ); then
+            PROFILE_LANG_VERSION="$(rustc --version | strip)" "$DIR/rust/lang/clbg/target/release/profile-clbg" \
                 || skip_lang rust scalar "rust clbg runner crashed"
         else
             skip_lang rust scalar "cargo build failed (see /tmp/profile-clbg-rust.log)"
@@ -45,8 +45,8 @@ fi
 if want cpp; then
     if command -v g++ >/dev/null 2>&1; then
         BIN="$BUILD/cpp-clbg"
-        if [[ ! -x "$BIN" || "$DIR/cpp/clbg/clbg_bench.cpp" -nt "$BIN" ]]; then
-            g++ -O3 -march=native -DNDEBUG "$DIR/cpp/clbg/clbg_bench.cpp" \
+        if [[ ! -x "$BIN" || "$DIR/cpp/lang/clbg/clbg_bench.cpp" -nt "$BIN" ]]; then
+            g++ -O3 -march=native -DNDEBUG "$DIR/cpp/lang/clbg/clbg_bench.cpp" \
                 -o "$BIN" >/tmp/profile-clbg-cpp.log 2>&1 || true
         fi
         if [[ -x "$BIN" ]]; then
@@ -63,7 +63,7 @@ fi
 # ---- go ----
 if want go; then
     if command -v go >/dev/null 2>&1; then
-        ( cd "$DIR/go/clbg" && GOAMD64=v4 PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-clbg-go.log ) \
+        ( cd "$DIR/go/lang/clbg" && GOAMD64="${GOAMD64:-v4}" PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-clbg-go.log ) \
             || skip_lang go scalar "go build/run failed (see /tmp/profile-clbg-go.log)"
     else
         skip_lang go scalar "go not installed"
@@ -75,7 +75,7 @@ if want python; then
     PY="$DIR/python/.venv/bin/python"
     [[ -x "$PY" ]] || PY="$(command -v python3 || true)"
     if [[ -n "$PY" ]]; then
-        PROFILE_LANG_VERSION="$("$PY" --version 2>&1 | strip)" "$PY" "$DIR/python/clbg/clbg_bench.py" \
+        PROFILE_LANG_VERSION="$("$PY" --version 2>&1 | strip)" "$PY" "$DIR/python/lang/clbg/clbg_bench.py" \
             || skip_lang python cpython "python clbg runner crashed"
     else
         skip_lang python cpython "python3 not installed"
@@ -85,7 +85,7 @@ fi
 # ---- java: pure JDK stdlib (java.lang.Math) scalar mandelbrot/fannkuch/spectral ----
 if want java; then
     if command -v javac >/dev/null 2>&1; then
-        OUT="$BUILD/java-clbg"; SRC="$DIR/java/clbg/ClbgBench.java"
+        OUT="$BUILD/java-clbg"; SRC="$DIR/java/lang/clbg/ClbgBench.java"
         if [[ ! -f "$OUT/ClbgBench.class" || "$SRC" -nt "$OUT/ClbgBench.class" ]]; then
             mkdir -p "$OUT"; javac -d "$OUT" "$SRC" >/tmp/profile-clbg-java.log 2>&1 || true
         fi

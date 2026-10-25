@@ -16,7 +16,7 @@
 #      PROFILE_LANGS (space-list filter).
 set -uo pipefail
 
-DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )/../.." &> /dev/null && pwd )"   # competitors/ (this file is drivers/hash/hash.sh)
 BUILD="${DIR}/.build"; mkdir -p "$BUILD"
 VENDOR="${DIR}/vendor"
 LANGS="${PROFILE_LANGS:-rust cpp go python java}"
@@ -47,8 +47,8 @@ want() { case " $LANGS " in *" $1 "*) return 0;; *) return 1;; esac; }
 # ---- rust ----
 if want rust; then
     if command -v cargo >/dev/null 2>&1; then
-        if ( cd "$DIR/rust/hash" && cargo build --release >/tmp/profile-hash-rust.log 2>&1 ); then
-            PROFILE_LANG_VERSION="$(rustc --version | strip)" "$DIR/rust/hash/target/release/profile-hash" \
+        if ( cd "$DIR/rust/hash/hash" && cargo build --release >/tmp/profile-hash-rust.log 2>&1 ); then
+            PROFILE_LANG_VERSION="$(rustc --version | strip)" "$DIR/rust/hash/hash/target/release/profile-hash" \
                 || skip_lang rust rust "rust hash runner crashed"
         else
             skip_lang rust rust "cargo build failed (see /tmp/profile-hash-rust.log)"
@@ -62,9 +62,9 @@ fi
 if want cpp; then
     if command -v g++ >/dev/null 2>&1 && [[ -f "$VENDOR/xxhash/xxhash.h" ]]; then
         BIN="$BUILD/cpp-hash"
-        if [[ ! -x "$BIN" || "$DIR/cpp/hash/hash_bulk.cpp" -nt "$BIN" ]]; then
+        if [[ ! -x "$BIN" || "$DIR/cpp/hash/hash/hash_bulk.cpp" -nt "$BIN" ]]; then
             g++ -O3 -march=native -DNDEBUG -I "$VENDOR/xxhash" \
-                "$DIR/cpp/hash/hash_bulk.cpp" -lcrypto -o "$BIN" >/tmp/profile-hash-cpp.log 2>&1 || true
+                "$DIR/cpp/hash/hash/hash_bulk.cpp" -lcrypto -o "$BIN" >/tmp/profile-hash-cpp.log 2>&1 || true
         fi
         if [[ -x "$BIN" ]]; then
             PROFILE_LANG_VERSION="$(g++ --version | head -1 | strip)" "$BIN" \
@@ -80,8 +80,8 @@ fi
 # ---- go ----
 if want go; then
     if command -v go >/dev/null 2>&1; then
-        ( cd "$DIR/go/hash" && go mod tidy >/tmp/profile-hash-go.log 2>&1 && \
-          GOAMD64=v4 PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>>/tmp/profile-hash-go.log ) \
+        ( cd "$DIR/go/hash/hash" && go mod tidy >/tmp/profile-hash-go.log 2>&1 && \
+          GOAMD64="${GOAMD64:-v4}" PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>>/tmp/profile-hash-go.log ) \
             || skip_lang go go "go build/run failed (see /tmp/profile-hash-go.log)"
     else
         skip_lang go go "go not installed"
@@ -93,7 +93,7 @@ if want python; then
     PY="$DIR/python/.venv/bin/python"
     [[ -x "$PY" ]] || PY="$(command -v python3 || true)"
     if [[ -n "$PY" ]]; then
-        PROFILE_LANG_VERSION="$("$PY" --version 2>&1 | strip)" "$PY" "$DIR/python/hash/hash_bulk.py" \
+        PROFILE_LANG_VERSION="$("$PY" --version 2>&1 | strip)" "$PY" "$DIR/python/hash/hash/hash_bulk.py" \
             || skip_lang python python "python hash runner crashed"
     else
         skip_lang python python "python3 not installed"
@@ -103,7 +103,7 @@ fi
 # ---- java: sha256 + md5 via java.security.MessageDigest (JDK stdlib); xxhash3 skipped (no JDK xxHash) ----
 if want java; then
     if command -v javac >/dev/null 2>&1; then
-        OUT="$BUILD/java-hash"; SRC="$DIR/java/hash/HashBench.java"
+        OUT="$BUILD/java-hash"; SRC="$DIR/java/hash/hash/HashBench.java"
         if [[ ! -f "$OUT/HashBench.class" || "$SRC" -nt "$OUT/HashBench.class" ]]; then
             mkdir -p "$OUT"; javac -d "$OUT" "$SRC" >/tmp/profile-hash-java.log 2>&1 || true
         fi

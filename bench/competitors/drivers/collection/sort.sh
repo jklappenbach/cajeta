@@ -15,7 +15,7 @@
 #      PROFILE_LANGS (space-list filter).
 set -uo pipefail
 
-DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )/../.." &> /dev/null && pwd )"   # competitors/ (this file is drivers/collection/sort.sh)
 BUILD="${DIR}/.build"; mkdir -p "$BUILD"
 VENDOR="${DIR}/vendor"
 LANGS="${PROFILE_LANGS:-rust cpp go python java}"
@@ -37,8 +37,8 @@ want() { case " $LANGS " in *" $1 "*) return 0;; *) return 1;; esac; }
 # ---- rust ----
 if want rust; then
     if command -v cargo >/dev/null 2>&1; then
-        if ( cd "$DIR/rust/sort" && cargo build --release >/tmp/profile-sort-rust.log 2>&1 ); then
-            PROFILE_LANG_VERSION="$(rustc --version | strip)" "$DIR/rust/sort/target/release/profile-sort" \
+        if ( cd "$DIR/rust/collection/sort" && cargo build --release >/tmp/profile-sort-rust.log 2>&1 ); then
+            PROFILE_LANG_VERSION="$(rustc --version | strip)" "$DIR/rust/collection/sort/target/release/profile-sort" \
                 || skip_lang rust rust "rust sort runner crashed"
         else
             skip_lang rust rust "cargo build failed (see /tmp/profile-sort-rust.log)"
@@ -52,9 +52,9 @@ fi
 if want cpp; then
     if command -v g++ >/dev/null 2>&1 && [[ -f "$VENDOR/pdqsort/pdqsort.h" ]]; then
         BIN="$BUILD/cpp-sort"
-        if [[ ! -x "$BIN" || "$DIR/cpp/sort/sort_bench.cpp" -nt "$BIN" ]]; then
+        if [[ ! -x "$BIN" || "$DIR/cpp/collection/sort/sort_bench.cpp" -nt "$BIN" ]]; then
             g++ -O3 -march=native -DNDEBUG -I "$VENDOR/pdqsort" \
-                "$DIR/cpp/sort/sort_bench.cpp" -o "$BIN" >/tmp/profile-sort-cpp.log 2>&1 || true
+                "$DIR/cpp/collection/sort/sort_bench.cpp" -o "$BIN" >/tmp/profile-sort-cpp.log 2>&1 || true
         fi
         if [[ -x "$BIN" ]]; then
             PROFILE_LANG_VERSION="$(g++ --version | head -1 | strip)" "$BIN" \
@@ -70,7 +70,7 @@ fi
 # ---- go ----
 if want go; then
     if command -v go >/dev/null 2>&1; then
-        ( cd "$DIR/go/sort" && GOAMD64=v4 PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-sort-go.log ) \
+        ( cd "$DIR/go/collection/sort" && GOAMD64="${GOAMD64:-v4}" PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-sort-go.log ) \
             || skip_lang go go "go build/run failed (see /tmp/profile-sort-go.log)"
     else
         skip_lang go go "go not installed"
@@ -82,7 +82,7 @@ if want python; then
     PY="$DIR/python/.venv/bin/python"
     [[ -x "$PY" ]] || PY="$(command -v python3 || true)"
     if [[ -n "$PY" ]]; then
-        PROFILE_LANG_VERSION="$("$PY" --version 2>&1 | strip)" "$PY" "$DIR/python/sort/sort_bench.py" \
+        PROFILE_LANG_VERSION="$("$PY" --version 2>&1 | strip)" "$PY" "$DIR/python/collection/sort/sort_bench.py" \
             || skip_lang python python "python sort runner crashed"
     else
         skip_lang python python "python3 not installed"
@@ -92,7 +92,7 @@ fi
 # ---- java: java.util.Arrays.sort (dual-pivot quicksort + Timsort, JDK stdlib) ----
 if want java; then
     if command -v javac >/dev/null 2>&1; then
-        OUT="$BUILD/java-sort"; SRC="$DIR/java/sort/SortBench.java"
+        OUT="$BUILD/java-sort"; SRC="$DIR/java/collection/sort/SortBench.java"
         if [[ ! -f "$OUT/SortBench.class" || "$SRC" -nt "$OUT/SortBench.class" ]]; then
             mkdir -p "$OUT"; javac -d "$OUT" "$SRC" >/tmp/profile-sort-java.log 2>&1 || true
         fi

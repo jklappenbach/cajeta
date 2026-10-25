@@ -1,6 +1,6 @@
 module profile-hash
 
-go 1.26
+go 1.22
 
 require (
 	github.com/zeebo/xxh3 v1.0.2

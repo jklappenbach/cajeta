@@ -1,7 +1,7 @@
 // Java collection competitors — the same four workloads the Cajeta side runs:
 // hashmap-int / hashmap-string (Ankerl insert+find shape), hashset-dedup,
 // arraylist-append. One schema-conformant CSV row per (benchmark, library),
-// competitors/columns.txt order. A faithful port of competitors/go/collection/
+// competitors/columns.txt order. A faithful port of competitors/go/collection/collection/
 // main.go: identical sizes (50000 / 30000 / 100000 / 100000), identical
 // construction (pre-sized HashMaps where Go pre-sizes its map, unsized HashSet/
 // ArrayList where Go leaves them unsized), identical closed-form cross-checks.

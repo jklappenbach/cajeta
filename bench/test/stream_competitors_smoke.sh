@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Phase B stream smoke test — cross-language stream-filter-map-reduce (sequential)
 # + stream-parallel-reduce over xs[i]=i%1000 (N=1M), same as the Cajeta side.
-# Asserts competitors/stream.sh emits schema-conformant rows for the present
+# Asserts competitors/lang.sh stream emits schema-conformant rows for the present
 # languages (rust Iterator/rayon, cpp hand-loop/OpenMP, go loop/goroutines, python
 # genexpr/sum), every measured row passes its exact-sum cross-check, and the data-
 # parallel competitor (rayon) is present. No dataset needed.
@@ -9,13 +9,13 @@ set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
-RUNNER="${PROJ}/competitors/stream.sh"
+RUNNER="${PROJ}/competitors/lang.sh"   # program stream of package lang
 NCOLS="$(awk -F, '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
 
 fail() { echo "STREAM-COMP FAIL: $1" >&2; exit 1; }
 
 echo "[stream-comp] building + running stream competitors (compiles cargo/g++/go on first run)…"
-OUT="$(PROFILE_RUN_ID=stream-comp PROFILE_RUN_TS=0 PROFILE_TRIALS=3 bash "$RUNNER" 2>/tmp/stream-comp.err)" \
+OUT="$(PROFILE_RUN_ID=stream-comp PROFILE_RUN_TS=0 PROFILE_TRIALS=3 bash "$RUNNER" stream 2>/tmp/stream-comp.err)" \
     || fail "stream.sh exited non-zero"
 [[ -n "$OUT" ]] || fail "stream.sh produced no rows"
 
@@ -24,9 +24,12 @@ while IFS= read -r row; do
     [[ -z "$row" ]] && continue
     N="$(printf '%s' "$row" | awk -F, '{print NF}')"
     [[ "$N" == "$NCOLS" ]] || fail "row has $N cols, expected $NCOLS: $row"
+    [[ "$(printf '%s' "$row" | awk -F, '{print $1}')" == "2" ]] || fail "row is not schema_version 2: $row"
+    printf '%s' "$row" | awk -F, '$33=="" || $34=="" || $37=="" || $37!=$10 {exit 1}' \
+        || fail "row lacks machine/os/platform (platform must be the language): $row"
     bench="$(printf '%s' "$row" | awk -F, '{print $4}')"; area="$(printf '%s' "$row" | awk -F, '{print $5}')"
     case "$bench" in stream-filter-map-reduce|stream-parallel-reduce) ;; *) fail "unexpected benchmark: $bench" ;; esac
-    [[ "$area" == "stream" ]] || fail "unexpected area: $area"
+    [[ "$area" == "lang" ]] || fail "unexpected area: $area"
     status="$(printf '%s' "$row" | awk -F, '{print $28}')"
     if [[ "$status" == "ok" ]]; then
         min="$(printf '%s' "$row" | awk -F, '{print $17}')"
