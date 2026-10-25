@@ -1,0 +1,23 @@
+---
+// A Benchmarks page's body: the machine selector island at the top, then the
+// rendered markdown with every <bench-chart> placeholder re-filled against
+// the current bench/results/ (the content layer caches rendered markdown by
+// file digest, so a cached fallback may predate the results). The island
+// (client:idle) hydrates the placeholders into charts.
+import BenchPage from './react/BenchPage.tsx';
+import benchData from '../data/bench.json';
+import { fillPlaceholders, placeholderBlocks, islandProps } from '../../scripts/lib/bench-render.mjs';
+
+interface Props {
+  pagePath: string; // manifest path, 'benchmarks/collection/HashMap.md'
+  html: string;
+}
+const { pagePath, html } = Astro.props;
+const data = benchData as any;
+const blocks = placeholderBlocks(html);
+const filled = fillPlaceholders(html, { pagePath, data });
+const props = islandProps(pagePath, blocks, data);
+---
+
+<BenchPage client:idle {...props} />
+<Fragment set:html={filled} />

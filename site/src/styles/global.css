@@ -18,6 +18,11 @@
   --accent-wash: #f3e3cc;
   /* chart mark color — validated against --bg (dataviz six checks) */
   --chart-mark: #a05e1a;
+  /* the context fill beside it: every competitor bar on the Benchmarks
+     charts. A cool slate stepped off the warm ink at the validator's chroma
+     floor (OKLCH 0.54 0.102 255), validated as "#a05e1a,#4470a9" against
+     --bg #faf6ee: all six checks pass. */
+  --chart-context: #4470a9;
   --card-shadow: 0 1px 2px rgb(66 45 21 / 0.06), 0 4px 16px rgb(66 45 21 / 0.07);
 
   --content-width: 46rem;
@@ -36,6 +41,8 @@
   --accent-strong: #e8b878;
   --accent-wash: #2e2318;
   --chart-mark: #c08339;
+  /* OKLCH 0.55 0.102 255; "#c08339,#4673ac" against --bg #191310: all pass */
+  --chart-context: #4673ac;
   --card-shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 4px 16px rgb(0 0 0 / 0.35);
 }
 
@@ -634,6 +641,239 @@ figure.chart td {
   text-align: left;
   padding: 0.3rem 0.6rem 0.3rem 0;
   border-bottom: 1px solid var(--line);
+}
+
+/* ---------------------------------------------------------------- benchmarks */
+.chart-tip-line {
+  display: block;
+}
+.segmented {
+  display: inline-flex;
+  flex-wrap: wrap;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  overflow: hidden;
+  font-family: var(--font-ui);
+}
+.segmented button {
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 550;
+  padding: 0.3rem 0.75rem;
+  border: 0;
+  border-left: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.segmented button:first-child {
+  border-left: 0;
+}
+.segmented button[aria-checked='true'] {
+  background: var(--bg-sunken);
+  color: var(--ink);
+  font-weight: 650;
+}
+.segmented button:disabled {
+  cursor: default;
+  color: var(--ink-faint);
+}
+.segmented button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.bench-machine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin: 0 0 1.75rem;
+  font-family: var(--font-ui);
+  min-height: 1.9rem;
+}
+.bench-machine-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+.bench-machine-run {
+  font-size: 0.75rem;
+  color: var(--ink-faint);
+}
+bench-chart {
+  display: block;
+  margin: 1.5rem 0;
+}
+figure.bench-figure {
+  max-width: 100%;
+  min-width: 0;
+}
+figure.bench-figure + figure.bench-figure {
+  margin-top: 1.25rem;
+}
+figure.bench-figure figcaption {
+  text-transform: none;
+  letter-spacing: 0.01em;
+  overflow-wrap: anywhere;
+}
+figure.bench-figure .segmented {
+  margin-bottom: 0.6rem;
+}
+/* the unmeasured state: one quiet line, the same height before and after
+   hydration so the page does not shift */
+figure.bench-unmeasured-figure {
+  min-height: 5.25rem;
+  box-shadow: none;
+}
+.bench-unmeasured {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+.bench-row {
+  outline: none;
+}
+.bench-row:focus-visible rect {
+  stroke: var(--accent);
+  stroke-width: 1;
+}
+.prose figure.chart details.bench-data {
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  margin: 0.5rem 0 0;
+  background: none;
+  overflow-x: auto;
+}
+.prose figure.chart details.bench-data summary {
+  font-size: 0.78rem;
+  font-weight: 550;
+  color: var(--ink-faint);
+}
+.prose figure.chart .bench-data table {
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+.prose figure.chart .bench-data caption {
+  text-align: left;
+  font-weight: 600;
+  color: var(--ink-soft);
+  padding: 0.4rem 0 0.2rem;
+}
+.prose figure.chart .bench-data thead th {
+  font-size: 0.66rem;
+  border-bottom-width: 1px;
+  padding: 0.35rem 0.75rem 0.3rem 0;
+}
+.prose figure.chart .bench-data tbody td {
+  padding: 0.3rem 0.75rem 0.3rem 0;
+  font-variant-numeric: tabular-nums;
+}
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+.kicker-bench {
+  margin-left: 0.9rem;
+  white-space: nowrap;
+}
+/* the llm matrix: a legend, then rows of key + one cell per id */
+.bench-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.1rem;
+  list-style: none;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+}
+.bench-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+}
+.bench-swatch {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 2px;
+  display: inline-block;
+}
+.bench-matrix {
+  font-size: 0.75rem;
+}
+.bench-matrix-head,
+.bench-matrix-row {
+  display: grid;
+  grid-template-columns: minmax(9rem, 1.3fr) repeat(var(--bench-cols), minmax(0, 1fr));
+  gap: 0.25rem 0.9rem;
+  padding: 0.45rem 0;
+  border-bottom: 1px solid var(--line);
+  align-items: start;
+}
+.bench-matrix-head {
+  color: var(--ink-soft);
+  font-size: 0.7rem;
+}
+.bench-matrix-head b {
+  font-weight: 650;
+}
+.bench-matrix-key {
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+.bench-matrix-cell {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.bench-matrix-cell-label {
+  display: none;
+  color: var(--ink-faint);
+  font-size: 0.68rem;
+}
+.bench-mbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.4rem;
+}
+.bench-mbar-track {
+  display: block;
+  height: 8px;
+}
+.bench-mbar-fill {
+  display: block;
+  height: 8px;
+  border-radius: 0 4px 4px 0;
+}
+.bench-mbar-value {
+  color: var(--ink);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.bench-ratio {
+  color: var(--ink);
+  font-weight: 650;
+}
+@media (max-width: 640px) {
+  .bench-matrix-head {
+    display: none;
+  }
+  .bench-matrix-row {
+    grid-template-columns: repeat(var(--bench-cols), minmax(0, 1fr));
+  }
+  .bench-matrix-row .bench-matrix-key {
+    grid-column: 1 / -1;
+    font-weight: 600;
+  }
+  .bench-matrix-cell-label {
+    display: block;
+  }
 }
 
 /* ---------------------------------------------------------------- hero */

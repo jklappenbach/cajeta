@@ -24,6 +24,15 @@ drift from the in-repo documentation.
    (`docs/specification/lang/MemoryModel.md` → `/specification/lang/memorymodel/`).
 4. Relative `*.md` links inside doc markdown are rewritten to site URLs at
    build time (`src/lib/rehype-docs-links.mjs`).
+5. **Benchmarks** (`../bench/`): `scripts/lib/bench-results.mjs` reads
+   `bench/results/<machine>/<run>/results.csv` (the run `LATEST` names) and
+   every page's ```` ```bench ````, ```` ```bench-standings ```` and
+   ```` ```bench-matrix ```` block into `src/data/bench.json`;
+   `src/lib/rehype-bench.mjs` turns the blocks into `<bench-chart>`
+   placeholders with a static data table (or "Not yet measured on …"), and one
+   `BenchPage` island per page renders the machine selector and the charts
+   into them. An unknown benchmark id fails the build. With no results the
+   site builds and every chart shows its unmeasured state.
 
 ## Commands
 

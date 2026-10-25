@@ -5,8 +5,9 @@ import Toc from '../components/react/Toc.tsx';
 import GuideReader from '../components/GuideReader.astro';
 import manifest from '../data/manifest.json';
 import { splitChapters } from '../lib/chapters.mjs';
-import { fileChapters, sectionNav } from '../../scripts/lib/extract.mjs';
+import { fileChapters, sectionNav, routeSlugFor, benchPageFor } from '../../scripts/lib/extract.mjs';
 import RefIndex from '../components/RefIndex.astro';
+import BenchContent from '../components/BenchContent.astro';
 
 export const REF_SECTIONS = ['stdlib', 'benchmarks'];
 
@@ -37,8 +38,12 @@ export async function getStaticPaths() {
     const section = entry.id.includes('/') ? entry.id.split('/')[0] : 'guides';
 
     if (navBySection.has(section)) {
+      // a package README routes at its directory; the section README is the
+      // section index ([section]/index.astro)
+      const route = routeSlugFor(entry.id);
+      if (route === null) continue;
       paths.push({
-        params: { slug: baseSlug },
+        params: { slug: route },
         props: { entry, mode: 'ref', chapters: null, index: 0, nav: navBySection.get(section) },
       });
       continue;
@@ -91,6 +96,9 @@ if (mode !== 'h2') {
   ({ Content, headings } = await render(entry));
 }
 const chapter = chapters?.[index];
+// a stdlib class page links to its benchmark page when bench/<pkg>/<Class>.md exists
+const benchPage = meta && section?.name === 'stdlib' ? benchPageFor(meta.path, manifest.docs) : null;
+const isBench = section?.name === 'benchmarks';
 const pageTitle = chapter && index > 0 ? `${chapter.title} · ${title}` : title;
 
 // file-mode guides are named for their README ("The Cajeta Guide"). A section
@@ -135,6 +143,11 @@ const guideTitle =
                 {crumbs.slice(1, -1).join(' / ')}
               </>
             )}
+            {benchPage && (
+              <a class="kicker-bench" href={benchPage.url}>
+                Benchmarks →
+              </a>
+            )}
           </p>
           <RefIndex
             sectionLabel={section?.label ?? ''}
@@ -143,7 +156,7 @@ const guideTitle =
             activeSlug={entry.id}
             variant="mobile"
           />
-          <Content />
+          {isBench ? <BenchContent pagePath={meta?.path ?? entry.id} html={entry.rendered?.html ?? ''} /> : <Content />}
           <p class="doc-meta">
             Source: <code>{meta?.src}</code> · {meta?.minutes} min read · {meta?.words} words
           </p>

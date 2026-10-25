@@ -19,9 +19,11 @@ import {
   buildTabs,
 } from './lib/extract.mjs';
 import { docsRoot, SITE_ROOT } from './lib/docs-root.mjs';
+import { buildBenchData } from './lib/bench-results.mjs';
 
 const DOCS_ROOT = docsRoot();
 const OUT_FILE = join(SITE_ROOT, 'src', 'data', 'manifest.json');
+const BENCH_FILE = join(SITE_ROOT, 'src', 'data', 'bench.json');
 
 // scanned roots: the docs tree, plus its sibling bench/ mapped to a
 // "benchmarks" pseudo-section when present
@@ -124,4 +126,16 @@ await mkdir(dirname(OUT_FILE), { recursive: true });
 await writeFile(OUT_FILE, JSON.stringify(manifest, null, 2) + '\n');
 console.log(
   `manifest: ${docs.length} docs, ${sections.length} sections -> ${relative(process.cwd(), OUT_FILE)}`
+);
+
+// the Benchmarks data: bench/results/ runs, every page's bench blocks, the
+// known ids (benchmark-reference §5). A malformed block or results file
+// fails here, before the build.
+const bench = buildBenchData(BENCH_ROOT);
+await writeFile(BENCH_FILE, JSON.stringify(bench) + '\n');
+const measured = bench.machines.map((m) => `${m.name} ${m.run}`).join(', ') || 'no runs yet';
+console.log(
+  `bench: ${Object.keys(bench.pages).length} pages with blocks, ${Object.keys(bench.idMeta).length} ids, ` +
+    `${bench.knownIds.length} known (${bench.registered ? 'registered list' : 'page + result ids'}); ${measured} -> ` +
+    relative(process.cwd(), BENCH_FILE)
 );

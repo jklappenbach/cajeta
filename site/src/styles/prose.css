@@ -124,6 +124,14 @@
   padding: 0.08em 0;
   white-space: nowrap;
 }
+/* at phone width a long inline path (runtime/src/cajeta/…) may break rather
+   than push the page past the viewport */
+@media (max-width: 640px) {
+  .prose :not(pre) > code {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
 
 .prose pre.astro-code {
   margin: 1.5rem 0;

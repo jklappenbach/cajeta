@@ -9,6 +9,7 @@ import DocCard from '../../components/DocCard.astro';
 import DocFilter from '../../components/react/DocFilter.tsx';
 import GuideReader from '../../components/GuideReader.astro';
 import RefIndex from '../../components/RefIndex.astro';
+import BenchContent from '../../components/BenchContent.astro';
 import manifest from '../../data/manifest.json';
 import { fileChapters, sectionNav } from '../../../scripts/lib/extract.mjs';
 
@@ -33,12 +34,16 @@ const nav = REF_SECTIONS.includes(section.name) ? sectionNav(docs, section.url) 
 const landingSlug = chapters?.[0]?.slug ?? nav?.overview?.slug ?? null;
 const landingMeta = landingSlug ? manifest.docs.find((d) => d.slug === landingSlug) : null;
 let Content = null;
+let landingHtml = '';
 if (landingSlug) {
   const entries = [
     ...(await getCollection('docs', (e) => e.id === landingSlug)),
     ...(await getCollection('bench', (e) => e.id === landingSlug)),
   ];
-  if (entries[0]) ({ Content } = await render(entries[0]));
+  if (entries[0]) {
+    ({ Content } = await render(entries[0]));
+    landingHtml = entries[0].rendered?.html ?? '';
+  }
 }
 const guideTitle = landingMeta?.title ?? section.label;
 
@@ -98,7 +103,9 @@ const filterDocs = docs.map((d) => ({
             variant="mobile"
           />
           {
-            Content ? (
+            Content && section.name === 'benchmarks' ? (
+              <BenchContent pagePath={landingMeta?.path ?? 'benchmarks/README.md'} html={landingHtml} />
+            ) : Content ? (
               <Content />
             ) : (
               <>

@@ -24,10 +24,47 @@ export function sectionFor(relPath) {
   return i === -1 ? 'guides' : relPath.slice(0, i);
 }
 
+/**
+ * Sections whose README files are index pages: a package README renders at
+ * its directory (bench/collection/README.md -> /benchmarks/collection/), the
+ * section README at the section root, which the section index renders.
+ */
+export const INDEX_SECTIONS = ['benchmarks'];
+
+/** Slug of the directory an index-section README stands for, else null. */
+function indexDirSlug(slug) {
+  const section = slug.split('/')[0];
+  if (!INDEX_SECTIONS.includes(section) || !/(^|\/)readme$/.test(slug)) return null;
+  return slug.replace(/\/readme$/, '');
+}
+
 /** Site URL for a docs-relative path. */
 export function urlForDoc(relPath) {
   const slug = slugForPath(relPath);
-  return sectionFor(relPath) === 'guides' ? `/guides/${slug}/` : `/${slug}/`;
+  if (sectionFor(relPath) === 'guides') return `/guides/${slug}/`;
+  return `/${indexDirSlug(slug) ?? slug}/`;
+}
+
+/**
+ * The [...slug] route param a content entry renders at, or null when the
+ * section index renders it (the README of an index section).
+ */
+export function routeSlugFor(entryId) {
+  if (!entryId.includes('/')) return `guides/${entryId}`;
+  const dir = indexDirSlug(entryId);
+  if (dir === null) return entryId;
+  return dir.includes('/') ? dir : null;
+}
+
+/**
+ * The Benchmarks page of a stdlib page: stdlib/<pkg>/<Class>.md pairs with
+ * bench/<pkg>/<Class>.md (manifest path benchmarks/<pkg>/<Class>.md). Null
+ * when there is none, or for a README.
+ */
+export function benchPageFor(stdlibPath, docs) {
+  if (!/^stdlib\//.test(stdlibPath) || /(^|\/)readme\.md$/i.test(stdlibPath)) return null;
+  const slug = slugForPath(stdlibPath.replace(/^stdlib\//, 'benchmarks/'));
+  return docs.find((d) => d.slug === slug) ?? null;
 }
 
 /** Strip inline markdown down to plain text. */
@@ -200,12 +237,18 @@ export function sectionNav(sectionDocs, sectionUrl) {
   const readme = sectionDocs.find((d) => d.group === '' && /(^|\/)readme$/.test(d.slug));
   const rest = sectionDocs.filter((d) => d !== readme);
   const groupNames = [...new Set(rest.map((d) => d.group))].sort();
+  // a group's own README (a package index) leads its group as "Overview"
+  const isReadme = (d) => /(^|\/)readme$/.test(d.slug);
   return {
     overview: readme ? { title: 'Overview', url: sectionUrl, slug: readme.slug } : null,
-    groups: groupNames.map((name) => ({
-      name: name === '' ? '' : name.split('/').join(' / '),
-      docs: rest.filter((d) => d.group === name).sort(byTitleNumeric),
-    })),
+    groups: groupNames.map((name) => {
+      const inGroup = rest.filter((d) => d.group === name);
+      const index = inGroup.filter(isReadme).map((d) => ({ ...d, title: 'Overview' }));
+      return {
+        name: name === '' ? '' : name.split('/').join(' / '),
+        docs: [...index, ...inGroup.filter((d) => !isReadme(d)).sort(byTitleNumeric)],
+      };
+    }),
   };
 }
 

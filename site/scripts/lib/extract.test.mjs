@@ -14,6 +14,8 @@ import {
   fileChapters,
   buildTabs,
   sectionNav,
+  routeSlugFor,
+  benchPageFor,
 } from './extract.mjs';
 
 // 2.1.4 slug derivation
@@ -219,14 +221,16 @@ test('rewriteMdHref maps ../docs/ links from bench pseudo-paths into the docs tr
     rewriteMdHref('../docs/specification/codec/json/Json.md', 'benchmarks/README.md'),
     '/specification/codec/json/json/'
   );
+  // a package README is the package index (benchmark-reference 3.1.4)
   assert.equal(
     rewriteMdHref('rust/README.md', 'benchmarks/README.md'),
-    '/benchmarks/rust/readme/'
+    '/benchmarks/rust/'
   );
-  // docs files reach bench via ../../bench/… — maps into the pseudo-section
+  // docs files reach bench via ../../bench/… — maps into the pseudo-section;
+  // the bench README is the Benchmarks landing
   assert.equal(
     rewriteMdHref('../../bench/README.md', 'home/README.md'),
-    '/benchmarks/readme/'
+    '/benchmarks/'
   );
 });
 
@@ -298,4 +302,73 @@ test('rewriteMdHref keeps anchors and leaves non-md links alone', () => {
   assert.equal(rewriteMdHref('https://example.com/x.md', 'a/b.md'), 'https://example.com/x.md');
   assert.equal(rewriteMdHref('mailto:x@y.z', 'a/b.md'), 'mailto:x@y.z');
   assert.equal(rewriteMdHref('image.png', 'a/b.md'), 'image.png');
+});
+
+// benchmark-reference 3.1.4: bench/<pkg>/README.md is the package index,
+// bench/README.md the Benchmarks landing; tab order unchanged
+test('urlForDoc: a bench package README is the package index, the bench README the landing', () => {
+  assert.equal(urlForDoc('benchmarks/README.md'), '/benchmarks/');
+  assert.equal(urlForDoc('benchmarks/collection/README.md'), '/benchmarks/collection/');
+  assert.equal(urlForDoc('benchmarks/codec/json/README.md'), '/benchmarks/codec/json/');
+  assert.equal(urlForDoc('benchmarks/collection/HashMap.md'), '/benchmarks/collection/hashmap/');
+  // other sections keep their README pages where they were
+  assert.equal(urlForDoc('specification/lang/README.md'), '/specification/lang/readme/');
+});
+
+test('routeSlugFor: package READMEs route at their directory, the section README at none', () => {
+  assert.equal(routeSlugFor('benchmarks/collection/readme'), 'benchmarks/collection');
+  assert.equal(routeSlugFor('benchmarks/readme'), null);
+  assert.equal(routeSlugFor('benchmarks/collection/hashmap'), 'benchmarks/collection/hashmap');
+  assert.equal(routeSlugFor('specification/lang/readme'), 'specification/lang/readme');
+  assert.equal(routeSlugFor('languageguide'), 'guides/languageguide');
+});
+
+test('rewriteMdHref: bench package links reach the index, class pages reach the stdlib page', () => {
+  assert.equal(rewriteMdHref('collection/README.md', 'benchmarks/README.md'), '/benchmarks/collection/');
+  assert.equal(rewriteMdHref('README.md', 'benchmarks/collection/HashMap.md'), '/benchmarks/collection/');
+  assert.equal(rewriteMdHref('../README.md', 'benchmarks/collection/HashMap.md'), '/benchmarks/');
+  assert.equal(
+    rewriteMdHref('../../docs/stdlib/collection/HashMap.md', 'benchmarks/collection/HashMap.md'),
+    '/stdlib/collection/hashmap/'
+  );
+  assert.equal(
+    rewriteMdHref('../../../docs/stdlib/collection/ltm/LtmBPlusTree.md', 'benchmarks/collection/ltm/LtmBPlusTree.md'),
+    '/stdlib/collection/ltm/ltmbplustree/'
+  );
+});
+
+test('benchPageFor finds the bench page of a stdlib class page, case-insensitively', () => {
+  const docs = [
+    { path: 'benchmarks/collection/HashMap.md', slug: 'benchmarks/collection/hashmap', url: '/benchmarks/collection/hashmap/' },
+    { path: 'benchmarks/codec/json/Json.md', slug: 'benchmarks/codec/json/json', url: '/benchmarks/codec/json/json/' },
+    { path: 'stdlib/collection/HashMap.md', slug: 'stdlib/collection/hashmap', url: '/stdlib/collection/hashmap/' },
+  ];
+  assert.equal(benchPageFor('stdlib/collection/HashMap.md', docs)?.url, '/benchmarks/collection/hashmap/');
+  assert.equal(benchPageFor('stdlib/codec/json/Json.md', docs)?.url, '/benchmarks/codec/json/json/');
+  assert.equal(benchPageFor('stdlib/collection/Heap.md', docs), null);
+  assert.equal(benchPageFor('specification/lang/X.md', docs), null);
+  assert.equal(benchPageFor('stdlib/README.md', docs), null);
+});
+
+test('sectionNav lists a package README first in its group as Overview', () => {
+  const docs = [
+    { slug: 'benchmarks/readme', url: '/benchmarks/', group: '', title: 'Benchmarks', order: null },
+    { slug: 'benchmarks/collection/hashmap', url: '/benchmarks/collection/hashmap/', group: 'collection', title: 'HashMap', order: null },
+    { slug: 'benchmarks/collection/readme', url: '/benchmarks/collection/', group: 'collection', title: 'cajeta.collection', order: null },
+    { slug: 'benchmarks/collection/arraylist', url: '/benchmarks/collection/arraylist/', group: 'collection', title: 'ArrayList', order: null },
+  ];
+  const nav = sectionNav(docs, '/benchmarks/');
+  assert.equal(nav.overview.url, '/benchmarks/');
+  assert.deepEqual(nav.groups[0].docs.map((d) => d.title), ['Overview', 'ArrayList', 'HashMap']);
+  assert.equal(nav.groups[0].docs[0].url, '/benchmarks/collection/');
+});
+
+test('buildTabs keeps Benchmarks pinned last with package index docs present', () => {
+  const sections = [
+    { name: 'benchmarks', label: 'Benchmarks', url: '/benchmarks/' },
+    { name: 'stdlib', label: 'Stdlib', url: '/stdlib/' },
+    { name: 'guide', label: 'Guide', url: '/guide/' },
+  ];
+  const docs = [{ slug: 'benchmarks/collection/readme', section: 'benchmarks', url: '/benchmarks/collection/' }];
+  assert.deepEqual(buildTabs(sections, docs).map((t) => t.label), ['Guide', 'Stdlib', 'Benchmarks']);
 });
