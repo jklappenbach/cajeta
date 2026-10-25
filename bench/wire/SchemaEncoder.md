@@ -1,6 +1,6 @@
 # SchemaEncoder
 
-`cajeta.wire.SchemaEncoder` — the schema-driven encoder.
+`cajeta.wire.SchemaEncoder` — the schema-driven encoder. protobuf and Cap'n Proto compile their schemas ahead of time, so they are measured through their runtime-schema paths (`DynamicMessage`, `DynamicStruct`); Avro through `GenericDatum`.
 
 ## Benchmarks
 

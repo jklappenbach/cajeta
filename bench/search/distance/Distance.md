@@ -7,7 +7,7 @@
 | id | workload | against | check |
 |---|---|---|---|
 | `search/distance-levenshtein` | 1e6 pairs of 16-byte strings | Rust `strsim`, Python `rapidfuzz`, Java commons-text, Go `agnivade/levenshtein` | sum |
-| `search/distance-jaro-winkler` | 1e6 pairs | same | sum within epsilon |
+| `search/distance-jaro-winkler` | 1e6 pairs, the strsim/rapidfuzz definition (`Distance` has none yet; commons-text uses a different definition and is checked against its own sum) | same | sum within epsilon |
 
 ## Results
 

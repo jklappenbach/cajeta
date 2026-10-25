@@ -20,6 +20,7 @@ tracked below: `cajeta-text-shaping` is a **new spec not yet written**, and
 
 | Spec | Plan | Status |
 |------|------|--------|
+| [command-run-stdin-pipe-deadlock](command-run-stdin-pipe-deadlock-spec.md) | — (defect, stdlib) | **draft**: filed 2026-10-25 by benchmark-reference unit 13. `Command.run()` with `stdinBytes` writes all input before draining stdout and deadlocks past one pipe buffer; its timeout cannot fire. |
 | [udp-recvfromasync-parks-every-receive](udp-recvfromasync-parks-every-receive-spec.md) | — (defect, stdlib) | **draft**: filed 2026-10-25 by benchmark-reference unit 10. `recvFromAsync` parks before every receive (141 µs a datagram against 9 µs reading first); the reactor echo round trip is 474 µs against Go's 17 µs on Phoenix. |
 | [file-watcher-unimplemented](file-watcher-unimplemented-spec.md) | — (defect, stdlib) | **draft**: filed 2026-10-25 by benchmark-reference unit 10. `Watcher` is a documented placeholder with no watch call; the io README claims typed `ByteBuffer` accessors that do not exist. |
 | [math-fma-host](math-fma-host-spec.md) | — (defect) | **draft**: filed 2026-10-25 by benchmark-reference unit 5. `Math.fma` is kernel-only though documented as native everywhere; two guide errors noted (`instanceof` semantics, untyped lambda syntax). |

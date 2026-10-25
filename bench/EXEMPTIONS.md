@@ -4,7 +4,7 @@ A stdlib page listed here has no benchmark page, and `test/coverage_smoke.sh`
 accepts that. Each line names the page and the reason. A reason is one of:
 *pure type* (a value with no hot path), *protocol* (an interface measured
 through its implementations), *exception* (measured under `lang/Exceptions`),
-*windowed* (needs a display; not measured), *network* (depends on a remote
+*network* (depends on a remote
 host), *session* (package management; not a runtime path).
 
 | Page | Reason |
@@ -20,8 +20,8 @@ host), *session* (package management; not a runtime path).
 | `error/Throwable` | exception |
 | `error/UnrecoverableException` | exception; its throw cost is `lang/throw-recoverable` |
 | `gfx/Sampler` | pure type; sampling cost is `gfx/texture-sample-rate` |
-| `ifx/BackendRegistry` | windowed |
-| `ifx/Window` | windowed |
+| `ifx/BackendRegistry` | pure type; a one-time backend selection with a headless null floor, no hot path |
+| `ifx/Window` | pure type; a handle wrapper, no hot path |
 | `io/net/IpAddress` | pure type |
 | `io/net/ServerBuilder` | pure type; the server is measured under `io/net/Server` |
 | `io/net/SocketAddress` | pure type |

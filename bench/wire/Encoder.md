@@ -1,13 +1,13 @@
 # Encoder
 
-`cajeta.wire.Encoder` — the bidirectional wire codec for a `T`, and the zero-copy `struct` view that reads a wire record without decoding it.
+`cajeta.wire.Encoder` — the bidirectional wire codec protocol for a `T`, and the zero-copy `struct` view that reads a wire record without decoding it. `cajeta.wire` ships the interfaces; the measured codec is a generated protobuf-wire-format implementation whose byte count equals protobuf's own, produced from the same record description every competitor uses.
 
 ## Benchmarks
 
 | id | workload | against | check |
 |---|---|---|---|
 | `wire/encoder-encode` | encode 1e6 100-field records | protobuf (C++ and Java), FlatBuffers, Cap'n Proto, Rust `bincode` | byte count |
-| `wire/encoder-decode` | decode them back | same | field checksum |
+| `wire/encoder-decode` | decode them back (Cap'n Proto has no decode step; its row is a zero-copy read of all 100 fields) | same | field checksum |
 | `wire/struct-view-read` | read three fields from 1e6 records through a `struct` view, no decode | FlatBuffers and Cap'n Proto zero-copy reads | field checksum |
 
 ## Results

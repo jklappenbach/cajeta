@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `aot/di-graph-100-startup` | start a process with a 100-component graph, 10 deep; the row is time to the first injected call | Spring (Java), Dagger (compile-time, Java), Guice, Go `wire`, Rust `shaku` | component count |
+| `aot/di-graph-100-startup` | start a process with a 100-component graph, 10 deep, generated for every framework from one description; the row is time to the first injected call | Spring (Java), Dagger (compile-time, Java), Guice, Go `wire`; Rust `shaku` skips (its compile time grows exponentially with depth and did not finish) | component count |
 
 ## Results
 

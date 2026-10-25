@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `wire/compressstream-roundtrip` | write and read back 64 MB of records through the stream | zlib and zstd streams in C++, Rust, Go, Java | byte equality |
+| `wire/compressstream-roundtrip` | write and read back 64 MB of records through the stream; variants zlib (raw DEFLATE at level 1, the pure-cajeta `DeflateStream` from dev.cajeta.codec behind a `CompressStream` adapter) and zstd (Cajeta skips: no zstd stream exists) | zlib and zstd streams in C++, Rust, Go, Java | byte equality |
 
 ## Results
 

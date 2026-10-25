@@ -6,8 +6,8 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `reflect/class-lookup` | 1e7 `Class` lookups by name | Java `Class.forName` (cached), Go `reflect.TypeOf`, Python `type` | count |
-| `reflect/field-enumerate` | enumerate the fields of a 20-field class 1e6 times | Java reflection, Go reflect, Python `__dict__` | field count |
+| `reflect/class-lookup` | 1e7 `Class` lookups by name | Java `Class.forName` (cached), Go `reflect.TypeOf` (no by-name lookup), Python `getattr(module, name)` | count |
+| `reflect/field-enumerate` | enumerate the fields of a 20-field class 1e6 times (exported names, so Go can see them) | Java reflection, Go reflect, Python `vars` | field count |
 
 ## Results
 
