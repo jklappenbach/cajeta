@@ -159,5 +159,7 @@ visual computing — written once, running across vendors and devices.
   format, the authoring levels, and how to ship skills with your own library.
 - **Designing against the language?** The [language specification](../specification/01-introduction.md)
   holds the deep-dive documents behind every subsystem.
-- **Wondering about speed?** The [benchmarks](../../bench/README.md) compare
-  Cajeta against incumbent runtimes on shared workloads.
+- **Wondering about speed?** The [benchmarks](../../bench/README.md) are laid
+  out like the stdlib reference: one page per class, each naming what is
+  measured, against which language or system, and how it is checked. The
+  first published run is pending.

@@ -1,0 +1,40 @@
+# Fft
+
+`cajeta.math.fft.Fft` — the fast Fourier transform.
+
+## Benchmarks
+
+| id | workload | against | check |
+|---|---|---|---|
+| `math/fft-1d` | complex 1-D FFT; variants 2^16 and 2^20 | FFTW, pocketfft (NumPy), Rust `rustfft`, `gonum/fourier`, JTransforms | against a direct DFT at small N and round-trip at full N |
+| `math/fft-2d` | 2-D FFT of 2048 × 2048 | same | round-trip within epsilon |
+
+## Results
+
+One chart per benchmark, for the machine selected at the top of the page. Languages are the bars; a skipped competitor is an empty bar with its reason. A benchmark with no row on the selected machine says so and shows nothing else.
+
+```bench
+id: math/fft-1d
+metric: time
+```
+
+```bench
+id: math/fft-2d
+metric: time
+```
+
+## Reproduce
+
+```sh
+cd bench
+./bench.sh --bench fft-1d               # Cajeta
+./bench.sh --bench fft-1d --competitors # every pinned competitor
+```
+
+Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+
+## See also
+
+- Reference: [Fft](../../../docs/stdlib/math/fft/Fft.md)
+- Source: `runtime/src/cajeta/math/fft/Fft.cajeta`
+- Benchmark source: `bench/src/main/cajeta/bench/math/`

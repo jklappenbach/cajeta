@@ -1,0 +1,33 @@
+# Dependency injection at scale
+
+`primavera` — a hundred components wired ten deep, the start-up cost of the graph itself.
+
+## Benchmarks
+
+| id | workload | against | check |
+|---|---|---|---|
+| `primavera/di-graph-100-startup` | 100 components, 10 deep, time to first injected call | Spring, Quarkus (ArC), Micronaut, ASP.NET Core DI, FastAPI `Depends` | component count |
+
+## Results
+
+One chart per benchmark, for the machine selected at the top of the page. Languages are the bars; a skipped competitor is an empty bar with its reason. A benchmark with no row on the selected machine says so and shows nothing else.
+
+```bench
+id: primavera/di-graph-100-startup
+metric: time
+```
+
+## Reproduce
+
+```sh
+cd bench
+./bench.sh --bench di-graph-100-startup               # Cajeta
+./bench.sh --bench di-graph-100-startup --competitors # every pinned competitor
+```
+
+Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+
+## See also
+
+- Benchmark source: `bench/src/main/cajeta/bench/primavera/`
+- Library: `cajeta-primavera`
