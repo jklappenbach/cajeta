@@ -1,0 +1,94 @@
+package bench.math;
+
+import cajeta.math.Tensor;
+import cajeta.math.poly.Poly;
+
+import dev.cajeta.bench.Benchmark;
+
+// math/poly-eval (bench/math/poly/Poly.md): evaluate a degree-8 polynomial at
+// 1e8 points through Poly.polyval (Horner, numpy coefficient order), one call
+// per point (the API is scalar: there is no array polyval), into an output
+// array. c = [0.5, -1.25, 2, -0.75, 1.5, -2.25, 0.25, 1.75, -1], x[i] = i/n.
+// Smoke: 1e7. Check: sum(y) within rel 1e-7 of n * integral_0^1 p - (p(1) - p(0))/2
+// (Euler-Maclaurin; the O(1/n) remainder is far below the tolerance).
+public class PolyEvalBench extends Benchmark {
+
+    public Tensor<float64> c;
+    public float64[] x;
+    public float64[] y;
+    public int64 n;
+    public float64 ref;
+
+    public String name() { return "poly-eval"; }
+    public String area() { return "math"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 5; }
+    public int64 inputSize() { return this.n; }
+
+    public String competitorNote() {
+        String s = "Poly.polyval (scalar Horner per point); check: rel err <= 1e-7 vs Euler-Maclaurin reference";
+        if (MathData.smoke()) {
+            return s + "; smoke size n=1e7 in place of 1e8";
+        }
+        return s;
+    }
+
+    static #Tensor<float64> coeffs() {
+        int64[] shp = heap int64[1];
+        shp[0] = (int64) 9;
+        Tensor<float64> t #= Tensor.zeros<float64>(shp);
+        t.flatSet((int64) 0, 0.5);
+        t.flatSet((int64) 1, -1.25);
+        t.flatSet((int64) 2, 2.0);
+        t.flatSet((int64) 3, -0.75);
+        t.flatSet((int64) 4, 1.5);
+        t.flatSet((int64) 5, -2.25);
+        t.flatSet((int64) 6, 0.25);
+        t.flatSet((int64) 7, 1.75);
+        t.flatSet((int64) 8, -1.0);
+        return #t;
+    }
+
+    public void setup() {
+        this.n = (int64) 100000000;
+        if (MathData.smoke()) {
+            this.n = (int64) 10000000;
+        }
+        this.c #= PolyEvalBench.coeffs();
+        this.x = heap float64[this.n];
+        this.y = heap float64[this.n];
+        int64 i = 0;
+        while (i < this.n) {
+            this.x[i] = (float64) i / (float64) this.n;
+            i = i + 1;
+        }
+        float64 integral = 0.0;
+        float64 p1 = 0.0;
+        int64 k = 0;
+        while (k < (int64) 9) {
+            integral = integral + this.c.flatGet(k) / (float64) ((int64) 9 - k);
+            p1 = p1 + this.c.flatGet(k);
+            k = k + 1;
+        }
+        float64 p0 = this.c.flatGet((int64) 8);
+        this.ref = (float64) this.n * integral - (p1 - p0) / 2.0;
+    }
+
+    public void run(int32 iterations) {
+        int64 i = 0;
+        while (i < this.n) {
+            this.y[i] = Poly.polyval<float64>(this.c, this.x[i]);
+            i = i + 1;
+        }
+    }
+
+    public boolean checkResult() {
+        float64 s = 0.0;
+        int64 i = 0;
+        while (i < this.n) {
+            s = s + this.y[i];
+            i = i + 1;
+        }
+        return MathData.relErr(s, this.ref) <= 0.0000001;
+    }
+}

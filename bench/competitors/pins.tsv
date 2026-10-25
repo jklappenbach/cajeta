@@ -60,3 +60,12 @@ ejml-simple	library	jar	org/ejml/ejml-simple/0.46.1/ejml-simple-0.46.1.jar	0.46.
 ejml-zdense	library	jar	org/ejml/ejml-zdense/0.46.1/ejml-zdense-0.46.1.jar	0.46.1	6c0b124b7cdcec8387aa608f5e46304385ad0536dc7b790f5b0eab988c2e5dbc
 commons-codec	library	jar	commons-codec/commons-codec/1.23.0/commons-codec-1.23.0.jar	1.23.0	47504a3ce71d73a1b0af07675546b8d8c5af87f82ef12b6381f9eb3c17dd5a5b
 univocity-parsers	library	jar	com/univocity/univocity-parsers/2.9.1/univocity-parsers-2.9.1.jar	2.9.1	31685122d5e392e98672ed6009a95a4c1623ca1185567bd44ee94527d454e5c3
+# --- math/ Java jars (unit 11; Maven Central, transitive closure by the poms on 2026-10-25) ---
+# JTransforms 3.1 needs JLargeArrays 1.5 and commons-math3 (3.5 in its pom; 3.6.1 is
+# binary-compatible and is the Commons Math the stats rows use). npy is Kotlin: kotlin-stdlib.
+jtransforms	library	jar	com/github/wendykierp/JTransforms/3.1/JTransforms-3.1.jar	3.1	d9dffa3e27793040dccb97b054d95267df46e669c396bf1ca4f3b085069bc2d5
+jlargearrays	library	jar	pl/edu/icm/JLargeArrays/1.5/JLargeArrays-1.5.jar	1.5	6dca5ab23e1fdb9190a257c04687a9ea19111c36b6ec9478bce6b2a128ca1aeb
+commons-math3	library	jar	org/apache/commons/commons-math3/3.6.1/commons-math3-3.6.1.jar	3.6.1	1e56d7b058d28b65abd256b8458e3885b674c1d588fa43cd7d1cbb9c7ef2b308
+joml	library	jar	org/joml/joml/1.10.8/joml-1.10.8.jar	1.10.8	bf19510145178df82cd3bd37edd514c13f411531ec5545299fd3abcbc98fe7c2
+npy	library	jar	org/jetbrains/bio/npy/0.3.5/npy-0.3.5.jar	0.3.5	c3f543b834c46f57addd3c99d17c512621756afd52fcf999a5ba6d4631d381e8
+kotlin-stdlib	library	jar	org/jetbrains/kotlin/kotlin-stdlib/1.4.21/kotlin-stdlib-1.4.21.jar	1.4.21	f78c5d8c09db985912ab83a1de3c3b53ddf208d7b151f06a72358ea3e137d01b

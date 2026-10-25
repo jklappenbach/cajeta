@@ -1,0 +1,202 @@
+package bench.math;
+
+import cajeta.collection.ArrayList;
+import cajeta.math.Tensor;
+import cajeta.math.linalg.LinAlg;
+
+import dev.cajeta.bench.Benchmark;
+
+// math/linalg-solve, -inverse, -qr, -svd (bench/math/linalg/LinAlg.md): the
+// cajeta.math.linalg.LinAlg factorizations over a float64 matrix, variants
+// 512 and 2048. A[i][j] = u(i*n + j) - 0.5 with n added on the diagonal (well
+// conditioned), b[i] = u(i + 3). One class, four ids (`kind`). The check runs
+// once on the last trial's output, outside the timed region:
+//   solve    ||Ax - b||inf / (||A||inf ||x||inf + ||b||inf) <= 1e-12
+//   inverse  max|A·Ai - I| <= 1e-10
+//   qr       max|Q·R - A| / max|A| <= 1e-12
+//   svd      max|U·diag(S)·Vt - A| / max|A| <= 1e-10
+// Smoke sizes (the variant label keeps the page's size): solve, inverse, qr
+// 512 -> 128 and 2048 -> 256; svd 512 -> 64 and 2048 -> 128.
+public class LinAlgBench extends Benchmark {
+
+    public int32 kind;
+    public int64 n;
+    public Tensor<float64> a;
+    public Tensor<float64> b;
+    public Tensor<float64> x;
+    public Tensor<float64>[] f;
+
+    public LinAlgBench(int32 kind) {
+        this.kind = kind;
+        this.n = 0;
+    }
+
+    public String name() {
+        if (this.kind == 0) { return "linalg-solve"; }
+        if (this.kind == 1) { return "linalg-inverse"; }
+        if (this.kind == 2) { return "linalg-qr"; }
+        return "linalg-svd";
+    }
+
+    public String area() { return "math"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 3; }
+    public int64 inputSize() { return this.n; }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("512");
+        v.add("2048");
+        return v;
+    }
+
+    public String competitorNote() {
+        String what = "LinAlg.solve (LU partial pivoting); check: scaled residual <= 1e-12";
+        if (this.kind == 1) { what = "LinAlg.inv; check: max|A*Ai - I| <= 1e-10"; }
+        if (this.kind == 2) { what = "LinAlg.qr (Householder; Q materialized); check: max|QR - A|/max|A| <= 1e-12"; }
+        if (this.kind == 3) { what = "LinAlg.svd (Golub-Kahan-Reinsch; full U and Vt); check: max|U S Vt - A|/max|A| <= 1e-10"; }
+        if (MathData.smoke()) {
+            if (this.kind == 3) {
+                return what + "; smoke size n=64 for 512 and n=128 for 2048";
+            }
+            return what + "; smoke size n=128 for 512 and n=256 for 2048";
+        }
+        return what;
+    }
+
+    public void prepare(String variant) {
+        int64 full = (int64) 512;
+        if (variant.equals("2048")) { full = (int64) 2048; }
+        this.n = full;
+        if (MathData.smoke()) {
+            if (this.kind == 3) {
+                this.n = (int64) 64;
+                if (full == (int64) 2048) { this.n = (int64) 128; }
+            } else {
+                this.n = (int64) 128;
+                if (full == (int64) 2048) { this.n = (int64) 256; }
+            }
+        }
+        int64[] shp = heap int64[2];
+        shp[0] = this.n;
+        shp[1] = this.n;
+        this.a #= Tensor.zeros<float64>(shp);
+        int64 i = 0;
+        while (i < this.n) {
+            int64 j = 0;
+            while (j < this.n) {
+                float64 val = MathData.u(i * this.n + j) - 0.5;
+                if (i == j) { val = val + (float64) this.n; }
+                this.a.flatSet(i * this.n + j, val);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        int64[] bs = heap int64[1];
+        bs[0] = this.n;
+        this.b #= Tensor.zeros<float64>(bs);
+        int64 k = 0;
+        while (k < this.n) {
+            this.b.flatSet(k, MathData.u(k + (int64) 3));
+            k = k + 1;
+        }
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        if (this.kind == 0) {
+            this.x #= LinAlg.solve<float64>(this.a, this.b);
+        } else if (this.kind == 1) {
+            this.x #= LinAlg.inv<float64>(this.a);
+        } else if (this.kind == 2) {
+            this.f #= LinAlg.qr<float64>(this.a);
+        } else {
+            this.f #= LinAlg.svd<float64>(this.a);
+        }
+    }
+
+    static float64 maxAbs(Tensor<float64> t) {
+        float64 m = 0.0;
+        int64 sz = t.size();
+        int64 i = 0;
+        while (i < sz) {
+            float64 v = MathData.absf(t.flatGet(i));
+            if (v > m) { m = v; }
+            i = i + 1;
+        }
+        return m;
+    }
+
+    // Q·R for qr; U·diag(S)·Vt for svd (U's columns scaled by S, then times Vt).
+    static #Tensor<float64> reconstruct(Tensor<float64>[] f, int32 kind, int64 n) {
+        if (kind == 2) {
+            return Tensor.matmul<float64>(f[0], f[1]);
+        }
+        Tensor<float64> us #= f[0].copy();
+        int64 i = 0;
+        while (i < n) {
+            int64 j = 0;
+            while (j < n) {
+                us.flatSet(i * n + j, us.flatGet(i * n + j) * f[1].flatGet(j));
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return Tensor.matmul<float64>(us, f[2]);
+    }
+
+    public boolean checkResult() {
+        int64 n = this.n;
+        if (this.kind == 0) {
+            float64 rmax = 0.0;
+            float64 anorm = 0.0;
+            int64 i = 0;
+            while (i < n) {
+                float64 acc = 0.0;
+                float64 rowAbs = 0.0;
+                int64 j = 0;
+                while (j < n) {
+                    float64 aij = this.a.flatGet(i * n + j);
+                    acc = acc + aij * this.x.flatGet(j);
+                    rowAbs = rowAbs + MathData.absf(aij);
+                    j = j + 1;
+                }
+                float64 r = MathData.absf(acc - this.b.flatGet(i));
+                if (r > rmax) { rmax = r; }
+                if (rowAbs > anorm) { anorm = rowAbs; }
+                i = i + 1;
+            }
+            float64 scale = anorm * LinAlgBench.maxAbs(this.x) + LinAlgBench.maxAbs(this.b);
+            return rmax / scale <= 0.000000000001;
+        }
+        if (this.kind == 1) {
+            Tensor<float64> p #= Tensor.matmul<float64>(this.a, this.x);
+            float64 emax = 0.0;
+            int64 i = 0;
+            while (i < n) {
+                int64 j = 0;
+                while (j < n) {
+                    float64 want = 0.0;
+                    if (i == j) { want = 1.0; }
+                    float64 e = MathData.absf(p.flatGet(i * n + j) - want);
+                    if (e > emax) { emax = e; }
+                    j = j + 1;
+                }
+                i = i + 1;
+            }
+            return emax <= 0.0000000001;
+        }
+        float64 tol = 0.000000000001;
+        if (this.kind == 3) {
+            tol = 0.0000000001;
+        }
+        Tensor<float64> rec #= LinAlgBench.reconstruct(this.f, this.kind, n);
+        float64 emax = 0.0;
+        int64 k = 0;
+        while (k < n * n) {
+            float64 e = MathData.absf(rec.flatGet(k) - this.a.flatGet(k));
+            if (e > emax) { emax = e; }
+            k = k + 1;
+        }
+        return emax / LinAlgBench.maxAbs(this.a) <= tol;
+    }
+}

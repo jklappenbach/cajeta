@@ -1,0 +1,123 @@
+package bench.math;
+
+import cajeta.math.Tensor;
+import cajeta.math.stats.Stats;
+
+import dev.cajeta.bench.Benchmark;
+
+// math/stats-moments and math/stats-histogram (bench/math/stats/Stats.md) over
+// 1e8 float64 values x[i] = u(i) (smoke 1e7).
+//   moments: mean (Tensor.mean), population variance (Tensor.variance, ddof 0),
+//     and skewness and excess kurtosis — which neither Stats nor Tensor has, so
+//     they are one host-buffer pass over the central moments (biased, scipy's
+//     default). Check: |mean-0.49995|, |var-1/12|, |skew|, |kurt+1.2| each <= 1e-3.
+//   histogram: Stats.histogram into 1000 bins over [0, 1]. Check: every count
+//     equals the integer reference, bin = ((i*7919) % 10007) * 1000 / 10007.
+public class StatsBench extends Benchmark {
+
+    public boolean hist;
+    public Tensor<float64> x;
+    public Tensor<int64> counts;
+    public int64[] refCounts;
+    public int64 n;
+    public float64 mean;
+    public float64 var;
+    public float64 skew;
+    public float64 kurt;
+
+    public StatsBench(boolean hist) {
+        this.hist = hist;
+        this.n = 0;
+    }
+
+    public String name() {
+        if (this.hist) { return "stats-histogram"; }
+        return "stats-moments";
+    }
+
+    public String area() { return "math"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 5; }
+    public int64 inputSize() { return this.n; }
+
+    public String competitorNote() {
+        String s = "Tensor.mean + Tensor.variance; Stats/Tensor have no skew or kurtosis: one host-buffer pass (biased); check: each moment within 1e-3";
+        if (this.hist) {
+            s = "Stats.histogram 1000 bins over [0 1]; check: every count equals the integer reference";
+        }
+        if (MathData.smoke()) {
+            return s + "; smoke size n=1e7 in place of 1e8";
+        }
+        return s;
+    }
+
+    public void setup() {
+        this.n = (int64) 100000000;
+        if (MathData.smoke()) {
+            this.n = (int64) 10000000;
+        }
+        int64[] shp = heap int64[1];
+        shp[0] = this.n;
+        this.x #= Tensor.zeros<float64>(shp);
+        float64[] hb = this.x.hostBuffer();
+        int64 base = this.x.hostBase();
+        this.refCounts = heap int64[1000];
+        int64 z = 0;
+        while (z < (int64) 1000) { this.refCounts[z] = 0; z = z + 1; }
+        int64 i = 0;
+        while (i < this.n) {
+            int64 k = (i * (int64) 7919) % (int64) 10007;
+            hb[base + i] = (float64) k / 10007.0;
+            int64 b = k * (int64) 1000 / (int64) 10007;
+            this.refCounts[b] = this.refCounts[b] + 1;
+            i = i + 1;
+        }
+    }
+
+    public void run(int32 iterations) {
+        if (this.hist) {
+            this.counts #= Stats.histogram<float64>(this.x, 1000, 0.0, 1.0);
+            return;
+        }
+        float64 mu = Tensor.mean<float64, float64>(this.x);
+        float64 v = Tensor.variance<float64, float64>(this.x, 0);
+        float64[] hb = this.x.hostBuffer();
+        int64 base = this.x.hostBase();
+        float64 m3 = 0.0;
+        float64 m4 = 0.0;
+        int64 i = 0;
+        while (i < this.n) {
+            float64 d = hb[base + i] - mu;
+            float64 d2 = d * d;
+            m3 = m3 + d2 * d;
+            m4 = m4 + d2 * d2;
+            i = i + 1;
+        }
+        m3 = m3 / (float64) this.n;
+        m4 = m4 / (float64) this.n;
+        this.mean = mu;
+        this.var = v;
+        this.skew = m3 / (v * Math.sqrt(v));
+        this.kurt = m4 / (v * v) - 3.0;
+    }
+
+    public boolean checkResult() {
+        if (this.hist) {
+            if (this.counts.size() != (int64) 1000) {
+                return false;
+            }
+            int64 b = 0;
+            while (b < (int64) 1000) {
+                if (this.counts.flatGet(b) != this.refCounts[b]) {
+                    return false;
+                }
+                b = b + 1;
+            }
+            return true;
+        }
+        return MathData.absf(this.mean - 0.49995) <= 0.001
+            && MathData.absf(this.var - 1.0 / 12.0) <= 0.001
+            && MathData.absf(this.skew) <= 0.001
+            && MathData.absf(this.kurt + 1.2) <= 0.001;
+    }
+}

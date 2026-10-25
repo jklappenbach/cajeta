@@ -1,0 +1,155 @@
+package bench.math;
+
+import cajeta.math.Aabb;
+import cajeta.math.Ray;
+import cajeta.math.Sphere;
+
+import dev.cajeta.bench.Benchmark;
+
+// math/ray-sphere and math/ray-aabb (bench/math/Ray.md): every (ray, object)
+// pair of R rays x 10000 objects through Sphere.intersectsRay (the no-sqrt
+// discriminant test, unit directions) or Aabb.intersectsRay (the slab test),
+// float32 Vector<float32,3> math. Ray is a value type with no intersection
+// methods of its own; the tests live on Sphere and Aabb (cajeta.math), which
+// is what a tracer calls. Inputs are SoA float32 arrays built from v(i)
+// (MathData; see the competitors' WORKLOADS): R = 10000 (1e8 tests), smoke
+// R = 1000 (1e7). Check: |hits - ref| <= 1e-5 * tests, ref from a float64
+// evaluation of the same predicate (sphere 502607 / 51613, aabb 476570 / 49068).
+public class RayBench extends Benchmark {
+
+    public boolean box;
+    public int64 nr;
+    public int64 ns;
+    public float32[] ox;
+    public float32[] oy;
+    public float32[] oz;
+    public float32[] dx;
+    public float32[] dy;
+    public float32[] dz;
+    public float32[] cx;
+    public float32[] cy;
+    public float32[] cz;
+    public float32[] rr;
+    public float32[] mx;
+    public float32[] my;
+    public float32[] mz;
+    public int64 hits;
+
+    public RayBench(boolean box) {
+        this.box = box;
+        this.nr = 0;
+        this.ns = 0;
+    }
+
+    public String name() {
+        if (this.box) { return "ray-aabb"; }
+        return "ray-sphere";
+    }
+
+    public String area() { return "math"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 5; }
+    public int64 inputSize() { return this.nr * this.ns; }
+
+    public String competitorNote() {
+        String s = "Sphere.intersectsRay (Ray has no intersect methods); check: |hits-ref| <= 1e-5*tests";
+        if (this.box) {
+            s = "Aabb.intersectsRay slab test (Ray has no intersect methods); check: |hits-ref| <= 1e-5*tests";
+        }
+        if (MathData.smoke()) {
+            return s + "; smoke size 1e3 rays x 1e4 objects in place of 1e4 x 1e4";
+        }
+        return s;
+    }
+
+    public void setup() {
+        this.nr = (int64) 10000;
+        if (MathData.smoke()) {
+            this.nr = (int64) 1000;
+        }
+        this.ns = (int64) 10000;
+        this.ox = heap float32[this.nr];
+        this.oy = heap float32[this.nr];
+        this.oz = heap float32[this.nr];
+        this.dx = heap float32[this.nr];
+        this.dy = heap float32[this.nr];
+        this.dz = heap float32[this.nr];
+        int64 i = 0;
+        while (i < this.nr) {
+            this.ox[i] = (float32) (MathData.v((int64) 3 * i) * 2.0 - 1.0);
+            this.oy[i] = (float32) (MathData.v((int64) 3 * i + (int64) 1) * 2.0 - 1.0);
+            this.oz[i] = -5.0f;
+            float64 ax = MathData.v((int64) 3 * i + (int64) 2) * 0.2 - 0.1;
+            float64 ay = MathData.v((int64) 3 * i + (int64) 7) * 0.2 - 0.1;
+            float64 len = Math.sqrt(ax * ax + ay * ay + 1.0);
+            this.dx[i] = (float32) (ax / len);
+            this.dy[i] = (float32) (ay / len);
+            this.dz[i] = (float32) (1.0 / len);
+            i = i + 1;
+        }
+        this.cx = heap float32[this.ns];
+        this.cy = heap float32[this.ns];
+        this.cz = heap float32[this.ns];
+        this.rr = heap float32[this.ns];
+        this.mx = heap float32[this.ns];
+        this.my = heap float32[this.ns];
+        this.mz = heap float32[this.ns];
+        int64 j = 0;
+        while (j < this.ns) {
+            float64 x = MathData.v((int64) 5 * j) * 4.0 - 2.0;
+            float64 y = MathData.v((int64) 5 * j + (int64) 1) * 4.0 - 2.0;
+            float64 z = MathData.v((int64) 5 * j + (int64) 2) * 4.0;
+            float64 w = MathData.v((int64) 5 * j + (int64) 3);
+            float64 side = 0.1 + w * 0.3;
+            this.cx[j] = (float32) x;
+            this.cy[j] = (float32) y;
+            this.cz[j] = (float32) z;
+            this.rr[j] = (float32) (0.05 + w * 0.2);
+            this.mx[j] = (float32) (x + side);
+            this.my[j] = (float32) (y + side);
+            this.mz[j] = (float32) (z + side);
+            j = j + 1;
+        }
+    }
+
+    public void run(int32 iterations) {
+        int64 h = 0;
+        int64 i = 0;
+        while (i < this.nr) {
+            Vector<float32,3> o = stack Vector<float32,3>(this.ox[i], this.oy[i], this.oz[i]);
+            Vector<float32,3> d = stack Vector<float32,3>(this.dx[i], this.dy[i], this.dz[i]);
+            Ray r = stack Ray(o, d);
+            int64 j = 0;
+            if (this.box) {
+                while (j < this.ns) {
+                    Vector<float32,3> lo = stack Vector<float32,3>(this.cx[j], this.cy[j], this.cz[j]);
+                    Vector<float32,3> hi = stack Vector<float32,3>(this.mx[j], this.my[j], this.mz[j]);
+                    Aabb b = stack Aabb(lo, hi);
+                    if (b.intersectsRay(r)) { h = h + 1; }
+                    j = j + 1;
+                }
+            } else {
+                while (j < this.ns) {
+                    Vector<float32,3> c = stack Vector<float32,3>(this.cx[j], this.cy[j], this.cz[j]);
+                    Sphere s = stack Sphere(c, this.rr[j]);
+                    if (s.intersectsRay(r)) { h = h + 1; }
+                    j = j + 1;
+                }
+            }
+            i = i + 1;
+        }
+        this.hits = h;
+    }
+
+    public boolean checkResult() {
+        int64 ref = (int64) 502607;
+        if (this.box) { ref = (int64) 476570; }
+        if (this.nr == (int64) 1000) {
+            ref = (int64) 51613;
+            if (this.box) { ref = (int64) 49068; }
+        }
+        int64 d = this.hits - ref;
+        if (d < 0) { d = 0 - d; }
+        return (float64) d <= 0.00001 * (float64) (this.nr * this.ns);
+    }
+}

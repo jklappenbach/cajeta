@@ -1,0 +1,115 @@
+package bench.math;
+
+import cajeta.collection.ArrayList;
+import cajeta.math.Tensor;
+import cajeta.math.fft.Fft;
+
+import dev.cajeta.bench.Benchmark;
+
+// math/fft-1d (bench/math/fft/Fft.md): forward complex FFT through Fft.fft, the
+// radix-2 core over an interleaved float32 tensor (complex64 layout), variants
+// 2^16 and 2^20. x[k] = (u(2k) - 0.5, u(2k+1) - 0.5). Checks, outside timing:
+// (a) Fft.fft at N=64 against a direct O(N^2) float64 DFT of the same signal,
+// max abs err <= 1e-4; (b) Fft.ifft of the last trial's spectrum against x at
+// full N, max abs err <= 1e-4. Smoke: 2^20 runs at N=2^18.
+public class Fft1dBench extends Benchmark {
+
+    public Tensor<float32> x;
+    public Tensor<float32> y;
+    public int64 n;
+    public boolean smallOk;
+
+    public String name() { return "fft-1d"; }
+    public String area() { return "math"; }
+    public int32 warmupIters() { return 2; }
+    public int32 measuredIters() { return 10; }
+    public int64 inputSize() { return this.n; }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("2^16");
+        v.add("2^20");
+        return v;
+    }
+
+    public String competitorNote() {
+        String s = "Fft.fft radix-2 float32 interleaved (complex64); check: direct DFT at N=64 and round trip max abs err <= 1e-4";
+        if (MathData.smoke()) {
+            return s + "; smoke size N=2^18 for 2^20";
+        }
+        return s;
+    }
+
+    static #Tensor<float32> signal(int64 n) {
+        int64[] shp = heap int64[1];
+        shp[0] = (int64) 2 * n;
+        Tensor<float32> t #= Tensor.zeros<float32>(shp);
+        int64 k = 0;
+        while (k < (int64) 2 * n) {
+            t.flatSet(k, (float32) (MathData.u(k) - 0.5));
+            k = k + 1;
+        }
+        return #t;
+    }
+
+    public void setup() {
+        // (a) the small-N direct DFT check, once.
+        int64 sn = (int64) 64;
+        Tensor<float32> xs #= Fft1dBench.signal(sn);
+        Tensor<float32> ys #= Fft.fft(xs);
+        float64 emax = 0.0;
+        int64 f = 0;
+        while (f < sn) {
+            float64 re = 0.0;
+            float64 im = 0.0;
+            int64 k = 0;
+            while (k < sn) {
+                float64 th = -6.283185307179586 * (float64) ((f * k) % sn) / (float64) sn;
+                float64 c = Math.cos(th);
+                float64 s = Math.sin(th);
+                float64 xr = (float64) xs.flatGet((int64) 2 * k);
+                float64 xi = (float64) xs.flatGet((int64) 2 * k + (int64) 1);
+                re = re + xr * c - xi * s;
+                im = im + xr * s + xi * c;
+                k = k + 1;
+            }
+            float64 er = MathData.absf(re - (float64) ys.flatGet((int64) 2 * f));
+            float64 ei = MathData.absf(im - (float64) ys.flatGet((int64) 2 * f + (int64) 1));
+            if (er > emax) { emax = er; }
+            if (ei > emax) { emax = ei; }
+            f = f + 1;
+        }
+        this.smallOk = emax <= 0.0001;
+    }
+
+    public void prepare(String variant) {
+        this.n = (int64) 65536;
+        if (variant.equals("2^20")) {
+            this.n = (int64) 1048576;
+            if (MathData.smoke()) {
+                this.n = (int64) 262144;
+            }
+        }
+        this.x #= Fft1dBench.signal(this.n);
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        this.y #= Fft.fft(this.x);
+    }
+
+    public boolean checkResult() {
+        if (!this.smallOk || this.y.size() != (int64) 2 * this.n) {
+            return false;
+        }
+        Tensor<float32> back #= Fft.ifft(this.y);
+        int64 k = 0;
+        while (k < (int64) 2 * this.n) {
+            float64 e = MathData.absf((float64) back.flatGet(k) - (float64) this.x.flatGet(k));
+            if (e > 0.0001) {
+                return false;
+            }
+            k = k + 1;
+        }
+        return true;
+    }
+}

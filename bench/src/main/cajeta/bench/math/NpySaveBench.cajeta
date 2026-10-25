@@ -1,0 +1,97 @@
+package bench.math;
+
+import cajeta.math.Tensor;
+import cajeta.math.npio.Npy;
+
+import dev.cajeta.bench.Benchmark;
+
+// math/npy-save-i32 (bench/math/npio/Npy.md): encode a 2^23-element int32
+// tensor (zeros, t[0] = 7, t[last] = 8247, the npy-load-i32 tensor) to an
+// in-memory .npy image through Npy.encodeI32; no disk in the measured window.
+// Check: the last trial's image is byte-equal to the reference image NumPy's
+// np.save writes for the same array — the 128-byte v1.0 header
+// "{'descr': '<i4', 'fortran_order': False, 'shape': (8388608,), }" padded with
+// spaces to a 64-byte boundary and ended by a newline, then the little-endian
+// payload — built here byte by byte, not by the encoder under test.
+public class NpySaveBench extends Benchmark {
+
+    public Tensor<int32> t;
+    public int8[] img;
+    public int8[] ref;
+    public int64 m;
+
+    public String name() { return "npy-save-i32"; }
+    public String area() { return "math"; }
+    public int32 warmupIters() { return 2; }
+    public int32 measuredIters() { return 10; }
+    public int64 inputSize() { return this.ref.count(); }
+
+    public String competitorNote() {
+        return "Npy.encodeI32 to memory; check: byte equality with the np.save image (128-byte header + payload)";
+    }
+
+    public void setup() {
+        this.m = (int64) 8388608;
+        int64[] ms = heap int64[1];
+        ms[0] = this.m;
+        this.t #= Tensor.zeros<int32>(ms);
+        this.t.flatSet((int64) 0, 7);
+        this.t.flatSet(this.m - (int64) 1, 8247);
+        String dict = "{'descr': '<i4', 'fortran_order': False, 'shape': (8388608,), }";
+        int64 hdr = (int64) 128;
+        int64 total = hdr + this.m * (int64) 4;
+        this.ref = heap int8[total];
+        this.ref[0] = (int8) -109;                  // 0x93
+        this.ref[1] = (int8) 78;                    // N
+        this.ref[2] = (int8) 85;                    // U
+        this.ref[3] = (int8) 77;                    // M
+        this.ref[4] = (int8) 80;                    // P
+        this.ref[5] = (int8) 89;                    // Y
+        this.ref[6] = (int8) 1;
+        this.ref[7] = (int8) 0;
+        this.ref[8] = (int8) 118;                   // header length 118, little-endian
+        this.ref[9] = (int8) 0;
+        int64 p = (int64) 10;
+        int32 dl = (int32) dict.count();
+        int32 q = 0;
+        while (q < dl) {
+            this.ref[p] = (int8) dict.charAt(q);
+            p = p + 1;
+            q = q + 1;
+        }
+        while (p < hdr - (int64) 1) {
+            this.ref[p] = (int8) 32;
+            p = p + 1;
+        }
+        this.ref[hdr - (int64) 1] = (int8) 10;
+        // payload: zeros except element 0 = 7 and the last = 8247 (0x2037)
+        p = hdr;
+        while (p < total) {
+            this.ref[p] = (int8) 0;
+            p = p + 1;
+        }
+        this.ref[hdr] = (int8) 7;
+        int64 last = hdr + (this.m - (int64) 1) * (int64) 4;
+        this.ref[last] = (int8) 55;                 // 0x37
+        this.ref[last + (int64) 1] = (int8) 32;     // 0x20
+    }
+
+    public void run(int32 iterations) {
+        this.img #= Npy.encodeI32(this.t);
+    }
+
+    public boolean checkResult() {
+        int64 n = (int64) this.img.count();
+        if (n != (int64) this.ref.count()) {
+            return false;
+        }
+        int64 i = 0;
+        while (i < n) {
+            if (this.img[i] != this.ref[i]) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+}

@@ -1,0 +1,83 @@
+package bench.math;
+
+import cajeta.math.Tensor;
+
+import dev.cajeta.bench.Benchmark;
+
+// math/tensor-broadcast (bench/math/Tensor.md): add a 1e3-element float32 row
+// to every row of a 1e4 x 1e3 float32 matrix with Tensor.add, which broadcasts
+// right-aligned (the row is shape (1000,)), a fresh result per trial.
+// M[r][c] = u(r*1000 + c), row[c] = u(c + 5). Smoke: 1e3 rows. Check: the
+// float64 sum of the result within rel 1e-5 of the float64 reference.
+public class TensorBroadcastBench extends Benchmark {
+
+    public Tensor<float32> m;
+    public Tensor<float32> row;
+    public Tensor<float32> r;
+    public int64 rows;
+    public int64 cols;
+    public float64 ref;
+
+    public String name() { return "tensor-broadcast"; }
+    public String area() { return "math"; }
+    public int32 warmupIters() { return 3; }
+    public int32 measuredIters() { return 20; }
+    public int64 inputSize() { return this.rows * this.cols; }
+
+    public String competitorNote() {
+        if (MathData.smoke()) {
+            return "Tensor.add of a (rows x cols) matrix and a (cols) row: right-aligned broadcast; check: rel err <= 1e-5; smoke size 1e3 x 1e3 in place of 1e4 x 1e3";
+        }
+        return "Tensor.add of a (rows x cols) matrix and a (cols) row: right-aligned broadcast; check: rel err <= 1e-5";
+    }
+
+    public void setup() {
+        this.rows = (int64) 10000;
+        this.cols = (int64) 1000;
+        if (MathData.smoke()) {
+            this.rows = (int64) 1000;
+        }
+        int64[] shp = heap int64[2];
+        shp[0] = this.rows;
+        shp[1] = this.cols;
+        this.m #= Tensor.zeros<float32>(shp);
+        int64[] rs = heap int64[1];
+        rs[0] = this.cols;
+        this.row #= Tensor.zeros<float32>(rs);
+        int64 c = 0;
+        while (c < this.cols) {
+            this.row.flatSet(c, (float32) MathData.u(c + (int64) 5));
+            c = c + 1;
+        }
+        float64 s = 0.0;
+        int64 i = 0;
+        int64 total = this.rows * this.cols;
+        while (i < total) {
+            float32 x = (float32) MathData.u(i);
+            this.m.flatSet(i, x);
+            s = s + (float64) x + (float64) this.row.flatGet(i % this.cols);
+            i = i + 1;
+        }
+        this.ref = s;
+    }
+
+    public void run(int32 iterations) {
+        this.r #= Tensor.add<float32>(this.m, this.row);
+    }
+
+    public boolean checkResult() {
+        if (this.r.ndim() != 2 || this.r.shapeAt(0) != this.rows || this.r.shapeAt(1) != this.cols) {
+            return false;
+        }
+        float32[] hb = this.r.hostBuffer();
+        int64 base = this.r.hostBase();
+        float64 s = 0.0;
+        int64 i = 0;
+        int64 total = this.rows * this.cols;
+        while (i < total) {
+            s = s + (float64) hb[base + i];
+            i = i + 1;
+        }
+        return MathData.relErr(s, this.ref) <= 0.00001;
+    }
+}

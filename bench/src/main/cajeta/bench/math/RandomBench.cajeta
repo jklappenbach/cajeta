@@ -1,0 +1,87 @@
+package bench.math;
+
+import cajeta.math.Tensor;
+import cajeta.math.random.Generator;
+
+import dev.cajeta.bench.Benchmark;
+
+// math/random-uniform and math/random-normal (bench/math/random/Generator.md):
+// 1e8 draws per trial through cajeta.math.random.Generator (Philox4x32-10,
+// seed 42) — uniform(n) and normal(n) (Box-Muller). The page asks for float64
+// draws; Generator only produces float32 tensors (24-bit uniforms), so the
+// rows are float32 draws, said in notes. Each trial allocates the result
+// tensor (the API has no out= form). Smoke: 1e7. Check on the last trial:
+// uniform |mean - 0.5| <= 1e-3 and |var - 1/12| <= 1e-3; normal |mean| <= 1e-3
+// and |var - 1| <= 2e-3.
+public class RandomBench extends Benchmark {
+
+    public boolean normal;
+    public Generator g;
+    public Tensor<float32> t;
+    public int64 n;
+
+    public RandomBench(boolean normal) {
+        this.normal = normal;
+        this.n = 0;
+    }
+
+    public String name() {
+        if (this.normal) { return "random-normal"; }
+        return "random-uniform";
+    }
+
+    public String area() { return "math"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 5; }
+    public int64 inputSize() { return this.n; }
+
+    public String competitorNote() {
+        String s = "Generator(42).uniform (Philox; float32 draws: the API has no float64); check: |mean-0.5| <= 1e-3 and |var-1/12| <= 1e-3";
+        if (this.normal) {
+            s = "Generator(42).normal (Philox Box-Muller; float32 draws: the API has no float64); check: |mean| <= 1e-3 and |var-1| <= 2e-3";
+        }
+        if (MathData.smoke()) {
+            return s + "; smoke size n=1e7 in place of 1e8";
+        }
+        return s;
+    }
+
+    public void setup() {
+        this.n = (int64) 100000000;
+        if (MathData.smoke()) {
+            this.n = (int64) 10000000;
+        }
+        this.g = heap Generator((uint64) 42);
+    }
+
+    public void run(int32 iterations) {
+        if (this.normal) {
+            this.t #= this.g.normal(this.n);
+        } else {
+            this.t #= this.g.uniform(this.n);
+        }
+    }
+
+    public boolean checkResult() {
+        if (this.t.size() != this.n) {
+            return false;
+        }
+        float32[] hb = this.t.hostBuffer();
+        int64 base = this.t.hostBase();
+        float64 s = 0.0;
+        float64 s2 = 0.0;
+        int64 i = 0;
+        while (i < this.n) {
+            float64 x = (float64) hb[base + i];
+            s = s + x;
+            s2 = s2 + x * x;
+            i = i + 1;
+        }
+        float64 mean = s / (float64) this.n;
+        float64 var = s2 / (float64) this.n - mean * mean;
+        if (this.normal) {
+            return MathData.absf(mean) <= 0.001 && MathData.absf(var - 1.0) <= 0.002;
+        }
+        return MathData.absf(mean - 0.5) <= 0.001 && MathData.absf(var - 1.0 / 12.0) <= 0.001;
+    }
+}

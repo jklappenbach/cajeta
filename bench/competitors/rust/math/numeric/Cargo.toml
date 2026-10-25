@@ -1,0 +1,27 @@
+[package]
+name = "math-numeric"
+version = "0.1.0"
+edition = "2021"
+
+# math/ competitors (benchmark-reference unit 11): the workloads of
+# scratchpad WORKLOADS / bench/math/*.md with the libraries the pages name.
+# Cargo.lock pins every crate; the driver builds with --locked.
+
+[dependencies]
+ndarray = "0.17"
+nalgebra = "0.35"
+rustfft = "6.4"
+rand = "0.10"
+rand_distr = "0.6"
+npyz = "0.9"
+statrs = "0.19"
+glam = "0.34"
+
+[[bin]]
+name = "math-numeric"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

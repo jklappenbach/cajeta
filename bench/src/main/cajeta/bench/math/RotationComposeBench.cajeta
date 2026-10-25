@@ -1,0 +1,96 @@
+package bench.math;
+
+import dev.cajeta.bench.Benchmark;
+
+// math/rotation-compose (bench/math/Rotation.md): 1e8 quaternion compositions
+// and vector rotations with the builtin Quaternion<float32> algebra that
+// cajeta.math.Rotation builds on (Hamilton product `a * b`, rotate-vector
+// `q * v`). Tables of 1024 unit quaternions and 1024 vectors from v(i) (the
+// competitors' WORKLOADS); step i composes Q[i & 1023] * Q[(i >> 10) & 1023]
+// and rotates V[i & 1023], accumulating x + y + z in float64. Smoke: 1e7.
+// Check: |sum - ref| <= 1e-6 * n against a float64 reference
+// (386090.57108821085 for 1e8, 38600.96393095818 for 1e7).
+public class RotationComposeBench extends Benchmark {
+
+    public float32[] qw;
+    public float32[] qx;
+    public float32[] qy;
+    public float32[] qz;
+    public float32[] vx;
+    public float32[] vy;
+    public float32[] vz;
+    public int64 n;
+    public float64 sum;
+
+    public String name() { return "rotation-compose"; }
+    public String area() { return "math"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 5; }
+    public int64 inputSize() { return this.n; }
+
+    public String competitorNote() {
+        String s = "builtin Quaternion<float32> a*b then q*v; check: |sum-ref| <= 1e-6*n";
+        if (MathData.smoke()) {
+            return s + "; smoke size n=1e7 in place of 1e8";
+        }
+        return s;
+    }
+
+    public void setup() {
+        this.n = (int64) 100000000;
+        if (MathData.smoke()) {
+            this.n = (int64) 10000000;
+        }
+        this.qw = heap float32[1024];
+        this.qx = heap float32[1024];
+        this.qy = heap float32[1024];
+        this.qz = heap float32[1024];
+        this.vx = heap float32[1024];
+        this.vy = heap float32[1024];
+        this.vz = heap float32[1024];
+        int64 j = 0;
+        while (j < (int64) 1024) {
+            float64 ax = MathData.v((int64) 4 * j) - 0.5;
+            float64 ay = MathData.v((int64) 4 * j + (int64) 1) - 0.5;
+            float64 az = MathData.v((int64) 4 * j + (int64) 2) - 0.5;
+            float64 len = Math.sqrt(ax * ax + ay * ay + az * az);
+            float64 half = MathData.v((int64) 4 * j + (int64) 3) * 6.283185307179586 * 0.5;
+            float64 s = Math.sin(half);
+            this.qw[j] = (float32) Math.cos(half);
+            this.qx[j] = (float32) (ax / len * s);
+            this.qy[j] = (float32) (ay / len * s);
+            this.qz[j] = (float32) (az / len * s);
+            this.vx[j] = (float32) (MathData.v((int64) 3 * j + (int64) 11) - 0.5);
+            this.vy[j] = (float32) (MathData.v((int64) 3 * j + (int64) 12) - 0.5);
+            this.vz[j] = (float32) (MathData.v((int64) 3 * j + (int64) 13) - 0.5);
+            j = j + 1;
+        }
+    }
+
+    public void run(int32 iterations) {
+        float64 acc = 0.0;
+        int64 i = 0;
+        while (i < this.n) {
+            int64 p = i & (int64) 1023;
+            int64 k = (i >> 10) & (int64) 1023;
+            Quaternion<float32> a = stack Quaternion<float32>(this.qw[p], this.qx[p], this.qy[p], this.qz[p]);
+            Quaternion<float32> b = stack Quaternion<float32>(this.qw[k], this.qx[k], this.qy[k], this.qz[k]);
+            Quaternion<float32> q = a * b;
+            Vector<float32,3> v = stack Vector<float32,3>(this.vx[p], this.vy[p], this.vz[p]);
+            Vector<float32,3> w = q * v;
+            acc = acc + (float64) w.x;
+            acc = acc + (float64) w.y;
+            acc = acc + (float64) w.z;
+            i = i + 1;
+        }
+        this.sum = acc;
+    }
+
+    public boolean checkResult() {
+        float64 ref = 386090.57108821085;
+        if (this.n == (int64) 10000000) {
+            ref = 38600.96393095818;
+        }
+        return MathData.absf(this.sum - ref) <= 0.000001 * (float64) this.n;
+    }
+}

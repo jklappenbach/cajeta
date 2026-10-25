@@ -1,0 +1,100 @@
+package bench.math;
+
+import cajeta.math.Transform;
+
+import dev.cajeta.bench.Benchmark;
+
+// math/transform-apply (bench/math/Transform.md): 1e8 point applications of a
+// transform, as 100 passes over 1e6 float32 points (smoke: 10 passes), each
+// pass writing every transformed point to output arrays. cajeta.math.Transform
+// is TRS (scale, then quaternion rotate, then translate), not a 4 x 4 matrix;
+// the competitors apply the equivalent 4 x 4 affine matrix. T = translate
+// (1, -2, 3), rotate 0.7 rad about normalize(1, 2, 3), uniform scale 2.
+// p[k] = (v(3k), v(3k+1), v(3k+2)) * 10 - 5. Check: the float64 sum of every
+// output coordinate of the last pass within 2e-5 * m of 1910391.7256280927.
+public class TransformApplyBench extends Benchmark {
+
+    public float32[] px;
+    public float32[] py;
+    public float32[] pz;
+    public float32[] outx;
+    public float32[] outy;
+    public float32[] outz;
+    public int64 m;
+    public int32 passes;
+    public float32 rw;
+    public float32 rx;
+    public float32 ry;
+    public float32 rz;
+
+    public String name() { return "transform-apply"; }
+    public String area() { return "math"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 5; }
+    public int64 inputSize() { return this.m * (int64) this.passes; }
+
+    public String competitorNote() {
+        String s = "Transform.transformPoint (TRS; not a 4x4 matrix); 1e8 point applications as 100 passes over 1e6 points; check: |cs-ref| <= 2e-5*m";
+        if (MathData.smoke()) {
+            return s + "; smoke size 10 passes in place of 100";
+        }
+        return s;
+    }
+
+    public void setup() {
+        this.m = (int64) 1000000;
+        this.passes = 100;
+        if (MathData.smoke()) {
+            this.passes = 10;
+        }
+        this.px = heap float32[this.m];
+        this.py = heap float32[this.m];
+        this.pz = heap float32[this.m];
+        this.outx = heap float32[this.m];
+        this.outy = heap float32[this.m];
+        this.outz = heap float32[this.m];
+        int64 k = 0;
+        while (k < this.m) {
+            this.px[k] = (float32) (MathData.v((int64) 3 * k) * 10.0 - 5.0);
+            this.py[k] = (float32) (MathData.v((int64) 3 * k + (int64) 1) * 10.0 - 5.0);
+            this.pz[k] = (float32) (MathData.v((int64) 3 * k + (int64) 2) * 10.0 - 5.0);
+            k = k + 1;
+        }
+        float64 len = Math.sqrt(14.0);
+        float64 s = Math.sin(0.35);
+        this.rw = (float32) Math.cos(0.35);
+        this.rx = (float32) (1.0 / len * s);
+        this.ry = (float32) (2.0 / len * s);
+        this.rz = (float32) (3.0 / len * s);
+    }
+
+    public void run(int32 iterations) {
+        Vector<float32,3> tr = stack Vector<float32,3>(1.0f, -2.0f, 3.0f);
+        Quaternion<float32> rot = stack Quaternion<float32>(this.rw, this.rx, this.ry, this.rz);
+        Vector<float32,3> sc = stack Vector<float32,3>(2.0f, 2.0f, 2.0f);
+        Transform t = stack Transform(tr, rot, sc);
+        int32 pass = 0;
+        while (pass < this.passes) {
+            int64 k = 0;
+            while (k < this.m) {
+                Vector<float32,3> p = stack Vector<float32,3>(this.px[k], this.py[k], this.pz[k]);
+                Vector<float32,3> w = t.transformPoint(p);
+                this.outx[k] = w.x;
+                this.outy[k] = w.y;
+                this.outz[k] = w.z;
+                k = k + 1;
+            }
+            pass = pass + 1;
+        }
+    }
+
+    public boolean checkResult() {
+        float64 cs = 0.0;
+        int64 k = 0;
+        while (k < this.m) {
+            cs = cs + (float64) this.outx[k] + (float64) this.outy[k] + (float64) this.outz[k];
+            k = k + 1;
+        }
+        return MathData.absf(cs - 1910391.7256280927) <= 0.00002 * (float64) this.m;
+    }
+}

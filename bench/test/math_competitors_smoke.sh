@@ -5,12 +5,20 @@
 # that every measured row passes its exact-checksum cross-check (148250000.0 /
 # 148499899 / 1980000), and that the numpy (BLAS) competitor is present — the
 # headline that contrasts a tuned library against the scalar kernels. No dataset.
+#
+# Part B (benchmark-reference unit 11, plan 11.1.2): drivers/math/numeric.sh
+# under CAJETA_BENCH_SMOKE=1 — every math/ page id each language's page row
+# names (NumPy/SciPy, Eigen/FFTW/pocketfft, ndarray/nalgebra/rustfft/...,
+# gonum, EJML/JTransforms/...) emits rows through run.sh with status ok and
+# check_ok true, with both variants of the linalg ids and of fft-1d.
+# SKIP_NUMERIC=1 runs part A only.
 set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 RUNNER="${PROJ}/competitors/drivers/math/math.sh"   # spans lang/ (saxpy, dot-product) and math/ (matmul)
 source "${PROJ}/competitors/lib/rows.sh"
+[[ -d "$HOME/.cargo/bin" ]] && export PATH="$HOME/.cargo/bin:$PATH"   # rustup is user-level
 NCOLS="$(awk -F, '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
 
 fail() { echo "MATH-COMP FAIL: $1" >&2; exit 1; }
@@ -62,6 +70,53 @@ done
 echo "$OUT" | awk -F, '$10=="python" && $12=="numpy" && $4=="matmul" && $28=="ok"' | grep -q . \
     || fail "numpy matmul (BLAS) competitor missing"
 
+
+# ---- part B: the numeric programs (unit 11) ----
+if [[ "${SKIP_NUMERIC:-0}" != 1 ]]; then
+    echo "[math-comp] numeric: building + running python cpp rust go java (smoke sizes)…"
+    t0=$SECONDS
+    NOUT="$(cd "${PROJ}/competitors" && CAJETA_BENCH_SMOKE=1 PROFILE_RUN_ID=math-comp PROFILE_RUN_TS=0 PROFILE_TRIALS=3 PROFILE_WARMUP=1 \
+            bash run.sh math numeric 2>/tmp/math-comp-numeric.err)" || fail "run.sh math numeric exited non-zero (see /tmp/math-comp-numeric.err)"
+    echo "[math-comp] numeric run $((SECONDS - t0)) s"
+    [[ -n "$NOUT" ]] || fail "numeric produced no rows"
+    while IFS= read -r row; do
+        [[ -z "$row" ]] && continue
+        IFS=, read -r -a c <<< "$row"
+        [[ "${#c[@]}" -ge 36 && "${c[0]}" == "2" && "${c[4]}" == "math" ]] || fail "numeric row not v2 math: $row"
+        [[ "${c[27]}" == "ok" && "${c[28]}" == "true" ]] || fail "numeric ${c[9]} ${c[11]} ${c[3]} [${c[30]}] status=${c[27]} check=${c[28]} notes=${c[29]}"
+        [[ "${c[16]}" =~ ^[0-9]+$ && "${c[16]}" -gt 0 ]] || fail "numeric ${c[9]} ${c[3]} min_ns=${c[16]}"
+    done <<< "$NOUT"
+    T="tensor-elementwise tensor-broadcast tensor-reduce tensor-transpose tensor-cast"
+    L="linalg-solve linalg-inverse linalg-qr linalg-svd"
+    G="ray-sphere ray-aabb rotation-compose transform-apply"
+    want_ids() {
+        case "$1" in
+            python) echo "tensor-element-get tensor-element-set $T $L fft-1d fft-2d random-uniform random-normal npy-load-i32 npy-save-i32 poly-eval poly-fit stats-moments stats-histogram transform-apply" ;;
+            cpp)    echo "tensor-element-get tensor-element-set $T $L fft-1d fft-2d random-uniform random-normal poly-eval poly-fit $G" ;;
+            rust)   echo "tensor-element-get tensor-element-set $T $L fft-1d fft-2d random-uniform random-normal npy-load-i32 npy-save-i32 poly-eval poly-fit stats-moments stats-histogram $G" ;;
+            go)     echo "$T $L fft-1d fft-2d random-uniform random-normal poly-eval poly-fit stats-moments stats-histogram $G" ;;
+            java)   echo "$T $L fft-1d fft-2d random-uniform random-normal npy-load-i32 npy-save-i32 poly-eval stats-moments stats-histogram $G" ;;
+        esac
+    }
+    for lang in python cpp rust go java; do
+        for b in $(want_ids "$lang"); do
+            vs=""
+            case "$b" in linalg-*) vs="512 2048" ;; fft-1d) vs="2^16 2^20" ;; esac
+            if [[ -z "$vs" ]]; then
+                echo "$NOUT" | awk -F, -v l="$lang" -v b="$b" '$10==l && $4==b' | grep -q . || fail "no $lang math/$b row"
+            else
+                for v in $vs; do
+                    echo "$NOUT" | awk -F, -v l="$lang" -v b="$b" -v v="$v" '$10==l && $4==b && $31==v' | grep -q . || fail "no $lang math/$b [$v] row"
+                done
+            fi
+        done
+    done
+    # the fft libraries the page names: FFTW and pocketfft both on the C++ side
+    for lib in fftw pocketfft; do
+        echo "$NOUT" | awk -F, -v l="$lib" '$10=="cpp" && $12==l && $4=="fft-1d"' | grep -q . || fail "no cpp $lib fft-1d row"
+    done
+    echo "[math-comp] numeric: $(echo "$NOUT" | grep -c .) rows ok across $(echo "$NOUT" | awk -F, '{print $10}' | sort -u | tr '\n' ' ')"
+fi
 
 NLANGS="$(echo "$OUT" | awk -F, '$28=="ok"{print $10}' | sort -u | tr '\n' ' ')"
 echo "[math-comp] measured langs: [$NLANGS]; numpy BLAS headline included"

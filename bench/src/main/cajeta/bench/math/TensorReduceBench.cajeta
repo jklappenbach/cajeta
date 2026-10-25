@@ -1,0 +1,108 @@
+package bench.math;
+
+import cajeta.math.Tensor;
+
+import dev.cajeta.bench.Benchmark;
+
+// math/tensor-reduce (bench/math/Tensor.md): sum, max and mean along each axis
+// of a 1e4 x 1e3 float32 matrix (six reductions per trial) through
+// Tensor.sumAxis / maxAxis / meanAxis, accumulating in float32 as numpy does
+// for a float32 array. M[r][c] = u(r*1000 + c). Smoke: 1e3 rows. Check: the
+// float64 total of the six result vectors within rel 1e-3 of the float64
+// reference (float32 accumulation over 1e4 rows).
+public class TensorReduceBench extends Benchmark {
+
+    public Tensor<float32> m;
+    public Tensor<float32> s0;
+    public Tensor<float32> s1;
+    public Tensor<float32> x0;
+    public Tensor<float32> x1;
+    public Tensor<float32> m0;
+    public Tensor<float32> m1;
+    public int64 rows;
+    public int64 cols;
+    public float64 ref;
+
+    public String name() { return "tensor-reduce"; }
+    public String area() { return "math"; }
+    public int32 warmupIters() { return 3; }
+    public int32 measuredIters() { return 20; }
+    public int64 inputSize() { return this.rows * this.cols; }
+
+    public String competitorNote() {
+        if (MathData.smoke()) {
+            return "Tensor.sumAxis/maxAxis/meanAxis on axes 0 and 1 (float32 accumulate); check: rel err <= 1e-3; smoke size 1e3 x 1e3 in place of 1e4 x 1e3";
+        }
+        return "Tensor.sumAxis/maxAxis/meanAxis on axes 0 and 1 (float32 accumulate); check: rel err <= 1e-3";
+    }
+
+    public void setup() {
+        this.rows = (int64) 10000;
+        this.cols = (int64) 1000;
+        if (MathData.smoke()) {
+            this.rows = (int64) 1000;
+        }
+        int64[] shp = heap int64[2];
+        shp[0] = this.rows;
+        shp[1] = this.cols;
+        this.m #= Tensor.zeros<float32>(shp);
+        float64[] colMax = heap float64[this.cols];
+        float64 total = 0.0;
+        float64 rowMaxSum = 0.0;
+        int64 r = 0;
+        while (r < this.rows) {
+            float64 rmax = -1.0;
+            int64 c = 0;
+            while (c < this.cols) {
+                float32 x = (float32) MathData.u(r * this.cols + c);
+                this.m.flatSet(r * this.cols + c, x);
+                float64 xd = (float64) x;
+                total = total + xd;
+                if (xd > rmax) { rmax = xd; }
+                if (r == 0 || xd > colMax[c]) { colMax[c] = xd; }
+                c = c + 1;
+            }
+            rowMaxSum = rowMaxSum + rmax;
+            r = r + 1;
+        }
+        float64 colMaxSum = 0.0;
+        int64 k = 0;
+        while (k < this.cols) {
+            colMaxSum = colMaxSum + colMax[k];
+            k = k + 1;
+        }
+        // sum0 and sum1 each total `total`; mean0 = total / rows; mean1 = total / cols.
+        this.ref = 2.0 * total + colMaxSum + rowMaxSum
+                 + total / (float64) this.rows + total / (float64) this.cols;
+    }
+
+    public void run(int32 iterations) {
+        this.s0 #= Tensor.sumAxis<float32, float32>(this.m, 0, false);
+        this.s1 #= Tensor.sumAxis<float32, float32>(this.m, 1, false);
+        this.x0 #= Tensor.maxAxis<float32>(this.m, 0, false);
+        this.x1 #= Tensor.maxAxis<float32>(this.m, 1, false);
+        this.m0 #= Tensor.meanAxis<float32, float32>(this.m, 0, false);
+        this.m1 #= Tensor.meanAxis<float32, float32>(this.m, 1, false);
+    }
+
+    static float64 total(Tensor<float32> t) {
+        float64 s = 0.0;
+        int64 n = t.size();
+        int64 i = 0;
+        while (i < n) {
+            s = s + (float64) t.flatGet(i);
+            i = i + 1;
+        }
+        return s;
+    }
+
+    public boolean checkResult() {
+        if (this.s0.size() != this.cols || this.s1.size() != this.rows) {
+            return false;
+        }
+        float64 cs = TensorReduceBench.total(this.s0) + TensorReduceBench.total(this.s1)
+                   + TensorReduceBench.total(this.x0) + TensorReduceBench.total(this.x1)
+                   + TensorReduceBench.total(this.m0) + TensorReduceBench.total(this.m1);
+        return MathData.relErr(cs, this.ref) <= 0.001;
+    }
+}

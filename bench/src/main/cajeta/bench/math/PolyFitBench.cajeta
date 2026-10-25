@@ -1,0 +1,101 @@
+package bench.math;
+
+import cajeta.math.Tensor;
+import cajeta.math.linalg.LinAlg;
+
+import dev.cajeta.bench.Benchmark;
+
+// math/poly-fit (bench/math/poly/Poly.md): least-squares fit of degree 8 to
+// 1e6 points, 100 fits per trial. Poly has no polyfit (its page defers fitting
+// to the linalg tier), so each fit is the nearest honest thing: build the
+// m x 9 Vandermonde tensor and solve with LinAlg.lstsq (Householder QR). The
+// data are exact: x[i] = -1 + 2i/(m-1), y = p(x) with the poly-eval
+// coefficients. Smoke: m=1e5, 10 fits. Check: max |coef - c| <= 1e-6.
+public class PolyFitBench extends Benchmark {
+
+    public Tensor<float64> c;
+    public Tensor<float64> xs;
+    public Tensor<float64> ys;
+    public Tensor<float64> fit;
+    public int64 m;
+    public int32 fits;
+
+    public String name() { return "poly-fit"; }
+    public String area() { return "math"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 3; }
+    public int64 inputSize() { return this.m * (int64) this.fits; }
+
+    public String competitorNote() {
+        String s = "Poly has no polyfit: Vandermonde tensor + LinAlg.lstsq (Householder QR) per fit; check: max|coef-c| <= 1e-6";
+        if (MathData.smoke()) {
+            return s + "; smoke size m=1e5 x 10 fits in place of 1e6 x 100";
+        }
+        return s;
+    }
+
+    public void setup() {
+        this.m = (int64) 1000000;
+        this.fits = 100;
+        if (MathData.smoke()) {
+            this.m = (int64) 100000;
+            this.fits = 10;
+        }
+        this.c #= PolyEvalBench.coeffs();
+        int64[] shp = heap int64[1];
+        shp[0] = this.m;
+        this.xs #= Tensor.zeros<float64>(shp);
+        this.ys #= Tensor.zeros<float64>(shp);
+        int64 i = 0;
+        while (i < this.m) {
+            float64 x = -1.0 + 2.0 * (float64) i / (float64) (this.m - (int64) 1);
+            float64 acc = 0.0;
+            int64 k = 0;
+            while (k < (int64) 9) {
+                acc = acc * x + this.c.flatGet(k);
+                k = k + 1;
+            }
+            this.xs.flatSet(i, x);
+            this.ys.flatSet(i, acc);
+            i = i + 1;
+        }
+    }
+
+    public void run(int32 iterations) {
+        int32 f = 0;
+        while (f < this.fits) {
+            int64[] vs = heap int64[2];
+            vs[0] = this.m;
+            vs[1] = (int64) 9;
+            Tensor<float64> v #= Tensor.empty<float64>(vs);
+            int64 i = 0;
+            while (i < this.m) {
+                float64 x = this.xs.flatGet(i);
+                float64 p = 1.0;
+                int64 j = (int64) 8;
+                while (j >= (int64) 0) {
+                    v.flatSet(i * (int64) 9 + j, p);
+                    p = p * x;
+                    j = j - 1;
+                }
+                i = i + 1;
+            }
+            this.fit #= LinAlg.lstsq<float64>(v, this.ys);
+            f = f + 1;
+        }
+    }
+
+    public boolean checkResult() {
+        if (this.fit.size() != (int64) 9) {
+            return false;
+        }
+        int64 k = 0;
+        while (k < (int64) 9) {
+            if (MathData.absf(this.fit.flatGet(k) - this.c.flatGet(k)) > 0.000001) {
+                return false;
+            }
+            k = k + 1;
+        }
+        return true;
+    }
+}

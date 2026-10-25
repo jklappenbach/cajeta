@@ -4,15 +4,38 @@ import cajeta.collection.ArrayList;
 
 import dev.cajeta.bench.Benchmark;
 
-// Registers every math/ benchmark, in catalog order. A unit adds a math/
-// benchmark by writing the class in this directory and one `b.add(heap X());`
-// line here; Bench.cajeta calls this and is never edited for it.
+// Registers every math/ benchmark, in catalog order (the pages of bench/math/:
+// Tensor, LinAlg, Fft, Generator, Npy, Poly, Stats, Ray, Rotation, Transform).
+// A unit adds a math/ benchmark by writing the class in this directory and one
+// `b.add(heap X());` line here; Bench.cajeta calls this and is never edited for it.
 public final class MathRegistry {
 
     public static void register(ArrayList<Benchmark> b) {
         b.add(heap ElementAccessBench());
         b.add(heap ElementSetBench());
-        b.add(heap NpyLoadBench());
+        b.add(heap TensorElementwiseBench());
+        b.add(heap TensorBroadcastBench());
+        b.add(heap TensorReduceBench());
+        b.add(heap TensorTransposeBench());
+        b.add(heap TensorCastBench());
         b.add(heap MatMulBench());
+        b.add(heap LinAlgBench(0));
+        b.add(heap LinAlgBench(1));
+        b.add(heap LinAlgBench(2));
+        b.add(heap LinAlgBench(3));
+        b.add(heap Fft1dBench());
+        b.add(heap Fft2dBench());
+        b.add(heap RandomBench(false));
+        b.add(heap RandomBench(true));
+        b.add(heap NpyLoadBench());
+        b.add(heap NpySaveBench());
+        b.add(heap PolyEvalBench());
+        b.add(heap PolyFitBench());
+        b.add(heap StatsBench(false));
+        b.add(heap StatsBench(true));
+        b.add(heap RayBench(false));
+        b.add(heap RayBench(true));
+        b.add(heap RotationComposeBench());
+        b.add(heap TransformApplyBench());
     }
 }

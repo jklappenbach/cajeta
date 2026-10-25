@@ -1,0 +1,43 @@
+package bench.math;
+
+// The shared, deterministic inputs of the math/ benchmarks (benchmark-reference
+// unit 11), identical in every competitor program so rows line up:
+//   u(i) = ((i * 7919) % 10007) / 10007           tensors, linalg, fft, stats, poly
+//   v(i) = (((i % P)^2 * 7 + i * 7919) % P) / P    geometry (decorrelated)
+// and the smoke switch: CAJETA_BENCH_SMOKE=1 selects the reduced sizes each
+// benchmark states in its notes.
+public final class MathData {
+
+    public static float64 u(int64 i) {
+        return (float64) ((i * (int64) 7919) % (int64) 10007) / 10007.0;
+    }
+
+    public static float64 v(int64 i) {
+        int64 m = i % (int64) 10007;
+        return (float64) ((m * m * (int64) 7 + i * (int64) 7919) % (int64) 10007) / 10007.0;
+    }
+
+    public static boolean smoke() {
+        String s = System.env.get("CAJETA_BENCH_SMOKE");
+        if (s == null) {
+            return false;
+        }
+        return s.equals("1") || s.equals("true");
+    }
+
+    public static float64 absf(float64 x) {
+        if (x < 0.0) {
+            return 0.0 - x;
+        }
+        return x;
+    }
+
+    // Relative error |a - b| / max(|b|, 1).
+    public static float64 relErr(float64 a, float64 b) {
+        float64 d = MathData.absf(b);
+        if (d < 1.0) {
+            d = 1.0;
+        }
+        return MathData.absf(a - b) / d;
+    }
+}

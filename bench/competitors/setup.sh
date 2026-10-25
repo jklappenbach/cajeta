@@ -364,6 +364,37 @@ install_pin() {  # item
     esac
 }
 
+# ---- FFTW, built (unit 11) ----------------------------------------------------
+# The fftw pin above is the source tarball; the math/ fft competitor links the
+# single-precision library built from it, user-level, into third_party/fftw-install.
+# Cached: the stamp records version, tarball sha256 and configure flags, so a
+# re-run with the same pin and flags is a check, not a rebuild; configure is
+# skipped when the build directory's config.status was made with the same flags.
+# Measured on Phoenix 2026-10-25: 102 s for configure + make -j32 + install (logs/timing.tsv).
+FFTW_FLAGS="--enable-float --enable-sse2 --enable-avx --enable-avx2 --enable-fma --disable-fortran --disable-shared --enable-static"
+fftw_stamp() { printf '%s %s %s\n' "$(pin_field fftw 5)" "$(pin_field fftw 6)" "$FFTW_FLAGS"; }
+check_fftw_build() {
+    local inst="$TP/fftw-install"
+    [[ -f "$inst/lib/libfftw3f.a" && -f "$inst/include/fftw3.h" && -f "$inst/.stamp" ]] || return 1
+    [[ "$(cat "$inst/.stamp")" == "$(fftw_stamp)" ]] || return 1
+    out "$(pin_field fftw 5) (float; built)" "$inst" "libfftw3f.a + stamp == pins.tsv fftw ($FFTW_FLAGS)"
+}
+install_fftw_build() {
+    local src="$TP/fftw-$(pin_field fftw 5)" bld="$TP/fftw-build" inst="$TP/fftw-install"
+    [[ -d "$src" ]] || install_pin fftw || return 1
+    mkdir -p "$bld"
+    if ! [[ -f "$bld/config.status" && -f "$bld/.flags" && "$(cat "$bld/.flags")" == "$FFTW_FLAGS" ]]; then
+        rm -rf "$bld" && mkdir -p "$bld" || return 1
+        ( cd "$bld" && "$src/configure" --prefix="$inst" $FFTW_FLAGS CFLAGS="-O3" ) || return 1
+        printf '%s' "$FFTW_FLAGS" > "$bld/.flags"
+    fi
+    make -C "$bld" -j"$(nproc)" && make -C "$bld" install && fftw_stamp > "$inst/.stamp"
+}
+prereq_fftw_build() {
+    command -v make >/dev/null && command -v cc >/dev/null && return 0
+    echo "apt install make gcc (to build FFTW)"; return 1
+}
+
 # ---- the item registry ---------------------------------------------------------
 # name|kind|check|install|prereq   (install/prereq may be "-"; check rc 2 = n/a)
 REGISTRY=(
@@ -388,6 +419,7 @@ while IFS=$'\t' read -r n k _rest; do
     [[ -z "$n" || "$n" == \#* ]] && continue
     REGISTRY+=("$n|$k|check_pin $n|install_pin $n|-")
 done < "$PINS"
+REGISTRY+=("fftw-build|library|check_fftw_build|install_fftw_build|prereq_fftw_build")
 REGISTRY+=("python-venv|toolchain|check_venv|install_venv|prereq_python3")
 while read -r line; do
     d="${line%%[=<> ]*}"; [[ -z "$d" || "$d" == \#* ]] && continue

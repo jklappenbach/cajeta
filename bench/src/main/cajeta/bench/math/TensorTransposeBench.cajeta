@@ -1,0 +1,73 @@
+package bench.math;
+
+import cajeta.math.Tensor;
+
+import dev.cajeta.bench.Benchmark;
+
+// math/tensor-transpose (bench/math/Tensor.md): materialized transpose of a
+// 4096 x 4096 float32 matrix — the transpose() view made contiguous with
+// copy(), numpy's `a.T.copy()`. M[i][j] = u(i*N + j). Smoke: 1024 x 1024.
+// Check: T[j][i] == M[i][j] for every element (exact).
+public class TensorTransposeBench extends Benchmark {
+
+    public Tensor<float32> m;
+    public Tensor<float32> t;
+    public int64 nDim;
+
+    public String name() { return "tensor-transpose"; }
+    public String area() { return "math"; }
+    public int32 warmupIters() { return 2; }
+    public int32 measuredIters() { return 10; }
+    public int64 inputSize() { return this.nDim * this.nDim; }
+
+    public String competitorNote() {
+        if (MathData.smoke()) {
+            return "transpose() view then copy() (contiguous); check: exact equality; smoke size 1024 x 1024 in place of 4096 x 4096";
+        }
+        return "transpose() view then copy() (contiguous); check: exact equality";
+    }
+
+    public void setup() {
+        this.nDim = (int64) 4096;
+        if (MathData.smoke()) {
+            this.nDim = (int64) 1024;
+        }
+        int64[] shp = heap int64[2];
+        shp[0] = this.nDim;
+        shp[1] = this.nDim;
+        this.m #= Tensor.zeros<float32>(shp);
+        int64 total = this.nDim * this.nDim;
+        int64 i = 0;
+        while (i < total) {
+            this.m.flatSet(i, (float32) MathData.u(i));
+            i = i + 1;
+        }
+    }
+
+    public void run(int32 iterations) {
+        Tensor<float32> v #= this.m.transpose();
+        this.t #= v.copy();
+    }
+
+    public boolean checkResult() {
+        if (!this.t.isContiguous() || this.t.shapeAt(0) != this.nDim) {
+            return false;
+        }
+        float32[] src = this.m.hostBuffer();
+        int64 sb = this.m.hostBase();
+        float32[] dst = this.t.hostBuffer();
+        int64 db = this.t.hostBase();
+        int64 i = 0;
+        while (i < this.nDim) {
+            int64 j = 0;
+            while (j < this.nDim) {
+                if (dst[db + j * this.nDim + i] != src[sb + i * this.nDim + j]) {
+                    return false;
+                }
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+}

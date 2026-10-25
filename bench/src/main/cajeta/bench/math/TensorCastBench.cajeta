@@ -1,0 +1,87 @@
+package bench.math;
+
+import cajeta.math.Tensor;
+
+import dev.cajeta.bench.Benchmark;
+
+// math/tensor-cast (bench/math/Tensor.md): float32 -> float64 -> int32 over 1e7
+// elements, two materialized tensors per trial. Tensor has no dtype cast
+// (no astype; the cross-dtype forms are arithmetic), so the conversion is the
+// nearest honest thing: an element loop over the tensors' host buffers into
+// Tensor.empty results, truncating toward zero for int32 as numpy's astype
+// does. x[i] = u(i)*1000 - 500. Smoke: 1e6. Check: the int64 sum of the int32
+// result equals the reference exactly.
+public class TensorCastBench extends Benchmark {
+
+    public Tensor<float32> x;
+    public Tensor<float64> y;
+    public Tensor<int32> z;
+    public int64 n;
+    public int64 ref;
+
+    public String name() { return "tensor-cast"; }
+    public String area() { return "math"; }
+    public int32 warmupIters() { return 3; }
+    public int32 measuredIters() { return 20; }
+    public int64 inputSize() { return this.n; }
+
+    public String competitorNote() {
+        String s = "Tensor has no astype: host-buffer element loop into Tensor.empty<float64> and Tensor.empty<int32>; check: exact int64 checksum";
+        if (MathData.smoke()) {
+            return s + "; smoke size n=1e6 in place of 1e7";
+        }
+        return s;
+    }
+
+    public void setup() {
+        this.n = (int64) 10000000;
+        if (MathData.smoke()) {
+            this.n = (int64) 1000000;
+        }
+        int64[] shp = heap int64[1];
+        shp[0] = this.n;
+        this.x #= Tensor.zeros<float32>(shp);
+        int64 s = 0;
+        int64 i = 0;
+        while (i < this.n) {
+            float32 v = (float32) (MathData.u(i) * 1000.0 - 500.0);
+            this.x.flatSet(i, v);
+            s = s + (int64) (int32) (float64) v;
+            i = i + 1;
+        }
+        this.ref = s;
+    }
+
+    public void run(int32 iterations) {
+        int64[] shp = heap int64[1];
+        shp[0] = this.n;
+        this.y #= Tensor.empty<float64>(shp);
+        this.z #= Tensor.empty<int32>(shp);
+        float32[] xb = this.x.hostBuffer();
+        int64 xo = this.x.hostBase();
+        float64[] yb = this.y.hostBuffer();
+        int64 yo = this.y.hostBase();
+        int32[] zb = this.z.hostBuffer();
+        int64 zo = this.z.hostBase();
+        int64 i = 0;
+        while (i < this.n) {
+            yb[yo + i] = (float64) xb[xo + i];
+            i = i + 1;
+        }
+        i = 0;
+        while (i < this.n) {
+            zb[zo + i] = (int32) yb[yo + i];
+            i = i + 1;
+        }
+    }
+
+    public boolean checkResult() {
+        int64 s = 0;
+        int64 i = 0;
+        while (i < this.n) {
+            s = s + (int64) this.z.flatGet(i);
+            i = i + 1;
+        }
+        return s == this.ref;
+    }
+}
