@@ -40,6 +40,21 @@ boost-container_hash	library	git	https://github.com/boostorg/container_hash	boos
 boost-config	library	git	https://github.com/boostorg/config	boost-1.89.0	bf8c8bd7960cd8505210838f86bd28fb4fb71071
 boost-describe	library	git	https://github.com/boostorg/describe	boost-1.89.0	b64177c39f929998e3a145992d0328712e095c29
 boost-mp11	library	git	https://github.com/boostorg/mp11	boost-1.89.0	2fb81c24534663a99f9570b99a3c748393a23dba
+# Boost.URL for the io/ C++ rows (io/net/Url.md), with the headers it includes
+# beyond the four above (closure measured with g++ -M: nothing from
+# /usr/include/boost). Fetched and verified only: io.sh still links the
+# distro's libboost-url 1.83. Building against these needs url/src/*.cpp
+# compiled with the program (1.89 dropped the header-only src.hpp); not wired.
+boost-url	library	git	https://github.com/boostorg/url	boost-1.89.0	8d5cc6e34884b4f3a8a43c8f9706c0f5800238a0
+boost-align	library	git	https://github.com/boostorg/align	boost-1.89.0	5ad7df63cd792fbdb801d600b93cad1a432f0151
+boost-assert	library	git	https://github.com/boostorg/assert	boost-1.89.0	5dcb2af5213ae132b7531e45e7f93258cc33ffd8
+boost-core	library	git	https://github.com/boostorg/core	boost-1.89.0	a128501403c08d70475cc87c4e511b59744b1aa1
+boost-optional	library	git	https://github.com/boostorg/optional	boost-1.89.0	121f3efde91de78ca018019904732f55d33b5788
+boost-static_assert	library	git	https://github.com/boostorg/static_assert	boost-1.89.0	9a6a86efc8dea37083ed1a78fb0998673517cf4e
+boost-system	library	git	https://github.com/boostorg/system	boost-1.89.0	14c5f52602c172d2ede2dda2c06847f7123b4c77
+boost-throw_exception	library	git	https://github.com/boostorg/throw_exception	boost-1.89.0	f3d4d55f52894fda75ef2915dc122e3133b97b45
+boost-type_traits	library	git	https://github.com/boostorg/type_traits	boost-1.89.0	67a6c32499866ea4485e249e8e406fb1348eb5d2
+boost-variant2	library	git	https://github.com/boostorg/variant2	boost-1.89.0	8caa1a34843951b9e4e302dc85e90bc19ca4f3dd
 # --- C++ additions for concurrent/ (Channel.md: moodycamel; header-only) ---
 concurrentqueue	library	git	https://github.com/cameron314/concurrentqueue	v1.0.4	6dd38b8a1dbaa7863aa907045f32308a56a6ff5d
 # --- device reference suites (§6.13, §8.3): fetched only, never built here ---
