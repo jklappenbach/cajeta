@@ -7,7 +7,7 @@
 | id | workload | against | check |
 |---|---|---|---|
 | `collection/redblacktree-insert-lookup` | insert 1e6 random int64 keys, look each up | C++ `std::map`, Rust `BTreeMap`, Go (no stdlib ordered map; `google/btree`), Java `TreeMap`, Python `sortedcontainers` | sum |
-| `collection/redblacktree-range` | 1e4 range scans of 1e3 keys | same | sum |
+| `collection/redblacktree-range` | 1e4 range scans of 1e3 keys (Cajeta skips: `RedBlackTree` has no range scan, cursor or lower-bound; `keysInOrder` copies every key) | same | sum |
 
 ## Results
 

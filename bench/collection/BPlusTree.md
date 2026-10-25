@@ -8,7 +8,7 @@
 |---|---|---|---|
 | `collection/bplustree-insert` | insert 1e6 random int64 keys | C++ `std::map`, Rust `BTreeMap`, Java `TreeMap`, Python `sortedcontainers` | count |
 | `collection/bplustree-point-lookup` | 1e7 point lookups on 1e6 keys | same | sum |
-| `collection/bplustree-range` | 1e4 range scans of 1e3 keys | same | sum |
+| `collection/bplustree-range` | 1e4 range scans of 1e3 keys (Cajeta skips: `BPlusTree` exposes no range scan yet) | same | sum |
 
 ## Results
 

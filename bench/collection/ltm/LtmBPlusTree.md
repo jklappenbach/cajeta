@@ -6,10 +6,10 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `collection/ltm-insert` | insert 1e7 random 16-byte keys with 64-byte values under a 256 MB page budget | RocksDB and LMDB through their Rust and Java bindings | count |
-| `collection/ltm-lookup` | 1e6 random point lookups after the insert | same | sum of value lengths |
+| `collection/ltm-insert` | insert random 16-byte keys with 64-byte values under a page budget; the page shape is 1e7 keys and 256 MB, the default run is 1e6 and 16 MB (see the note) | RocksDB and LMDB through their Rust and Java bindings | count |
+| `collection/ltm-lookup` | random point lookups after the insert (1e6 at page shape, 1e5 by default) | same | sum of value lengths |
 
-Skips with a reason when the disk budget is unavailable; the page records the storage device of the run.
+Skips with a reason when the disk budget is unavailable; the row records the storage device. The default is a tenth of the page shape because `LtmPager` scans its whole frame table on every page touch (44 µs an insert at 4096 frames): at 65536 frames one trial would take hours. `CAJETA_BENCH_LTM_N`, `_LOOKUPS` and `_BUDGET_MB` restore the page shape and the competitors read the same variables.
 
 ## Results
 

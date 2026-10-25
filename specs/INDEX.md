@@ -20,6 +20,8 @@ tracked below: `cajeta-text-shaping` is a **new spec not yet written**, and
 
 | Spec | Plan | Status |
 |------|------|--------|
+| [foreach-arraylist-zero-iterations](foreach-arraylist-zero-iterations-spec.md) | — (defect) | **draft**: filed 2026-10-25 by benchmark-reference unit 6. `for (v : list)` over an `ArrayList` and `for (v : list.stream())` compile and run zero iterations on v0.46.3; arrays iterate. |
+| [ltm-pager-frame-lookup-linear](ltm-pager-frame-lookup-linear-spec.md) | — (defect, stdlib) | **draft**: filed 2026-10-25 by benchmark-reference unit 6. `LtmPager` scans the frame table on every page touch (44 µs an insert at 4096 frames); the 256 MB page shape is hours per trial. |
 | [intrinsic-field-argument-never-returns](intrinsic-field-argument-never-returns-spec.md) | — (defect) | **draft**: filed 2026-10-25 from dev.cajeta.bench 0.1.4. `this.p.waitMillis(this.ms)` never returns; with a local or literal argument it times out correctly. A miscompile of a field-read argument to an intrinsic. |
 | [return-in-try-with-async-call-aborts](return-in-try-with-async-call-aborts-spec.md) | — (defect) | **draft**: filed 2026-10-25. `return` inside a `try` that contains `connectAsync` aborts the compiler with a thrown `const char*`. |
 | [runtime-pipe-inherited-by-children](runtime-pipe-inherited-by-children-spec.md) | — (defect, runtime) | **draft**: filed 2026-10-25. The runtime's pipe lacks close-on-exec and every child inherits it; `connectAsync`'s socket is non-blocking and the docs should say so. |

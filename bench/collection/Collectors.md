@@ -7,7 +7,7 @@
 | id | workload | against | check |
 |---|---|---|---|
 | `collection/collectors-to-list` | `stream().collect(toList())` over 1e7 int32 | Java `Collectors.toList`, Rust `collect::<Vec>`, Go append loop, Python list comprehension | count |
-| `collection/collectors-group-by` | group 1e7 int32 by `x % 1000` | Java `groupingBy`, Rust `HashMap` fold, Go map of slices, Python `defaultdict` | group count |
+| `collection/collectors-group-by` | group 1e7 int32 by `x % 1000` through a hand-built `Collector` (`Collectors` ships `toList` only) | Java `groupingBy`, Rust `HashMap` fold, Go map of slices, Python `defaultdict` | group count |
 
 ## Results
 

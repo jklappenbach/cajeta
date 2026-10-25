@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `collection/immutablelist-build` | build from a 1e6 `ArrayList`, 1e2 times | Java `List.copyOf`, Rust `Arc<[T]>`, Go slice copy, Python tuple | count |
+| `collection/immutablelist-build` | build from a 1e6 `ArrayList`, 1e2 times (two copies per build: there is no copy-from-a-borrowed-list factory) | Java `List.copyOf`, Rust `Arc<[T]>`, Go slice copy, Python tuple | count |
 | `collection/immutablelist-get` | 1e8 random gets | same | sum |
 
 ## Results

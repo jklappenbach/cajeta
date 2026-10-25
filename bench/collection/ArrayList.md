@@ -8,7 +8,7 @@
 |---|---|---|---|
 | `collection/arraylist-append` | append 1e7 int32 to an empty list | C++ `vector`, Rust `Vec`, Go slice, Java `ArrayList<Integer>` (boxed; noted), Python list | count |
 | `collection/arraylist-get` | 1e8 random `get` on a 1e6 list | same | sum |
-| `collection/arraylist-iterate` | `foreach` over 1e7 elements, 10 times | same | sum |
+| `collection/arraylist-iterate` | walk 1e7 elements by index, 10 times (`foreach` over an `ArrayList` runs zero iterations on v0.46.3, a filed defect; the row moves to `foreach` when it is fixed) | same | sum |
 | `collection/arraylist-sort` | `sort()` of 1e6 random int32 | same libraries' sorts | non-decreasing |
 
 ## Results
