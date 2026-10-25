@@ -1211,6 +1211,7 @@ static struct {
     // Open-addressing set of VkBuffer handles the open batch references.
     void* bound[CAJ_VK_BOUND_SLOTS];
     uint64_t boundWriteSeq[CAJ_VK_BOUND_SLOTS];   // the last dispatch (sequence) writing it
+    uint64_t boundTouchSeq[CAJ_VK_BOUND_SLOTS];   // the last dispatch reading or writing it
     unsigned nbound;
     int boundOverflow;
     int chunkHasEvent;             // the open chunk carries an event's set command
@@ -1390,24 +1391,30 @@ static void caj_vk_bound_note(void* buf) {
     g_vk_batch.bound[h] = buf;
     g_vk_batch.nbound++;
 }
-// Note that `buf` is written by dispatch `seq` (the open batch); it is bound too.
-static void caj_vk_bound_note_write(void* buf, uint64_t seq) {
+// Note that dispatch `seq` (the open batch) touches `buf`, writing it when `write`.
+static void caj_vk_bound_note_touch(void* buf, uint64_t seq, int write) {
     if (!buf || g_vk_batch.boundOverflow) return;
     caj_vk_bound_note(buf);
     if (g_vk_batch.boundOverflow) return;
     size_t h = ((size_t) buf >> 4) % CAJ_VK_BOUND_SLOTS;
     while (g_vk_batch.bound[h]) {
-        if (g_vk_batch.bound[h] == buf) { g_vk_batch.boundWriteSeq[h] = seq; return; }
+        if (g_vk_batch.bound[h] == buf) {
+            g_vk_batch.boundTouchSeq[h] = seq;
+            if (write) g_vk_batch.boundWriteSeq[h] = seq;
+            return;
+        }
         h = (h + 1) % CAJ_VK_BOUND_SLOTS;
     }
 }
-// The sequence of the open batch's last write to `buf`, 0 when none (UINT64_MAX on overflow).
-static uint64_t caj_vk_bound_write_seq(void* buf) {
+// The sequence of the open batch's last write to (or, `touch`, any use of) `buf`: 0 when
+// none, UINT64_MAX when the set overflowed and nothing is known.
+static uint64_t caj_vk_bound_seq(void* buf, int touch) {
     if (!buf) return 0;
     if (g_vk_batch.boundOverflow) return UINT64_MAX;
     size_t h = ((size_t) buf >> 4) % CAJ_VK_BOUND_SLOTS;
     while (g_vk_batch.bound[h]) {
-        if (g_vk_batch.bound[h] == buf) return g_vk_batch.boundWriteSeq[h];
+        if (g_vk_batch.bound[h] == buf)
+            return touch ? g_vk_batch.boundTouchSeq[h] : g_vk_batch.boundWriteSeq[h];
         h = (h + 1) % CAJ_VK_BOUND_SLOTS;
     }
     return 0;
@@ -1423,20 +1430,16 @@ static int caj_vk_bound_has(void* buf) {
     return 0;
 }
 
-// The host is about to READ (`write` 0) or WRITE `handle`'s storage. A write lands the
-// open batch when it references the VkBuffer at all; a read lands it only when a dispatch
-// not yet known complete (past the last awaited event) writes the buffer (spec 5.3).
+// The host is about to READ (`write` 0) or WRITE `handle`'s storage. The open batch lands
+// only when a dispatch not yet known complete (past the last awaited event) writes the
+// buffer (a read) or touches it at all (a write) (spec 5.3).
 static void cajeta_xpu_vk_note_host_access(int64_t handle, int write) {
     if (!g_vk_batch.open) return;
     pthread_mutex_lock(&g_xpu_vk_submit_mu);
     struct cajeta_vk_buf* r = cajeta_xpu_vk_rec(handle);
-    if (r && g_vk_batch.open) {
-        if (write) {
-            if (caj_vk_bound_has((void*) r->buffer)) cajeta_xpu_vk_flush();
-        } else if (caj_vk_bound_write_seq((void*) r->buffer) > g_vk_awaited_seq) {
-            cajeta_xpu_vk_flush();
-        }
-    }
+    if (r && g_vk_batch.open
+            && caj_vk_bound_seq((void*) r->buffer, write) > g_vk_awaited_seq)
+        cajeta_xpu_vk_flush();
     pthread_mutex_unlock(&g_xpu_vk_submit_mu);
 }
 
@@ -3252,6 +3255,7 @@ static int caj_vk_batch_begin(void) {
     g_vk_batch.poolCursor = 0;
     memset(g_vk_batch.bound, 0, sizeof(g_vk_batch.bound));
     memset(g_vk_batch.boundWriteSeq, 0, sizeof(g_vk_batch.boundWriteSeq));
+    memset(g_vk_batch.boundTouchSeq, 0, sizeof(g_vk_batch.boundTouchSeq));
     g_vk_batch.nbound = 0;
     g_vk_batch.boundOverflow = 0;
     g_vk_batch.chunkHasEvent = 0;
@@ -3466,8 +3470,9 @@ static int caj_vk_launch_batched(struct caj_vk_pipe* P,
             if (!g_vk_ws.rngIsBuf[i]) continue;
             struct caj_vk_range e = { g_vk_ws.rngBuf[i], g_vk_ws.rngOff[i],
                                       g_vk_ws.rngEnd[i] };
+            caj_vk_bound_note_touch((void*) g_vk_ws.rngBuf[i], g_vk_dispatch_seq + 1,
+                                    (int) ((P->writesMask >> i) & 1u));
             if ((P->writesMask >> i) & 1u) {
-                caj_vk_bound_note_write((void*) g_vk_ws.rngBuf[i], g_vk_dispatch_seq + 1);
                 if (g_vk_unsync.nw < CAJ_VK_UNSYNC_W)
                     g_vk_unsync.w[g_vk_unsync.nw++] = e;
             } else {
@@ -3761,7 +3766,12 @@ static void caj_vk_event_wait_locked(struct caj_vk_event* e) {
             fprintf(stderr, "cajeta.xpu.vulkan: event wait timed out after 60 s\n");
             break;
         }
-        sched_yield();
+        // A sleeping poll: a core spinning here takes GPU clock on a part that shares
+        // its power budget (gfx1151), which cost more than the overlap gained.
+        {
+            struct timespec ts = { 0, 50000 };
+            nanosleep(&ts, NULL);
+        }
     }
     const int64_t t1 = __cajeta_currentTimeNanos();
     __cajeta_prof_vk_note_wait(0, t0, t1);
@@ -3784,13 +3794,16 @@ static void cajeta_xpu_vk_event_record(int64_t h) {
     }
     VkCommandBuffer cmd = g_vk_batch.cmds[g_vk_batch.cur];
     // Shader writes before the event become visible to the host once it is set.
-    VkMemoryBarrier mb;
-    memset(&mb, 0, sizeof(mb));
-    mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-    mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    mb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-    g_xpu_vk.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                  VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+    // CAJETA_XPU_VK_EVENT_NOBARRIER drops the barrier: a measurement knob only.
+    if (!getenv("CAJETA_XPU_VK_EVENT_NOBARRIER")) {
+        VkMemoryBarrier mb;
+        memset(&mb, 0, sizeof(mb));
+        mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        mb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        g_xpu_vk.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                      VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+    }
     g_xpu_vk.vkCmdSetEvent(cmd, e->ev, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
     e->seq = g_vk_dispatch_seq;
     e->chunkNo = g_vk_batch.chunksFlown;
