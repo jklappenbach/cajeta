@@ -16,7 +16,13 @@ import {
   sectionNav,
   routeSlugFor,
   benchPageFor,
+  isBenchCatalogPath,
+  BENCH_CATALOG_GLOB,
 } from './extract.mjs';
+import { glob } from 'tinyglobby';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // 2.1.4 slug derivation
 test('slugForPath lowercases and strips .md', () => {
@@ -371,4 +377,43 @@ test('buildTabs keeps Benchmarks pinned last with package index docs present', (
   ];
   const docs = [{ slug: 'benchmarks/collection/readme', section: 'benchmarks', url: '/benchmarks/collection/' }];
   assert.deepEqual(buildTabs(sections, docs).map((t) => t.label), ['Guide', 'Stdlib', 'Benchmarks']);
+});
+
+// only catalog pages are documents: bench/*.md and bench/<package>/**/*.md
+const BENCH_TREE = {
+  'README.md': true,
+  'METHODOLOGY.md': true,
+  'collection/README.md': true,
+  'collection/HashMap.md': true,
+  'collection/ltm/LtmBPlusTree.md': true,
+  'competitors/rust/codec/bind/README.md': false,
+  'competitors/third_party/capnproto/doc/_posts/2013-04-01-announcing.md': false,
+  'src/main/cajeta/bench/NOTES.md': false,
+  'datasets/README.md': false,
+  'test/README.md': false,
+  'scripts/README.md': false,
+  'results/phoenix/r1/NOTES.md': false,
+  'build/bench/x.md': false,
+  'collection/HashMap.cajeta': false,
+};
+
+test('isBenchCatalogPath keeps catalog pages and drops sources, checkouts and runs', () => {
+  for (const [path, keep] of Object.entries(BENCH_TREE)) {
+    assert.equal(isBenchCatalogPath(path), keep, path);
+  }
+});
+
+test('BENCH_CATALOG_GLOB (the content collection) loads exactly the catalog pages', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bench-glob-'));
+  try {
+    for (const path of Object.keys(BENCH_TREE)) {
+      mkdirSync(join(root, path, '..'), { recursive: true });
+      writeFileSync(join(root, path), '# x\n');
+    }
+    const found = (await glob(BENCH_CATALOG_GLOB, { cwd: root })).sort();
+    const want = Object.entries(BENCH_TREE).filter(([, k]) => k).map(([p]) => p).sort();
+    assert.deepEqual(found, want);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

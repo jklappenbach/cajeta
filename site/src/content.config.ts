@@ -3,7 +3,7 @@ import { glob } from 'astro/loaders';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 // @ts-ignore -- plain mjs helpers shared with the manifest generator
-import { slugForPath } from '../scripts/lib/extract.mjs';
+import { slugForPath, BENCH_CATALOG_GLOB } from '../scripts/lib/extract.mjs';
 // @ts-ignore
 import { docsRoot } from '../scripts/lib/docs-root.mjs';
 
@@ -19,11 +19,12 @@ const docs = defineCollection({
 });
 
 // The benchmarks live beside the docs tree in bench/; their ids get the
-// 'benchmarks/' pseudo-section prefix to match the manifest.
+// 'benchmarks/' pseudo-section prefix to match the manifest. Only catalog
+// pages load (BENCH_CATALOG_GLOB, the rule the manifest applies too).
 const benchRoot = join(docsRoot(), '..', 'bench');
 const bench = defineCollection({
   loader: glob({
-    pattern: existsSync(benchRoot) ? '**/*.md' : '!**',
+    pattern: existsSync(benchRoot) ? BENCH_CATALOG_GLOB : '!**',
     base: existsSync(benchRoot) ? benchRoot : docsRoot(),
     generateId: ({ entry }) => 'benchmarks/' + slugForPath(entry),
   }),

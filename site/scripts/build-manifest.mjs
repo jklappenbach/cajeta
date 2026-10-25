@@ -17,6 +17,7 @@ import {
   orderTabs,
   orderFromPath,
   buildTabs,
+  isBenchCatalogPath,
 } from './lib/extract.mjs';
 import { docsRoot, SITE_ROOT } from './lib/docs-root.mjs';
 import { buildBenchData } from './lib/bench-results.mjs';
@@ -71,6 +72,8 @@ const slugs = new Map();
 for (const { root, pseudo, srcPrefix } of ROOTS) {
   for await (const file of mdFiles(root)) {
     const realRel = relative(root, file).split('\\').join('/');
+    // bench/: catalog pages only, never competitor checkouts or sources
+    if (pseudo === 'benchmarks/' && !isBenchCatalogPath(realRel)) continue;
     const relPath = pseudo + realRel; // path inside the *site's* tree model
     const body = await readFile(file, 'utf8');
     const slug = slugForPath(relPath);

@@ -33,6 +33,7 @@
 //     known id (math/matmul stayed in math/).
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { BENCH_NON_CATALOG_DIRS } from './extract.mjs';
 import { languageLabel, isCajetaRow, machineLabel, parseBlock, blockKindFor, blockIds } from './bench-render.mjs';
 
 export const OLD_AREA_PACKAGE = {
@@ -351,7 +352,7 @@ export function buildBenchData(benchRoot, { env = process.env } = {}) {
   if (!existsSync(benchRoot)) return { machines: [], results: {}, pages: {}, idMeta: {}, packages: [], knownIds: [] };
   const skip = (p) => {
     const rel = relative(benchRoot, p).split('\\').join('/');
-    return rel === 'results' || rel === 'build' || rel === 'competitors' || rel === 'datasets' || rel === 'src';
+    return !rel.includes('/') && BENCH_NON_CATALOG_DIRS.includes(rel);
   };
   const pages = {};
   const idMeta = {};

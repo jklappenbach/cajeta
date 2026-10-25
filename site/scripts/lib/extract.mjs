@@ -38,6 +38,27 @@ function indexDirSlug(slug) {
   return slug.replace(/\/readme$/, '');
 }
 
+/**
+ * bench/ holds the catalog and everything that produces it. Only the catalog
+ * pages are documents: the bench/ root .md files and every .md under a
+ * package directory (bench/<package>/…). These
+ * top-level directories are not packages (harness and competitor sources,
+ * third-party checkouts, datasets, smoke tests, scripts, committed runs,
+ * build output) and never render.
+ */
+export const BENCH_NON_CATALOG_DIRS = ['competitors', 'src', 'datasets', 'test', 'scripts', 'results', 'build'];
+
+/** Is this bench-relative path ('collection/HashMap.md') a catalog page? */
+export function isBenchCatalogPath(benchRel) {
+  const rel = String(benchRel).replace(/^\.\//, '');
+  if (!/\.md$/i.test(rel)) return false;
+  const parts = rel.split('/');
+  return parts.length === 1 || !BENCH_NON_CATALOG_DIRS.includes(parts[0]);
+}
+
+/** The same rule as a glob pattern list, for the content collection loader. */
+export const BENCH_CATALOG_GLOB = ['**/*.md', ...BENCH_NON_CATALOG_DIRS.map((d) => `!${d}/**`)];
+
 /** Site URL for a docs-relative path. */
 export function urlForDoc(relPath) {
   const slug = slugForPath(relPath);
