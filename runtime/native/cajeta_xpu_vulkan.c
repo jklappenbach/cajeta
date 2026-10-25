@@ -1191,10 +1191,11 @@ struct caj_vk_dpool { VkDescriptorPool pool; };
 // Chunked submission every CAJ_VK_CHUNK_DISPATCHES, so no single submit trips RADV's
 // hang detection. Chunks fly fenceless; the flush's final submit carries the fence.
 #define CAJ_VK_BATCH_CMDS 32
-// The cadence measured best on the 8B (vulkan-batch-pipelining 1.3.2): the device
-// starts after 8 recorded dispatches, then takes 16 a submit.
-#define CAJ_VK_CHUNK_DISPATCHES 16
+// The cadence measured best on the 8B (vulkan-batch-pipelining 5.3.1): the device
+// starts after 8 recorded dispatches, then the chunks double up to 128 a submit.
+#define CAJ_VK_CHUNK_DISPATCHES 128
 #define CAJ_VK_FIRST_CHUNK_DISPATCHES 8
+#define CAJ_VK_CHUNK_RAMP 2
 static struct {
     int open;                      // recording?
     int inited;                    // cmds/fence created?
@@ -1202,6 +1203,7 @@ static struct {
     unsigned chunkDispatches;      // recorded in the open chunk
     unsigned chunksFlown;          // fenceless submits since last flush
     unsigned firstChunk, chunk;   // dispatches before the first submit, and per chunk after it (0 = at flush)
+    unsigned ramp;                 // growth factor of each chunk after the first, up to chunk (0 = fixed)
     int cur;                       // ring index of the open command buffer
     VkCommandBuffer cmds[CAJ_VK_BATCH_CMDS];
     VkFence fence;
@@ -3239,15 +3241,17 @@ static int caj_vk_batch_begin(void) {
     g_vk_batch.chunksFlown = 0;
     // The cadence knobs are read per batch (a test sweeps them in one process):
     // CAJETA_XPU_VK_NOCHUNK one submit at flush; CAJETA_XPU_VK_CHUNK=N both sizes;
-    // CAJETA_XPU_VK_FIRST_CHUNK=M the first alone.
+    // CAJETA_XPU_VK_FIRST_CHUNK=M the first alone; CAJETA_XPU_VK_CHUNK_RAMP=G (1 = fixed).
     {
         const char* c = getenv("CAJETA_XPU_VK_CHUNK");
         const char* f = getenv("CAJETA_XPU_VK_FIRST_CHUNK");
         const unsigned chunk = (c && atoi(c) > 0) ? (unsigned) atoi(c) : CAJ_VK_CHUNK_DISPATCHES;
         unsigned first = (c && atoi(c) > 0) ? chunk : CAJ_VK_FIRST_CHUNK_DISPATCHES;
         if (f && atoi(f) > 0) first = (unsigned) atoi(f);
+        const char* r = getenv("CAJETA_XPU_VK_CHUNK_RAMP");
         if (getenv("CAJETA_XPU_VK_NOCHUNK")) { g_vk_batch.chunk = 0; g_vk_batch.firstChunk = 0; }
         else { g_vk_batch.chunk = chunk; g_vk_batch.firstChunk = first; }
+        g_vk_batch.ramp = r ? (atoi(r) > 1 ? (unsigned) atoi(r) : 0) : CAJ_VK_CHUNK_RAMP;
         g_vk_sync_log = getenv("CAJETA_XPU_VK_SYNC_LOG") ? 1 : 0;
         g_vk_stat_disp = 0;      // the flush line counts this batch alone
         g_vk_stat_barrier = 0;
@@ -3362,9 +3366,11 @@ static void cajeta_xpu_vk_flush(void) {
     }
     if (g_vk_sync_log && g_vk_stat_disp) {
         fprintf(stderr, "cajeta.xpu.vulkan: sync-log %u dispatches, "
-                "%u barriers elided to %u, %u chunks, first %u\n", g_vk_stat_disp,
+                "%u barriers elided to %u, %u chunks, first %u", g_vk_stat_disp,
                 g_vk_stat_disp > 0 ? g_vk_stat_disp - 1 : 0,
                 g_vk_stat_barrier, g_vk_batch.chunksFlown, g_vk_batch.firstChunk);
+        if (g_vk_batch.ramp) fprintf(stderr, ", ramp %u", g_vk_batch.ramp);
+        fputc('\n', stderr);
         g_vk_stat_disp = 0;
         g_vk_stat_barrier = 0;
     }
@@ -3386,6 +3392,16 @@ static void cajeta_xpu_vk_flush(void) {
 }
 
 // ---- Batched record path ---------------------------------------------------
+// Dispatches the open chunk holds before it submits: the first chunk goes early so the
+// device starts while the host records the rest; later chunks are fixed or ramp up to the cap.
+static unsigned caj_vk_chunk_limit(void) {
+    if (g_vk_batch.chunksFlown == 0) return g_vk_batch.firstChunk;
+    if (!g_vk_batch.ramp) return g_vk_batch.chunk;
+    unsigned lim = g_vk_batch.firstChunk;
+    for (unsigned i = 0; i < g_vk_batch.chunksFlown && lim < g_vk_batch.chunk; i++) lim *= g_vk_batch.ramp;
+    return lim < g_vk_batch.chunk ? lim : g_vk_batch.chunk;
+}
+
 static int caj_vk_launch_batched(struct caj_vk_pipe* P,
                                  const int64_t* bindings,
                                  const uint8_t* kinds, int n,
@@ -3510,8 +3526,7 @@ static int caj_vk_launch_batched(struct caj_vk_pipe* P,
     g_vk_batch.dispatches++;
     g_vk_batch.chunkDispatches++;
     {
-        // The first chunk goes early so the device starts while the host records the rest.
-        const unsigned lim = g_vk_batch.chunksFlown == 0 ? g_vk_batch.firstChunk : g_vk_batch.chunk;
+        const unsigned lim = caj_vk_chunk_limit();
         if (lim > 0 && g_vk_batch.chunkDispatches >= lim)
             caj_vk_batch_submit_chunk();
     }

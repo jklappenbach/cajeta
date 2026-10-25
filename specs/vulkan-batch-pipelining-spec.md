@@ -77,8 +77,9 @@ sequences decoding, `cajeta-llm` bench):
 
 - **2.1** When a batch opens, its first chunk is submitted after `first`
   dispatches (default 8), and every chunk after it after `chunk`
-  dispatches (default 16); both measured on the 8B (4.2, the table in the
-  plan).
+  dispatches (default 16; from Unit 5, the chunks ramp from 8 by 2 to a
+  cap of 128, see 2.6 and 2.7); measured on the 8B (the tables in the
+  plan, 1.3 and 5.3.1).
 - **2.2** When `CAJETA_XPU_VK_CHUNK=N` is set, both sizes are N;
   `CAJETA_XPU_VK_FIRST_CHUNK=N` sets the first alone;
   `CAJETA_XPU_VK_NOCHUNK` keeps meaning one submit at flush.
@@ -89,6 +90,17 @@ sequences decoding, `cajeta-llm` bench):
 - **2.5** When the command-buffer ring wraps (32 chunks), the batch waits on
   its fence and resets the descriptor pools, as today; a smaller chunk
   reaches the wrap sooner, and the wait is accounted in 4.2's measurement.
+- **2.6** When `CAJETA_XPU_VK_CHUNK_RAMP=G` is set (G > 1), each chunk after
+  the first is G times the one before it, up to `chunk` as the cap; the
+  flush line reports the factor. A submit costs the device a
+  command-processor drain and re-prime (~17 us on gfx1151), so once the
+  device has work queued the chunks should be large; the first chunk stays
+  small so the device starts early.
+- **2.7** When no knob is set, the cadence is first 8, then ramp 2 to a cap
+  of 128 (plan 5.3.1: the ramp matched a fixed 100 pipelined, held the
+  unpipelined step where fixed 100 lost 1.3%, and took the 1-seq gain).
+  `CAJETA_XPU_VK_CHUNK=N` still means both sizes N, so the ramp has nothing
+  to grow; `CAJETA_XPU_VK_CHUNK_RAMP=1` turns the ramp off.
 
 ## 3. In-stream device timing under the profiler
 

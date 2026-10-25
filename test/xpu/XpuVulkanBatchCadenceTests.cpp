@@ -84,6 +84,15 @@ int64_t runWith(const Cadence& c, int n, const char* chunk, const char* first,
     return r;
 }
 
+// As runWith, with CAJETA_XPU_VK_CHUNK_RAMP=ramp: each chunk after the first grows by that factor up to the cap.
+int64_t runRamp(const Cadence& c, int n, const char* chunk, const char* first, const char* ramp,
+                std::string* err) {
+    setenv("CAJETA_XPU_VK_CHUNK_RAMP", ramp, 1);
+    const int64_t r = runWith(c, n, chunk, first, false, err);
+    unsetenv("CAJETA_XPU_VK_CHUNK_RAMP");
+    return r;
+}
+
 bool has(const std::string& s, const char* needle) { return s.find(needle) != std::string::npos; }
 
 } // namespace
@@ -94,9 +103,9 @@ TEST(XpuVulkanBatchCadence, firstChunkSubmitsAfterEightDispatches) {
     ASSERT_NE(c.run, nullptr);
     std::string err;
     EXPECT_EQ(runWith(c, 44, nullptr, nullptr, false, &err), 176);
-    // 44 dispatches: 8 (first), 16, 16, and 4 with the flush.
+    // 44 dispatches: 8 (first), 16, and 20 with the flush (the default ramps by 2 to 128).
     EXPECT_TRUE(has(err, "sync-log 44 dispatches")) << err.substr(0, 400);
-    EXPECT_TRUE(has(err, "3 chunks, first 8")) << err.substr(0, 400);
+    EXPECT_TRUE(has(err, "2 chunks, first 8, ramp 2")) << err.substr(0, 400);
 }
 
 TEST(XpuVulkanBatchCadence, knobsSetTheCadence) {
@@ -107,7 +116,9 @@ TEST(XpuVulkanBatchCadence, knobsSetTheCadence) {
     EXPECT_EQ(runWith(c, 40, "8", nullptr, false, &err), 160);
     EXPECT_TRUE(has(err, "5 chunks, first 8")) << err.substr(0, 400);
     EXPECT_EQ(runWith(c, 40, "100", "4", false, &err), 160);
-    EXPECT_TRUE(has(err, "1 chunks, first 4")) << err.substr(0, 400);
+    EXPECT_TRUE(has(err, "3 chunks, first 4, ramp 2")) << err.substr(0, 400);   // 4, 8, 16, 12 at flush
+    EXPECT_EQ(runRamp(c, 40, "100", "4", "1", &err), 160);
+    EXPECT_TRUE(has(err, "1 chunks, first 4\n")) << err.substr(0, 400);        // ramp off: 4, 36 at flush
     EXPECT_EQ(runWith(c, 40, nullptr, nullptr, true, &err), 160);
     EXPECT_TRUE(has(err, "0 chunks")) << err.substr(0, 400);
 }
@@ -132,4 +143,17 @@ TEST(XpuVulkanBatchCadence, ringWrapWaitsAndReclaims) {
     EXPECT_EQ(runWith(c, 40, "1", nullptr, false, &err), 160) << err.substr(0, 300);
     EXPECT_TRUE(has(err, "40 chunks, first 1")) << err.substr(0, 400);
     EXPECT_FALSE(has(err, "FAILED")) << err.substr(0, 400);
+}
+
+TEST(XpuVulkanBatchCadence, aRampGrowsEachChunkUpToTheCap) {
+    CAJETA_SKIP_IF_NO_VULKAN();
+    Cadence c = compile();
+    ASSERT_NE(c.run, nullptr);
+    std::string err;
+    // 8, 16, 32, 64, 64, 64 = 248 flown, 52 with the flush; a fixed 64 would fly 5.
+    EXPECT_EQ(runRamp(c, 300, "64", "8", "2", &err), 1200) << err.substr(0, 300);
+    EXPECT_TRUE(has(err, "6 chunks, first 8, ramp 2")) << err.substr(0, 400);
+    // 8, 16 flown, 20 with the flush.
+    EXPECT_EQ(runRamp(c, 44, "100", "8", "2", &err), 176) << err.substr(0, 300);
+    EXPECT_TRUE(has(err, "2 chunks, first 8, ramp 2")) << err.substr(0, 400);
 }

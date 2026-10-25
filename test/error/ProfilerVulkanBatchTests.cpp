@@ -162,7 +162,7 @@ TEST(ProfilerVulkanBatch, batchedLaunchesResolveAtEventTier) {
         EXPECT_EQ(h.checkDispatch(e), CAJETA_SPAN_OK) << "launch " << e->launch_id
             << " flags " << h.checkDispatch(e);
     }
-    // 50 launches: chunks of 8, 16, 16 and 10 at the flush; the fence is waited once.
+    // 50 launches: chunks of 8, 16 and 26 at the flush; the fence is waited once.
     EXPECT_EQ(waits(), 1u);
 }
 
@@ -200,7 +200,7 @@ TEST(ProfilerVulkanBatch, aProfiledStepKeepsTheCadence) {
     ::unsetenv("CAJETA_XPU_VK_SYNC_LOG");
     ASSERT_EQ(sum, 176);
     EXPECT_TRUE(has(err, "sync-log 44 dispatches")) << err.substr(0, 400);
-    EXPECT_TRUE(has(err, "3 chunks, first 8")) << err.substr(0, 400);
+    EXPECT_TRUE(has(err, "2 chunks, first 8, ramp 2")) << err.substr(0, 400);
     EXPECT_EQ(spansOf(CAJETA_PROF_TIER_EVENT).size(), 44u);
 }
 
