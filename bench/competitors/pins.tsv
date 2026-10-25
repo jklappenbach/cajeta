@@ -1,0 +1,58 @@
+# Pinned competitor libraries and checkouts for competitors/setup.sh (spec §8.2–8.7).
+# Toolchain pins (Rust channel, oha, wrk, .NET channel, version floors) live at the top of setup.sh.
+#
+# Columns: item<TAB>kind<TAB>method<TAB>source<TAB>pin<TAB>check
+#   vendorlock  source = name in vendor/manifest.tsv; the commit is that suite's <name>.lock
+#               (the existing pins, spec §8.2 — not duplicated here; pin/check are "-")
+#   git         source = clone URL; pin = tag or branch; check = the commit it resolved to
+#   jar         source = Maven Central path; pin = version; check = sha256 of the jar
+#   tarball     source = URL; pin = version; check = sha256 of the tarball
+# Everything is fetched into competitors/third_party/ (gitignored); nothing here is built.
+#
+# --- existing pins (competitors/vendor/manifest.tsv + *.lock) ---
+simdjson	library	vendorlock	simdjson	-	-
+yyjson	library	vendorlock	yyjson	-	-
+pdqsort	library	vendorlock	pdqsort	-	-
+unordered_dense	library	vendorlock	unordered_dense	-	-
+xxhash	library	vendorlock	xxhash	-	-
+# --- C++ additions §6 names (codec, wire, math) ---
+zlib-ng	library	git	https://github.com/zlib-ng/zlib-ng	2.3.3	12731092979c6d07f42da27da673a9f6c7b13586
+protobuf	library	git	https://github.com/protocolbuffers/protobuf	v36.2	2c74169b34066ceb8ddb6b882fcb3fb32d737a55
+flatbuffers	library	git	https://github.com/google/flatbuffers	v25.12.19	7e163021e59cca4f8e1e35a7c828b5c6b7915953
+capnproto	library	git	https://github.com/capnproto/capnproto	v1.5.0	373e61ec89e2359f1c362e9b2eadc552f4779306
+eigen	library	git	https://gitlab.com/libeigen/eigen.git	5.0.1	bc3b39870ecb690a623a3f49149a358b95c5781d
+pocketfft	library	git	https://github.com/mreineck/pocketfft	cpp	4d865cba24359b05b37da4e75aee24498c3b78e7
+fftw	library	tarball	https://www.fftw.org/fftw-3.3.11.tar.gz	3.3.11	5630c24cdeb33b131612f7eb4b1a9934234754f9f388ff8617458d0be6f239a1
+# --- device reference suites (§6.13, §8.3): fetched only, never built here ---
+babelstream	checkout	git	https://github.com/UoB-HPC/BabelStream	v5.0	f6ae48de899408cf50c24079417dc71a03dbb5a8
+mixbench	checkout	git	https://github.com/ekondis/mixbench	master	06297d6b4882729079fef586407e3ff7ecba437b
+# --- Java jars (Maven Central, transitive closure as resolved by Maven 3.8.7 on 2026-10-25) ---
+# Jackson stays at the vendor/jackson.lock versions (2.22.0 / 2.22); setup.sh cross-checks.
+jackson-annotations	library	jar	com/fasterxml/jackson/core/jackson-annotations/2.22/jackson-annotations-2.22.jar	2.22	21ddb598807d3a51a876704eb979d9296e1c6a6f47ab1826ff88c6d6a127a2d0
+jackson-core	library	jar	com/fasterxml/jackson/core/jackson-core/2.22.0/jackson-core-2.22.0.jar	2.22.0	d2e8dd4df1e0f61b786ea06792f5bf4235d8278f158f3be6e997e955931c0c98
+jackson-databind	library	jar	com/fasterxml/jackson/core/jackson-databind/2.22.0/jackson-databind-2.22.0.jar	2.22.0	3520a0351f294699e3e1b7a37c7a726afd81e1a89ae702ac7d47ff347fd2ecbf
+gson	library	jar	com/google/code/gson/gson/2.15.0/gson-2.15.0.jar	2.15.0	96d3dd843dc2911de01cdabcd50064cb9e860353102a0a78c96fd833d396fc7d
+error_prone_annotations	library	jar	com/google/errorprone/error_prone_annotations/2.50.0/error_prone_annotations-2.50.0.jar	2.50.0	4667724877f1d37a689202da191e23efa7657c62eef93ccdac406eccfe5cdd0a
+netty-buffer	library	jar	io/netty/netty-buffer/4.2.19.Final/netty-buffer-4.2.19.Final.jar	4.2.19.Final	863f09b46cfe7d83872c9499086b9681cd9878c30a319d9f1f3a681bbfb0b12f
+netty-codec-base	library	jar	io/netty/netty-codec-base/4.2.19.Final/netty-codec-base-4.2.19.Final.jar	4.2.19.Final	5702c8097cc81e939dd12e5b39ac2e81f83737c320f6f4d88553577842f9ceb6
+netty-codec-compression	library	jar	io/netty/netty-codec-compression/4.2.19.Final/netty-codec-compression-4.2.19.Final.jar	4.2.19.Final	8935c51c7217780ae56d178c938b50ea5729b1e088cf3c2568674e331665554c
+netty-codec-http	library	jar	io/netty/netty-codec-http/4.2.19.Final/netty-codec-http-4.2.19.Final.jar	4.2.19.Final	7c28809a4f527746fbce2369f5ac5d5fcef45cfe9da21aa3dd9d3f6bdf00cbe0
+netty-codec-http2	library	jar	io/netty/netty-codec-http2/4.2.19.Final/netty-codec-http2-4.2.19.Final.jar	4.2.19.Final	f45756b12a75b907e98cd0158dc947308ca463cd3d27b9035d11a025a4fdbc4d
+netty-common	library	jar	io/netty/netty-common/4.2.19.Final/netty-common-4.2.19.Final.jar	4.2.19.Final	22fa74761f6e35c8c88972f35cf65664566b922dd73d3424528e97c34278fa79
+netty-handler	library	jar	io/netty/netty-handler/4.2.19.Final/netty-handler-4.2.19.Final.jar	4.2.19.Final	8b469cf23ddf21ba84291f4dff470d2277a28deac95e7084b0ff2ce853e58276
+netty-resolver	library	jar	io/netty/netty-resolver/4.2.19.Final/netty-resolver-4.2.19.Final.jar	4.2.19.Final	3ded47536faeb3c4c544a84871d82f461511589afb2a892a180ca425f281363e
+netty-transport-classes-epoll	library	jar	io/netty/netty-transport-classes-epoll/4.2.19.Final/netty-transport-classes-epoll-4.2.19.Final.jar	4.2.19.Final	4d96ba8dd98ace998f6ae7bfe53ae9e581bd92ad2f7ebe5bd994d1a24306db7e
+netty-transport-native-epoll	library	jar	io/netty/netty-transport-native-epoll/4.2.19.Final/netty-transport-native-epoll-4.2.19.Final-linux-x86_64.jar	4.2.19.Final	3dd01532f34540676c9e0153f96a44c78a73f2b0118ef46cb14247e512dde76b
+netty-transport-native-unix-common	library	jar	io/netty/netty-transport-native-unix-common/4.2.19.Final/netty-transport-native-unix-common-4.2.19.Final.jar	4.2.19.Final	341e91b8e69e6b7d92c353c845ffd91f34e921b7186254c176a64c7089b3e721
+netty-transport	library	jar	io/netty/netty-transport/4.2.19.Final/netty-transport-4.2.19.Final.jar	4.2.19.Final	d82d4e200456b8c5d8a1647a3724603f80616e5b35b9ada6e7a20d048f175075
+commons-lang3	library	jar	org/apache/commons/commons-lang3/3.20.0/commons-lang3-3.20.0.jar	3.20.0	69e5c9fa35da7a51a5fd2099dfe56a2d8d32cf233e2f6d770e796146440263f4
+commons-text	library	jar	org/apache/commons/commons-text/1.15.0/commons-text-1.15.0.jar	1.15.0	58d2da30f058512a1e7f914e39241deca4dff5c27a085b4ed2faa9e7208067f6
+ejml-all	library	jar	org/ejml/ejml-all/0.46.1/ejml-all-0.46.1.jar	0.46.1	c2e726ef1941444adcea08fc2ff90f749bc7eabaea75b827873e403ec2688fe6
+ejml-cdense	library	jar	org/ejml/ejml-cdense/0.46.1/ejml-cdense-0.46.1.jar	0.46.1	bcae1ca55fc546b9f13e21042467281458f04b11d8e21015f248c6aebb9b2ab3
+ejml-core	library	jar	org/ejml/ejml-core/0.46.1/ejml-core-0.46.1.jar	0.46.1	60e239ad8ad7b255542cab56986edec88f14feecdf86468b1ad37a7a7afe52e2
+ejml-ddense	library	jar	org/ejml/ejml-ddense/0.46.1/ejml-ddense-0.46.1.jar	0.46.1	5e056bb27c1f39e612e8d05b3467bf1f05d0dc6c73f6b73a85fddf73127f901f
+ejml-dsparse	library	jar	org/ejml/ejml-dsparse/0.46.1/ejml-dsparse-0.46.1.jar	0.46.1	3d3679e89895c5b9abc78ab7407c5b9218b247d38de5fa5ad8395c1b4d1ee30b
+ejml-fdense	library	jar	org/ejml/ejml-fdense/0.46.1/ejml-fdense-0.46.1.jar	0.46.1	cfb01f81014f53cfb1def140b76150541123bfe886589d4b9043fc0d0125b688
+ejml-fsparse	library	jar	org/ejml/ejml-fsparse/0.46.1/ejml-fsparse-0.46.1.jar	0.46.1	b834c5851ecdf65390af5cc487ef3167baf8ed4bd84463d42cc21591369b49aa
+ejml-simple	library	jar	org/ejml/ejml-simple/0.46.1/ejml-simple-0.46.1.jar	0.46.1	9f5dc17cde87c00570278aae3d9b2efcdd5b5e058728d6929ae892816c419f25
+ejml-zdense	library	jar	org/ejml/ejml-zdense/0.46.1/ejml-zdense-0.46.1.jar	0.46.1	6c0b124b7cdcec8387aa608f5e46304385ad0536dc7b790f5b0eab988c2e5dbc

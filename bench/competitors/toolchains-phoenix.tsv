@@ -1,0 +1,75 @@
+item	kind	version	path	verified
+g++	toolchain	13.3.0	/usr/bin/g++	g++ -dumpfullversion >= 13
+clang-fork	toolchain	clang version 23.0.0git (https://github.com/jklappenbach/cajeta-llvm 977f02d5f4fc63f136db99bad4e5aec3ce804622)	/home/julian/code/cpp/cajeta-llvm/llvm-install/bin/clang	clang --version major >= 23
+cmake	toolchain	3.28.3	/usr/bin/cmake	cmake --version
+rustc	toolchain	rustc 1.99.1 (58cf8f9c3 2026-10-13)	/home/julian/.cargo/bin/rustc	rustc --version (rustup stable)
+cargo	toolchain	cargo 1.99.1 (5f94df478 2026-08-27)	/home/julian/.cargo/bin/cargo	cargo --version
+go	toolchain	go1.22.2	/usr/bin/go	go env GOVERSION >= go1.22
+java	toolchain	openjdk version "25.0.1" 2025-10-21 LTS	/home/julian/.sdkman/candidates/java/current/bin/java	java -version major == 25
+javac	toolchain	javac 25.0.1	/home/julian/.sdkman/candidates/java/current/bin/javac	javac -version major == 25
+maven	toolchain	Apache Maven 3.8.7	/usr/bin/mvn	mvn -v (Spring Boot, Quarkus, Micronaut builds)
+node	toolchain	v22.22.3	/home/julian/.nvm/versions/node/v22.22.3/bin/node	node --version >= v22
+python3	toolchain	3.12.3	/usr/bin/python3	python3 version 3.12.x with venv+ensurepip
+dotnet	toolchain	sdk 10.0.402	/home/julian/.dotnet/dotnet	dotnet --list-sdks has 10.0.x (ASP.NET Core)
+cuda-nvcc	toolchain	13.3 V13.3.73	/usr/local/cuda/bin/nvcc	nvcc --version (no device query)
+rocm-hipcc	toolchain	n/a (not on this machine)	-	check_rocm found no install
+oha	toolchain	oha 1.16.0	/home/julian/.cargo/bin/oha	oha --version == 1.16.0
+wrk	toolchain	4.2.0 @ a211dd5a7050b1f9e8a9870b95513060e72ac4a0	/home/julian/code/cpp/cajeta/bench/competitors/bin/wrk	wrk --version reports a211dd5 (tag 4.2.0)
+simdjson	library	9b33047a878264250c5361f865d0b2da86217d14	/home/julian/code/cpp/cajeta/bench/competitors/third_party/simdjson	git rev-parse HEAD == vendor/simdjson.lock
+yyjson	library	92ae1e2216548eb1dee78c09145a9a9bd067e9e9	/home/julian/code/cpp/cajeta/bench/competitors/third_party/yyjson	git rev-parse HEAD == vendor/yyjson.lock
+pdqsort	library	b1ef26a55cdb60d236a5cb199c4234c704f46726	/home/julian/code/cpp/cajeta/bench/competitors/third_party/pdqsort	git rev-parse HEAD == vendor/pdqsort.lock
+unordered_dense	library	7b55cab8418da1603496462ce3ccdb4cb1dc3368	/home/julian/code/cpp/cajeta/bench/competitors/third_party/unordered_dense	git rev-parse HEAD == vendor/unordered_dense.lock
+xxhash	library	e573d4d2aaeaba0f3e5a0a9a54144a1f2b4b56e7	/home/julian/code/cpp/cajeta/bench/competitors/third_party/xxhash	git rev-parse HEAD == vendor/xxhash.lock
+zlib-ng	library	2.3.3 @ 12731092979c6d07f42da27da673a9f6c7b13586	/home/julian/code/cpp/cajeta/bench/competitors/third_party/zlib-ng	git rev-parse HEAD == pins.tsv (2.3.3)
+protobuf	library	v36.2 @ 2c74169b34066ceb8ddb6b882fcb3fb32d737a55	/home/julian/code/cpp/cajeta/bench/competitors/third_party/protobuf	git rev-parse HEAD == pins.tsv (v36.2)
+flatbuffers	library	v25.12.19 @ 7e163021e59cca4f8e1e35a7c828b5c6b7915953	/home/julian/code/cpp/cajeta/bench/competitors/third_party/flatbuffers	git rev-parse HEAD == pins.tsv (v25.12.19)
+capnproto	library	v1.5.0 @ 373e61ec89e2359f1c362e9b2eadc552f4779306	/home/julian/code/cpp/cajeta/bench/competitors/third_party/capnproto	git rev-parse HEAD == pins.tsv (v1.5.0)
+eigen	library	5.0.1 @ bc3b39870ecb690a623a3f49149a358b95c5781d	/home/julian/code/cpp/cajeta/bench/competitors/third_party/eigen	git rev-parse HEAD == pins.tsv (5.0.1)
+pocketfft	library	cpp @ 4d865cba24359b05b37da4e75aee24498c3b78e7	/home/julian/code/cpp/cajeta/bench/competitors/third_party/pocketfft	git rev-parse HEAD == pins.tsv (cpp)
+fftw	library	3.3.11	/home/julian/code/cpp/cajeta/bench/competitors/third_party/fftw-3.3.11	sha256 of fftw-3.3.11.tar.gz == pins.tsv (5630c24cdeb3…)
+babelstream	checkout	v5.0 @ f6ae48de899408cf50c24079417dc71a03dbb5a8	/home/julian/code/cpp/cajeta/bench/competitors/third_party/babelstream	git rev-parse HEAD == pins.tsv (v5.0)
+mixbench	checkout	master @ 06297d6b4882729079fef586407e3ff7ecba437b	/home/julian/code/cpp/cajeta/bench/competitors/third_party/mixbench	git rev-parse HEAD == pins.tsv (master)
+jackson-annotations	library	2.22	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/com/fasterxml/jackson/core/jackson-annotations/2.22/jackson-annotations-2.22.jar	sha256 == pins.tsv (21ddb598807d…), from https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-annotations/2.22/jackson-annotations-2.22.jar
+jackson-core	library	2.22.0	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/com/fasterxml/jackson/core/jackson-core/2.22.0/jackson-core-2.22.0.jar	sha256 == pins.tsv (d2e8dd4df1e0…), from https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-core/2.22.0/jackson-core-2.22.0.jar
+jackson-databind	library	2.22.0	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/com/fasterxml/jackson/core/jackson-databind/2.22.0/jackson-databind-2.22.0.jar	sha256 == pins.tsv (3520a0351f29…), from https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.22.0/jackson-databind-2.22.0.jar
+gson	library	2.15.0	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/com/google/code/gson/gson/2.15.0/gson-2.15.0.jar	sha256 == pins.tsv (96d3dd843dc2…), from https://repo1.maven.org/maven2/com/google/code/gson/gson/2.15.0/gson-2.15.0.jar
+error_prone_annotations	library	2.50.0	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/com/google/errorprone/error_prone_annotations/2.50.0/error_prone_annotations-2.50.0.jar	sha256 == pins.tsv (4667724877f1…), from https://repo1.maven.org/maven2/com/google/errorprone/error_prone_annotations/2.50.0/error_prone_annotations-2.50.0.jar
+netty-buffer	library	4.2.19.Final	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/io/netty/netty-buffer/4.2.19.Final/netty-buffer-4.2.19.Final.jar	sha256 == pins.tsv (863f09b46cfe…), from https://repo1.maven.org/maven2/io/netty/netty-buffer/4.2.19.Final/netty-buffer-4.2.19.Final.jar
+netty-codec-base	library	4.2.19.Final	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/io/netty/netty-codec-base/4.2.19.Final/netty-codec-base-4.2.19.Final.jar	sha256 == pins.tsv (5702c8097cc8…), from https://repo1.maven.org/maven2/io/netty/netty-codec-base/4.2.19.Final/netty-codec-base-4.2.19.Final.jar
+netty-codec-compression	library	4.2.19.Final	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/io/netty/netty-codec-compression/4.2.19.Final/netty-codec-compression-4.2.19.Final.jar	sha256 == pins.tsv (8935c51c7217…), from https://repo1.maven.org/maven2/io/netty/netty-codec-compression/4.2.19.Final/netty-codec-compression-4.2.19.Final.jar
+netty-codec-http	library	4.2.19.Final	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/io/netty/netty-codec-http/4.2.19.Final/netty-codec-http-4.2.19.Final.jar	sha256 == pins.tsv (7c28809a4f52…), from https://repo1.maven.org/maven2/io/netty/netty-codec-http/4.2.19.Final/netty-codec-http-4.2.19.Final.jar
+netty-codec-http2	library	4.2.19.Final	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/io/netty/netty-codec-http2/4.2.19.Final/netty-codec-http2-4.2.19.Final.jar	sha256 == pins.tsv (f45756b12a75…), from https://repo1.maven.org/maven2/io/netty/netty-codec-http2/4.2.19.Final/netty-codec-http2-4.2.19.Final.jar
+netty-common	library	4.2.19.Final	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/io/netty/netty-common/4.2.19.Final/netty-common-4.2.19.Final.jar	sha256 == pins.tsv (22fa74761f6e…), from https://repo1.maven.org/maven2/io/netty/netty-common/4.2.19.Final/netty-common-4.2.19.Final.jar
+netty-handler	library	4.2.19.Final	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/io/netty/netty-handler/4.2.19.Final/netty-handler-4.2.19.Final.jar	sha256 == pins.tsv (8b469cf23ddf…), from https://repo1.maven.org/maven2/io/netty/netty-handler/4.2.19.Final/netty-handler-4.2.19.Final.jar
+netty-resolver	library	4.2.19.Final	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/io/netty/netty-resolver/4.2.19.Final/netty-resolver-4.2.19.Final.jar	sha256 == pins.tsv (3ded47536fae…), from https://repo1.maven.org/maven2/io/netty/netty-resolver/4.2.19.Final/netty-resolver-4.2.19.Final.jar
+netty-transport-classes-epoll	library	4.2.19.Final	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/io/netty/netty-transport-classes-epoll/4.2.19.Final/netty-transport-classes-epoll-4.2.19.Final.jar	sha256 == pins.tsv (4d96ba8dd98a…), from https://repo1.maven.org/maven2/io/netty/netty-transport-classes-epoll/4.2.19.Final/netty-transport-classes-epoll-4.2.19.Final.jar
+netty-transport-native-epoll	library	4.2.19.Final	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/io/netty/netty-transport-native-epoll/4.2.19.Final/netty-transport-native-epoll-4.2.19.Final-linux-x86_64.jar	sha256 == pins.tsv (3dd01532f345…), from https://repo1.maven.org/maven2/io/netty/netty-transport-native-epoll/4.2.19.Final/netty-transport-native-epoll-4.2.19.Final-linux-x86_64.jar
+netty-transport-native-unix-common	library	4.2.19.Final	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/io/netty/netty-transport-native-unix-common/4.2.19.Final/netty-transport-native-unix-common-4.2.19.Final.jar	sha256 == pins.tsv (341e91b8e69e…), from https://repo1.maven.org/maven2/io/netty/netty-transport-native-unix-common/4.2.19.Final/netty-transport-native-unix-common-4.2.19.Final.jar
+netty-transport	library	4.2.19.Final	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/io/netty/netty-transport/4.2.19.Final/netty-transport-4.2.19.Final.jar	sha256 == pins.tsv (d82d4e200456…), from https://repo1.maven.org/maven2/io/netty/netty-transport/4.2.19.Final/netty-transport-4.2.19.Final.jar
+commons-lang3	library	3.20.0	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/org/apache/commons/commons-lang3/3.20.0/commons-lang3-3.20.0.jar	sha256 == pins.tsv (69e5c9fa35da…), from https://repo1.maven.org/maven2/org/apache/commons/commons-lang3/3.20.0/commons-lang3-3.20.0.jar
+commons-text	library	1.15.0	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/org/apache/commons/commons-text/1.15.0/commons-text-1.15.0.jar	sha256 == pins.tsv (58d2da30f058…), from https://repo1.maven.org/maven2/org/apache/commons/commons-text/1.15.0/commons-text-1.15.0.jar
+ejml-all	library	0.46.1	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/org/ejml/ejml-all/0.46.1/ejml-all-0.46.1.jar	sha256 == pins.tsv (c2e726ef1941…), from https://repo1.maven.org/maven2/org/ejml/ejml-all/0.46.1/ejml-all-0.46.1.jar
+ejml-cdense	library	0.46.1	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/org/ejml/ejml-cdense/0.46.1/ejml-cdense-0.46.1.jar	sha256 == pins.tsv (bcae1ca55fc5…), from https://repo1.maven.org/maven2/org/ejml/ejml-cdense/0.46.1/ejml-cdense-0.46.1.jar
+ejml-core	library	0.46.1	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/org/ejml/ejml-core/0.46.1/ejml-core-0.46.1.jar	sha256 == pins.tsv (60e239ad8ad7…), from https://repo1.maven.org/maven2/org/ejml/ejml-core/0.46.1/ejml-core-0.46.1.jar
+ejml-ddense	library	0.46.1	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/org/ejml/ejml-ddense/0.46.1/ejml-ddense-0.46.1.jar	sha256 == pins.tsv (5e056bb27c1f…), from https://repo1.maven.org/maven2/org/ejml/ejml-ddense/0.46.1/ejml-ddense-0.46.1.jar
+ejml-dsparse	library	0.46.1	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/org/ejml/ejml-dsparse/0.46.1/ejml-dsparse-0.46.1.jar	sha256 == pins.tsv (3d3679e89895…), from https://repo1.maven.org/maven2/org/ejml/ejml-dsparse/0.46.1/ejml-dsparse-0.46.1.jar
+ejml-fdense	library	0.46.1	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/org/ejml/ejml-fdense/0.46.1/ejml-fdense-0.46.1.jar	sha256 == pins.tsv (cfb01f81014f…), from https://repo1.maven.org/maven2/org/ejml/ejml-fdense/0.46.1/ejml-fdense-0.46.1.jar
+ejml-fsparse	library	0.46.1	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/org/ejml/ejml-fsparse/0.46.1/ejml-fsparse-0.46.1.jar	sha256 == pins.tsv (b834c5851ecd…), from https://repo1.maven.org/maven2/org/ejml/ejml-fsparse/0.46.1/ejml-fsparse-0.46.1.jar
+ejml-simple	library	0.46.1	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/org/ejml/ejml-simple/0.46.1/ejml-simple-0.46.1.jar	sha256 == pins.tsv (9f5dc17cde87…), from https://repo1.maven.org/maven2/org/ejml/ejml-simple/0.46.1/ejml-simple-0.46.1.jar
+ejml-zdense	library	0.46.1	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/org/ejml/ejml-zdense/0.46.1/ejml-zdense-0.46.1.jar	sha256 == pins.tsv (6c0b124b7cdc…), from https://repo1.maven.org/maven2/org/ejml/ejml-zdense/0.46.1/ejml-zdense-0.46.1.jar
+python-venv	toolchain	3.12.3	/home/julian/code/cpp/cajeta/bench/competitors/python/.venv	venv python runs
+py-numpy	library	2.5.4	/home/julian/code/cpp/cajeta/bench/competitors/python/.venv	importlib.metadata.version == requirements.txt pin
+py-scipy	library	1.18.1	/home/julian/code/cpp/cajeta/bench/competitors/python/.venv	importlib.metadata.version == requirements.txt pin
+py-pandas	library	3.1.0	/home/julian/code/cpp/cajeta/bench/competitors/python/.venv	importlib.metadata.version == requirements.txt pin
+py-polars	library	2.0.0	/home/julian/code/cpp/cajeta/bench/competitors/python/.venv	importlib.metadata.version == requirements.txt pin
+py-duckdb	library	2.0.0	/home/julian/code/cpp/cajeta/bench/competitors/python/.venv	importlib.metadata.version == requirements.txt pin
+py-scikit-learn	library	1.9.1	/home/julian/code/cpp/cajeta/bench/competitors/python/.venv	importlib.metadata.version == requirements.txt pin
+py-xgboost	library	3.4.1	/home/julian/code/cpp/cajeta/bench/competitors/python/.venv	importlib.metadata.version == requirements.txt pin
+py-rapidfuzz	library	3.14.6	/home/julian/code/cpp/cajeta/bench/competitors/python/.venv	importlib.metadata.version == requirements.txt pin
+py-xxhash	library	4.0.2	/home/julian/code/cpp/cajeta/bench/competitors/python/.venv	importlib.metadata.version == requirements.txt pin
+py-orjson	library	3.13.0	/home/julian/code/cpp/cajeta/bench/competitors/python/.venv	importlib.metadata.version == requirements.txt pin
+py-whenever	library	0.11.0	/home/julian/code/cpp/cajeta/bench/competitors/python/.venv	importlib.metadata.version == requirements.txt pin
+py-uvicorn	library	0.54.0	/home/julian/code/cpp/cajeta/bench/competitors/python/.venv	importlib.metadata.version == requirements.txt pin
+py-fastapi	library	0.162.0	/home/julian/code/cpp/cajeta/bench/competitors/python/.venv	importlib.metadata.version == requirements.txt pin
+llama.cpp	checkout	67a17c17caa95742186f8b1ecadd1b5abd6d5ebb (llama-bench built: build-cuda)	/home/julian/code/cpp/llama.cpp	git rev-parse HEAD; ls */bin/llama-bench (not built here)
+py-torch	library	2.14.1+cu130	/home/julian/code/cpp/cajeta/bench/competitors/python/.venv	importlib.metadata.version (wheel tag +cu130; not imported, GPU untouched)

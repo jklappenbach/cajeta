@@ -1,0 +1,15 @@
+# Python competitors (spec §6, §7.2–7.4, §8.4–8.6). Pinned by setup.sh resolution on 2026-10-25;
+# torch is installed separately (CUDA / ROCm / CPU wheel index chosen per machine).
+numpy==2.5.4
+scipy==1.18.1
+pandas==3.1.0
+polars==2.0.0
+duckdb==2.0.0
+scikit-learn==1.9.1
+xgboost==3.4.1
+rapidfuzz==3.14.6
+xxhash==4.0.2
+orjson==3.13.0
+whenever==0.11.0
+uvicorn==0.54.0
+fastapi==0.162.0
