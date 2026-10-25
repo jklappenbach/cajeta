@@ -10,13 +10,13 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
-from collgen import Gen, bench, key, params, row, selected, skip  # noqa: E402
+from collgen import Gen, bench, key, params, row, selected, size_note, sized, skip  # noqa: E402
 
 try:
     import sortedcontainers
     from sortedcontainers import SortedDict
 except ImportError:
-    for b, n in (("redblacktree-insert-lookup", 20000), ("redblacktree-range", 10_000_000),
+    for b, n in (("redblacktree-insert-lookup", 1_000_000), ("redblacktree-range", 10_000_000),
                  ("bplustree-insert", 1_000_000), ("bplustree-point-lookup", 10_000_000),
                  ("bplustree-range", 10_000_000)):
         print(skip(b, "sortedcontainers", n, "sortedcontainers not installed (run competitors/setup.sh)"))
@@ -34,21 +34,23 @@ def run(bench_id, size, f, check, notes=""):
     print(row(bench_id, "sortedcontainers.SortedDict", VER, size, W, T, s, ok, notes), flush=True)
 
 
-# redblacktree-insert-lookup (the Cajeta shape): put(i, 2i) for 20000, sum get.
-N_RB = 20000
+# redblacktree-insert-lookup: insert 1e6 random int keys key(i) -> i, look each up.
+N_RB = sized(N)
+rb_keys = [key(i) for i in range(N_RB)]
 
 
 def rb():
     t = SortedDict()
-    for i in range(N_RB):
-        t[i] = i * 2
+    for i, k in enumerate(rb_keys):
+        t[k] = i
     s = 0
-    for j in range(N_RB):
-        s += t[j]
+    for k in rb_keys:
+        s += t[k]
     return s
 
 
-run("redblacktree-insert-lookup", N_RB, rb, lambda s: s == N_RB * (N_RB - 1))
+run("redblacktree-insert-lookup", N_RB, rb, lambda s: s == N_RB * (N_RB - 1) // 2, size_note(N))
+del rb_keys
 
 keys = [key(i) for i in range(N)]
 

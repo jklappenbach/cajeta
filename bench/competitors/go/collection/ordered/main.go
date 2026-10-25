@@ -22,19 +22,23 @@ func less(a, b kv) bool { return a.k < b.k }
 
 func main() {
 	if Selected("redblacktree-insert-lookup") {
-		const m = 20000
-		Row("redblacktree-insert-lookup", "google/btree", "v1.1.3", m, Bench(func() int64 {
+		m := Sized(n)
+		ks := make([]int64, m)
+		for i := range ks {
+			ks[i] = Key(int64(i))
+		}
+		Row("redblacktree-insert-lookup", "google/btree", "v1.1.3", int64(m), Bench(func() int64 {
 			t := btree.NewG(32, less)
-			for i := int64(0); i < m; i++ {
-				t.ReplaceOrInsert(kv{i, i * 2})
+			for i, k := range ks {
+				t.ReplaceOrInsert(kv{k, int64(i)})
 			}
 			var s int64
-			for j := int64(0); j < m; j++ {
-				e, _ := t.Get(kv{k: j})
+			for _, k := range ks {
+				e, _ := t.Get(kv{k: k})
 				s += e.v
 			}
 			return s
-		}, func(s int64) bool { return s == m*(m-1) }), "BTreeG degree 32")
+		}, func(s int64) bool { return s == int64(m)*int64(m-1)/2 }), SizeNote(n, "BTreeG degree 32"))
 	}
 	keys := make([]int64, n)
 	for i := range keys {

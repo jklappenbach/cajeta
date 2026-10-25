@@ -4,12 +4,14 @@ import cajeta.collection.HashMap;
 
 import dev.cajeta.bench.Benchmark;
 
-// HashMap<int32,int32> build + lookup: insert N entries, then N successful
-// lookups summing the values. Cross-check: the value sum is the closed form
-// (sum of 2*i for i in 0..N-1 == N*(N-1)). Mirrors the Ankerl insert+find shape.
+// collection/hashmap-int: insert 1e6 int64 keys key(i) -> i into an empty
+// HashMap<int64,int64> (default capacity, so it grows), then get() each key in
+// insertion order, summing. Keys precomputed untimed. Check: n(n-1)/2.
+// Smoke: n/100.
 public class HashMapIntBench extends Benchmark {
 
     public int32 n;
+    public int64[] keys;
     public int64 checksum;
 
     public String name() {
@@ -21,32 +23,39 @@ public class HashMapIntBench extends Benchmark {
     }
 
     public int32 warmupIters() {
-        return 5;
+        return 3;
     }
 
     public int32 measuredIters() {
-        return 30;
+        return 20;
     }
 
     public void setup() {
-        this.n = 50000;
+        this.n = CollGen.sized(1000000);
+        int64[] k #= CollGen.keys(this.n);
+        this.keys #= k;
     }
 
     public int64 inputSize() {
         return (int64) this.n;
     }
 
+    public String competitorNote() {
+        return CollGen.sizeNote(1000000);
+    }
+
     public void run(int32 iterations) {
-        HashMap<int32, int32> m = heap HashMap<int32, int32>(131072);
+        int64[] ks = this.keys;
+        HashMap<int64, int64> m = heap HashMap<int64, int64>();
         int32 i = 0;
         while (i < this.n) {
-            m.put(i, i * 2);
+            m.put(ks[i], (int64) i);
             i = i + 1;
         }
         int64 sum = 0;
         int32 j = 0;
         while (j < this.n) {
-            sum = sum + (int64) m.get(j);
+            sum = sum + m.get(ks[j]);
             j = j + 1;
         }
         this.checksum = sum;
@@ -54,6 +63,6 @@ public class HashMapIntBench extends Benchmark {
 
     public boolean checkResult() {
         int64 nn = (int64) this.n;
-        return this.checksum == nn * (nn - 1);
+        return this.checksum == nn * (nn - 1) / 2;
     }
 }

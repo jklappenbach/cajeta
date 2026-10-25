@@ -4,13 +4,14 @@ import cajeta.collection.Heap;
 
 import dev.cajeta.bench.Benchmark;
 
-// Binary min-heap as a priority queue (heapsort): push N pseudo-random values,
-// then pop all and verify they come out non-decreasing. Cross-check: the pop
-// sequence is sorted (sortedOk == 1).
+// collection/heap-sort: push 1e6 random int32 (CollGen draws, precomputed
+// untimed) into an empty min-Heap, then pop all of them in order. Check
+// (untimed): the n popped values are non-decreasing. Smoke: n/100.
 public class HeapSortBench extends Benchmark {
 
     public int32 n;
-    public int32 sortedOk;
+    public int32[] vals;
+    public int32[] out;
 
     public String name() {
         return "heap-sort";
@@ -21,55 +22,59 @@ public class HeapSortBench extends Benchmark {
     }
 
     public int32 warmupIters() {
-        return 5;
+        return 3;
     }
 
     public int32 measuredIters() {
-        return 30;
+        return 20;
     }
 
     public void setup() {
-        this.n = 50000;
+        this.n = CollGen.sized(1000000);
+        CollGen g = heap CollGen();
+        int32[] v = heap int32[this.n];
+        int32 i = 0;
+        while (i < this.n) {
+            v[i] = g.next();
+            i = i + 1;
+        }
+        this.vals #= v;
     }
 
     public int64 inputSize() {
         return (int64) this.n;
     }
 
+    public String competitorNote() {
+        return CollGen.sizeNote(1000000);
+    }
+
     public void run(int32 iterations) {
+        int32[] v = this.vals;
         Heap<int32> h = heap Heap<int32>();
-        int64 x = 12345;
         int32 i = 0;
         while (i < this.n) {
-            x = (x * 1103515245 + 12345) & 0x7FFFFFFF;
-            h.push((int32) x);
+            h.push(v[i]);
             i = i + 1;
         }
-        // A heap pops in sorted order — accept either direction (min or max),
-        // so the cross-check verifies "monotonic" without assuming orientation.
-        int32 prev = h.pop();
-        boolean asc = true;
-        boolean desc = true;
-        int32 j = 1;
+        int32[] o = heap int32[this.n];
+        int32 j = 0;
         while (j < this.n) {
-            int32 v = h.pop();
-            if (v < prev) {
-                asc = false;
-            }
-            if (v > prev) {
-                desc = false;
-            }
-            prev = v;
+            o[j] = h.pop();
             j = j + 1;
         }
-        if (asc || desc) {
-            this.sortedOk = 1;
-        } else {
-            this.sortedOk = 0;
-        }
+        this.out #= o;
     }
 
     public boolean checkResult() {
-        return this.sortedOk == 1;
+        int32[] o = this.out;
+        int32 j = 1;
+        while (j < this.n) {
+            if (o[j] < o[j - 1]) {
+                return false;
+            }
+            j = j + 1;
+        }
+        return true;
     }
 }

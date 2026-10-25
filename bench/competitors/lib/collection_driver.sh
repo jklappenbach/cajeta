@@ -61,12 +61,14 @@ coll_rust() {
 }
 
 coll_cpp() {
-    local src="$DIR/cpp/collection/$PROG/${PROG}_bench.cpp" bin="$BUILD/cpp-collection-$PROG" log="$BUILD/logs/cpp-collection-$PROG.log" ud
+    local src="$DIR/cpp/collection/$PROG/${PROG}_bench.cpp" bin="$BUILD/cpp-collection-$PROG" log="$BUILD/logs/cpp-collection-$PROG.log" ud pd
     command -v g++ >/dev/null 2>&1 || { skip_lang cpp cpp "g++ not installed"; return; }
     ud="$(pinned_path unordered_dense include/ankerl/unordered_dense.h)" \
         || { skip_lang cpp cpp "pinned unordered_dense missing under competitors/third_party (run competitors/setup.sh)"; return; }
+    pd="$(pinned_path pdqsort pdqsort.h)" \
+        || { skip_lang cpp cpp "pinned pdqsort missing under competitors/third_party (run competitors/setup.sh)"; return; }
     if [[ ! -x "$bin" || "$src" -nt "$bin" || "$DIR/cpp/collection/common/collgen.h" -nt "$bin" ]]; then
-        g++ -O3 -march=native -std=c++20 -DNDEBUG -I "$ud/include" "$src" -o "$bin.new" >"$log" 2>&1 && mv -f "$bin.new" "$bin"
+        g++ -O3 -march=native -std=c++20 -DNDEBUG -I "$ud/include" -I "$pd" "$src" -o "$bin.new" >"$log" 2>&1 && mv -f "$bin.new" "$bin"
     fi
     [[ -x "$bin" && ! "$src" -nt "$bin" ]] || { skip_lang cpp cpp "g++ build failed (see ${log#$DIR/})"; return; }
     PROFILE_LANG_VERSION="$(g++ --version | head -1 | strip)" "$bin" || echo "coll: cpp $PROG exited non-zero" >&2

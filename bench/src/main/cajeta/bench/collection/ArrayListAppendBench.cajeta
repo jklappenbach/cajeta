@@ -4,12 +4,14 @@ import cajeta.collection.ArrayList;
 
 import dev.cajeta.bench.Benchmark;
 
-// ArrayList grow-on-demand append: N pushes into a fresh list each trial.
-// Cross-check: final count == N. (Self-generating; no dataset.)
+// collection/arraylist-append: append 1e7 int32 (0..n-1) to an empty
+// ArrayList (no reserve). Check: count == n and the last element n-1.
+// Smoke: n/100 (CollGen.sized).
 public class ArrayListAppendBench extends Benchmark {
 
     public int32 n;
     public int64 lastCount;
+    public int32 tail;
 
     public String name() {
         return "arraylist-append";
@@ -20,19 +22,23 @@ public class ArrayListAppendBench extends Benchmark {
     }
 
     public int32 warmupIters() {
-        return 5;
+        return 3;
     }
 
     public int32 measuredIters() {
-        return 50;
+        return 20;
     }
 
     public void setup() {
-        this.n = 100000;
+        this.n = CollGen.sized(10000000);
     }
 
     public int64 inputSize() {
         return (int64) this.n;
+    }
+
+    public String competitorNote() {
+        return CollGen.sizeNote(10000000);
     }
 
     public void run(int32 iterations) {
@@ -42,10 +48,11 @@ public class ArrayListAppendBench extends Benchmark {
             a.add(i);
             i = i + 1;
         }
-        this.lastCount = a.count();
+        this.lastCount = (int64) a.count();
+        this.tail = a.get(this.n - 1);
     }
 
     public boolean checkResult() {
-        return this.lastCount == (int64) this.n;
+        return this.lastCount == (int64) this.n && this.tail == this.n - 1;
     }
 }

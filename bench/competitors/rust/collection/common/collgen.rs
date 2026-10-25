@@ -83,7 +83,9 @@ pub fn bench<T, F: FnMut() -> T, C: Fn(&T) -> bool>(f: &mut F, check: C) -> Meas
     Measured { samples, ok, alloc }
 }
 
-pub fn row(id: &str, lib: &str, libver: &str, input: u64, m: Measured, notes: &str) {
+pub fn row(id: &str, lib: &str, libver: &str, input: u64, m: Measured, notes: &str) { rowv(id, lib, libver, input, m, notes, "") }
+
+pub fn rowv(id: &str, lib: &str, libver: &str, input: u64, m: Measured, notes: &str, variant: &str) {
     let (warmup, trials) = params();
     let mut s = m.samples;
     s.sort_unstable();
@@ -93,7 +95,7 @@ pub fn row(id: &str, lib: &str, libver: &str, input: u64, m: Measured, notes: &s
     let mops = if med > 0 { input as f64 / med as f64 * 1e3 } else { 0.0 };
     println!(
         "1,{},{},{id},collection,,{input},,{input},rust,{},{lib},{libver},-O3 lto target-cpu=native,{warmup},{trials},\
-{mn},{med},{mean},{p95},{mops:.2},Mop/s,{},-1,{},-1,-1,{},{},{},",
+{mn},{med},{mean},{p95},{mops:.2},Mop/s,{},-1,{},-1,-1,{},{},{},{variant}",
         env("PROFILE_RUN_ID", "local"), env("PROFILE_RUN_TS", ""), env("PROFILE_LANG_VERSION", ""),
         peak_rss_kb(), m.alloc, if m.ok { "ok" } else { "invalid" }, m.ok, notes.replace(',', " "));
 }
@@ -101,4 +103,41 @@ pub fn row(id: &str, lib: &str, libver: &str, input: u64, m: Measured, notes: &s
 pub fn skip(id: &str, lib: &str, input: u64, reason: &str) {
     println!("1,{},{},{id},collection,,{input},,{input},rust,{},{lib},,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,,{},",
         env("PROFILE_RUN_ID", "local"), env("PROFILE_RUN_TS", ""), env("PROFILE_LANG_VERSION", ""), reason.replace(',', " "));
+}
+
+fn flag(k: &str) -> bool { matches!(env(k, "").as_str(), "1" | "true" | "yes") }
+
+/// CAJETA_BENCH_SMOKE=1 runs the first-suite rows at n/100 (CollGen.sized on
+/// the Cajeta side); CAJETA_BENCH_FULL_SIZE=1 keeps the page shape.
+pub fn small_smoke() -> bool { flag("CAJETA_BENCH_SMOKE") && !flag("CAJETA_BENCH_FULL_SIZE") }
+pub fn sized(full: usize) -> usize { if small_smoke() { full / 100 } else { full } }
+pub fn size_note(full: usize, extra: &str) -> String {
+    let mut p: Vec<String> = Vec::new();
+    if !extra.is_empty() { p.push(extra.to_string()); }
+    if small_smoke() { p.push(format!("smoke size n/100 (page shape {full})")); }
+    p.join("; ")
+}
+pub fn hex16(v: i64) -> String { format!("{:016x}", v as u64) }
+
+/// Like `bench`, with an untimed input step: each call times only `f(mk())`'s
+/// `f` (the sort rows' copy stays outside the time, as the Cajeta side
+/// subtracts its copy).
+pub fn bench_with<I, T, M: FnMut() -> I, F: FnMut(I) -> T, C: Fn(&T) -> bool>(mk: &mut M, f: &mut F, check: C) -> Measured {
+    let (warmup, trials) = params();
+    for _ in 0..warmup { let i = mk(); std::hint::black_box(f(i)); }
+    let mut samples = Vec::with_capacity(trials);
+    let mut ok = true;
+    for _ in 0..trials {
+        let i = mk();
+        let t = Instant::now();
+        let r = f(i);
+        samples.push(t.elapsed().as_nanos());
+        ok = check(&r);
+        std::hint::black_box(&r);
+    }
+    let i = mk();
+    let a0 = ALLOCED.load(Ordering::Relaxed);
+    std::hint::black_box(f(i));
+    let alloc = ALLOCED.load(Ordering::Relaxed) - a0;
+    Measured { samples, ok, alloc }
 }

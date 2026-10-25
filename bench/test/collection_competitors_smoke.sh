@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # collection/ competitor smoke (plan 6.1.2): every program under
-# competitors/drivers/collection/ (collection, sort, lists, maps, ordered,
-# cache, ltm) emits schema-v2 rows with area collection, and every id on
+# competitors/drivers/collection/ (sort, lists, maps, ordered, cache, ltm) emits schema-v2 rows with area collection, and every id on
 # bench/collection/*.md and ltm/LtmBPlusTree.md has rows in all five languages,
 # each `ok` with check_ok=true or skipped for a reason this smoke allows:
 #   cache-ttl  python (lru_cache has no TTL), cpp (hand-written LRU, no TTL),
@@ -25,7 +24,8 @@ COMP="$PROJ/competitors"
 NCOLS="$(awk -F, '{print NF; exit}' "$COMP/columns.txt")"
 OUTDIR="${CAJETA_BENCH_OUT:-$(mktemp -d)}/collection-competitors-smoke"
 mkdir -p "$OUTDIR"
-export PROFILE_RUN_ID=coll-comp PROFILE_RUN_TS=0 PROFILE_WARMUP="${PROFILE_WARMUP:-1}" PROFILE_TRIALS="${PROFILE_TRIALS:-3}"
+# CAJETA_BENCH_SMOKE=1: the first-suite rows run at n/100, as on the Cajeta side.
+export CAJETA_BENCH_SMOKE=1 PROFILE_RUN_ID=coll-comp PROFILE_RUN_TS=0 PROFILE_WARMUP="${PROFILE_WARMUP:-1}" PROFILE_TRIALS="${PROFILE_TRIALS:-3}"
 
 fail() { echo "COLL-COMP FAIL: $1" >&2; exit 1; }
 
@@ -83,9 +83,16 @@ for id in $PAGE_IDS; do
     [[ "$n_ok" -gt 0 ]] || fail "collection/$id has no ok competitor row"
 done
 
-# (3) The fast-hash libraries the HashMap page names.
-for lib in ankerl::unordered_dense::map hashbrown::HashMap; do
-    awk -F, -v l="$lib" '$4=="hashmap-lookup-hit" && $12==l && $28=="ok"' "$ALL" | grep -q . || fail "$lib hashmap-lookup-hit row missing"
+# (3) The fast-hash libraries the HashMap page names, on every HashMap id that
+# names them; the first-suite rows carry the smoke-size note.
+for id in hashmap-int hashmap-string hashmap-lookup-hit; do
+    for lib in ankerl::unordered_dense::map hashbrown::HashMap; do
+        awk -F, -v b="$id" -v l="$lib" '$4==b && $12==l && $28=="ok"' "$ALL" | grep -q . || fail "$lib $id row missing"
+    done
+done
+FIRST="arraylist-append linkedlist-insert-traverse hashmap-int hashmap-string hashset-dedup heap-sort redblacktree-insert-lookup sort-int64 sort-f64 sort-stable-int64 binary-search"
+for id in $FIRST; do
+    awk -F, -v b="$id" '$4==b && $28=="ok" && $30 !~ /smoke size n\/100/' "$ALL" | grep -q . && fail "$id has an ok row without the smoke-size note"
 done
 
 # (4) ltm rows record the storage device; without a disk budget they skip, saying so.

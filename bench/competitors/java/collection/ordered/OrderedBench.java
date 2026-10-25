@@ -12,14 +12,16 @@ public final class OrderedBench {
 
     public static void main(String[] args) {
         if (CollGen.selected("redblacktree-insert-lookup")) {
-            final int m = 20000;
+            final int m = CollGen.sized(N);
+            long[] ks = new long[m];
+            for (int i = 0; i < m; i++) ks[i] = CollGen.key(i);
             CollGen.row("redblacktree-insert-lookup", "TreeMap", "jdk", m, CollGen.bench(() -> {
-                TreeMap<Integer, Integer> t = new TreeMap<>();
-                for (int i = 0; i < m; i++) t.put(i, i * 2);
+                TreeMap<Long, Long> t = new TreeMap<>();
+                for (int i = 0; i < m; i++) t.put(ks[i], (long) i);
                 long s = 0;
-                for (int j = 0; j < m; j++) s += t.get(j);
+                for (long k : ks) s += t.get(k);
                 return s;
-            }, s -> s == (long) m * (m - 1)), "");
+            }, s -> s == (long) m * (m - 1) / 2), CollGen.sizeNote(N, "boxed Long"));
         }
         long[] keys = new long[N];
         for (int i = 0; i < N; i++) keys[i] = CollGen.key(i);

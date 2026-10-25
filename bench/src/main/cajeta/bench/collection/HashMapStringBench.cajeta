@@ -4,13 +4,18 @@ import cajeta.collection.HashMap;
 
 import dev.cajeta.bench.Benchmark;
 
-// HashMap<String,int32> build + lookup with string keys ("key"+i) — the string
-// hashing/equality cost dominates here, vs the integer-key benchmark. Cross-check:
-// all N lookups hit (return the value put), so hit count == N.
+// collection/hashmap-string: insert 1e6 16-byte string keys (16 hex digits of
+// key(i)) -> i into an empty HashMap<String,int64>, then look each up through
+// a second, separately allocated copy of the keys (equal content, other
+// objects, so no identity shortcut), summing. The map borrows its keys
+// (put lends), as every competitor's map holds references or views, not
+// copies. Keys built untimed. Check: n(n-1)/2. Smoke: n/100.
 public class HashMapStringBench extends Benchmark {
 
     public int32 n;
-    public int64 hits;
+    public String[] keys;
+    public String[] probes;
+    public int64 checksum;
 
     public String name() {
         return "hashmap-string";
@@ -21,43 +26,58 @@ public class HashMapStringBench extends Benchmark {
     }
 
     public int32 warmupIters() {
-        return 5;
+        return 3;
     }
 
     public int32 measuredIters() {
-        return 30;
+        return 20;
     }
 
     public void setup() {
-        this.n = 30000;
+        this.n = CollGen.sized(1000000);
+        String[] ks = heap String[this.n];
+        String[] ps = heap String[this.n];
+        int32 i = 0;
+        while (i < this.n) {
+            String k #= CollGen.hex16(CollGen.key((int64) i));
+            String p #= CollGen.hex16(CollGen.key((int64) i));
+            ks[i] #= k;
+            ps[i] #= p;
+            i = i + 1;
+        }
+        this.keys #= ks;
+        this.probes #= ps;
     }
 
     public int64 inputSize() {
         return (int64) this.n;
     }
 
+    public String competitorNote() {
+        String s #= CollGen.sizeNote(1000000);
+        return "keys borrowed by the map; lookups through a separate copy" + (s.isEmpty() ? "" : "; " + s);
+    }
+
     public void run(int32 iterations) {
-        HashMap<String, int32> m = heap HashMap<String, int32>(65536);
+        String[] ks = this.keys;
+        String[] ps = this.probes;
+        HashMap<String, int64> m = heap HashMap<String, int64>();
         int32 i = 0;
         while (i < this.n) {
-            String k = "key" + i;
-            m.put(#k, i);
+            m.put(ks[i], (int64) i);
             i = i + 1;
         }
-        int64 h = 0;
+        int64 sum = 0;
         int32 j = 0;
         while (j < this.n) {
-            String q = "key" + j;
-            int32 v = m.get(q);
-            if (v == j) {
-                h = h + 1;
-            }
+            sum = sum + m.get(ps[j]);
             j = j + 1;
         }
-        this.hits = h;
+        this.checksum = sum;
     }
 
     public boolean checkResult() {
-        return this.hits == (int64) this.n;
+        int64 nn = (int64) this.n;
+        return this.checksum == nn * (nn - 1) / 2;
     }
 }

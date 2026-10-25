@@ -11,7 +11,7 @@ import sys
 from collections import defaultdict, deque
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
-from collgen import Gen, bench, params, row, selected  # noqa: E402
+from collgen import Gen, bench, params, row, selected, size_note, sized  # noqa: E402
 
 W, T = params()
 out = []
@@ -73,35 +73,51 @@ def sort_once():
 run("arraylist-sort", "list.sort", "cpython", N1M, sort_once,
     lambda a: len(a) == N1M and all(a[i - 1] <= a[i] for i in range(1, len(a))), "includes the copy")
 
-# linkedlist-insert-traverse (the Cajeta shape): append 40000, count, contains(n-1).
-N_LL = 40000
+# arraylist-append: append 1e7 ints to an empty list.
+N_AP = sized(10_000_000)
+
+
+def append():
+    a = []
+    for i in range(N_AP):
+        a.append(i)
+    return len(a), a[-1]
+
+
+run("arraylist-append", "list", "cpython", N_AP, append, lambda r: r == (N_AP, N_AP - 1), size_note(10_000_000))
+
+# linkedlist-insert-traverse: 1e6 head inserts, then two full walks that look
+# for an absent value (the Cajeta LinkedList has no iterator; see its bench).
+N_LL = sized(1_000_000)
 
 
 def ll():
     d = deque()
     for i in range(N_LL):
-        d.append(i)
-    return len(d), (N_LL - 1) in d
+        d.appendleft(i)
+    f = (-1 in d) or (-1 in d)
+    return len(d), f, d[0], d[-1]
 
 
-run("linkedlist-insert-traverse", "collections.deque", "cpython", N_LL, ll, lambda r: r == (N_LL, True))
+run("linkedlist-insert-traverse", "collections.deque", "cpython", N_LL, ll, lambda r: r == (N_LL, False, N_LL - 1, 0),
+    size_note(1_000_000, "traversal = `in` of an absent value"))
 
-# heap-sort (the Cajeta shape): push 50000 LCG values, pop all, monotonic.
-N_HS = 50000
+# heap-sort: push 1e6 draws into a min-heap, pop all.
+N_HS = sized(1_000_000)
+g = Gen()
+hs_vals = [g.next() for _ in range(N_HS)]
 
 
 def heap_sort():
     h = []
-    x = 12345
-    for _ in range(N_HS):
-        x = (x * 1103515245 + 12345) & 0x7FFFFFFF
-        heapq.heappush(h, x)
-    out_ = [heapq.heappop(h) for _ in range(N_HS)]
-    return out_
+    push, pop = heapq.heappush, heapq.heappop
+    for v in hs_vals:
+        push(h, v)
+    return [pop(h) for _ in range(N_HS)]
 
 
 run("heap-sort", "heapq", "cpython", N_HS, heap_sort,
-    lambda a: all(a[i - 1] <= a[i] for i in range(1, len(a))))
+    lambda a: len(a) == N_HS and all(a[i - 1] <= a[i] for i in range(1, len(a))), size_note(1_000_000))
 
 # heap-push-pop: min-heap of 1e3 draws, then 1e7 push + pop, summing pops.
 g = Gen()
@@ -162,21 +178,21 @@ def group_by():
 
 run("collectors-group-by", "collections.defaultdict", "cpython", 10_000_000, group_by, lambda r: r == (1000, 10000))
 
-# binary-search (the Cajeta shape): a[i] = 2i over 50000, 50000 bisect lookups.
-N_BS = 50000
+# binary-search: 1e7 bisect lookups of 2 * (draw % 1e6) in a[i] = 2i (1e6).
+N_BS = sized(10_000_000)
+M_BS = N_BS // 10
+bs_a = [i * 2 for i in range(M_BS)]
+bs_q = [2 * i for i in Gen().indices(N_BS, M_BS)]
 
 
 def bsearch():
-    a = [i * 2 for i in range(N_BS)]
     hits = 0
-    x = 12345
-    for _ in range(N_BS):
-        x = (x * 1103515245 + 12345) & 0x7FFFFFFF
-        k = (x % N_BS) * 2
-        i = bisect.bisect_left(a, k)
-        if i < N_BS and a[i] == k:
+    bl = bisect.bisect_left
+    for k in bs_q:
+        i = bl(bs_a, k)
+        if i < M_BS and bs_a[i] == k:
             hits += 1
     return hits
 
 
-run("binary-search", "bisect", "cpython", N_BS, bsearch, lambda h: h == N_BS)
+run("binary-search", "bisect", "cpython", N_BS, bsearch, lambda h: h == N_BS, size_note(10_000_000))

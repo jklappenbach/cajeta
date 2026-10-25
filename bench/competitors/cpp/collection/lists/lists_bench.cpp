@@ -43,25 +43,36 @@ int main() {
         row("arraylist-sort", "std::sort", "libstdc++", N1M, bench([&] { auto a = src; std::sort(a.begin(), a.end()); return a; },
             [](const std::vector<int32_t>& a) { return a.size() == (size_t) N1M && std::is_sorted(a.begin(), a.end()); }), "includes the copy");
     }
+    if (selected("arraylist-append")) {
+        const int64_t n = sized(10'000'000);
+        row("arraylist-append", "std::vector", "libstdc++", n, bench([&] {
+            std::vector<int32_t> a;
+            for (int64_t i = 0; i < n; i++) a.push_back((int32_t) i);
+            return a;
+        }, [&](const std::vector<int32_t>& a) { return (int64_t) a.size() == n && a[n - 1] == n - 1; }), size_note(10'000'000, "push_back without reserve"));
+    }
     if (selected("linkedlist-insert-traverse")) {
-        constexpr int n = 40000;
-        row("linkedlist-insert-traverse", "std::list", "libstdc++", n, bench([] {
+        const int32_t n = (int32_t) sized(1'000'000);
+        row("linkedlist-insert-traverse", "std::list", "libstdc++", n, bench([&] {
             std::list<int32_t> l;
-            for (int i = 0; i < n; i++) l.push_back(i);
-            return l.size() == (size_t) n && std::find(l.begin(), l.end(), n - 1) != l.end();
-        }, [](bool r) { return r; }), "");
+            for (int32_t i = 0; i < n; i++) l.push_front(i);
+            bool f = std::find(l.begin(), l.end(), -1) != l.end() || std::find(l.begin(), l.end(), -1) != l.end();
+            return l.size() == (size_t) n && !f && l.front() == n - 1 && l.back() == 0;
+        }, [](bool r) { return r; }), size_note(1'000'000, "traversal = find of an absent value; destructor in the time"));
     }
     if (selected("heap-sort")) {
-        constexpr int n = 50000;
-        row("heap-sort", "std::priority_queue", "libstdc++", n, bench([] {
+        const int64_t n = sized(1'000'000);
+        Gen g;
+        std::vector<int32_t> vals(n);
+        for (auto& x : vals) x = g.next();
+        row("heap-sort", "std::priority_queue", "libstdc++", n, bench([&] {
             std::priority_queue<int32_t, std::vector<int32_t>, std::greater<int32_t>> h;
-            int64_t x = 12345;
-            for (int i = 0; i < n; i++) { x = (x * 1103515245 + 12345) & 0x7FFFFFFF; h.push((int32_t) x); }
+            for (auto v : vals) h.push(v);
             std::vector<int32_t> out;
             out.reserve(n);
             while (!h.empty()) { out.push_back(h.top()); h.pop(); }
             return out;
-        }, [](const std::vector<int32_t>& a) { return a.size() == (size_t) n && std::is_sorted(a.begin(), a.end()); }), "greater: a min-heap");
+        }, [&](const std::vector<int32_t>& a) { return (int64_t) a.size() == n && std::is_sorted(a.begin(), a.end()); }), size_note(1'000'000, "greater: a min-heap"));
     }
     if (selected("heap-push-pop")) {
         Gen g;
@@ -98,18 +109,14 @@ int main() {
             return g.size() == 1000 && g[0].size() == 10000;
         }, [](bool r) { return r; }), "");
     if (selected("binary-search")) {
-        constexpr int64_t n = 50000;
-        row("binary-search", "std::lower_bound", "libstdc++", n, bench([] {
-            std::vector<int64_t> a(n);
-            for (int64_t i = 0; i < n; i++) a[i] = i * 2;
-            int64_t hits = 0, x = 12345;
-            for (int64_t m = 0; m < n; m++) {
-                x = (x * 1103515245 + 12345) & 0x7FFFFFFF;
-                int64_t k = (x % n) * 2;
-                auto it = std::lower_bound(a.begin(), a.end(), k);
-                if (it != a.end() && *it == k) hits++;
-            }
+        const int64_t n = sized(10'000'000), m = n / 10;
+        std::vector<int64_t> a(m), q;
+        for (int64_t i = 0; i < m; i++) a[i] = i * 2;
+        for (auto i : Gen().indices(n, (int32_t) m)) q.push_back(2 * (int64_t) i);
+        row("binary-search", "std::lower_bound", "libstdc++", n, bench([&] {
+            int64_t hits = 0;
+            for (auto k : q) { auto it = std::lower_bound(a.begin(), a.end(), k); if (it != a.end() && *it == k) hits++; }
             return hits;
-        }, [](int64_t h) { return h == n; }), "");
+        }, [&](int64_t h) { return h == n; }), size_note(10'000'000));
     }
 }

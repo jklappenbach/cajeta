@@ -12,15 +12,16 @@ const N: usize = 1_000_000;
 
 fn main() {
     if selected("redblacktree-insert-lookup") {
-        const M: i32 = 20000;
+        let m = sized(N);
+        let ks: Vec<i64> = (0..m as i64).map(key).collect();
         let r = bench(&mut || {
             let mut t = BTreeMap::new();
-            for i in 0..M { t.insert(i, i * 2); }
+            for (i, &k) in black_box(&ks).iter().enumerate() { t.insert(k, i as i64); }
             let mut s = 0i64;
-            for j in 0..M { s += t[&j] as i64; }
+            for k in ks.iter() { s += t[k]; }
             s
-        }, |&s| s == M as i64 * (M as i64 - 1));
-        row("redblacktree-insert-lookup", "BTreeMap", "std", M as u64, r, "");
+        }, |&s| s == m as i64 * (m as i64 - 1) / 2);
+        row("redblacktree-insert-lookup", "BTreeMap", "std", m as u64, r, &size_note(N, ""));
     }
     let keys: Vec<i64> = (0..N as i64).map(key).collect();
     if selected("bplustree-insert") {

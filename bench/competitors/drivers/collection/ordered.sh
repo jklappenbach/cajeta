@@ -6,7 +6,7 @@
 PROG=ordered
 JAVA_MAIN=OrderedBench
 LANGS_SUPPORTED="rust cpp go python java"
-IDS="redblacktree-insert-lookup:20000 redblacktree-range:10000000 bplustree-insert:1000000
+IDS="redblacktree-insert-lookup:1000000 redblacktree-range:10000000 bplustree-insert:1000000
 bplustree-point-lookup:10000000 bplustree-range:10000000"
 source "$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )/../../lib" &> /dev/null && pwd )/collection_driver.sh"
 coll_run_all

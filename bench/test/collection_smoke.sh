@@ -79,6 +79,11 @@ for b in $IDS_SKIP; do
     col 30 <<<"$row" | grep -q 'no range scan' || fail "$b skip reason missing: $(col 30 <<<"$row")"
     printf '[collection] %-28s skipped (%s)\n' "$b" "$(col 30 <<<"$row" | cut -c1-70)"
 done
+# The first-suite rows run at n/100 under smoke and say so.
+for b in arraylist-append linkedlist-insert-traverse hashmap-int hashmap-string hashset-dedup heap-sort \
+         redblacktree-insert-lookup sort-int64 sort-f64 sort-stable-int64 binary-search; do
+    col 30 <<<"$(row_of "$b")" | grep -q 'smoke size n/100' || fail "$b row lacks the smoke-size note"
+done
 for b in ltm-insert ltm-lookup; do
     col 30 <<<"$(row_of "$b")" | grep -q 'storage=' || fail "$b does not record the storage device"
 done

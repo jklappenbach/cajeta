@@ -21,6 +21,7 @@ type pair struct {
 }
 
 func main() {
+	firstSuite()
 	keys := make([]int64, n)
 	m := make(map[int64]int64)
 	st := make(map[int64]struct{})
@@ -128,5 +129,66 @@ func main() {
 	if Selected("immutableset-contains") {
 		f := maps.Clone(st)
 		Row("immutableset-contains", "maps.Clone", "stdlib", q, Bench(contains(f), func(c int64) bool { return c == halfExp }), "a cloned set map")
+	}
+}
+
+// hashmap-int, hashmap-string and hashset-dedup at the page shape (n/100 under
+// CAJETA_BENCH_SMOKE=1): insert into an empty map/set, then look up.
+func firstSuite() {
+	ni := Sized(n)
+	if Selected("hashmap-int") {
+		ks := make([]int64, ni)
+		for i := range ks {
+			ks[i] = Key(int64(i))
+		}
+		Row("hashmap-int", "map", "stdlib", int64(ni), Bench(func() int64 {
+			m := map[int64]int64{}
+			for i, k := range ks {
+				m[k] = int64(i)
+			}
+			var s int64
+			for _, k := range ks {
+				s += m[k]
+			}
+			return s
+		}, func(s int64) bool { return s == int64(ni)*int64(ni-1)/2 }), SizeNote(n, ""))
+	}
+	if Selected("hashmap-string") {
+		ks := make([]string, ni)
+		ps := make([]string, ni)
+		for i := range ks {
+			ks[i] = Hex16(Key(int64(i)))
+			ps[i] = string([]byte(ks[i]))
+		}
+		Row("hashmap-string", "map", "stdlib", int64(ni), Bench(func() int64 {
+			m := map[string]int64{}
+			for i, k := range ks {
+				m[k] = int64(i)
+			}
+			var s int64
+			for _, p := range ps {
+				s += m[p]
+			}
+			return s
+		}, func(s int64) bool { return s == int64(ni)*int64(ni-1)/2 }), SizeNote(n, "lookups through a separate copy of the keys"))
+	}
+	if Selected("hashset-dedup") {
+		nd := Sized(10 * n)
+		vals := NewGen().Indices(nd, int32(nd/10))
+		seen := make([]bool, nd/10)
+		exp := 0
+		for _, v := range vals {
+			if !seen[v] {
+				seen[v] = true
+				exp++
+			}
+		}
+		Row("hashset-dedup", "map[int32]struct{}", "stdlib", int64(nd), Bench(func() int {
+			st := map[int32]struct{}{}
+			for _, v := range vals {
+				st[v] = struct{}{}
+			}
+			return len(st)
+		}, func(c int) bool { return c == exp }), SizeNote(10*n, ""))
 	}
 }

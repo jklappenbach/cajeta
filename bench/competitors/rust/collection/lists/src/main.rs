@@ -47,27 +47,37 @@ fn main() {
         row("arraylist-sort", "Vec::sort_unstable", "std", N1M as u64, m, "includes the copy");
     }
 
+    if selected("arraylist-append") {
+        let n = sized(10_000_000);
+        let m = bench(&mut || { let mut a = Vec::new(); for i in 0..n as i32 { a.push(i); } a },
+            |a| a.len() == n && a[n - 1] == n as i32 - 1);
+        row("arraylist-append", "Vec", "std", n as u64, m, &size_note(10_000_000, "push without reserve"));
+    }
+
     if selected("linkedlist-insert-traverse") {
-        const N: i32 = 40000;
+        let n = sized(1_000_000) as i32;
         let m = bench(&mut || {
             let mut l = LinkedList::new();
-            for i in 0..N { l.push_back(i); }
-            (l.len(), l.iter().any(|&v| v == N - 1))
-        }, |&r| r == (N as usize, true));
-        row("linkedlist-insert-traverse", "LinkedList", "std", N as u64, m, "");
+            for i in 0..n { l.push_front(i); }
+            let f = l.iter().any(|&v| v == -1) || l.iter().any(|&v| v == -1);
+            (l.len(), f, *l.front().unwrap(), *l.back().unwrap())
+        }, |&r| r == (n as usize, false, n - 1, 0));
+        row("linkedlist-insert-traverse", "LinkedList", "std", n as u64, m,
+            &size_note(1_000_000, "traversal = search for an absent value; drop in the time"));
     }
 
     if selected("heap-sort") {
-        const N: usize = 50000;
+        let n = sized(1_000_000);
+        let mut g = Gen::new();
+        let vals: Vec<i32> = (0..n).map(|_| g.next()).collect();
         let m = bench(&mut || {
-            let mut h = BinaryHeap::new();
-            let mut x: i64 = 12345;
-            for _ in 0..N { x = (x * 1103515245 + 12345) & 0x7FFFFFFF; h.push(Reverse(x as i32)); }
-            let mut out = Vec::with_capacity(N);
+            let mut h = BinaryHeap::with_capacity(0);
+            for &v in black_box(&vals).iter() { h.push(Reverse(v)); }
+            let mut out = Vec::with_capacity(n);
             while let Some(Reverse(v)) = h.pop() { out.push(v); }
             out
-        }, |a| a.len() == N && a.windows(2).all(|w| w[0] <= w[1]));
-        row("heap-sort", "BinaryHeap", "std", N as u64, m, "Reverse for a min-heap");
+        }, |a| a.len() == n && a.windows(2).all(|w| w[0] <= w[1]));
+        row("heap-sort", "BinaryHeap", "std", n as u64, m, &size_note(1_000_000, "Reverse for a min-heap"));
     }
 
     if selected("heap-push-pop") {
@@ -122,17 +132,15 @@ fn main() {
     }
 
     if selected("binary-search") {
-        const N: i64 = 50000;
+        let n = sized(10_000_000);
+        let mm = n / 10;
+        let a: Vec<i64> = (0..mm as i64).map(|i| i * 2).collect();
+        let q: Vec<i64> = Gen::new().indices(n, mm as i32).iter().map(|&i| 2 * i as i64).collect();
         let m = bench(&mut || {
-            let a: Vec<i64> = (0..N).map(|i| i * 2).collect();
             let mut hits = 0i64;
-            let mut x: i64 = 12345;
-            for _ in 0..N {
-                x = (x * 1103515245 + 12345) & 0x7FFFFFFF;
-                if a.binary_search(&((x % N) * 2)).is_ok() { hits += 1; }
-            }
+            for k in black_box(&q).iter() { if a.binary_search(k).is_ok() { hits += 1; } }
             hits
-        }, |&h| h == N);
-        row("binary-search", "slice::binary_search", "std", N as u64, m, "");
+        }, |&h| h == n as i64);
+        row("binary-search", "slice::binary_search", "std", n as u64, m, &size_note(10_000_000, ""));
     }
 }

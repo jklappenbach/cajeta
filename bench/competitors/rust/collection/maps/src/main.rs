@@ -62,7 +62,52 @@ macro_rules! hash_rows {
     }};
 }
 
+// hashmap-int, hashmap-string and hashset-dedup at the page shape (n/100
+// under CAJETA_BENCH_SMOKE=1): insert into an empty map/set, then look up.
+macro_rules! first_suite {
+    ($lib:expr, $ver:expr, $imap:ty, $smap:ty) => {{
+        let n = sized(N);
+        if selected("hashmap-int") {
+            let ks: Vec<i64> = (0..n as i64).map(key).collect();
+            let r = bench(&mut || {
+                let mut m: $imap = Default::default();
+                for (i, &k) in black_box(&ks).iter().enumerate() { m.insert(k, i as i64); }
+                let mut s = 0i64;
+                for k in ks.iter() { s += m[k]; }
+                s
+            }, |&s| s == n as i64 * (n as i64 - 1) / 2);
+            row("hashmap-int", $lib, $ver, n as u64, r, &size_note(N, ""));
+        }
+        if selected("hashmap-string") {
+            let ks: Vec<String> = (0..n as i64).map(|i| hex16(key(i))).collect();
+            let ps: Vec<String> = ks.iter().map(|k| k.clone()).collect();
+            let r = bench(&mut || {
+                let mut m: $smap = Default::default();
+                for (i, k) in black_box(&ks).iter().enumerate() { m.insert(k.as_str(), i as i64); }
+                let mut s = 0i64;
+                for p in ps.iter() { s += m[p.as_str()]; }
+                s
+            }, |&s| s == n as i64 * (n as i64 - 1) / 2);
+            row("hashmap-string", $lib, $ver, n as u64, r, &size_note(N, "&str keys borrowed from the key vector; lookups through a separate copy"));
+        }
+    }};
+}
+
 fn main() {
+    first_suite!("hashbrown::HashMap", "0.17.1", hashbrown::HashMap<i64, i64>, hashbrown::HashMap<&str, i64>);
+    first_suite!("std::collections::HashMap", "std", std::collections::HashMap<i64, i64>, std::collections::HashMap<&str, i64>);
+    first_suite!("ahash::AHashMap", "0.8.12", ahash::AHashMap<i64, i64>, ahash::AHashMap<&str, i64>);
+    if selected("hashset-dedup") {
+        let nd = sized(10 * N);
+        let vals = Gen::new().indices(nd, (nd / 10) as i32);
+        let exp = vals.iter().collect::<std::collections::HashSet<_>>().len();
+        let r = bench(&mut || {
+            let mut st = std::collections::HashSet::new();
+            for &v in black_box(&vals).iter() { st.insert(v); }
+            st.len()
+        }, |&c| c == exp);
+        row("hashset-dedup", "std::collections::HashSet", "std", nd as u64, r, &size_note(10 * N, ""));
+    }
     let keys: Vec<i64> = (0..N as i64).map(key).collect();
     let hit_idx = Gen::new().indices(Q, N as i32);
     let hit_exp: i64 = hit_idx.iter().map(|&x| x as i64).sum();

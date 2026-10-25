@@ -86,7 +86,7 @@ template <class F, class C> Measured bench(F f, C check) {
 
 inline std::string clean(std::string s) { std::replace(s.begin(), s.end(), ',', ' '); return s; }
 
-inline void row(const char* id, const char* lib, const char* ver, int64_t input, Measured m, const char* notes) {
+inline void rowv(const char* id, const char* lib, const char* ver, int64_t input, Measured m, const char* notes, const char* variant) {
     auto s = m.samples;
     std::sort(s.begin(), s.end());
     size_t n = s.size();
@@ -94,12 +94,51 @@ inline void row(const char* id, const char* lib, const char* ver, int64_t input,
     for (auto v : s) sum += v;
     int64_t med = s[n / 2];
     double mops = med > 0 ? (double) input / (double) med * 1e3 : 0.0;
-    std::printf("1,%s,%s,%s,collection,,%lld,,%lld,cpp,%s,%s,%s,-O3 -march=native -std=c++20,%d,%zu,%lld,%lld,%lld,%lld,%.2f,Mop/s,%ld,-1,%llu,-1,-1,%s,%s,%s,\n",
+    std::printf("1,%s,%s,%s,collection,,%lld,,%lld,cpp,%s,%s,%s,-O3 -march=native -std=c++20,%d,%zu,%lld,%lld,%lld,%lld,%.2f,Mop/s,%ld,-1,%llu,-1,-1,%s,%s,%s,%s\n",
         env("PROFILE_RUN_ID", "local").c_str(), env("PROFILE_RUN_TS", "").c_str(), id, (long long) input, (long long) input,
         env("PROFILE_LANG_VERSION", "").c_str(), clean(lib).c_str(), ver, warmup(), n, (long long) s[0], (long long) med,
         (long long) (sum / (int64_t) n), (long long) s[std::min(n - 1, n * 95 / 100)], mops, peak_rss_kb(),
-        (unsigned long long) m.alloc, m.ok ? "ok" : "invalid", m.ok ? "true" : "false", clean(notes).c_str());
+        (unsigned long long) m.alloc, m.ok ? "ok" : "invalid", m.ok ? "true" : "false", clean(notes).c_str(), variant);
     std::fflush(stdout);
+}
+
+inline void row(const char* id, const char* lib, const char* ver, int64_t input, Measured m, const char* notes) {
+    rowv(id, lib, ver, input, std::move(m), notes, "");
+}
+inline void row(const char* id, const char* lib, const char* ver, int64_t input, Measured m, const std::string& notes) {
+    rowv(id, lib, ver, input, std::move(m), notes.c_str(), "");
+}
+
+inline bool flag(const char* k) { std::string v = env(k, ""); return v == "1" || v == "true" || v == "yes"; }
+// CAJETA_BENCH_SMOKE=1 runs the first-suite rows at n/100 (CollGen.sized on the
+// Cajeta side); CAJETA_BENCH_FULL_SIZE=1 keeps the page shape.
+inline bool small_smoke() { return flag("CAJETA_BENCH_SMOKE") && !flag("CAJETA_BENCH_FULL_SIZE"); }
+inline int64_t sized(int64_t full) { return small_smoke() ? full / 100 : full; }
+inline std::string size_note(int64_t full, const std::string& extra = "") {
+    std::string s = small_smoke() ? "smoke size n/100 (page shape " + std::to_string(full) + ")" : "";
+    if (extra.empty()) return s;
+    return s.empty() ? extra : extra + "; " + s;
+}
+inline std::string hex16(int64_t v) { char b[17]; std::snprintf(b, sizeof b, "%016llx", (unsigned long long) v); return b; }
+
+// bench with an untimed input step: only f(mk()) is timed.
+template <class M, class F, class C> Measured bench_with(M mk, F f, C check) {
+    for (int i = 0; i < warmup(); i++) { auto in = mk(); auto r = f(std::move(in)); sink(r); }
+    Measured m;
+    for (int i = 0; i < trials(); i++) {
+        auto in = mk();
+        auto t0 = std::chrono::steady_clock::now();
+        auto r = f(std::move(in));
+        auto t1 = std::chrono::steady_clock::now();
+        m.samples.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+        m.ok = check(r);
+        sink(r);
+    }
+    auto in = mk();
+    uint64_t a0 = g_alloced.load();
+    { auto r = f(std::move(in)); sink(r); }
+    m.alloc = g_alloced.load() - a0;
+    return m;
 }
 
 inline void skip(const char* id, const char* lib, int64_t input, const char* reason) {

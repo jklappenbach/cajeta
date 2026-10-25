@@ -4,13 +4,24 @@ import cajeta.collection.LinkedList;
 
 import dev.cajeta.bench.Benchmark;
 
-// Doubly-linked list: N appends then an O(N) contains traversal (search for the
-// last-inserted value). Cross-check: count == N and the value is found.
+// collection/linkedlist-insert-traverse: insert 1e6 int32 (0..n-1) at the head
+// of an empty LinkedList, then traverse it twice. LinkedList exposes no
+// iterator or node walk (get(i) is O(i)), so each traversal is
+// contains(-1): a full walk that compares every node and misses. The
+// competitors walk the same way (find / contains of an absent value), so the
+// work is the same; the page's "sum" check becomes count, both walks missing,
+// head() == n-1 and tail() == 0. The list is then emptied with popHead()
+// inside the time: letting it drop at 1e6 nodes overflows the stack (the node
+// chain's drop recurses once per node; SIGSEGV measured at 1e6, a filed
+// defect), and every competitor's destructor runs inside its time too.
+// Smoke: n/100.
 public class LinkedListBench extends Benchmark {
 
     public int32 n;
     public int64 lastCount;
     public boolean found;
+    public int32 headV;
+    public int32 tailV;
 
     public String name() {
         return "linkedlist-insert-traverse";
@@ -21,37 +32,47 @@ public class LinkedListBench extends Benchmark {
     }
 
     public int32 warmupIters() {
-        return 5;
+        return 3;
     }
 
     public int32 measuredIters() {
-        return 30;
+        return 20;
     }
 
     public void setup() {
-        // Each node is a separate heap allocation. N was sized under the 0.7.1
-        // live-allocation tracking cap; at 0.46.3 there is no cap (1M live
-        // objects tracked exactly, benchmark-reference 2.2.4). N stays 40000 so
-        // the row is the same work as the competitors' runners.
-        this.n = 40000;
+        this.n = CollGen.sized(1000000);
     }
 
     public int64 inputSize() {
         return (int64) this.n;
     }
 
+    public String competitorNote() {
+        String s #= CollGen.sizeNote(1000000);
+        return "traversal = contains of an absent value (no iterator); emptied with popHead (recursive drop overflows at 1e6)" + (s.isEmpty() ? "" : "; " + s);
+    }
+
     public void run(int32 iterations) {
         LinkedList<int32> l = heap LinkedList<int32>();
         int32 i = 0;
         while (i < this.n) {
-            l.add(i);
+            l.addHead(i);
             i = i + 1;
         }
+        boolean f1 = l.contains(-1);
+        boolean f2 = l.contains(-1);
+        this.found = f1 || f2;
         this.lastCount = l.count();
-        this.found = l.contains(this.n - 1);
+        this.headV = l.head();
+        this.tailV = l.tail();
+        int32 k = 0;
+        while (k < this.n) {
+            l.popHead();
+            k = k + 1;
+        }
     }
 
     public boolean checkResult() {
-        return this.lastCount == (int64) this.n && this.found;
+        return this.lastCount == (int64) this.n && !this.found && this.headV == this.n - 1 && this.tailV == 0;
     }
 }

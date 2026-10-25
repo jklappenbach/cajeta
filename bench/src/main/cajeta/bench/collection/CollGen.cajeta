@@ -1,5 +1,7 @@
 package bench.collection;
 
+import dev.cajeta.bench.BenchConfig;
+
 // The deterministic inputs every collection/ benchmark added in unit 6 shares
 // with its competitors (bench/competitors/<lang>/collection/{lists,maps,ordered,
 // cache,ltm}): the same draws in the same order give the same keys, queries and
@@ -120,5 +122,63 @@ public final class CollGen {
             i = i + 1;
         }
         return r;
+    }
+    // The first-suite rows' size: `full` (the page shape), or full / 100 under
+    // CAJETA_BENCH_SMOKE=1 so the smoke stays short. CAJETA_BENCH_FULL_SIZE=1
+    // keeps the page shape in a smoke (how the run plan's estimates were taken).
+    // The competitors apply the same rule (their collgen), so the rows line up.
+    public static boolean smallSmoke() {
+        // BenchConfig.parseSmoke is the harness's own reading (1/true/yes). The
+        // same test written inline here (s.equals("1") on the env string)
+        // answered false in the bench binary while a standalone probe of the
+        // identical code answered true; not chased further.
+        if (!BenchConfig.parseSmoke(System.env.get("CAJETA_BENCH_SMOKE"))) {
+            return false;
+        }
+        return !BenchConfig.parseSmoke(System.env.get("CAJETA_BENCH_FULL_SIZE"));
+    }
+
+    public static int32 sized(int32 full) {
+        if (CollGen.smallSmoke()) {
+            return full / 100;
+        }
+        return full;
+    }
+
+    // The row note for a sized benchmark: "" at the page shape.
+    public static #String sizeNote(int32 full) {
+        if (CollGen.smallSmoke()) {
+            return "smoke size n/100 (page shape " + full + ")";
+        }
+        return "";
+    }
+
+    // 16 lowercase hex digits of v (the 16-byte string keys).
+    public static #String hex16(int64 v) {
+        int8[] b = heap int8[16];
+        int32 i = 0;
+        while (i < 16) {
+            int64 d = (v >>> (60 - 4 * i)) & 15;
+            if (d < 10) {
+                b[i] = (int8) (48 + d);
+            } else {
+                b[i] = (int8) (87 + d);
+            }
+            i = i + 1;
+        }
+        return heap String(#b, 16);
+    }
+
+    // sort-stable-int64's comparator: the value field (bits 20 and up) only.
+    public static int32 cmpValue(int64 a, int64 b) {
+        int64 va = a >> 20;
+        int64 vb = b >> 20;
+        if (va < vb) {
+            return -1;
+        }
+        if (va > vb) {
+            return 1;
+        }
+        return 0;
     }
 }

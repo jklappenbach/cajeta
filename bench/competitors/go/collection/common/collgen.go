@@ -122,7 +122,10 @@ func Bench[T any](f func() T, check func(T) bool) Measured {
 func clean(s string) string { return strings.ReplaceAll(s, ",", " ") }
 
 // Row prints one v1 row.
-func Row(id, lib, libver string, input int64, m Measured, notes string) {
+func Row(id, lib, libver string, input int64, m Measured, notes string) { RowV(id, lib, libver, input, m, notes, "") }
+
+// RowV prints one v1 row with a variant.
+func RowV(id, lib, libver string, input int64, m Measured, notes, variant string) {
 	w, t := Params()
 	s := append([]int64(nil), m.Samples...)
 	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
@@ -140,13 +143,62 @@ func Row(id, lib, libver string, input int64, m Measured, notes string) {
 	if m.OK {
 		status = "ok"
 	}
-	fmt.Printf("1,%s,%s,%s,collection,,%d,,%d,go,%s,%s,%s,GOAMD64=v4,%d,%d,%d,%d,%d,%d,%.2f,Mop/s,%d,-1,%d,-1,-1,%s,%t,%s,\n",
+	fmt.Printf("1,%s,%s,%s,collection,,%d,,%d,go,%s,%s,%s,GOAMD64=v4,%d,%d,%d,%d,%d,%d,%.2f,Mop/s,%d,-1,%d,-1,-1,%s,%t,%s,%s\n",
 		Env("PROFILE_RUN_ID", "local"), Env("PROFILE_RUN_TS", ""), id, input, input, Env("PROFILE_LANG_VERSION", ""),
-		lib, libver, w, t, mn, med, mean, p95, mops, peakRSSKb(), m.Alloc, status, m.OK, clean(notes))
+		lib, libver, w, t, mn, med, mean, p95, mops, peakRSSKb(), m.Alloc, status, m.OK, clean(notes), variant)
 }
 
 // Skip prints one skipped v1 row.
 func Skip(id, lib string, input int64, reason string) {
 	fmt.Printf("1,%s,%s,%s,collection,,%d,,%d,go,%s,%s,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,,%s,\n",
 		Env("PROFILE_RUN_ID", "local"), Env("PROFILE_RUN_TS", ""), id, input, input, Env("PROFILE_LANG_VERSION", ""), lib, clean(reason))
+}
+
+func flag(k string) bool { v := os.Getenv(k); return v == "1" || v == "true" || v == "yes" }
+
+// SmallSmoke: CAJETA_BENCH_SMOKE=1 runs the first-suite rows at n/100
+// (CollGen.sized on the Cajeta side); CAJETA_BENCH_FULL_SIZE=1 keeps the page shape.
+func SmallSmoke() bool { return flag("CAJETA_BENCH_SMOKE") && !flag("CAJETA_BENCH_FULL_SIZE") }
+
+func Sized(full int) int {
+	if SmallSmoke() {
+		return full / 100
+	}
+	return full
+}
+
+func SizeNote(full int, extra string) string {
+	var p []string
+	if extra != "" {
+		p = append(p, extra)
+	}
+	if SmallSmoke() {
+		p = append(p, fmt.Sprintf("smoke size n/100 (page shape %d)", full))
+	}
+	return strings.Join(p, "; ")
+}
+
+func Hex16(v int64) string { return fmt.Sprintf("%016x", uint64(v)) }
+
+// BenchWith is Bench with an untimed input step: only f(mk()) is timed.
+func BenchWith[I any, T any](mk func() I, f func(I) T, check func(T) bool) Measured {
+	w, t := Params()
+	for i := 0; i < w; i++ {
+		f(mk())
+	}
+	m := Measured{OK: true}
+	for i := 0; i < t; i++ {
+		in := mk()
+		t0 := time.Now()
+		r := f(in)
+		m.Samples = append(m.Samples, time.Since(t0).Nanoseconds())
+		m.OK = check(r)
+	}
+	in := mk()
+	var a, b runtime.MemStats
+	runtime.ReadMemStats(&a)
+	f(in)
+	runtime.ReadMemStats(&b)
+	m.Alloc = b.TotalAlloc - a.TotalAlloc
+	return m
 }

@@ -5,9 +5,11 @@ edition = "2021"
 
 # collection/ hash ids: HashMap lookups and iteration, HashSet contains, the
 # ImmutableMap/ImmutableSet ids. std HashMap/HashSet (SipHash) and hashbrown
-# (foldhash, the crate's default hasher), each frozen behind Arc.
+# (foldhash, the crate's default hasher), each frozen behind Arc; ahash for
+# a labelled third hashmap-int/-string row.
 [dependencies]
 hashbrown = "=0.17.1"
+ahash = "=0.8.12"
 
 [[bin]]
 name = "collection-maps"

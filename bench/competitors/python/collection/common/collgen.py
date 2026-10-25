@@ -68,7 +68,7 @@ def bench(warmup, trials, f, check):
     return samples, bool(check(r))
 
 
-def row(bench_id, lib, libver, input_size, warmup, trials, samples, ok, notes=""):
+def row(bench_id, lib, libver, input_size, warmup, trials, samples, ok, notes="", variant=""):
     s = sorted(samples)
     n = len(s)
     mn, med, mean, p95 = s[0], s[n // 2], sum(s) // n, s[min(n - 1, n * 95 // 100)]
@@ -78,7 +78,7 @@ def row(bench_id, lib, libver, input_size, warmup, trials, samples, ok, notes=""
     return (f"1,{env('PROFILE_RUN_ID', 'local')},{env('PROFILE_RUN_TS', '')},{bench_id},collection,,{input_size},,"
             f"{input_size},python,{env('PROFILE_LANG_VERSION', '')},{lib},{libver},-OO,"
             f"{warmup},{trials},{mn},{med},{mean},{p95},{mops:.2f},Mop/s,{peak_rss_kb()},"
-            f"-1,-1,-1,-1,{status},{str(ok).lower()},{note.replace(',', ' ')},")
+            f"-1,-1,-1,-1,{status},{str(ok).lower()},{note.replace(',', ' ')},{variant}")
 
 
 def skip(bench_id, lib, input_size, reason):
@@ -95,3 +95,28 @@ def selected(bench_id):
     """PROFILE_BENCH (space list) narrows a program to some of its ids."""
     sel = os.environ.get("PROFILE_BENCH", "").split()
     return not sel or bench_id in sel
+
+
+def _flag(k):
+    return os.environ.get(k, "") in ("1", "true", "yes")
+
+
+def small_smoke():
+    """CAJETA_BENCH_SMOKE=1 runs the first-suite rows at n/100 (CollGen.sized on the
+    Cajeta side); CAJETA_BENCH_FULL_SIZE=1 keeps the page shape."""
+    return _flag("CAJETA_BENCH_SMOKE") and not _flag("CAJETA_BENCH_FULL_SIZE")
+
+
+def sized(full):
+    return full // 100 if small_smoke() else full
+
+
+def size_note(full, extra=""):
+    parts = [extra] if extra else []
+    if small_smoke():
+        parts.append(f"smoke size n/100 (page shape {full})")
+    return "; ".join(parts)
+
+
+def hex16(v):
+    return format(v & M64, "016x")

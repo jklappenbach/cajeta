@@ -6,7 +6,7 @@ import cajeta.time.Clock;
 
 import dev.cajeta.bench.Benchmark;
 
-// Unstable sort of N int64 across input PATTERNS (the sort-research-rs matrix's
+// collection/sort-int64: unstable sort of 1e6 int64 (smoke: n/100) across input PATTERNS (the sort-research-rs matrix's
 // pattern dimension, which also stands in for branch-predictor predictability):
 // random / ascending / descending / dups. Each trial copies the unsorted source
 // into a fresh array and sorts it; the copy is the subtracted baseline.
@@ -50,14 +50,14 @@ public class SortInt64Bench extends Benchmark {
 
     // Cajeta's Sort.sort uses a middle-element pivot and an explicit range stack
     // that recurses the smaller partition and loops the larger, bounding the
-    // stack to O(log n) (~17 deep at n=50000) — so all four patterns sort
+    // stack to O(log n) (~20 deep at n=1e6) — so all four patterns sort
     // correctly without overflow. All variants are measured.
     public boolean supportsVariant(String variant) {
         return true;
     }
 
     public void prepare(String variant) {
-        this.n = 50000;
+        this.n = CollGen.sized(1000000);
         this.src = heap int64[this.n];
         int32 i = 0;
         if (variant.equals("ascending")) {
@@ -79,10 +79,9 @@ public class SortInt64Bench extends Benchmark {
                 i = i + 1;
             }
         } else {
-            int64 x = 88172645;
+            // key(i): pseudo-random over the whole int64 range, distinct.
             while (i < this.n) {
-                x = (x * 1103515245 + 12345) & 0x7FFFFFFF;
-                this.src[i] = x;
+                this.src[i] = CollGen.key((int64) i);
                 i = i + 1;
             }
         }
@@ -104,6 +103,10 @@ public class SortInt64Bench extends Benchmark {
 
     public int64 baselineNanos() {
         return this.baseNs;
+    }
+
+    public String competitorNote() {
+        return CollGen.sizeNote(1000000);
     }
 
     public int64 inputSize() {

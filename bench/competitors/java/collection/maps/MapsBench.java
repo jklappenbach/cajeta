@@ -12,6 +12,7 @@ public final class MapsBench {
     static final int N = 1_000_000, Q = 10_000_000;
 
     public static void main(String[] args) {
+        firstSuite();
         long[] keys = new long[N];
         HashMap<Long, Long> m = new HashMap<>();
         HashSet<Long> st = new HashSet<>();
@@ -76,5 +77,46 @@ public final class MapsBench {
         long c = 0;
         for (long k : q) if (st.contains(k)) c++;
         return c;
+    }
+
+    // hashmap-int, hashmap-string, hashset-dedup at the page shape (n/100 under
+    // CAJETA_BENCH_SMOKE=1): insert into an empty map/set, then look up.
+    static void firstSuite() {
+        final int ni = CollGen.sized(N);
+        if (CollGen.selected("hashmap-int")) {
+            long[] ks = new long[ni];
+            for (int i = 0; i < ni; i++) ks[i] = CollGen.key(i);
+            CollGen.row("hashmap-int", "HashMap", "jdk", ni, CollGen.bench(() -> {
+                HashMap<Long, Long> m = new HashMap<>();
+                for (int i = 0; i < ni; i++) m.put(ks[i], (long) i);
+                long s = 0;
+                for (long k : ks) s += m.get(k);
+                return s;
+            }, s -> s == (long) ni * (ni - 1) / 2), CollGen.sizeNote(N, "boxed Long"));
+        }
+        if (CollGen.selected("hashmap-string")) {
+            String[] ks = new String[ni], ps = new String[ni];
+            for (int i = 0; i < ni; i++) { ks[i] = CollGen.hex16(CollGen.key(i)); ps[i] = new String(ks[i].toCharArray()); }
+            CollGen.row("hashmap-string", "HashMap", "jdk", ni, CollGen.bench(() -> {
+                HashMap<String, Long> m = new HashMap<>();
+                for (int i = 0; i < ni; i++) m.put(ks[i], (long) i);
+                long s = 0;
+                for (String p : ps) s += m.get(p);
+                return s;
+            }, s -> s == (long) ni * (ni - 1) / 2), CollGen.sizeNote(N, "lookups through separately allocated equal Strings (hash recomputed once each)"));
+        }
+        if (CollGen.selected("hashset-dedup")) {
+            final int nd = CollGen.sized(10 * N);
+            int[] vals = new CollGen().indices(nd, nd / 10);
+            boolean[] seen = new boolean[nd / 10];
+            int e = 0;
+            for (int v : vals) if (!seen[v]) { seen[v] = true; e++; }
+            final int exp = e;
+            CollGen.row("hashset-dedup", "HashSet", "jdk", nd, CollGen.bench(() -> {
+                HashSet<Integer> st = new HashSet<>();
+                for (int v : vals) st.add(v);
+                return st.size();
+            }, c -> c == exp), CollGen.sizeNote(10 * N, "boxed Integer"));
+        }
     }
 }

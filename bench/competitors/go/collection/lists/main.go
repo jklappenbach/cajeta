@@ -93,38 +93,52 @@ func main() {
 			return a
 		}, func(a []int32) bool { return len(a) == n1m && sorted(a) }), "includes the copy")
 	}
+	if Selected("arraylist-append") {
+		n := Sized(10_000_000)
+		Row("arraylist-append", "slice", "stdlib", int64(n), Bench(func() []int32 {
+			var a []int32
+			for i := 0; i < n; i++ {
+				a = append(a, int32(i))
+			}
+			return a
+		}, func(a []int32) bool { return len(a) == n && a[n-1] == int32(n-1) }), SizeNote(10_000_000, "append without make capacity"))
+	}
 	if Selected("linkedlist-insert-traverse") {
-		const n = 40000
-		Row("linkedlist-insert-traverse", "container/list", "stdlib", n, Bench(func() [2]int {
+		n := Sized(1_000_000)
+		Row("linkedlist-insert-traverse", "container/list", "stdlib", int64(n), Bench(func() [4]int {
 			l := list.New()
 			for i := 0; i < n; i++ {
-				l.PushBack(int32(i))
+				l.PushFront(int32(i))
 			}
 			found := 0
-			for e := l.Front(); e != nil; e = e.Next() {
-				if e.Value.(int32) == n-1 {
-					found = 1
-					break
+			for p := 0; p < 2; p++ {
+				for e := l.Front(); e != nil; e = e.Next() {
+					if e.Value.(int32) == -1 {
+						found = 1
+					}
 				}
 			}
-			return [2]int{l.Len(), found}
-		}, func(r [2]int) bool { return r == [2]int{n, 1} }), "")
+			return [4]int{l.Len(), found, int(l.Front().Value.(int32)), int(l.Back().Value.(int32))}
+		}, func(r [4]int) bool { return r == [4]int{n, 0, n - 1, 0} }), SizeNote(1_000_000, "traversal = search for an absent value"))
 	}
 	if Selected("heap-sort") {
-		const n = 50000
-		Row("heap-sort", "container/heap", "stdlib", n, Bench(func() []int32 {
+		n := Sized(1_000_000)
+		g := NewGen()
+		vals := make([]int32, n)
+		for i := range vals {
+			vals[i] = g.Next()
+		}
+		Row("heap-sort", "container/heap", "stdlib", int64(n), Bench(func() []int32 {
 			h := &minHeap{}
-			x := int64(12345)
-			for i := 0; i < n; i++ {
-				x = (x*1103515245 + 12345) & 0x7FFFFFFF
-				heap.Push(h, int32(x))
+			for _, v := range vals {
+				heap.Push(h, v)
 			}
 			out := make([]int32, 0, n)
 			for h.Len() > 0 {
 				out = append(out, heap.Pop(h).(int32))
 			}
 			return out
-		}, func(a []int32) bool { return len(a) == n && sorted(a) }), "")
+		}, func(a []int32) bool { return len(a) == n && sorted(a) }), SizeNote(1_000_000, ""))
 	}
 	if Selected("heap-push-pop") {
 		g := NewGen()
@@ -177,23 +191,26 @@ func main() {
 		}, func(p pair) bool { return p == pair{1000, 10000} }), "")
 	}
 	if Selected("binary-search") {
-		const n = 50000
-		Row("binary-search", "sort.Search", "stdlib", n, Bench(func() int64 {
-			a := make([]int64, n)
-			for i := range a {
-				a[i] = int64(i * 2)
-			}
+		n := Sized(10_000_000)
+		m := n / 10
+		a := make([]int64, m)
+		for i := range a {
+			a[i] = int64(i * 2)
+		}
+		qi := NewGen().Indices(n, int32(m))
+		q := make([]int64, n)
+		for j, i := range qi {
+			q[j] = 2 * int64(i)
+		}
+		Row("binary-search", "sort.Search", "stdlib", int64(n), Bench(func() int64 {
 			var hits int64
-			x := int64(12345)
-			for m := 0; m < n; m++ {
-				x = (x*1103515245 + 12345) & 0x7FFFFFFF
-				k := (x % n) * 2
-				i := sort.Search(n, func(i int) bool { return a[i] >= k })
-				if i < n && a[i] == k {
+			for _, k := range q {
+				i := sort.Search(m, func(i int) bool { return a[i] >= k })
+				if i < m && a[i] == k {
 					hits++
 				}
 			}
 			return hits
-		}, func(h int64) bool { return h == n }), "")
+		}, func(h int64) bool { return h == int64(n) }), SizeNote(10_000_000, ""))
 	}
 }

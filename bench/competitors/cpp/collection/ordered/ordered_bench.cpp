@@ -10,14 +10,16 @@ constexpr int N = 1'000'000;
 
 int main() {
     if (selected("redblacktree-insert-lookup")) {
-        constexpr int m = 20000;
-        row("redblacktree-insert-lookup", "std::map", "libstdc++", m, bench([] {
-            std::map<int32_t, int32_t> t;
-            for (int i = 0; i < m; i++) t[i] = i * 2;
+        const int64_t m = sized(N);
+        std::vector<int64_t> ks(m);
+        for (int64_t i = 0; i < m; i++) ks[i] = key(i);
+        row("redblacktree-insert-lookup", "std::map", "libstdc++", m, bench([&] {
+            std::map<int64_t, int64_t> t;
+            for (int64_t i = 0; i < m; i++) t.emplace(ks[i], i);
             int64_t s = 0;
-            for (int j = 0; j < m; j++) s += t.find(j)->second;
+            for (auto k : ks) s += t.find(k)->second;
             return s;
-        }, [](int64_t s) { return s == (int64_t) m * (m - 1); }), "");
+        }, [&](int64_t s) { return s == m * (m - 1) / 2; }), size_note(N));
     }
     std::vector<int64_t> keys(N);
     for (int i = 0; i < N; i++) keys[i] = key(i);

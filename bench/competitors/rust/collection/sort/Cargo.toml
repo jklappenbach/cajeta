@@ -1,14 +1,13 @@
 [package]
-name = "profile-sort"
+name = "collection-sort"
 version = "0.1.0"
 edition = "2021"
 
-# Sorting competitors use only the standard library: sort_unstable is Rust's
-# ipnsort (pattern-defeating, the headline unstable sort); sort is driftsort
-# (stable, adaptive). No external crate is needed for the reference comparison.
+# collection/ sort ids: std only. sort_unstable is ipnsort, sort is driftsort.
+[dependencies]
 
 [[bin]]
-name = "profile-sort"
+name = "collection-sort"
 path = "src/main.rs"
 
 [profile.release]

@@ -5,9 +5,11 @@ import cajeta.time.Clock;
 
 import dev.cajeta.bench.Benchmark;
 
-// Stable (mergesort) sort of N random int64 — the Sort.sortStable path, vs the
-// unstable quicksort in sort-int64. Each trial copies the source and sorts.
-// Cross-check: non-decreasing.
+// collection/sort-stable-int64: Sort.sortStable of 1e6 (value, index) pairs
+// packed into int64 with a comparator on the value (smoke: n/100). Each trial
+// copies the source and sorts; the copy is the subtracted baseline. Check: the
+// packed array is non-decreasing, which holds exactly when the values are
+// sorted and equal values keep index order (stable).
 public class SortStableBench extends Benchmark {
 
     public int32 n;
@@ -35,13 +37,15 @@ public class SortStableBench extends Benchmark {
     }
 
     public void setup() {
-        this.n = 50000;
+        this.n = CollGen.sized(1000000);
         this.src = heap int64[this.n];
-        int64 x = 991;
+        // (value, index) pairs packed value << 20 | index: value = draw % 1e5
+        // (about ten equal values each), index = i (< 2^20). Sorting compares
+        // the value only, so stability is what keeps equal values in index order.
+        CollGen g = heap CollGen();
         int32 i = 0;
         while (i < this.n) {
-            x = (x * 1103515245 + 12345) & 0x7FFFFFFF;
-            this.src[i] = x;
+            this.src[i] = ((int64) (g.next() % 100000) << 20) | (int64) i;
             i = i + 1;
         }
         int64 r0 = Clock.nanoTime();
@@ -62,6 +66,11 @@ public class SortStableBench extends Benchmark {
         return this.baseNs;
     }
 
+    public String competitorNote() {
+        String s #= CollGen.sizeNote(1000000);
+        return "(value index) pairs packed in an int64; comparator on the value" + (s.isEmpty() ? "" : "; " + s);
+    }
+
     public int64 inputSize() {
         return (int64) this.n;
     }
@@ -73,7 +82,7 @@ public class SortStableBench extends Benchmark {
             w[i] = this.src[i];
             i = i + 1;
         }
-        Sort.sortStable<int64>(w, this.n);
+        Sort.sortStable<int64>(w, this.n, (a, b) -> CollGen.cmpValue(a, b));
         this.out #= w;
     }
 

@@ -4,12 +4,16 @@ import cajeta.collection.HashSet;
 
 import dev.cajeta.bench.Benchmark;
 
-// HashSet dedup: insert N values where each distinct value appears twice
-// (i % (N/2)), so the set must absorb the duplicates. Cross-check: the final
-// distinct count == N/2.
+// collection/hashset-dedup: add() 1e7 int32 values drawn from 1e6 distinct
+// (CollGen draws % 1e6, precomputed untimed) into an empty HashSet<int32>.
+// Check: count() equals the distinct count, computed untimed with a seen
+// table (1e7 draws over 1e6 values leave a few dozen unseen). Smoke: n/100
+// draws from n/100 / 10 values.
 public class HashSetDedupBench extends Benchmark {
 
     public int32 n;
+    public int32[] vals;
+    public int64 expected;
     public int64 distinct;
 
     public String name() {
@@ -21,33 +25,52 @@ public class HashSetDedupBench extends Benchmark {
     }
 
     public int32 warmupIters() {
-        return 5;
+        return 3;
     }
 
     public int32 measuredIters() {
-        return 30;
+        return 20;
     }
 
     public void setup() {
-        this.n = 100000;
+        this.n = CollGen.sized(10000000);
+        int32 range = this.n / 10;
+        CollGen g = heap CollGen();
+        int32[] v #= g.indices(this.n, range);
+        boolean[] seen = heap boolean[range];
+        int64 d = 0;
+        int32 i = 0;
+        while (i < this.n) {
+            if (!seen[v[i]]) {
+                seen[v[i]] = true;
+                d = d + 1;
+            }
+            i = i + 1;
+        }
+        this.expected = d;
+        this.vals #= v;
     }
 
     public int64 inputSize() {
         return (int64) this.n;
     }
 
+    public String competitorNote() {
+        return CollGen.sizeNote(10000000);
+    }
+
     public void run(int32 iterations) {
-        HashSet<int32> s = heap HashSet<int32>(64);
-        int32 half = this.n / 2;
+        int32[] v = this.vals;
+        HashSet<int32> s = heap HashSet<int32>();
         int32 i = 0;
         while (i < this.n) {
-            s.add(i % half);
+            s.add(v[i]);
             i = i + 1;
         }
         this.distinct = s.count();
     }
 
     public boolean checkResult() {
-        return this.distinct == (int64) (this.n / 2);
+        return this.distinct == this.expected;
     }
 }

@@ -8,7 +8,7 @@ import sys
 from types import MappingProxyType
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
-from collgen import Gen, bench, key, params, row, selected  # noqa: E402
+from collgen import Gen, bench, hex16, key, params, row, selected, size_note, sized  # noqa: E402
 
 W, T = params()
 N = 1_000_000
@@ -21,6 +21,59 @@ def run(bench_id, lib, size, f, check, notes=""):
     s, ok = bench(W, T, f, check)
     print(row(bench_id, lib, "cpython", size, W, T, s, ok, notes), flush=True)
 
+
+# hashmap-int: insert 1e6 int keys key(i) -> i into an empty dict, look each up.
+NI = sized(N)
+ikeys = [key(i) for i in range(NI)]
+
+
+def hm_int():
+    m = {}
+    for i, k in enumerate(ikeys):
+        m[k] = i
+    s = 0
+    for k in ikeys:
+        s += m[k]
+    return s
+
+
+run("hashmap-int", "dict", NI, hm_int, lambda s: s == NI * (NI - 1) // 2, size_note(N))
+
+# hashmap-string: 1e6 16-byte str keys; lookups through separately built equal strings.
+skeys = [hex16(key(i)) for i in range(NI)]
+sprobes = ["".join(list(k)) for k in skeys]
+
+
+def hm_str():
+    m = {}
+    for i, k in enumerate(skeys):
+        m[k] = i
+    s = 0
+    for k in sprobes:
+        s += m[k]
+    return s
+
+
+run("hashmap-string", "dict", NI, hm_str, lambda s: s == NI * (NI - 1) // 2,
+    size_note(N, "lookups through a separate copy of the keys"))
+del skeys, sprobes
+
+# hashset-dedup: add 1e7 draws over 1e6 values; distinct count from a seen table.
+ND = sized(10 * N)
+dvals = Gen().indices(ND, ND // 10)
+dexp = len(set(dvals))
+
+
+def dedup():
+    st_ = set()
+    add = st_.add
+    for v in dvals:
+        add(v)
+    return len(st_)
+
+
+run("hashset-dedup", "set", ND, dedup, lambda c: c == dexp, size_note(10 * N))
+del dvals
 
 keys = [key(i) for i in range(N)]
 d = {k: i for i, k in enumerate(keys)}
