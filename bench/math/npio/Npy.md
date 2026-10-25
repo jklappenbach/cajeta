@@ -6,8 +6,8 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `math/npy-load-i32` | load a 2^23 int32 `.npy` | NumPy `load`, Rust `npyz`, Java `npy` | checksum |
-| `math/npy-save-i32` | save it back | same | byte equality |
+| `math/npy-load-i32` | decode a 2^23 int32 `.npy` image held in memory (no disk read in the measured window) | NumPy `load` from a `BytesIO`, Rust `npyz`, Java `npy` | checksum |
+| `math/npy-save-i32` | encode it back to a `.npy` image in memory | same | byte equality |
 
 ## Results
 

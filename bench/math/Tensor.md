@@ -6,8 +6,8 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `math/tensor-element-get` | 1e8 `flatGet` on a 2^23 float32 tensor, against a plain array and the `hostBuffer()` view | NumPy item access (noted as interpreted), Eigen, `ndarray` | sum |
-| `math/tensor-element-set` | 1e8 `flatSet` | same | checksum |
+| `math/tensor-element-get` | `flatGet` over every element of a 1M float64 tensor per trial, against a plain array and the `hostBuffer()` view; the three read paths must agree before a time is printed | NumPy item access (noted as interpreted), Eigen, `ndarray` | sum |
+| `math/tensor-element-set` | `flatSet` over the same 1M elements | same | checksum |
 | `math/tensor-elementwise` | `a * b + c` over 1e7 float32 | NumPy, Eigen, Rust `ndarray`, Go `gonum`, Java EJML | within epsilon |
 | `math/tensor-broadcast` | add a 1e3 row to a 1e4 × 1e3 matrix | NumPy, Eigen, Rust `ndarray`, Go `gonum`, Java EJML | within epsilon |
 | `math/tensor-reduce` | sum, max and mean along each axis of 1e4 × 1e3 | NumPy, Eigen, Rust `ndarray`, Go `gonum`, Java EJML | within epsilon |
