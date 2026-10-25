@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-# Copy of cajeta-bench tools/verify-fidelity.py as of dev.cajeta.bench 0.1.1,
+# Copy of cajeta-bench tools/verify-fidelity.py as of dev.cajeta.bench 0.1.3,
 # the source of truth; refresh it when the library moves. bench.sh runs it.
-# Matches 0.1.1 exactly (0.1.1 took this copy's math/matmul-by-id change and
-# added the `external`-row exemption to the allocation check).
+# Matches 0.1.3 exactly (0.1.1 took this copy's math/matmul-by-id change and
+# added the `external`-row exemption; 0.1.3 reads the CSV as UTF-8).
 # Verification gate over a benchmark results.csv, schema 1 or 2.
 #
 # Two layers:
@@ -55,7 +55,7 @@ STATUSES = {1: {"ok", "skipped", "invalid"}, 2: {"ok", "skipped", "invalid", "fa
 def load(path):
     if os.path.isdir(path):
         path = os.path.join(path, "results.csv")
-    with open(path, newline="") as f:
+    with open(path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         rows = list(reader)
         return list(reader.fieldnames or []), rows

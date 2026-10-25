@@ -20,6 +20,9 @@ tracked below: `cajeta-text-shaping` is a **new spec not yet written**, and
 
 | Spec | Plan | Status |
 |------|------|--------|
+| [intrinsic-field-argument-never-returns](intrinsic-field-argument-never-returns-spec.md) | — (defect) | **draft**: filed 2026-10-25 from dev.cajeta.bench 0.1.4. `this.p.waitMillis(this.ms)` never returns; with a local or literal argument it times out correctly. A miscompile of a field-read argument to an intrinsic. |
+| [return-in-try-with-async-call-aborts](return-in-try-with-async-call-aborts-spec.md) | — (defect) | **draft**: filed 2026-10-25. `return` inside a `try` that contains `connectAsync` aborts the compiler with a thrown `const char*`. |
+| [runtime-pipe-inherited-by-children](runtime-pipe-inherited-by-children-spec.md) | — (defect, runtime) | **draft**: filed 2026-10-25. The runtime's pipe lacks close-on-exec and every child inherits it; `connectAsync`'s socket is non-blocking and the docs should say so. |
 | [carrier-deque-overflow-abort](carrier-deque-overflow-abort-spec.md) | — (defect, runtime) | **draft**: filed 2026-10-25 by benchmark-reference unit 7. The 2048-slot carrier deque aborts on a spawn burst or a channel close with many waiters; two mappings per fiber cap parked fibers near 520k under the default `vm.max_map_count`; spawn+await is 150 to 210 µs against the 24.6 µs recorded in June, about 7× regressed. |
 | [spawn-qualified-static-rejected](spawn-qualified-static-rejected-spec.md) | — (defect) | **draft**: filed 2026-10-25 by benchmark-reference unit 7. `spawn Class.method(...)` on a static method fails R3A as an instance call; the bare form works. |
 | [http-h2c-crash-above-256-streams](http-h2c-crash-above-256-streams-spec.md) | — (defect, cajeta-http) | **draft**: filed 2026-10-25 by benchmark-reference unit 18. The h2c server SIGSEGVs or stalls past `maxInFlight` (512 streams) in `Channel<Dispatch>.trySend`'s drop path; 256 streams run clean. |
