@@ -1,41 +1,77 @@
 # Catalog: every cajeta-xgboost kernel
 
-Generated from the sources of `dev.cajeta.xgboost` 0.7.0 on 2026-10-24: every `@Kernel` in the `gpu` package with its source location, the training stage it serves, whether it declares a 32-lane wave, and its role from the kernel's own documentation. The stages, decompositions and the one measured adaptation are described in [Gradient boosting on the device](xgboost.md).
+Generated from the sources of `dev.cajeta.xgboost` 0.7.0 on 2026-10-25 by `tools/catalog/gen-catalog.py`: every `@Kernel` in the `gpu` package, its name linked to its source line, the training stage it serves, whether it declares a 32-lane wave, and under it its role from the kernel's own documentation. The stages, decompositions and the one measured adaptation are described in [Gradient boosting on the device](xgboost.md).
 
 33 kernels. Every one is integer-exact across backends except the gradient and leaf kernels, whose float32 results are per row and need no reduction.
 
-| kernel | stage | source | `@Wave(32)` | role |
-|---|---|---|---|---|
-| `binCells` | Binning | `gpu/GpuBinner.cajeta:26` |  | One thread per (row, feature) cell binary-searches the quantile cuts on integer order keys, so the bin does not depend on the device's float compare. |
-| `histTiles` | Histograms | `gpu/GpuHistogram.cajeta:168` |  | Tile x of rows rows over feature group y, summed in workgroup memory and merged once per nonzero word; a level tile's segment comes from plan, else it is sBegin, sCount at sBase. |
-| `levelTiles` | Histograms | `gpu/GpuHistogram.cajeta:249` |  | Writes split j over its tiles of tileSplit when its half segment has at least minRows rows; its first tile is in slotTab, its count in tab. |
-| `histScatter` | Histograms | `gpu/GpuHistogram.cajeta:422` |  | The legacy whole-dataset histogram: one thread per cell, int64 global atomics, a position filter selecting the node's rows. |
-| `histSegment` | Histograms | `gpu/GpuHistogram.cajeta:449` |  | Node histogram over a row segment: one thread per (segment row, feature) cell, the same integer atomics as histScatter, into the slot at word base. |
-| `zeroRange` | Histograms | `gpu/GpuHistogram.cajeta:475` |  | Zeroes words [base, base + n) of buf. |
-| `subtractSlot` | Histograms | `gpu/GpuHistogram.cajeta:482` |  | Sibling subtraction over one slot: store[out + i] = store[parent + i] - store[built + i]. |
-| `copyWords` | Histograms | `gpu/GpuHistogram.cajeta:490` |  | Copies the first n words of src into dst. |
-| `zeroWords` | Histograms | `gpu/GpuHistogram.cajeta:497` |  | Zeroes the first n words of buf. |
-| `childSlots` | Histograms | `gpu/GpuHistogram.cajeta:509` |  | Per split j of a level: the smaller child is built in the new slot of slotTab (parent base, new base, first cell, first tile) and the larger derived in the parent's; plan gets built base, begin, count and derived base, a |
-| `zeroLevel` | Histograms | `gpu/GpuHistogram.cajeta:537` |  | Zeroes the built slot of every split in plan. |
-| `histLevel` | Histograms | `gpu/GpuHistogram.cajeta:552` |  | histSegment over every built child of a level: cell i belongs to the last split whose first cell in slotTab is at most i, and cells past the child's rows do nothing. |
-| `subtractLevel` | Histograms | `gpu/GpuHistogram.cajeta:587` |  | The derived slot of every split in plan, in place: parent minus built. |
-| `addLeaves` | Leaves | `gpu/GpuLeaves.cajeta:16` |  | Position p of ridx belongs to the last leaf of tab (segment begin, float32 value bits; ascending begins) whose begin is at most p; its row's margin of group gains that leaf's value in float32. |
-| `squaredError` | Gradients | `gpu/GpuObjective.cajeta:88` |  | One thread per row: gradient and hessian of the squared-error objective at the current margin. |
-| `logistic` | Gradients | `gpu/GpuObjective.cajeta:99` |  | One thread per row: logistic gradient and hessian, the exponential through the captured exp2 table and the software fused multiply-add model. |
-| `softmax` | Gradients | `gpu/GpuObjective.cajeta:116` |  | One thread per (row, class); each thread re-scans its row's classes for the maximum and the sum. |
-| `partitionScatter` | Partition | `gpu/GpuPartition.cajeta:26` |  | The legacy partition: one thread per row, int64 atomic adds for the left and right counts. |
-| `segmentCount` | Partition | `gpu/GpuPartition.cajeta:71` | yes | The partition's first pass: each workgroup stores how many of its rows go left. |
-| `segmentPlace` | Partition | `gpu/GpuPartition.cajeta:90` | yes | The second pass: a left row goes to its block's base plus the left rows before it in the block, a right row after every left row in segment order. |
-| `levelBlocks` | Partition | `gpu/GpuPartition.cajeta:113` |  | Workgroup j marks each block of split j's segment with j in blockSplit. |
-| `levelCount` | Partition | `gpu/GpuPartition.cajeta:127` | yes | segmentCount over every split of a level: block w counts the left rows of its split's block. |
-| `levelBases` | Partition | `gpu/GpuPartition.cajeta:142` | yes | Workgroup j turns split j's block counts into block bases in place and stores its left count. |
-| `levelPlace` | Partition | `gpu/GpuPartition.cajeta:165` | yes | segmentPlace over every split of a level, into scratch. |
-| `levelCopy` | Partition | `gpu/GpuPartition.cajeta:188` |  | Copies every split's segment of a level from scratch back into ridx. |
-| `copySegment` | Partition | `gpu/GpuPartition.cajeta:223` |  | Copies the segment [begin, begin + count) of src into dst. |
-| `identity` | Partition | `gpu/GpuPartition.cajeta:231` |  | ridx[r] = r for every row: the root's segment. |
-| `clipWords` | Gradient quantisation | `gpu/GpuQuantiser.cajeta:56` |  | Word w of sum s (0 grad+, 1 grad-, 2 hess+, 3 hess-) over rows r*stride + offset: each value's 24-bit mantissa lands at bit exponent - 1. |
-| `serialSums` | Gradient quantisation | `gpu/GpuQuantiser.cajeta:103` |  | The host's four ascending float64 clip sums, by one thread, into out[4]. |
-| `quantize` | Gradient quantisation | `gpu/GpuQuantiser.cajeta:131` |  | fixedGrad and fixedHess of each row into q (row-major pairs). |
-| `featureScan` | Split finding | `gpu/GpuSplitFinder.cajeta:95` | yes | Stage A, one 32-lane wave per feature and a lane per boundary of a 32-boundary tile. |
-| `levelScan` | Split finding | `gpu/GpuSplitFinder.cajeta:214` | yes | #featureScan for a level: one 32-lane wave per (node, feature), reading node j's slot of the device store at word slotBase[j] (interleaved G and H per bin, then the totals). |
-| `levelPick` | Split finding | `gpu/GpuSplitFinder.cajeta:340` |  | Stage B for a level, a thread per node: SplitFinder.findBest's cross-feature update over the node's records (strict > after the min_child_weight gate, so ties keep the lowest feature). |
+<table class="kernel-catalog">
+<thead><tr><th>kernel</th><th>stage</th><th class="census"><code>@Wave(32)</code></th></tr></thead>
+<tbody>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuBinner.cajeta#L26" title="gpu/GpuBinner.cajeta:26"><code>binCells</code></a></td><td>Binning</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">One thread per (row, feature) cell binary-searches the quantile cuts on integer order keys, so the bin does not depend on the device&#x27;s float compare.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuHistogram.cajeta#L168" title="gpu/GpuHistogram.cajeta:168"><code>histTiles</code></a></td><td>Histograms</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">Tile x of rows rows over feature group y, summed in workgroup memory and merged once per nonzero word; a level tile&#x27;s segment comes from plan, else it is sBegin, sCount at sBase.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuHistogram.cajeta#L249" title="gpu/GpuHistogram.cajeta:249"><code>levelTiles</code></a></td><td>Histograms</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">Writes split j over its tiles of tileSplit when its half segment has at least minRows rows; its first tile is in slotTab, its count in tab.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuHistogram.cajeta#L422" title="gpu/GpuHistogram.cajeta:422"><code>histScatter</code></a></td><td>Histograms</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">The legacy whole-dataset histogram: one thread per cell, int64 global atomics, a position filter selecting the node&#x27;s rows.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuHistogram.cajeta#L449" title="gpu/GpuHistogram.cajeta:449"><code>histSegment</code></a></td><td>Histograms</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">Node histogram over a row segment: one thread per (segment row, feature) cell, the same integer atomics as histScatter, into the slot at word base.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuHistogram.cajeta#L475" title="gpu/GpuHistogram.cajeta:475"><code>zeroRange</code></a></td><td>Histograms</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">Zeroes words [base, base + n) of buf.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuHistogram.cajeta#L482" title="gpu/GpuHistogram.cajeta:482"><code>subtractSlot</code></a></td><td>Histograms</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">Sibling subtraction over one slot: store[out + i] = store[parent + i] - store[built + i].</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuHistogram.cajeta#L490" title="gpu/GpuHistogram.cajeta:490"><code>copyWords</code></a></td><td>Histograms</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">Copies the first n words of src into dst.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuHistogram.cajeta#L497" title="gpu/GpuHistogram.cajeta:497"><code>zeroWords</code></a></td><td>Histograms</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">Zeroes the first n words of buf.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuHistogram.cajeta#L509" title="gpu/GpuHistogram.cajeta:509"><code>childSlots</code></a></td><td>Histograms</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">Per split j of a level: the smaller child is built in the new slot of slotTab (parent base, new base, first cell, first tile) and the larger derived in the parent&#x27;s; plan gets built base, begin, count and derived base, a</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuHistogram.cajeta#L537" title="gpu/GpuHistogram.cajeta:537"><code>zeroLevel</code></a></td><td>Histograms</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">Zeroes the built slot of every split in plan.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuHistogram.cajeta#L552" title="gpu/GpuHistogram.cajeta:552"><code>histLevel</code></a></td><td>Histograms</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">histSegment over every built child of a level: cell i belongs to the last split whose first cell in slotTab is at most i, and cells past the child&#x27;s rows do nothing.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuHistogram.cajeta#L587" title="gpu/GpuHistogram.cajeta:587"><code>subtractLevel</code></a></td><td>Histograms</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">The derived slot of every split in plan, in place: parent minus built.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuLeaves.cajeta#L16" title="gpu/GpuLeaves.cajeta:16"><code>addLeaves</code></a></td><td>Leaves</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">Position p of ridx belongs to the last leaf of tab (segment begin, float32 value bits; ascending begins) whose begin is at most p; its row&#x27;s margin of group gains that leaf&#x27;s value in float32.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuObjective.cajeta#L88" title="gpu/GpuObjective.cajeta:88"><code>squaredError</code></a></td><td>Gradients</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">One thread per row: gradient and hessian of the squared-error objective at the current margin.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuObjective.cajeta#L99" title="gpu/GpuObjective.cajeta:99"><code>logistic</code></a></td><td>Gradients</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">One thread per row: logistic gradient and hessian, the exponential through the captured exp2 table and the software fused multiply-add model.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuObjective.cajeta#L116" title="gpu/GpuObjective.cajeta:116"><code>softmax</code></a></td><td>Gradients</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">One thread per (row, class); each thread re-scans its row&#x27;s classes for the maximum and the sum.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuPartition.cajeta#L26" title="gpu/GpuPartition.cajeta:26"><code>partitionScatter</code></a></td><td>Partition</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">The legacy partition: one thread per row, int64 atomic adds for the left and right counts.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuPartition.cajeta#L71" title="gpu/GpuPartition.cajeta:71"><code>segmentCount</code></a></td><td>Partition</td><td class="census">yes</td></tr>
+<tr class="kernel-role"><td colspan="3">The partition&#x27;s first pass: each workgroup stores how many of its rows go left.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuPartition.cajeta#L90" title="gpu/GpuPartition.cajeta:90"><code>segmentPlace</code></a></td><td>Partition</td><td class="census">yes</td></tr>
+<tr class="kernel-role"><td colspan="3">The second pass: a left row goes to its block&#x27;s base plus the left rows before it in the block, a right row after every left row in segment order.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuPartition.cajeta#L113" title="gpu/GpuPartition.cajeta:113"><code>levelBlocks</code></a></td><td>Partition</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">Workgroup j marks each block of split j&#x27;s segment with j in blockSplit.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuPartition.cajeta#L127" title="gpu/GpuPartition.cajeta:127"><code>levelCount</code></a></td><td>Partition</td><td class="census">yes</td></tr>
+<tr class="kernel-role"><td colspan="3">segmentCount over every split of a level: block w counts the left rows of its split&#x27;s block.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuPartition.cajeta#L142" title="gpu/GpuPartition.cajeta:142"><code>levelBases</code></a></td><td>Partition</td><td class="census">yes</td></tr>
+<tr class="kernel-role"><td colspan="3">Workgroup j turns split j&#x27;s block counts into block bases in place and stores its left count.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuPartition.cajeta#L165" title="gpu/GpuPartition.cajeta:165"><code>levelPlace</code></a></td><td>Partition</td><td class="census">yes</td></tr>
+<tr class="kernel-role"><td colspan="3">segmentPlace over every split of a level, into scratch.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuPartition.cajeta#L188" title="gpu/GpuPartition.cajeta:188"><code>levelCopy</code></a></td><td>Partition</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">Copies every split&#x27;s segment of a level from scratch back into ridx.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuPartition.cajeta#L223" title="gpu/GpuPartition.cajeta:223"><code>copySegment</code></a></td><td>Partition</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">Copies the segment [begin, begin + count) of src into dst.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuPartition.cajeta#L231" title="gpu/GpuPartition.cajeta:231"><code>identity</code></a></td><td>Partition</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">ridx[r] = r for every row: the root&#x27;s segment.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuQuantiser.cajeta#L56" title="gpu/GpuQuantiser.cajeta:56"><code>clipWords</code></a></td><td>Gradient quantisation</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">Word w of sum s (0 grad+, 1 grad-, 2 hess+, 3 hess-) over rows r*stride + offset: each value&#x27;s 24-bit mantissa lands at bit exponent - 1.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuQuantiser.cajeta#L103" title="gpu/GpuQuantiser.cajeta:103"><code>serialSums</code></a></td><td>Gradient quantisation</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">The host&#x27;s four ascending float64 clip sums, by one thread, into out[4].</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuQuantiser.cajeta#L131" title="gpu/GpuQuantiser.cajeta:131"><code>quantize</code></a></td><td>Gradient quantisation</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">fixedGrad and fixedHess of each row into q (row-major pairs).</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuSplitFinder.cajeta#L95" title="gpu/GpuSplitFinder.cajeta:95"><code>featureScan</code></a></td><td>Split finding</td><td class="census">yes</td></tr>
+<tr class="kernel-role"><td colspan="3">Stage A, one 32-lane wave per feature and a lane per boundary of a 32-boundary tile.</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuSplitFinder.cajeta#L214" title="gpu/GpuSplitFinder.cajeta:214"><code>levelScan</code></a></td><td>Split finding</td><td class="census">yes</td></tr>
+<tr class="kernel-role"><td colspan="3">#featureScan for a level: one 32-lane wave per (node, feature), reading node j&#x27;s slot of the device store at word slotBase[j] (interleaved G and H per bin, then the totals).</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-xgboost/blob/main/src/main/cajeta/dev/cajeta/xgboost/gpu/GpuSplitFinder.cajeta#L340" title="gpu/GpuSplitFinder.cajeta:340"><code>levelPick</code></a></td><td>Split finding</td><td class="census"></td></tr>
+<tr class="kernel-role"><td colspan="3">Stage B for a level, a thread per node: SplitFinder.findBest&#x27;s cross-feature update over the node&#x27;s records (strict &gt; after the min_child_weight gate, so ties keep the lowest feature).</td></tr>
+</tbody>
+</table>

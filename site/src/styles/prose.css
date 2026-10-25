@@ -171,6 +171,60 @@
   white-space: nowrap;
 }
 
+/* --- kernel catalogs (docs/kernels/catalog-*.md, generated) -------------
+   A kernel is two rows: the grid row (name, counterpart or stage, the
+   one-mark census columns) and its role on a full-width row underneath, so
+   the grid stays narrow enough that no cell wraps at the prose width. The
+   pair reads as one entry: the grid row drops its rule, the role row carries
+   it. Widths at a 1280 px viewport (a 46rem = 736 px column): the longest
+   name, q4kQ8WaveMatVecColsSegPlainKernel, is 229 px of mono; the longest
+   counterpart, moe-weighted-reduction.cu:moe_weighted_reduction, 350 px of
+   Inter; three 2.5rem census columns are 120 px; with the 0.75rem gutters
+   the row is 725 px. */
+.prose table.kernel-catalog td,
+.prose table.kernel-catalog th {
+  padding-right: 0.75rem;
+}
+.prose table.kernel-catalog .census {
+  width: 2.5rem;
+  padding-left: 0;
+  padding-right: 0;
+  text-align: center;
+  white-space: nowrap;
+}
+.prose table.kernel-catalog th.census {
+  letter-spacing: 0.04em;
+}
+.prose table.kernel-catalog td.census {
+  color: var(--ink-soft);
+}
+.prose tbody tr.kernel td {
+  border-bottom: 0;
+  padding-bottom: 0.1rem;
+}
+.prose table tr.kernel-role td {
+  border-top: 0;
+  padding-top: 0;
+  padding-left: 0;
+  font-size: 0.9em;
+  color: var(--ink-soft);
+}
+.prose tbody tr.kernel:hover,
+.prose tbody tr.kernel:hover + tr.kernel-role,
+.prose tbody tr.kernel:has(+ tr.kernel-role:hover) {
+  background: color-mix(in srgb, var(--accent-wash) 45%, transparent);
+}
+/* The counterpart stays on one line wherever the column is its full 46rem
+   (the toc rail beside it); narrower, the table scrolls and may wrap. */
+@media (min-width: 68rem) {
+  .prose table.kernel-catalog td {
+    white-space: nowrap;
+  }
+  .prose table.kernel-catalog tr.kernel-role td {
+    white-space: normal;
+  }
+}
+
 /* --- misc --------------------------------------------------------------- */
 .prose a {
   color: var(--accent);
