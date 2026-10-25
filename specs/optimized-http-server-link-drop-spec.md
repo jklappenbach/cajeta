@@ -10,7 +10,11 @@ setting tried: `--release` at O3 and at O1, and the debug base at O3. The
 undefined symbols are instantiated drop functions:
 `__cajeta_stack_cajeta_lang_Optional_dev_cajeta_http_server_Dispatch__drop`
 and `…_primavera_web_Connection__drop`. An `Optional<T>` instantiated in the
-bench's own module lost its drop the same way. Only O0 links. The primavera
+bench's own module lost its drop the same way. Only O0 links. Unit 18 narrowed it: the drop function is a weak definition
+in the stdlib module at O0, and the optimizer removes it while
+`DispatchPool.worker` still calls it; `--link-mode=full`, `--tree-shake=off`,
+the fork's lld on PATH, the Olla archive, a rebuilt checkout archive and
+compiling the http sources in directly all fail the same way. The primavera
 bench therefore builds its server on the debug base with the runtime checks
 off and records that in `flags`; its register-user row reads about 4k req/s
 against 60k to 130k for the JVM and .NET stacks, a number that says nothing

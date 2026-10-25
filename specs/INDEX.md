@@ -20,6 +20,8 @@ tracked below: `cajeta-text-shaping` is a **new spec not yet written**, and
 
 | Spec | Plan | Status |
 |------|------|--------|
+| [http-h2c-crash-above-256-streams](http-h2c-crash-above-256-streams-spec.md) | — (defect, cajeta-http) | **draft**: filed 2026-10-25 by benchmark-reference unit 18. The h2c server SIGSEGVs or stalls past `maxInFlight` (512 streams) in `Channel<Dispatch>.trySend`'s drop path; 256 streams run clean. |
+| [http-tls-handshake-collapse](http-tls-handshake-collapse-spec.md) | — (defect, cajeta-http) | **draft**: filed 2026-10-25 by benchmark-reference unit 18. TLS handshakes fall from 177/s at one connection to about 16/s at 8 or 64, with connection errors. |
 | [xxhash3-writebytesrange-offset](xxhash3-writebytesrange-offset-spec.md) | — (defect) | **draft**: filed 2026-10-25 by benchmark-reference unit 8. `XXHash3.writeBytesRange` ignores its offset; `hashSeeded` never takes the SIMD long path. |
 | [optimized-http-server-link-drop](optimized-http-server-link-drop-spec.md) | — (defect) | **draft**: filed 2026-10-25 by benchmark-reference unit 19. No optimized build of a cajeta-http server links on v0.46.3 (undefined `Optional<…Dispatch>__drop` and `…Connection__drop`); only O0 links, so primavera's and cajeta-http's server rows cannot be release figures until fixed. |
 | [json-parse-accepts-invalid](json-parse-accepts-invalid-spec.md) | — (defect) | **draft**: filed 2026-10-25 by benchmark-reference unit 9. `Json.parse` accepts 9 of 31 JSON_checker fail files (trailing content, leading zero, raw control characters, malformed exponents); every competitor rejects all 31. The float half (canada does not round-trip at 6 fraction digits) is `float64-tostring-roundtrip`. |
