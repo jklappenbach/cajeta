@@ -38,6 +38,36 @@ function useWidth<T extends HTMLElement>(fallback = 560) {
   return [setEl, width] as const;
 }
 
+/**
+ * Text width in px as the browser will draw it: a canvas measure in the
+ * --font-ui family, redone once the web font has loaded.
+ */
+function useMeasure() {
+  const [fontsReady, setFontsReady] = useState(0);
+  const [ctx] = useState<CanvasRenderingContext2D | null>(() =>
+    typeof document === 'undefined' ? null : document.createElement('canvas').getContext('2d')
+  );
+  useLayoutEffect(() => {
+    let live = true;
+    document.fonts?.ready.then(() => live && setFontsReady((n) => n + 1));
+    return () => {
+      live = false;
+    };
+  }, []);
+  const family =
+    typeof document === 'undefined'
+      ? 'sans-serif'
+      : getComputedStyle(document.documentElement).getPropertyValue('--font-ui').trim() || 'sans-serif';
+  return (text: string, size: number, weight: number) => {
+    void fontsReady;
+    if (!ctx) return text.length * size * 0.6;
+    ctx.font = `${weight} ${size}px ${family}`;
+    return ctx.measureText(text).width;
+  };
+}
+
+const ROW_H2 = 38; // a row whose label has a second (library) line
+
 const fit = (s: string, px: number) => {
   const n = Math.max(4, Math.floor(px / CHAR_W));
   return s.length <= n ? s : s.slice(0, n - 1) + '…';
@@ -171,12 +201,18 @@ export function BenchChart({
   const [measure, setMeasure] = useState<string>(R.initialMeasure(metric));
   const [tip, setTip] = useState<Tip | null>(null);
   const [plotRef, width] = useWidth<HTMLDivElement>();
+  const measureText = useMeasure();
   if (!variants || !Object.keys(variants).length) return <Unmeasured caption={id} machine={machine} />;
 
   const model = R.chartModel(variants, measure);
-  const labelW = Math.min(156, Math.round(width * 0.3));
+  // row labels are never cut: the column fits the widest line, the plot shrinks
+  const labelLines = new Map<any, any[]>(
+    model.variants.map((v: any) => [v, R.rowLabelLines(v.rows.map((r: any) => r.entry))])
+  );
+  const labelW = R.labelColumnWidth([...labelLines.values()].flat(), measureText);
   const valueW = 86;
-  const plotW = Math.max(60, width - labelW - valueW);
+  const viewW = Math.max(width, labelW + 60 + valueW);
+  const plotW = viewW - labelW - valueW;
   const x0 = labelW;
   const scale = (v: number) => Math.max(2, (v / (model.max || 1)) * plotW);
   const multi = model.variants.length > 1;
@@ -205,16 +241,25 @@ export function BenchChart({
         }}
       />
       <div className="chart-plot" ref={plotRef} onMouseLeave={() => setTip(null)} style={{ position: 'relative' }}>
-        {model.variants.map(({ variant, rows }: any) => {
+        {model.variants.map((v: any) => {
+          const { variant, rows } = v;
+          const lines = labelLines.get(v)!;
           const head = multi ? 20 : 0;
-          const height = head + rows.length * ROW_H + 4;
+          const tops: number[] = [];
+          let y0 = head;
+          for (const l of lines) {
+            tops.push(y0);
+            y0 += l.secondary ? ROW_H2 : ROW_H;
+          }
+          const height = y0 + 4;
           const top = offset;
           offset += height;
           return (
             <svg
               key={variant}
-              viewBox={`0 0 ${width} ${height}`}
+              viewBox={`0 0 ${viewW} ${height}`}
               width="100%"
+              data-label-width={labelW}
               role="img"
               aria-label={`${id}${variant ? ' ' + variant : ''}: ${rows.map((r: any) => `${r.label} ${r.text}`).join(', ')}`}
             >
@@ -235,10 +280,14 @@ export function BenchChart({
                 />
               ))}
               {rows.map((r: any, i: number) => {
-                const y = head + i * ROW_H + (ROW_H - BAR_H) / 2;
+                const line = lines[i];
+                const rowH = line.secondary ? ROW_H2 : ROW_H;
+                const y = tops[i] + (rowH - BAR_H) / 2;
                 const measured = r.value !== null;
                 const w = measured ? scale(r.value) : 0;
                 const textY = y + BAR_H - 2;
+                const labelY = line.secondary ? tops[i] + rowH / 2 - 3 : textY;
+                const labelFill = measured ? 'var(--ink-soft)' : 'var(--ink-faint)';
                 return (
                   <g
                     key={r.label}
@@ -249,18 +298,31 @@ export function BenchChart({
                     onFocus={(e) => show(e, r, top + y + BAR_H)}
                     onBlur={() => setTip(null)}
                   >
-                    <rect x={0} y={head + i * ROW_H} width={width} height={ROW_H} fill="transparent" />
+                    <rect x={0} y={tops[i]} width={viewW} height={rowH} fill="transparent" />
                     <text
-                      x={labelW - 10}
-                      y={textY}
+                      x={labelW - R.LABEL_GAP}
+                      y={labelY}
                       textAnchor="end"
-                      fontSize={FONT}
-                      fontWeight={r.entry.cajeta ? 600 : 400}
-                      fill={measured ? 'var(--ink-soft)' : 'var(--ink-faint)'}
+                      fontSize={R.LABEL_PRIMARY.size}
+                      fontWeight={line.cajeta ? R.LABEL_PRIMARY.cajetaWeight : R.LABEL_PRIMARY.weight}
+                      fill={labelFill}
                       fontFamily="var(--font-ui)"
                     >
-                      {fit(r.label, labelW - 14)}
+                      {line.primary}
                     </text>
+                    {line.secondary && (
+                      <text
+                        x={labelW - R.LABEL_GAP}
+                        y={labelY + 13}
+                        textAnchor="end"
+                        fontSize={R.LABEL_SECONDARY.size}
+                        fontWeight={R.LABEL_SECONDARY.weight}
+                        fill={labelFill}
+                        fontFamily="var(--font-ui)"
+                      >
+                        {line.secondary}
+                      </text>
+                    )}
                     {measured ? (
                       <>
                         <path
@@ -312,10 +374,14 @@ export function BenchStandings({
 }) {
   const [tip, setTip] = useState<Tip | null>(null);
   const [plotRef, width] = useWidth<HTMLDivElement>();
+  const measureText = useMeasure();
   if (!rows || !rows.length) return <Unmeasured caption="Standings" machine={machine} />;
 
   const colW = 46;
-  const labelW = Math.min(118, Math.round(width * 0.24));
+  const labelW = R.labelColumnWidth(
+    rows.map((r) => ({ primary: r.pkg, secondary: null, cajeta: false })),
+    measureText
+  );
   const plotW = Math.max(80, width - labelW - colW * 3 - 20);
   const x0 = labelW;
   const head = 22;
@@ -370,8 +436,8 @@ export function BenchStandings({
             return (
               <g key={r.pkg} className="bench-row" tabIndex={0} onMouseEnter={showTip} onMouseMove={showTip} onFocus={showTip} onBlur={() => setTip(null)}>
                 <rect x={0} y={cy - ROW_H / 2} width={width} height={ROW_H} fill="transparent" />
-                <text x={labelW - 10} y={cy + 4} textAnchor="end" fontSize={FONT} fill="var(--ink-soft)" fontFamily="var(--font-ui)">
-                  {fit(r.pkg, labelW - 14)}
+                <text x={labelW - R.LABEL_GAP} y={cy + 4} textAnchor="end" fontSize={FONT} fill="var(--ink-soft)" fontFamily="var(--font-ui)">
+                  {r.pkg}
                 </text>
                 {r.ratio !== null ? (
                   <circle cx={x(r.ratio)} cy={cy} r={5} fill="var(--chart-mark)" stroke="var(--bg-raised)" strokeWidth={2} />

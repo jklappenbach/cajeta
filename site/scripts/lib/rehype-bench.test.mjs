@@ -10,7 +10,17 @@ import rehypeBench, { syntaxHighlight } from '../../src/lib/rehype-bench.mjs';
 import rehypeDocsLinks from '../../src/lib/rehype-docs-links.mjs';
 import rehypeEditorial from '../../src/lib/rehype-editorial.mjs';
 import { docsRoot } from './docs-root.mjs';
-import { fillPlaceholders, defaultMachine, standingsModel } from './bench-render.mjs';
+import {
+  fillPlaceholders,
+  defaultMachine,
+  standingsModel,
+  rowLabelLines,
+  libraryShortName,
+  labelColumnWidth,
+  LABEL_GAP,
+  LABEL_MARGIN,
+} from './bench-render.mjs';
+import { readFileSync } from 'node:fs';
 
 const BENCH = join(docsRoot(), '..', 'bench');
 
@@ -191,4 +201,74 @@ test('fillPlaceholders also fails on an unknown id', () => {
     () => fillPlaceholders(html, { pagePath: 'benchmarks/collection/HashMap.md', data: { ...EMPTY, knownIds: ['collection/hashmap-int'] } }),
     /bench\/collection\/HashMap\.md.*collection\/nope/
   );
+});
+
+// design review: row labels never truncate; a second line names the library
+// only where a language repeats
+test('libraryShortName: std however spelled, else the last namespace segment', () => {
+  assert.equal(libraryShortName('ankerl::unordered_dense'), 'unordered_dense');
+  assert.equal(libraryShortName('std::unordered_map'), 'std');
+  assert.equal(libraryShortName('std-HashMap'), 'std');
+  assert.equal(libraryShortName('std'), 'std');
+  assert.equal(libraryShortName('ahash'), 'ahash');
+  assert.equal(libraryShortName('boost::unordered::unordered_flat_map'), 'unordered_flat_map');
+  assert.equal(libraryShortName('stdlib'), 'stdlib');
+  assert.equal(libraryShortName(''), '');
+});
+
+const HM = [
+  entry(),
+  entry({ language: 'cpp', cajeta: false, library: 'ankerl::unordered_dense' }),
+  entry({ language: 'cpp', cajeta: false, library: 'std::unordered_map' }),
+  entry({ language: 'rust', cajeta: false, library: 'ahash' }),
+  entry({ language: 'rust', cajeta: false, library: 'std-HashMap' }),
+  entry({ language: 'go', cajeta: false, library: 'map' }),
+  entry({ language: 'python', cajeta: false, library: 'dict' }),
+];
+
+test('rowLabelLines: the second line appears only for repeated languages', () => {
+  const lines = rowLabelLines(HM);
+  assert.deepEqual(
+    lines.map((l) => [l.primary, l.secondary]),
+    [
+      ['Cajeta', null],
+      ['C++', 'unordered_dense'],
+      ['C++', 'std'],
+      ['Rust', 'ahash'],
+      ['Rust', 'std'],
+      ['Go', null],
+      ['Python', null],
+    ]
+  );
+  // colliding short names fall back to the full library name
+  const two = rowLabelLines([
+    entry({ language: 'cpp', library: 'std::unordered_map' }),
+    entry({ language: 'cpp', library: 'std::map' }),
+  ]);
+  assert.deepEqual(two.map((l) => l.secondary), ['std::unordered_map', 'std::map']);
+});
+
+test('labelColumnWidth fits the widest line, so no label is cut', () => {
+  const lines = rowLabelLines([
+    ...HM,
+    entry({ language: 'cuda-c++', cajeta: false, library: 'BabelStream' }),
+    entry({ language: 'typescript', cajeta: false, library: 'node::some_very_long_library_name_v2' }),
+    entry({ language: 'typescript', cajeta: false, library: 'deno' }),
+  ]);
+  // a measure that grows with length, size and weight, as the canvas one does
+  const measure = (text, size, weight) => text.length * size * (weight >= 600 ? 0.62 : 0.56);
+  const w = labelColumnWidth(lines, measure);
+  for (const l of lines) {
+    assert.ok(!/…/.test(l.primary + (l.secondary ?? '')), 'no ellipsis in a label');
+    assert.ok(measure(l.primary, 12, l.cajeta ? 600 : 400) + LABEL_GAP + LABEL_MARGIN <= w, l.primary);
+    if (l.secondary) assert.ok(measure(l.secondary, 10.5, 400) + LABEL_GAP + LABEL_MARGIN <= w, l.secondary);
+  }
+  assert.ok(w >= Math.ceil(measure('some_very_long_library_name_v2', 10.5, 400)) + LABEL_GAP + LABEL_MARGIN);
+});
+
+test('BenchChart renders row labels whole: no truncation helper on a label', () => {
+  const src = readFileSync(new URL('../../src/components/react/BenchChart.tsx', import.meta.url), 'utf8');
+  assert.match(src, /rowLabelLines\(/);
+  assert.match(src, /labelColumnWidth\(/);
+  assert.doesNotMatch(src, /fit\(\s*(r\.label|line\.|l\.primary|l\.secondary|r\.pkg)/);
 });

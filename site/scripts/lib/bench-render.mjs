@@ -259,6 +259,78 @@ export function chartModel(variants, measureKey) {
   return { measure: measureKey, better: measure.better, variants: out, max };
 }
 
+// ------------------------------------------------------------------ row labels
+
+/** Label sizes (px) and weights: the language line, and the library line under it. */
+export const LABEL_PRIMARY = { size: 12, weight: 400, cajetaWeight: 600 };
+export const LABEL_SECONDARY = { size: 10.5, weight: 400 };
+/** Gap between the label column's text and the bar baseline, plus the left margin. */
+export const LABEL_GAP = 10;
+export const LABEL_MARGIN = 4;
+
+/**
+ * A library's short name for the second label line: the standard library is
+ * `std` however it is spelled (`std::unordered_map`, `std-HashMap`); anything
+ * else drops its namespaces and keeps the last segment
+ * (`ankerl::unordered_dense` -> `unordered_dense`, `ahash` -> `ahash`).
+ */
+export function libraryShortName(name) {
+  const s = String(name ?? '').trim();
+  if (!s) return '';
+  if (/^std(::|-|$)/i.test(s)) return 'std';
+  const parts = s.split('::').filter(Boolean);
+  return parts[parts.length - 1] ?? s;
+}
+
+/**
+ * The two-line row labels of one chart. Line one is the language (or the
+ * platform when a row has no language). Line two appears only on rows whose
+ * language is repeated in the chart: the library's short name, or its full
+ * name, then its backend, when the short names collide. Nothing is ever
+ * shortened with an ellipsis; the label column widens instead
+ * (labelColumnWidth).
+ */
+export function rowLabelLines(entries) {
+  const primary = entries.map((e) => (String(e.language ?? '').trim() ? languageLabel(e.language) : e.platform || 'unknown'));
+  const count = (arr, v) => arr.filter((x) => x === v).length;
+  const lines = entries.map((e, i) => ({ primary: primary[i], secondary: null, cajeta: !!e.cajeta }));
+  const groups = new Map();
+  primary.forEach((p, i) => groups.set(p, [...(groups.get(p) ?? []), i]));
+  for (const members of groups.values()) {
+    if (members.length < 2) continue;
+    const tries = [
+      (e) => libraryShortName(e.library || e.platform),
+      (e) => e.library || e.platform || '',
+      (e) => [e.library || e.platform, e.backend].filter(Boolean).join(' · '),
+    ];
+    let names = members.map((i) => tries[0](entries[i]));
+    for (const t of tries.slice(1)) {
+      if (names.every((n, k) => n && count(names, n) === 1)) break;
+      names = members.map((i) => t(entries[i]));
+    }
+    members.forEach((i, k) => {
+      lines[i].secondary = names[k] || null;
+    });
+  }
+  return lines;
+}
+
+/**
+ * The label column's width: the widest single line as `measure(text, size,
+ * weight)` reports it, plus the gap to the bars and the left margin.
+ */
+export function labelColumnWidth(lines, measure) {
+  let widest = 0;
+  for (const l of lines) {
+    widest = Math.max(
+      widest,
+      measure(l.primary, LABEL_PRIMARY.size, l.cajeta ? LABEL_PRIMARY.cajetaWeight : LABEL_PRIMARY.weight)
+    );
+    if (l.secondary) widest = Math.max(widest, measure(l.secondary, LABEL_SECONDARY.size, LABEL_SECONDARY.weight));
+  }
+  return Math.ceil(widest) + LABEL_GAP + LABEL_MARGIN;
+}
+
 // ------------------------------------------------------------------ machines
 
 /**
