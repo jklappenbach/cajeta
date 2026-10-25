@@ -1,0 +1,15 @@
+package bench.toolchain;
+
+import cajeta.collection.ArrayList;
+
+import dev.cajeta.bench.Benchmark;
+
+// Registers every toolchain/ benchmark, in catalog order. A unit adds a toolchain/
+// benchmark by writing the class in this directory and one `b.add(heap X());`
+// line here; Bench.cajeta calls this and is never edited for it.
+public final class ToolchainRegistry {
+
+    public static void register(ArrayList<Benchmark> b) {
+        // No toolchain/ benchmarks yet.
+    }
+}

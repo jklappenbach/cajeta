@@ -1,0 +1,18 @@
+package bench.math;
+
+import cajeta.collection.ArrayList;
+
+import dev.cajeta.bench.Benchmark;
+
+// Registers every math/ benchmark, in catalog order. A unit adds a math/
+// benchmark by writing the class in this directory and one `b.add(heap X());`
+// line here; Bench.cajeta calls this and is never edited for it.
+public final class MathRegistry {
+
+    public static void register(ArrayList<Benchmark> b) {
+        b.add(heap ElementAccessBench());
+        b.add(heap ElementSetBench());
+        b.add(heap NpyLoadBench());
+        b.add(heap MatMulBench());
+    }
+}

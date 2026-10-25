@@ -1,0 +1,25 @@
+package bench.collection;
+
+import cajeta.collection.ArrayList;
+
+import dev.cajeta.bench.Benchmark;
+
+// Registers every collection/ benchmark, in catalog order. A unit adds a collection/
+// benchmark by writing the class in this directory and one `b.add(heap X());`
+// line here; Bench.cajeta calls this and is never edited for it.
+public final class CollectionRegistry {
+
+    public static void register(ArrayList<Benchmark> b) {
+        b.add(heap ArrayListAppendBench());
+        b.add(heap HashMapIntBench());
+        b.add(heap HashMapStringBench());
+        b.add(heap HashSetDedupBench());
+        b.add(heap LinkedListBench());
+        b.add(heap HeapSortBench());
+        b.add(heap RedBlackTreeBench());
+        b.add(heap SortInt64Bench());
+        b.add(heap SortF64Bench());
+        b.add(heap SortStableBench());
+        b.add(heap BinarySearchBench());
+    }
+}

@@ -1,0 +1,25 @@
+package bench.lang;
+
+import cajeta.collection.ArrayList;
+
+import dev.cajeta.bench.Benchmark;
+
+// Registers every lang/ benchmark, in catalog order. A unit adds a lang/
+// benchmark by writing the class in this directory and one `b.add(heap X());`
+// line here; Bench.cajeta calls this and is never edited for it.
+public final class LangRegistry {
+
+    public static void register(ArrayList<Benchmark> b) {
+        b.add(heap StringBuildBench());
+        b.add(heap StringSearchBench());
+        b.add(heap StringReplaceBench());
+        b.add(heap StringUpperBench());
+        b.add(heap StreamPipelineBench());
+        b.add(heap StreamParallelReduceBench());
+        b.add(heap SaxpyBench());
+        b.add(heap DotProductBench());
+        b.add(heap MandelbrotBench());
+        b.add(heap FannkuchBench());
+        b.add(heap SpectralNormBench());
+    }
+}

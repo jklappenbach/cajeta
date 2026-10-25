@@ -1,0 +1,22 @@
+package bench.selftest;
+
+import cajeta.collection.ArrayList;
+
+import dev.cajeta.bench.Benchmark;
+
+// Registers the selftest/ scaffold benchmarks, only under CAJETA_BENCH_SCAFFOLD=1.
+public final class SelftestRegistry {
+
+    public static void register(ArrayList<Benchmark> b) {
+        // The harness's own scaffold benchmarks (lifecycle order, trial count,
+        // variant rows) are not catalog entries; only the harness smokes see
+        // them, under CAJETA_BENCH_SCAFFOLD=1.
+        String scaffold = System.env.get("CAJETA_BENCH_SCAFFOLD");
+        if (scaffold == null || !scaffold.equals("1")) {
+            return;
+        }
+        b.add(heap ExampleBenchmark());
+        b.add(heap SumBench());
+        b.add(heap VariantBench());
+    }
+}

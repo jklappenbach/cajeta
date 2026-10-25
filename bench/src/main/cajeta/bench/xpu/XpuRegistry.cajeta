@@ -1,0 +1,16 @@
+package bench.xpu;
+
+import cajeta.collection.ArrayList;
+
+import dev.cajeta.bench.Benchmark;
+
+// Registers every xpu/ benchmark, in catalog order. A unit adds a xpu/
+// benchmark by writing the class in this directory and one `b.add(heap X());`
+// line here; Bench.cajeta calls this and is never edited for it.
+public final class XpuRegistry {
+
+    public static void register(ArrayList<Benchmark> b) {
+        b.add(heap GpuMatMulBench());
+        b.add(heap GpuMatMulF16Bench());
+    }
+}

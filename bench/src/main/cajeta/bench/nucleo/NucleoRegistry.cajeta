@@ -1,0 +1,15 @@
+package bench.nucleo;
+
+import cajeta.collection.ArrayList;
+
+import dev.cajeta.bench.Benchmark;
+
+// Registers every nucleo/ benchmark, in catalog order. A unit adds a nucleo/
+// benchmark by writing the class in this directory and one `b.add(heap X());`
+// line here; Bench.cajeta calls this and is never edited for it.
+public final class NucleoRegistry {
+
+    public static void register(ArrayList<Benchmark> b) {
+        // No nucleo/ benchmarks yet.
+    }
+}

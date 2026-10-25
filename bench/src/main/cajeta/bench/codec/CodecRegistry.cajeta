@@ -1,0 +1,22 @@
+package bench.codec;
+
+import cajeta.collection.ArrayList;
+
+import dev.cajeta.bench.Benchmark;
+
+// Registers every codec/ benchmark, in catalog order. A unit adds a codec/
+// benchmark by writing the class in this directory and one `b.add(heap X());`
+// line here; Bench.cajeta calls this and is never edited for it.
+public final class CodecRegistry {
+
+    public static void register(ArrayList<Benchmark> b) {
+        b.add(heap JsonTokenizeBench());
+        b.add(heap JsonBindBench());
+        b.add(heap JsonDomBench());
+        b.add(heap JsonSerializeBench());
+        b.add(heap JsonRoundtripBench());
+        b.add(heap JsonConformanceBench());
+        b.add(heap Base64EncodeBench());
+        b.add(heap Base64DecodeBench());
+    }
+}

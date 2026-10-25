@@ -1,0 +1,15 @@
+package bench.search;
+
+import cajeta.collection.ArrayList;
+
+import dev.cajeta.bench.Benchmark;
+
+// Registers every search/ benchmark, in catalog order. A unit adds a search/
+// benchmark by writing the class in this directory and one `b.add(heap X());`
+// line here; Bench.cajeta calls this and is never edited for it.
+public final class SearchRegistry {
+
+    public static void register(ArrayList<Benchmark> b) {
+        // No search/ benchmarks yet.
+    }
+}

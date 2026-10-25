@@ -4,67 +4,41 @@ import cajeta.collection.ArrayList;
 
 import dev.cajeta.bench.Benchmark;
 import dev.cajeta.bench.BenchMain;
-import bench.selftest.ExampleBenchmark;
-import bench.selftest.SumBench;
-import bench.selftest.VariantBench;
-import bench.lang.StringBuildBench;
-import bench.lang.StringSearchBench;
-import bench.lang.StringReplaceBench;
-import bench.lang.StringUpperBench;
-import bench.lang.StreamPipelineBench;
-import bench.lang.StreamParallelReduceBench;
-import bench.lang.SaxpyBench;
-import bench.lang.DotProductBench;
-import bench.lang.MandelbrotBench;
-import bench.lang.FannkuchBench;
-import bench.lang.SpectralNormBench;
-import bench.collection.ArrayListAppendBench;
-import bench.collection.HashMapIntBench;
-import bench.collection.HashMapStringBench;
-import bench.collection.HashSetDedupBench;
-import bench.collection.LinkedListBench;
-import bench.collection.HeapSortBench;
-import bench.collection.RedBlackTreeBench;
-import bench.collection.SortInt64Bench;
-import bench.collection.SortF64Bench;
-import bench.collection.SortStableBench;
-import bench.collection.BinarySearchBench;
-import bench.concurrent.AtomicBench;
-import bench.concurrent.TaskSpawnBench;
-import bench.time.InstantArithmeticBench;
-import bench.time.LocalDateArithmeticBench;
-import bench.hash.XXHash3Bench;
-import bench.hash.XXHash3_256kBench;
-import bench.hash.XXHash3_128Bench;
-import bench.hash.XXHash3_128_256kBench;
-import bench.hash.SipHashBench;
-import bench.codec.JsonTokenizeBench;
-import bench.codec.JsonBindBench;
-import bench.codec.JsonDomBench;
-import bench.codec.JsonSerializeBench;
-import bench.codec.JsonRoundtripBench;
-import bench.codec.JsonConformanceBench;
-import bench.codec.Base64EncodeBench;
-import bench.codec.Base64DecodeBench;
-import bench.math.ElementAccessBench;
-import bench.math.ElementSetBench;
-import bench.math.NpyLoadBench;
-import bench.math.MatMulBench;
-import bench.xpu.GpuMatMulBench;
-import bench.xpu.GpuMatMulF16Bench;
+import bench.selftest.SelftestRegistry;
+import bench.lang.LangRegistry;
+import bench.collection.CollectionRegistry;
+import bench.concurrent.ConcurrentRegistry;
+import bench.time.TimeRegistry;
+import bench.hash.HashRegistry;
+import bench.codec.CodecRegistry;
+import bench.io.IoRegistry;
+import bench.math.MathRegistry;
+import bench.nucleo.NucleoRegistry;
+import bench.wire.WireRegistry;
+import bench.search.SearchRegistry;
+import bench.process.ProcessRegistry;
+import bench.reflect.ReflectRegistry;
+import bench.aot.AotRegistry;
+import bench.xpu.XpuRegistry;
+import bench.gfx.GfxRegistry;
+import bench.toolchain.ToolchainRegistry;
 
 // Entry point for the benchmark reference's language + stdlib catalog
 // (specs/benchmark-reference-spec.md §2.1). Every benchmark lives under
-// bench/<package>/ and its area() is the catalog path "<package>/<slug>", the
-// id a page under bench/<package>/ carries.
+// bench/<package>/; its id <area>/<name> is the one a page under
+// bench/<package>/ carries.
 //
 // Adding a benchmark: write a dev.cajeta.bench.Benchmark subclass in
-// src/main/cajeta/bench/<package>/, give it area() = "<package>/<slug>", and
-// add one import + one `benchmarks.add(heap X());` line below.
-// test/layout_smoke.sh checks all three.
+// src/main/cajeta/bench/<package>/ with area() = "<package>" and name() =
+// "<slug>", and add one `b.add(heap X());` line to that directory's
+// <Package>Registry. This file only calls the registries (the selftest/
+// scaffold's, then the seventeen catalog packages' in catalog order) and is
+// never edited to add a benchmark. test/layout_smoke.sh checks all of it.
+// (The registries have distinct names because cajeta does not resolve a
+// fully-qualified static call such as bench.lang.Registry.register(...).)
 //
 // The command line is dev.cajeta.bench's BenchMain: --list | --run
-// [--area <package|package/slug>] [--bench <name>] [--out <results.csv>].
+// [--area <package>] [--bench <name>] [--out <results.csv>].
 // Env: CAJETA_BENCH_SMOKE=1 (warmup 1, trials 3, rows tagged `smoke`),
 // CAJETA_BENCH_MACHINE, CAJETA_BENCH_SCAFFOLD=1 (also register the harness's
 // own selftest/ benchmarks), PROFILE_DATA_DIR (the dataset cache).
@@ -73,67 +47,24 @@ public final class Bench {
     public static int32 main(String[] args) {
         // The list owns each element; the drop chain releases them at scope exit.
         ArrayList<Benchmark> benchmarks = heap ArrayList<Benchmark>();
-        // The harness's own scaffold benchmarks (lifecycle order, trial count,
-        // variant rows) are not catalog entries; only the harness smokes see them.
-        String scaffold = System.env.get("CAJETA_BENCH_SCAFFOLD");
-        if (scaffold != null && scaffold.equals("1")) {
-            benchmarks.add(heap ExampleBenchmark());
-            benchmarks.add(heap SumBench());
-            benchmarks.add(heap VariantBench());
-        }
-        // -- lang/ --
-        benchmarks.add(heap StringBuildBench());
-        benchmarks.add(heap StringSearchBench());
-        benchmarks.add(heap StringReplaceBench());
-        benchmarks.add(heap StringUpperBench());
-        benchmarks.add(heap StreamPipelineBench());
-        benchmarks.add(heap StreamParallelReduceBench());
-        benchmarks.add(heap SaxpyBench());
-        benchmarks.add(heap DotProductBench());
-        benchmarks.add(heap MandelbrotBench());
-        benchmarks.add(heap FannkuchBench());
-        benchmarks.add(heap SpectralNormBench());
-        // -- collection/ --
-        benchmarks.add(heap ArrayListAppendBench());
-        benchmarks.add(heap HashMapIntBench());
-        benchmarks.add(heap HashMapStringBench());
-        benchmarks.add(heap HashSetDedupBench());
-        benchmarks.add(heap LinkedListBench());
-        benchmarks.add(heap HeapSortBench());
-        benchmarks.add(heap RedBlackTreeBench());
-        benchmarks.add(heap SortInt64Bench());
-        benchmarks.add(heap SortF64Bench());
-        benchmarks.add(heap SortStableBench());
-        benchmarks.add(heap BinarySearchBench());
-        // -- concurrent/ --
-        benchmarks.add(heap AtomicBench());
-        benchmarks.add(heap TaskSpawnBench());
-        // -- time/ --
-        benchmarks.add(heap InstantArithmeticBench());
-        benchmarks.add(heap LocalDateArithmeticBench());
-        // -- hash/ --
-        benchmarks.add(heap XXHash3Bench());
-        benchmarks.add(heap XXHash3_256kBench());
-        benchmarks.add(heap XXHash3_128Bench());
-        benchmarks.add(heap XXHash3_128_256kBench());
-        benchmarks.add(heap SipHashBench());
-        // -- codec/ --
-        benchmarks.add(heap JsonTokenizeBench());
-        benchmarks.add(heap JsonBindBench());
-        benchmarks.add(heap JsonDomBench());
-        benchmarks.add(heap JsonSerializeBench());
-        benchmarks.add(heap JsonRoundtripBench());
-        benchmarks.add(heap JsonConformanceBench());
-        benchmarks.add(heap Base64EncodeBench());
-        benchmarks.add(heap Base64DecodeBench());
-        // -- math/ --
-        benchmarks.add(heap ElementAccessBench());
-        benchmarks.add(heap ElementSetBench());
-        benchmarks.add(heap NpyLoadBench());
-        benchmarks.add(heap MatMulBench());
-        // -- xpu/ --
-        benchmarks.add(heap GpuMatMulBench());
-        benchmarks.add(heap GpuMatMulF16Bench());
+        SelftestRegistry.register(benchmarks);
+        LangRegistry.register(benchmarks);
+        CollectionRegistry.register(benchmarks);
+        ConcurrentRegistry.register(benchmarks);
+        TimeRegistry.register(benchmarks);
+        HashRegistry.register(benchmarks);
+        CodecRegistry.register(benchmarks);
+        IoRegistry.register(benchmarks);
+        MathRegistry.register(benchmarks);
+        NucleoRegistry.register(benchmarks);
+        WireRegistry.register(benchmarks);
+        SearchRegistry.register(benchmarks);
+        ProcessRegistry.register(benchmarks);
+        ReflectRegistry.register(benchmarks);
+        AotRegistry.register(benchmarks);
+        XpuRegistry.register(benchmarks);
+        GfxRegistry.register(benchmarks);
+        ToolchainRegistry.register(benchmarks);
 
         return BenchMain.run(args, benchmarks);
     }
