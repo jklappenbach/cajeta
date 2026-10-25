@@ -1,0 +1,112 @@
+package bench.search;
+
+import cajeta.collection.ArrayList;
+import cajeta.search.distance.Distance;
+
+import dev.cajeta.bench.Benchmark;
+
+// search/distance-levenshtein and search/distance-jaro-winkler
+// (bench/search/distance/Distance.md): 1e6 pairs of 16-byte strings over the
+// letters a..h (seed 12345, bench/scripts/search_ref.py), generated in setup.
+// levenshtein: Distance.levenshtein per pair, the distances summed; check ==
+// 12760743 (smoke 1276356). jaro-winkler: the stdlib has no Jaro-Winkler, so
+// the bench-local JaroWinkler (same definition as strsim and rapidfuzz) is
+// what is measured, reported as a gap; check |sum - ref| <= 1e-6 * pairs.
+// Smoke: 1e5 pairs.
+public class DistanceBench extends Benchmark {
+
+    public boolean jw;
+    public ArrayList<String> as;
+    public ArrayList<String> bs;
+    public JaroWinkler jwc;
+    public int32 m;
+    public int64 lsum;
+    public float64 jsum;
+
+    public DistanceBench(boolean jaroWinkler) {
+        this.jw = jaroWinkler;
+    }
+
+    public String name() {
+        if (this.jw) {
+            return "distance-jaro-winkler";
+        }
+        return "distance-levenshtein";
+    }
+    public String area() { return "search"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 5; }
+    public int64 inputSize() { return (int64) this.m; }
+    public String unit() { return "pairs/s"; }
+
+    public String competitorNote() {
+        if (this.jw) {
+            if (SearchData.smoke()) {
+                return "bench-local JaroWinkler (cajeta.search.distance.Distance has no Jaro-Winkler); check: |sum - ref| <= 1e-6 * pairs; smoke size 1e5 pairs in place of 1e6";
+            }
+            return "bench-local JaroWinkler (cajeta.search.distance.Distance has no Jaro-Winkler); check: |sum - ref| <= 1e-6 * pairs";
+        }
+        if (SearchData.smoke()) {
+            return "Distance.levenshtein (two rolling rows; allocated per call); check: exact sum; smoke size 1e5 pairs in place of 1e6";
+        }
+        return "Distance.levenshtein (two rolling rows; allocated per call); check: exact sum";
+    }
+
+    public void setup() {
+        this.m = 1000000;
+        if (SearchData.smoke()) {
+            this.m = 100000;
+        }
+        SearchData g = heap SearchData((int64) 12345);
+        this.as = heap ArrayList<String>();
+        this.bs = heap ArrayList<String>();
+        int32 i = 0;
+        while (i < this.m) {
+            String a #= g.word(16, 8);
+            String b #= g.word(16, 8);
+            this.as.add(#a);
+            this.bs.add(#b);
+            i = i + 1;
+        }
+        this.jwc = heap JaroWinkler();
+    }
+
+    public void run(int32 iterations) {
+        if (this.jw) {
+            float64 s = 0.0;
+            int32 i = 0;
+            while (i < this.m) {
+                s = s + this.jwc.similarity(this.as.get(i), this.bs.get(i));
+                i = i + 1;
+            }
+            this.jsum = s;
+        } else {
+            int64 s = 0;
+            int32 i = 0;
+            while (i < this.m) {
+                s = s + (int64) Distance.levenshtein(this.as.get(i), this.bs.get(i));
+                i = i + 1;
+            }
+            this.lsum = s;
+        }
+    }
+
+    public boolean checkResult() {
+        boolean sm = SearchData.smoke();
+        if (this.jw) {
+            float64 ref = 613325.3143160543;
+            if (sm) {
+                ref = 61342.531185943684;
+            }
+            float64 d = this.jsum - ref;
+            if (d < 0.0) {
+                d = 0.0 - d;
+            }
+            return d <= 0.000001 * (float64) this.m;
+        }
+        if (sm) {
+            return this.lsum == (int64) 1276356;
+        }
+        return this.lsum == (int64) 12760743;
+    }
+}

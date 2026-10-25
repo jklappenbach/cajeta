@@ -1,0 +1,29 @@
+package bench.wire;
+
+import cajeta.wire.CompressStream;
+import dev.cajeta.codec.compress.DeflateStream;
+
+// A cajeta.wire.CompressStream over dev.cajeta.codec's pure-cajeta raw DEFLATE
+// encoder (DeflateStream: fixed-Huffman blocks, LZ77 window carried across
+// flushes). The stdlib ships CompressStream as an interface only; this is the
+// adapter the benchmark measures it through (cajeta-http's GzipCoding wraps
+// the same DeflateStream with gzip framing).
+public final class DeflateWireStream implements CompressStream {
+    DeflateStream def;
+
+    public DeflateWireStream(int32 level) {
+        this.def = heap DeflateStream(level);
+    }
+
+    public void write(int8[] src, int64 len) {
+        this.def.write(src, (int32) len);
+    }
+
+    public #int8[] flush() {
+        return this.def.syncFlush();
+    }
+
+    public #int8[] finish() {
+        return this.def.finish();
+    }
+}

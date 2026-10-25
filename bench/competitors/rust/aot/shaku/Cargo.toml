@@ -1,0 +1,18 @@
+[package]
+name = "aot-shaku"
+version = "0.1.0"
+edition = "2021"
+
+# aot/di-graph-100-startup competitor (bench/aot/Components.md): the generated
+# 100-component graph (src/main.rs, from bench/scripts/gen_di_graph.py) on shaku.
+[dependencies]
+shaku = "0.6"
+
+[[bin]]
+name = "aot-shaku"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

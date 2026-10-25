@@ -4,12 +4,18 @@ import cajeta.collection.ArrayList;
 
 import dev.cajeta.bench.Benchmark;
 
-// Registers every wire/ benchmark, in catalog order. A unit adds a wire/
-// benchmark by writing the class in this directory and one `b.add(heap X());`
-// line here; Bench.cajeta calls this and is never edited for it.
+// Registers every wire/ benchmark, in catalog order (the pages of bench/wire/:
+// Encoder, SchemaEncoder, CompressStream). A unit adds a wire/ benchmark by
+// writing the class in this directory and one `b.add(heap X());` line here;
+// Bench.cajeta calls this and is never edited for it.
 public final class WireRegistry {
 
     public static void register(ArrayList<Benchmark> b) {
-        // No wire/ benchmarks yet.
+        b.add(heap EncoderEncodeBench());
+        b.add(heap EncoderDecodeBench());
+        b.add(heap StructViewReadBench());
+        b.add(heap SchemaEncoderEncodeBench());
+        b.add(heap SchemaEncoderDecodeBench());
+        b.add(heap CompressStreamRoundtripBench());
     }
 }

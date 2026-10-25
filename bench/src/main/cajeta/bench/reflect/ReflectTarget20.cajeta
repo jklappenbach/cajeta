@@ -1,0 +1,49 @@
+package bench.reflect;
+
+// The reflect/ pages' 20-field class (a0..a19: 10 int64, 5 int32, 5 float64),
+// the class field-enumerate reads and one of the names class-lookup resolves.
+public class ReflectTarget20 {
+    public int64 a0;
+    public int64 a1;
+    public int64 a2;
+    public int64 a3;
+    public int64 a4;
+    public int64 a5;
+    public int64 a6;
+    public int64 a7;
+    public int64 a8;
+    public int64 a9;
+    public int32 a10;
+    public int32 a11;
+    public int32 a12;
+    public int32 a13;
+    public int32 a14;
+    public float64 a15;
+    public float64 a16;
+    public float64 a17;
+    public float64 a18;
+    public float64 a19;
+
+    public ReflectTarget20() {
+        this.a0 = 0;
+        this.a1 = 0;
+        this.a2 = 0;
+        this.a3 = 0;
+        this.a4 = 0;
+        this.a5 = 0;
+        this.a6 = 0;
+        this.a7 = 0;
+        this.a8 = 0;
+        this.a9 = 0;
+        this.a10 = 0;
+        this.a11 = 0;
+        this.a12 = 0;
+        this.a13 = 0;
+        this.a14 = 0;
+        this.a15 = 0.0;
+        this.a16 = 0.0;
+        this.a17 = 0.0;
+        this.a18 = 0.0;
+        this.a19 = 0.0;
+    }
+}

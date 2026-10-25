@@ -1,0 +1,132 @@
+package bench.search;
+
+import cajeta.collection.ArrayList;
+import cajeta.search.ngram.Index;
+
+import dev.cajeta.bench.Benchmark;
+
+// search/ngram-build and search/ngram-query (bench/search/ngram/Index.md):
+// Index<int32> (lowercased trigrams, the default) over the 1e5 keys of
+// bench/scripts/search_ref.py (seed 777).
+//   build: a fresh index of every key per trial. Check: the page's posting
+//     count cannot be read (Index exposes add and candidates only, a gap), so
+//     the check is that each of 100 sampled keys is a candidate of itself in
+//     the built index, and the expected posting count (998746, smoke 100205)
+//     is stated in the notes.
+//   query: candidates() for 1e5 queries (seed 999) against an index built in
+//     setup; check: the candidate counts summed == 53088630 (smoke 545614).
+// Smoke: 1e4 keys and 1e4 queries.
+public class NgramBench extends Benchmark {
+
+    public boolean query;
+    public ArrayList<String> keys;
+    public ArrayList<String> queries;
+    public Index<int32> idx;
+    public int32 k;
+    public int32 q;
+    public int64 cands;
+
+    public NgramBench(boolean query) {
+        this.query = query;
+    }
+
+    public String name() {
+        if (this.query) {
+            return "ngram-query";
+        }
+        return "ngram-build";
+    }
+    public String area() { return "search"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 3; }
+    public int64 inputSize() {
+        if (this.query) {
+            return (int64) this.q;
+        }
+        return (int64) this.k;
+    }
+    public String unit() {
+        if (this.query) {
+            return "queries/s";
+        }
+        return "keys/s";
+    }
+
+    public String competitorNote() {
+        if (this.query) {
+            if (SearchData.smoke()) {
+                return "Index<int32>.candidates (trigrams; deduplicated); check: candidate count sum == reference; smoke size 1e4 keys and 1e4 queries in place of 1e5";
+            }
+            return "Index<int32>.candidates (trigrams; deduplicated); check: candidate count sum == reference";
+        }
+        if (SearchData.smoke()) {
+            return "Index<int32>.add per key (trigrams; a fresh index per trial); check: 100 sampled keys are their own candidates (no posting-count accessor; expected postings 100205); smoke size 1e4 keys in place of 1e5";
+        }
+        return "Index<int32>.add per key (trigrams; a fresh index per trial); check: 100 sampled keys are their own candidates (no posting-count accessor; expected postings 998746)";
+    }
+
+    public void setup() {
+        this.k = SearchData.keyCount();
+        this.q = 100000;
+        if (SearchData.smoke()) {
+            this.q = 10000;
+        }
+        this.keys #= SearchData.keys(this.k);
+        if (this.query) {
+            this.queries #= SearchData.queries(this.keys, this.q);
+            this.idx #= this.build();
+        }
+    }
+
+    #Index<int32> build() {
+        Index<int32> ix = heap Index<int32>();
+        int32 i = 0;
+        while (i < this.k) {
+            ix.add(this.keys.get(i), i);
+            i = i + 1;
+        }
+        return ix;
+    }
+
+    public void run(int32 iterations) {
+        if (this.query) {
+            int64 c = 0;
+            int32 i = 0;
+            while (i < this.q) {
+                ArrayList<int32> r #= this.idx.candidates(this.queries.get(i));
+                c = c + (int64) r.count();
+                i = i + 1;
+            }
+            this.cands = c;
+        } else {
+            this.idx #= this.build();
+        }
+    }
+
+    public boolean checkResult() {
+        if (this.query) {
+            if (SearchData.smoke()) {
+                return this.cands == (int64) 545614;
+            }
+            return this.cands == (int64) 53088630;
+        }
+        int32 s = 0;
+        while (s < 100) {
+            int32 id = (s * 997) % this.k;
+            ArrayList<int32> r #= this.idx.candidates(this.keys.get(id));
+            boolean found = false;
+            int32 j = 0;
+            while (j < r.count()) {
+                if (r.get(j) == id) {
+                    found = true;
+                }
+                j = j + 1;
+            }
+            if (!found) {
+                return false;
+            }
+            s = s + 1;
+        }
+        return true;
+    }
+}

@@ -398,6 +398,58 @@ prereq_fftw_build() {
     echo "apt install make gcc (to build FFTW)"; return 1
 }
 
+# ---- protobuf, FlatBuffers, Cap'n Proto, built (unit 13, wire/) ---------------
+# The protobuf / flatbuffers / capnproto pins are source checkouts; the wire/
+# C++ competitor links the libraries and runs the code generators (protoc,
+# flatc, capnp + capnpc-c++) built from them, user-level, into
+# third_party/<name>-install. protobuf v36.2 needs Abseil; the abseil-cpp pin is
+# the version protobuf's cmake/dependencies.cmake names (20250512.1), handed to
+# its FetchContent as a local source dir, so nothing is downloaded at build time.
+# Cached like FFTW: the stamp records the pin commit(s) and the cmake flags, so a
+# re-run with the same pins is a check, not a rebuild.
+WIRE_CMAKE_FLAGS="-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON"
+PROTOBUF_FLAGS="$WIRE_CMAKE_FLAGS -Dprotobuf_BUILD_TESTS=OFF -Dprotobuf_BUILD_CONFORMANCE=OFF -Dprotobuf_BUILD_EXAMPLES=OFF -Dprotobuf_WITH_ZLIB=OFF -Dprotobuf_FORCE_FETCH_DEPENDENCIES=ON -DABSL_PROPAGATE_CXX_STD=ON -DCMAKE_CXX_STANDARD=17"
+FLATBUFFERS_FLAGS="$WIRE_CMAKE_FLAGS -DFLATBUFFERS_BUILD_TESTS=OFF -DFLATBUFFERS_BUILD_FLATHASH=OFF"
+CAPNP_FLAGS="$WIRE_CMAKE_FLAGS -DBUILD_TESTING=OFF -DWITH_OPENSSL=OFF -DWITH_ZLIB=OFF"
+wire_stamp() {  # name flags -> the stamp line for that build
+    case "$1" in
+        protobuf) printf '%s %s %s\n' "$(pin_field protobuf 6)" "$(pin_field abseil-cpp 6)" "$PROTOBUF_FLAGS" ;;
+        flatbuffers) printf '%s %s\n' "$(pin_field flatbuffers 6)" "$FLATBUFFERS_FLAGS" ;;
+        capnproto) printf '%s %s\n' "$(pin_field capnproto 6)" "$CAPNP_FLAGS" ;;
+    esac
+}
+wire_built_file() {
+    case "$1" in
+        protobuf) echo "bin/protoc lib/libprotobuf.a include/google/protobuf/message.h" ;;
+        flatbuffers) echo "bin/flatc lib/libflatbuffers.a include/flatbuffers/flatbuffers.h" ;;
+        capnproto) echo "bin/capnp bin/capnpc-c++ lib/libcapnp.a lib/libkj.a include/capnp/message.h" ;;
+    esac
+}
+check_wire_build() {  # name
+    local inst="$TP/$1-install" f
+    for f in $(wire_built_file "$1") .stamp; do [[ -f "$inst/$f" ]] || return 1; done
+    [[ "$(cat "$inst/.stamp")" == "$(wire_stamp "$1")" ]] || return 1
+    out "$(pin_field "$1" 5) (static; built)" "$inst" "$(wire_built_file "$1" | cut -d' ' -f1) + stamp == pins.tsv $1"
+}
+install_wire_build() {  # name
+    local name="$1" src="$TP/$1" bld="$TP/$1-build" inst="$TP/$1-install" flags extra=""
+    case "$name" in
+        protobuf) flags="$PROTOBUF_FLAGS"
+                  [[ -d "$TP/abseil-cpp/.git" ]] || install_pin abseil-cpp || return 1
+                  extra="-DFETCHCONTENT_SOURCE_DIR_ABSL=$TP/abseil-cpp" ;;
+        flatbuffers) flags="$FLATBUFFERS_FLAGS" ;;
+        capnproto) flags="$CAPNP_FLAGS" ;;
+    esac
+    [[ -d "$src/.git" ]] || install_pin "$name" || return 1
+    rm -rf "$bld" && mkdir -p "$bld" || return 1
+    cmake -S "$src" -B "$bld" -G "Unix Makefiles" -DCMAKE_INSTALL_PREFIX="$inst" $flags $extra || return 1
+    cmake --build "$bld" -j"$(nproc)" && cmake --install "$bld" && wire_stamp "$name" > "$inst/.stamp"
+}
+prereq_wire_build() {
+    command -v cmake >/dev/null && command -v g++ >/dev/null && return 0
+    echo "apt install cmake g++ (to build protobuf, FlatBuffers, Cap'n Proto)"; return 1
+}
+
 # ---- the item registry ---------------------------------------------------------
 # name|kind|check|install|prereq   (install/prereq may be "-"; check rc 2 = n/a)
 REGISTRY=(
@@ -423,6 +475,9 @@ while IFS=$'\t' read -r n k _rest; do
     REGISTRY+=("$n|$k|check_pin $n|install_pin $n|-")
 done < "$PINS"
 REGISTRY+=("fftw-build|library|check_fftw_build|install_fftw_build|prereq_fftw_build")
+REGISTRY+=("protobuf-build|library|check_wire_build protobuf|install_wire_build protobuf|prereq_wire_build")
+REGISTRY+=("flatbuffers-build|library|check_wire_build flatbuffers|install_wire_build flatbuffers|prereq_wire_build")
+REGISTRY+=("capnproto-build|library|check_wire_build capnproto|install_wire_build capnproto|prereq_wire_build")
 REGISTRY+=("python-venv|toolchain|check_venv|install_venv|prereq_python3")
 while read -r line; do
     d="${line%%[=<> ]*}"; [[ -z "$d" || "$d" == \#* ]] && continue

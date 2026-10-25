@@ -1,0 +1,65 @@
+package bench.process;
+
+import cajeta.process.Command;
+import cajeta.process.ProcessResult;
+
+import dev.cajeta.bench.Benchmark;
+
+// process/command-spawn-wait (bench/process/Command.md): spawn and wait
+// /bin/true 1e3 times through one Command (Command.run: posix_spawnp, then
+// waitpid; no stdio captured). Check: every exit code is 0. Smoke: 1e2.
+public class CommandSpawnWaitBench extends Benchmark {
+
+    public Command cmd;
+    public int32 r;
+    public int32 zeros;
+
+    public String name() { return "command-spawn-wait"; }
+    public String area() { return "process"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 5; }
+    public int64 inputSize() { return (int64) this.r; }
+    public String unit() { return "spawns/s"; }
+
+    static boolean smoke() {
+        String s = System.env.get("CAJETA_BENCH_SMOKE");
+        if (s == null) {
+            return false;
+        }
+        return s.equals("1") || s.equals("true") || s.equals("yes");
+    }
+
+    public String competitorNote() {
+        if (CommandSpawnWaitBench.smoke()) {
+            return "Command(/bin/true).run() per spawn (posix_spawnp + waitpid); check: every exit code 0" + "; smoke size 1e2 spawns in place of 1e3";
+        }
+        return "Command(/bin/true).run() per spawn (posix_spawnp + waitpid); check: every exit code 0";
+    }
+
+    public void setup() {
+        this.r = 1000;
+        if (CommandSpawnWaitBench.smoke()) {
+            this.r = 100;
+        }
+        String[] argv = heap String[1];
+        argv[0] = "/bin/true";
+        this.cmd = heap Command(#argv);
+    }
+
+    public void run(int32 iterations) {
+        int32 z = 0;
+        int32 i = 0;
+        while (i < this.r) {
+            ProcessResult pr #= this.cmd.run();
+            if (pr.launched() && pr.code() == 0) {
+                z = z + 1;
+            }
+            i = i + 1;
+        }
+        this.zeros = z;
+    }
+
+    public boolean checkResult() {
+        return this.zeros == this.r;
+    }
+}

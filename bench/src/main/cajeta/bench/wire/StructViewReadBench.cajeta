@@ -1,0 +1,68 @@
+package bench.wire;
+
+import cajeta.collection.ArrayList;
+
+import dev.cajeta.bench.Benchmark;
+
+// wire/struct-view-read (bench/wire/Encoder.md): read three fields (f1 int32,
+// f2 int64, f5 float64) from 1e6 records through the language's zero-copy
+// `view` (docs/specification/lang/Views.md): WireBatch overlays a u32 count
+// and the records' fixed little-endian layout (720 bytes each), and
+// b.recs[i].f1 is a load at a constant stride, with no decode and no copy. The
+// buffer (record r = pool[r % 1024], written by WireRecord.writeFixed) is built
+// in setup; each trial constructs the view (which validates the size once) and
+// reads. Check: sum of f1 + f2 + (int64)(f5 * 4) == WireExpect.viewSum*.
+public class StructViewReadBench extends Benchmark {
+
+    public int8[] buf;
+    public int32 m;
+    public int64 sum;
+
+    public String name() { return "struct-view-read"; }
+    public String area() { return "wire"; }
+    public int32 warmupIters() { return 2; }
+    public int32 measuredIters() { return 10; }
+    public int64 inputSize() { return (int64) this.m; }
+    public String unit() { return "records/s"; }
+
+    public String competitorNote() {
+        String s #= WireData.sizeNote();
+        return "view WireBatch { WireRecordView[] recs; } over the 720-byte fixed layout; three fields read per record; check: sum == description" + s;
+    }
+
+    public void setup() {
+        this.m = WireData.records();
+        ArrayList<WireRecord> pool #= WireData.pool();
+        int64 size = (int64) 4 + (int64) this.m * (int64) 720;
+        this.buf = heap int8[size];
+        int8[] b = this.buf;
+        WireRecord.put32(b, (int64) 0, this.m);
+        int64 off = (int64) 4;
+        int32 r = 0;
+        while (r < this.m) {
+            off = pool.get(r & 1023).writeFixed(b, off);
+            r = r + 1;
+        }
+    }
+
+    public void run(int32 iterations) {
+        int8[] b = this.buf;
+        WireBatch bt = WireBatch(b);
+        int32 n = (int32) bt.recs.count();
+        int64 s = 0;
+        int32 i = 0;
+        while (i < n) {
+            WireRecordView v = bt.recs[i];
+            s = s + (int64) v.f1 + v.f2 + (int64) (v.f5 * 4.0);
+            i = i + 1;
+        }
+        this.sum = s;
+    }
+
+    public boolean checkResult() {
+        if (WireData.smoke()) {
+            return this.sum == WireExpect.viewSumSmoke();
+        }
+        return this.sum == WireExpect.viewSumFull();
+    }
+}

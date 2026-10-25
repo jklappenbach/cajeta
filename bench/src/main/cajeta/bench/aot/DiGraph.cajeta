@@ -1,0 +1,23 @@
+package bench.aot;
+
+// The generated DI program's identity (bench/scripts/gen_di_graph.py writes
+// src/aot-digraph/ and prints the line): the line it must print, where its
+// binary lands and how it is built (`cajeta release` in src/aot-digraph, the
+// project's own task: release, O3, cpu=native, as the harness is built).
+public final class DiGraph {
+
+    public static #String expectLine() {
+        return "" + "components=100 value=875665";
+    }
+
+    public static #String binary() {
+        return "" + "src/aot-digraph/build/aot-digraph";
+    }
+
+    public static #String[] buildArgv(String compiler) {
+        String[] a = heap String[2];
+        a[0] = "" + compiler;
+        a[1] = "release";
+        return a;
+    }
+}

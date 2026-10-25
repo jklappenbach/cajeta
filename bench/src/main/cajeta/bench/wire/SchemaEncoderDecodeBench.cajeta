@@ -1,0 +1,68 @@
+package bench.wire;
+
+import cajeta.collection.ArrayList;
+import cajeta.wire.Schema;
+import cajeta.wire.SchemaEncoder;
+
+import dev.cajeta.bench.Benchmark;
+
+// wire/schemaencoder-decode (bench/wire/SchemaEncoder.md): decode 1e6 Avro
+// binary records back through cajeta.wire.SchemaEncoder<WireRecord>.decode
+// under the record.avsc Schema, each a fresh owned WireRecord. The 1024 pool encodings are made in setup; decode i reads
+// encoding i % 1024. Check: the field checksum of every decoded record
+// (integer fields plus (int64)(v * 4) of each float64) summed equals the
+// generator's WireExpect.decodeSum*.
+public class SchemaEncoderDecodeBench extends Benchmark {
+
+    public ArrayList<WireBytes> enc;
+    public SchemaEncoder<WireRecord> codec;
+    public Schema schema;
+    public int32 n;
+    public int64 sum;
+
+    public String name() { return "schemaencoder-decode"; }
+    public String area() { return "wire"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 5; }
+    public int64 inputSize() { return (int64) this.n; }
+    public String unit() { return "records/s"; }
+
+    public String competitorNote() {
+        String s #= WireData.sizeNote();
+        return "SchemaEncoder<WireRecord>.decode = WireRecordAvro (Avro binary under record.avsc; bench-local); check: summed field checksum == description" + s;
+    }
+
+    public void setup() {
+        this.n = WireData.records();
+        this.codec = heap WireRecordAvro();
+        this.schema #= WireRecordAvro.schema();
+        ArrayList<WireRecord> pool #= WireData.pool();
+        this.enc = heap ArrayList<WireBytes>();
+        int32 r = 0;
+        while (r < 1024) {
+            int8[] b #= this.codec.encode(pool.get(r), this.schema);
+            WireBytes w = heap WireBytes(#b);
+            this.enc.add(#w);
+            r = r + 1;
+        }
+    }
+
+    public void run(int32 iterations) {
+        int64 s = 0;
+        int32 i = 0;
+        while (i < this.n) {
+            WireBytes w = this.enc.get(i & 1023);
+            WireRecord rec #= this.codec.decode(w.b, this.schema);
+            s = s + rec.checksum();
+            i = i + 1;
+        }
+        this.sum = s;
+    }
+
+    public boolean checkResult() {
+        if (WireData.smoke()) {
+            return this.sum == WireExpect.decodeSumSmoke();
+        }
+        return this.sum == WireExpect.decodeSumFull();
+    }
+}

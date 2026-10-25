@@ -1,0 +1,124 @@
+package bench.process;
+
+import cajeta.io.file.FileReader;
+import cajeta.io.file.FileWriter;
+import cajeta.process.Command;
+import cajeta.process.Process;
+import cajeta.process.ProcessResult;
+
+import dev.cajeta.bench.Benchmark;
+
+// process/process-pipe-100mb (bench/process/Process.md): push 100 MiB of
+// data[i] = (i * 31 + 7) & 0xFF through `cat` and read it back. Command.start
+// with piped stdin and stdout; the parent alternates: write one 64 KiB piece
+// (one pipe buffer, so the write never blocks) then read until that piece is
+// back. Lockstep, not a concurrent writer: Command.run() with stdinBytes
+// deadlocks once the input passes a pipe buffer (it writes all of stdin before
+// it drains stdout; measured with 1 MiB through cat, and its timeout cannot
+// fire), and FileWriter.write and FileReader.read address their buffer from
+// index 0, so each piece is copied into the write buffer first. Check: byte
+// count and the sum of the unsigned bytes read back. Smoke: 10 MiB.
+public class ProcessPipeBench extends Benchmark {
+
+    public int8[] data;
+    public int8[] wbuf;
+    public int8[] rbuf;
+    public int64 size;
+    public int64 got;
+    public int64 sum;
+    public int64 want;
+    public int32 exit;
+
+    public String name() { return "process-pipe-100mb"; }
+    public String area() { return "process"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 5; }
+    public int64 inputSize() { return this.size / (int64) 1048576; }
+    public String unit() { return "MB/s"; }
+
+    public String competitorNote() {
+        if (CommandSpawnWaitBench.smoke()) {
+            return "Command.start (pipeStdin + pipeStdout) and lockstep 64 KiB write/read (Command.run with stdinBytes deadlocks past one pipe buffer: a stdlib defect); check: byte count and unsigned byte sum" + "; smoke size 10 MiB in place of 100 MiB";
+        }
+        return "Command.start (pipeStdin + pipeStdout) and lockstep 64 KiB write/read (Command.run with stdinBytes deadlocks past one pipe buffer: a stdlib defect); check: byte count and unsigned byte sum";
+    }
+
+    public void setup() {
+        this.size = (int64) 104857600;
+        if (CommandSpawnWaitBench.smoke()) {
+            this.size = (int64) 10485760;
+        }
+        this.data = heap int8[this.size];
+        int8[] d = this.data;
+        int64 w = (int64) 0;
+        int64 i = (int64) 0;
+        while (i < this.size) {
+            int64 v = (i * (int64) 31 + (int64) 7) & (int64) 255;
+            d[i] = (int8) v;
+            w = w + v;
+            i = i + 1;
+        }
+        this.want = w;
+        this.wbuf = heap int8[65536];
+        this.rbuf = heap int8[65536];
+    }
+
+    public void run(int32 iterations) {
+        String[] argv = heap String[1];
+        argv[0] = "cat";
+        Command cmd = heap Command(#argv);
+        cmd.pipeStdin();
+        cmd.pipeStdout();
+        Process p #= cmd.start();
+        FileWriter w #= p.stdin();
+        FileReader r #= p.stdout();
+        int8[] d = this.data;
+        int8[] wb = this.wbuf;
+        int8[] rb = this.rbuf;
+        int64 got = (int64) 0;
+        int64 sum = (int64) 0;
+        int64 off = (int64) 0;
+        while (off < this.size) {
+            int64 len = (int64) 65536;
+            if (off + len > this.size) {
+                len = this.size - off;
+            }
+            int64 j = (int64) 0;
+            while (j < len) {
+                wb[j] = d[off + j];
+                j = j + 1;
+            }
+            w.write(wb, (int32) len);
+            off = off + len;
+            while (got < off) {
+                int32 n = r.read(rb, 65536);
+                if (n <= 0) {
+                    got = off + (int64) 1;   // EOF early: fails the count check
+                } else {
+                    int32 k = 0;
+                    while (k < n) {
+                        sum = sum + (((int64) rb[k]) & (int64) 255);
+                        k = k + 1;
+                    }
+                    got = got + (int64) n;
+                }
+            }
+        }
+        w.close();
+        int32 n2 = r.read(rb, 65536);
+        while (n2 > 0) {
+            got = got + (int64) n2;
+            n2 = r.read(rb, 65536);
+        }
+        r.close();
+        ProcessResult res #= p.waitFor();
+        this.exit = res.code();
+        p.close();
+        this.got = got;
+        this.sum = sum;
+    }
+
+    public boolean checkResult() {
+        return this.exit == 0 && this.got == this.size && this.sum == this.want;
+    }
+}

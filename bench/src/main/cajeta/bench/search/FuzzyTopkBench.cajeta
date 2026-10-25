@@ -1,0 +1,188 @@
+package bench.search;
+
+import cajeta.collection.ArrayList;
+import cajeta.search.distance.Distance;
+import cajeta.search.fuzzy.Match;
+import cajeta.search.fuzzy.Matcher;
+
+import dev.cajeta.bench.Benchmark;
+
+// search/fuzzy-topk (bench/search/fuzzy/Matcher.md): top-10 matches for 1e4
+// queries over 1e5 keys. Keys (seed 777) and queries (seed 999: a key with one
+// substitution, transposition or deletion) per bench/scripts/search_ref.py;
+// the Matcher<int32> (bigram prefilter, Distance.damerau = OSA scoring,
+// threshold max(1, len/2), ranked by distance then key) is built in setup.
+// Matcher.match returns every survivor ranked; it has no limit parameter, so
+// the top 10 are its first 10 (a gap: the page's top-k is a slice here, after
+// a full rank). Check: recall@10 over the first 100 queries against brute
+// force (Distance.damerau over every key, same threshold and ranking) >= 0.95
+// (the bigram prefilter is a recall-oriented approximation: measured 106/107
+// at smoke size; the row notes carry the count).
+// Smoke: 1e3 queries over 1e4 keys.
+public class FuzzyTopkBench extends Benchmark {
+
+    public ArrayList<String> keys;
+    public ArrayList<String> queries;
+    public Matcher<int32> matcher;
+    public int32 q;
+    public int64 hits;
+    public int64 sink;
+    public int64 truthHits;
+    public int64 recallHits;
+
+    public String name() { return "fuzzy-topk"; }
+    public String area() { return "search"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 3; }
+    public int64 inputSize() { return (int64) this.q; }
+    public String unit() { return "queries/s"; }
+
+    public String competitorNote() {
+        if (SearchData.smoke()) {
+            return "Matcher<int32>.match (bigram index + OSA; threshold max(1;len/2)); first 10 of the ranked list (no top-k limit in the API); check: recall@10 vs brute force over 100 queries >= 0.95 (" + this.recallHits + "/" + this.truthHits + ")" + "; smoke size 1e3 queries over 1e4 keys in place of 1e4 over 1e5";
+        }
+        return "Matcher<int32>.match (bigram index + OSA; threshold max(1;len/2)); first 10 of the ranked list (no top-k limit in the API); check: recall@10 vs brute force over 100 queries >= 0.95 (" + this.recallHits + "/" + this.truthHits + ")";
+    }
+
+    public void setup() {
+        int32 k = SearchData.keyCount();
+        this.q = 10000;
+        if (SearchData.smoke()) {
+            this.q = 1000;
+        }
+        this.keys #= SearchData.keys(k);
+        this.queries #= SearchData.queries(this.keys, this.q);
+        this.matcher = heap Matcher<int32>();
+        int32 i = 0;
+        while (i < k) {
+            this.matcher.add(this.keys.get(i), i);
+            i = i + 1;
+        }
+    }
+
+    public void run(int32 iterations) {
+        int64 h = 0;
+        int64 s = 0;
+        int32 i = 0;
+        while (i < this.q) {
+            ArrayList<Match<int32>> r #= this.matcher.match(this.queries.get(i));
+            int32 n = (int32) r.count();
+            if (n > 10) {
+                n = 10;
+            }
+            int32 j = 0;
+            while (j < n) {
+                Match<int32> mt = r.get(j);
+                s = s + (int64) mt.value() + (int64) mt.distance();
+                j = j + 1;
+            }
+            h = h + (int64) n;
+            i = i + 1;
+        }
+        this.hits = h;
+        this.sink = s;
+    }
+
+    // The brute-force top 10 of `query` as key ids into out[0..), returned count.
+    int32 brute(String query, int32[] ids, int32[] dists) {
+        int32 t = (int32) query.byteLength() / 2;
+        if (t < 1) {
+            t = 1;
+        }
+        int32 n = 0;
+        int32 k = (int32) this.keys.count();
+        int32 i = 0;
+        while (i < k) {
+            String key = this.keys.get(i);
+            int32 d = Distance.damerau(query, key);
+            if (d <= t) {
+                // insert (d, key) into the sorted top-10
+                int32 pos = n;
+                while (pos > 0 && this.before(d, key, dists[pos - 1], this.keys.get(ids[pos - 1]))) {
+                    pos = pos - 1;
+                }
+                if (pos < 10) {
+                    int32 e = n;
+                    if (e > 9) {
+                        e = 9;
+                    }
+                    while (e > pos) {
+                        ids[e] = ids[e - 1];
+                        dists[e] = dists[e - 1];
+                        e = e - 1;
+                    }
+                    ids[pos] = i;
+                    dists[pos] = d;
+                    if (n < 10) {
+                        n = n + 1;
+                    }
+                }
+            }
+            i = i + 1;
+        }
+        return n;
+    }
+
+    boolean before(int32 d1, String k1, int32 d2, String k2) {
+        if (d1 != d2) {
+            return d1 < d2;
+        }
+        int32 l1 = (int32) k1.byteLength();
+        int32 l2 = (int32) k2.byteLength();
+        int32 lim = l1;
+        if (l2 < lim) {
+            lim = l2;
+        }
+        int32 i = 0;
+        while (i < lim) {
+            int8 a = k1.charAt(i);
+            int8 b = k2.charAt(i);
+            if (a != b) {
+                return a < b;
+            }
+            i = i + 1;
+        }
+        return l1 < l2;
+    }
+
+    public boolean checkResult() {
+        int32[] ids = heap int32[10];
+        int32[] dists = heap int32[10];
+        int64 truth = 0;
+        int64 got = 0;
+        int32 qi = 0;
+        while (qi < 100) {
+            String query = this.queries.get(qi);
+            int32 n = this.brute(query, ids, dists);
+            ArrayList<Match<int32>> r #= this.matcher.match(query);
+            int32 m = (int32) r.count();
+            if (m > 10) {
+                m = 10;
+            }
+            int32 a = 0;
+            while (a < n) {
+                int32 b = 0;
+                boolean found = false;
+                while (b < m) {
+                    Match<int32> mt = r.get(b);
+                    if (mt.value() == ids[a]) {
+                        found = true;
+                    }
+                    b = b + 1;
+                }
+                if (found) {
+                    got = got + 1;
+                }
+                a = a + 1;
+            }
+            truth = truth + (int64) n;
+            qi = qi + 1;
+        }
+        this.truthHits = truth;
+        this.recallHits = got;
+        if (truth == 0) {
+            return false;
+        }
+        return (float64) got >= 0.95 * (float64) truth;
+    }
+}

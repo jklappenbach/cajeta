@@ -1,0 +1,20 @@
+[package]
+name = "search-search"
+version = "0.1.0"
+edition = "2021"
+
+# search/ competitors (bench/search/*.md): strsim (levenshtein, jaro_winkler),
+# nucleo-matcher (fuzzy top-k), std HashMap trigram index (ngram; the page
+# names no Rust library).
+[dependencies]
+strsim = "=0.11.1"
+nucleo-matcher = "=0.3.1"
+
+[[bin]]
+name = "search-search"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

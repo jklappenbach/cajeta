@@ -1,0 +1,63 @@
+package bench.reflect;
+
+import cajeta.reflect.Class;
+
+import dev.cajeta.bench.Benchmark;
+
+// reflect/field-enumerate (bench/reflect/Class.md): enumerate the fields of the
+// 20-field ReflectTarget20 1e6 times: Class.of(obj), getFieldCount(), and
+// getFieldName(i) for each field (an owned #String per name). Check: 20 fields
+// per enumeration and 50 name bytes (a0..a19) per enumeration. Smoke: 1e5.
+public class FieldEnumerateBench extends Benchmark {
+
+    public ReflectTarget20 obj;
+    public int32 n;
+    public int64 fields;
+    public int64 nameBytes;
+
+    public String name() { return "field-enumerate"; }
+    public String area() { return "reflect"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 5; }
+    public int64 inputSize() { return (int64) this.n; }
+    public String unit() { return "classes/s"; }
+
+    public String competitorNote() {
+        if (ClassLookupBench.smoke()) {
+            return "Class.of + getFieldCount + getFieldName(i) (owned String per name); check: field count and name bytes" + "; smoke size 1e5 enumerations in place of 1e6";
+        }
+        return "Class.of + getFieldCount + getFieldName(i) (owned String per name); check: field count and name bytes";
+    }
+
+    public void setup() {
+        this.n = 1000000;
+        if (ClassLookupBench.smoke()) {
+            this.n = 100000;
+        }
+        this.obj = heap ReflectTarget20();
+    }
+
+    public void run(int32 iterations) {
+        int64 f = 0;
+        int64 nb = 0;
+        int32 i = 0;
+        while (i < this.n) {
+            Class<?> c = Class.of(this.obj);
+            int32 fc = c.getFieldCount();
+            int32 j = 0;
+            while (j < fc) {
+                String nm #= c.getFieldName(j);
+                nb = nb + (int64) nm.byteLength();
+                j = j + 1;
+            }
+            f = f + (int64) fc;
+            i = i + 1;
+        }
+        this.fields = f;
+        this.nameBytes = nb;
+    }
+
+    public boolean checkResult() {
+        return this.fields == (int64) 20 * (int64) this.n && this.nameBytes == (int64) 50 * (int64) this.n;
+    }
+}

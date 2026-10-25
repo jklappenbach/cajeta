@@ -1,0 +1,73 @@
+package bench.aot;
+
+import cajeta.error.Exception;
+import cajeta.io.file.Path;
+import cajeta.process.Command;
+import cajeta.process.ProcessResult;
+
+import dev.cajeta.bench.ExternalBenchmark;
+
+// aot/di-graph-100-startup (bench/aot/Components.md): start a process whose
+// compile-time DI graph (cajeta.aot @Component / @Inject) has 100 components,
+// 10 deep, and time it to its first injected call: the generated program
+// (src/aot-digraph/, from bench/scripts/gen_di_graph.py, the same description
+// every competitor framework is generated from) resolves the root component,
+// calls root.value() through the graph, prints `components=<constructed>
+// value=<V>` and exits. The row is the whole process, spawn to exit, timed by
+// the harness (ExternalBenchmark). setup() builds the program (`$CAJETA
+// release` in src/aot-digraph, else <repo>/build/src/cajeta; untimed) when
+// src/aot-digraph/build/aot-digraph is not there yet. Check: exit 0 and
+// stdout is exactly the expected line (components=100).
+public class DiGraphStartupBench extends ExternalBenchmark {
+
+    public String expect;
+
+    public DiGraphStartupBench() {
+        super();
+        this.describe("di-graph-100-startup", "aot");
+        this.expect = "" + DiGraph.expectLine();
+        String[] argv = heap String[1];
+        argv[0] = "" + DiGraph.binary();
+        this.command(#argv);
+        this.iterations(3, 20);
+    }
+
+    public String unit() { return ""; }
+
+    public String competitorNote() {
+        return "process start to exit after the first injected call; 100 @Component classes; 10 levels (src/aot-digraph); check: stdout == " + this.expect;
+    }
+
+    public void setup() {
+        String bp #= DiGraph.binary();
+        Path bin #= Path.of(bp);
+        if (bin.exists()) {
+            return;
+        }
+        String cj = System.env.get("CAJETA");
+        String compiler = "";
+        if (cj == null) {
+            compiler = "" + "../../../build/src/cajeta";   // <repo>/build/src/cajeta from src/aot-digraph
+        } else {
+            compiler = "" + cj;
+        }
+        String[] argv #= DiGraph.buildArgv(compiler);
+        Command c = heap Command(#argv);
+        String dir = "" + "src/aot-digraph";
+        c.workingDir(#dir);
+        c.captureStdout();
+        c.captureStderr();
+        ProcessResult r #= c.run();
+        if (!r.launched() || r.code() != 0) {
+            throw heap Exception("building src/aot-digraph failed (exit " + r.code() + ")");
+        }
+    }
+
+    public boolean checkResult() {
+        if (this.lastExitCode != 0) {
+            return false;
+        }
+        String out = this.stdout();
+        return out.equals(this.expect) || out.equals(this.expect + "\n");
+    }
+}

@@ -1,0 +1,22 @@
+[package]
+name = "wire-wire"
+version = "0.1.0"
+edition = "2021"
+
+# wire/ competitors (bench/wire/Encoder.md, CompressStream.md): bincode 1.3 with
+# serde derive (encoder-encode/decode), flate2 (raw DEFLATE, default
+# miniz_oxide backend) and zstd (libzstd via zstd-sys) for compressstream-roundtrip.
+[dependencies]
+bincode = "1.3"
+serde = { version = "1", features = ["derive"] }
+flate2 = "1.1"
+zstd = "0.13"
+
+[[bin]]
+name = "wire-wire"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

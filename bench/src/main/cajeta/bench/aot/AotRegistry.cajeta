@@ -4,12 +4,12 @@ import cajeta.collection.ArrayList;
 
 import dev.cajeta.bench.Benchmark;
 
-// Registers every aot/ benchmark, in catalog order. A unit adds a aot/
-// benchmark by writing the class in this directory and one `b.add(heap X());`
-// line here; Bench.cajeta calls this and is never edited for it.
+// Registers every aot/ benchmark, in catalog order (bench/aot/Components.md).
+// A unit adds an aot/ benchmark by writing the class in this directory and one
+// `b.add(heap X());` line here; Bench.cajeta calls this and is never edited for it.
 public final class AotRegistry {
 
     public static void register(ArrayList<Benchmark> b) {
-        // No aot/ benchmarks yet.
+        b.add(heap DiGraphStartupBench());
     }
 }

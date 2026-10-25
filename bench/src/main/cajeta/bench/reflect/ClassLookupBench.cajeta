@@ -1,0 +1,74 @@
+package bench.reflect;
+
+import cajeta.collection.ArrayList;
+import cajeta.lang.Optional;
+import cajeta.reflect.Class;
+
+import dev.cajeta.bench.Benchmark;
+
+// reflect/class-lookup (bench/reflect/Class.md): 1e7 Class.forName lookups by
+// canonical name, cycling over four names (ReflectTarget20, ClassLookupBench,
+// FieldEnumerateBench, ReflectRegistry in bench.reflect). Each returns
+// Optional<Class<?>> from the process class registry. Check: every lookup
+// is present. Smoke: 1e6.
+public class ClassLookupBench extends Benchmark {
+
+    public ArrayList<String> names;
+    public int32 n;
+    public int32 found;
+    public int64 sink;
+
+    public String name() { return "class-lookup"; }
+    public String area() { return "reflect"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 5; }
+    public int64 inputSize() { return (int64) this.n; }
+    public String unit() { return "lookups/s"; }
+
+    static boolean smoke() {
+        String s = System.env.get("CAJETA_BENCH_SMOKE");
+        if (s == null) {
+            return false;
+        }
+        return s.equals("1") || s.equals("true") || s.equals("yes");
+    }
+
+    public String competitorNote() {
+        if (ClassLookupBench.smoke()) {
+            return "Class.forName(name) -> Optional<Class<?>>; four names cycled; check: every lookup present" + "; smoke size 1e6 lookups in place of 1e7";
+        }
+        return "Class.forName(name) -> Optional<Class<?>>; four names cycled; check: every lookup present";
+    }
+
+    public void setup() {
+        this.n = 10000000;
+        if (ClassLookupBench.smoke()) {
+            this.n = 1000000;
+        }
+        this.names = heap ArrayList<String>();
+        this.names.add("bench.reflect.ReflectTarget20");
+        this.names.add("bench.reflect.ClassLookupBench");
+        this.names.add("bench.reflect.FieldEnumerateBench");
+        this.names.add("bench.reflect.ReflectRegistry");
+    }
+
+    public void run(int32 iterations) {
+        int32 f = 0;
+        int64 s = 0;
+        int32 i = 0;
+        while (i < this.n) {
+            Optional<Class<?>> c = Class.forName(this.names.get(i & 3));
+            if (c.isPresent()) {
+                f = f + 1;
+                s = s + (int64) c.get().getFieldCount();
+            }
+            i = i + 1;
+        }
+        this.found = f;
+        this.sink = s;
+    }
+
+    public boolean checkResult() {
+        return this.found == this.n;
+    }
+}

@@ -1,0 +1,139 @@
+package bench.wire;
+
+import cajeta.collection.ArrayList;
+import cajeta.wire.CompressStream;
+import dev.cajeta.codec.compress.InflateStream;
+
+import dev.cajeta.bench.Benchmark;
+
+// wire/compressstream-roundtrip (bench/wire/CompressStream.md): write 64 MiB
+// of records (the fixed 720-byte layout of records 0, 1, 2, ..., pool r % 1024,
+// cut at 64 MiB) through a cajeta.wire.CompressStream in 64 KiB writes,
+// flush() after every 1 MiB, finish(); then stream-decompress the segments
+// (dev.cajeta.codec InflateStream, fed segment by segment, drained as it goes)
+// and compare every byte with the input. Level 1. The CompressStream is
+// DeflateWireStream over dev.cajeta.codec's pure-cajeta DEFLATE (no zlib).
+// Variants: zlib (the DEFLATE stream) and zstd, skipped: neither the stdlib nor
+// dev.cajeta.codec has a zstd stream. CompressStream.write reads src from index
+// 0, so each 64 KiB piece is copied into a scratch buffer first (competitors
+// pass slices). Smoke: 8 MiB.
+public class CompressStreamRoundtripBench extends Benchmark {
+
+    public int8[] data;
+    public int8[] piece;
+    public int64 size;
+    public int64 compressed;
+    public boolean equal;
+
+    public String name() { return "compressstream-roundtrip"; }
+    public String area() { return "wire"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 3; }
+    public int64 inputSize() { return this.size / (int64) 1048576; }
+    public String unit() { return "MB/s"; }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("zlib");
+        v.add("zstd");
+        return v;
+    }
+
+    public boolean supportsVariant(String variant) {
+        return variant.equals("zlib");
+    }
+
+    public String skipReason() {
+        return "no zstd CompressStream in the stdlib or dev.cajeta.codec (cajeta.wire ships the interface; dev.cajeta.codec has DEFLATE; Snappy; Lz4)";
+    }
+
+    public String competitorNote() {
+        if (WireData.smoke()) {
+            return "CompressStream = DeflateWireStream (dev.cajeta.codec 0.9.1 DeflateStream: pure-cajeta raw DEFLATE; fixed Huffman; level 1; InflateStream to decode); 64 KiB writes copied into a scratch piece; flush every 1 MiB; check: byte equality" + "; smoke size 8 MiB in place of 64 MiB";
+        }
+        return "CompressStream = DeflateWireStream (dev.cajeta.codec 0.9.1 DeflateStream: pure-cajeta raw DEFLATE; fixed Huffman; level 1; InflateStream to decode); 64 KiB writes copied into a scratch piece; flush every 1 MiB; check: byte equality";
+    }
+
+    public void setup() {
+        this.size = (int64) 67108864;
+        if (WireData.smoke()) {
+            this.size = (int64) 8388608;
+        }
+        ArrayList<WireRecord> pool #= WireData.pool();
+        int64 cap = this.size + (int64) 720;
+        int8[] full = heap int8[cap];
+        int64 off = (int64) 0;
+        int32 r = 0;
+        while (off < this.size) {
+            off = pool.get(r & 1023).writeFixed(full, off);
+            r = r + 1;
+        }
+        this.data #= full;
+        this.piece = heap int8[65536];
+    }
+
+    public void prepare(String variant) {
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        int8[] d = this.data;
+        int8[] p = this.piece;
+        CompressStream cs = heap DeflateWireStream(1);
+        ArrayList<WireBytes> segs = heap ArrayList<WireBytes>();
+        int64 csize = (int64) 0;
+        int64 off = (int64) 0;
+        while (off < this.size) {
+            int64 len = (int64) 65536;
+            if (off + len > this.size) {
+                len = this.size - off;
+            }
+            int64 j = (int64) 0;
+            while (j < len) {
+                p[j] = d[off + j];
+                j = j + 1;
+            }
+            cs.write(p, len);
+            off = off + len;
+            if ((off & (int64) 1048575) == (int64) 0 && off < this.size) {
+                int8[] seg #= cs.flush();
+                csize = csize + (int64) seg.count();
+                WireBytes w = heap WireBytes(#seg);
+                segs.add(#w);
+            }
+        }
+        int8[] tail #= cs.finish();
+        csize = csize + (int64) tail.count();
+        WireBytes wt = heap WireBytes(#tail);
+        segs.add(#wt);
+
+        InflateStream inf = heap InflateStream();
+        boolean eq = true;
+        int64 pos = (int64) 0;
+        int32 k = 0;
+        while (k < segs.count()) {
+            WireBytes w = segs.get(k);
+            inf.feed(w.b, (int32) w.b.count());
+            int8[] out #= inf.drain();
+            int64 n = (int64) out.count();
+            if (pos + n > this.size) {
+                eq = false;
+                n = this.size - pos;
+            }
+            int64 q = (int64) 0;
+            while (q < n) {
+                if (out[q] != d[pos + q]) {
+                    eq = false;
+                }
+                q = q + 1;
+            }
+            pos = pos + n;
+            k = k + 1;
+        }
+        this.compressed = csize;
+        this.equal = eq && pos == this.size && inf.finished();
+    }
+
+    public boolean checkResult() {
+        return this.equal;
+    }
+}

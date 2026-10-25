@@ -105,3 +105,59 @@ asm-commons	library	jar	org/ow2/asm/asm-commons/9.7.1/asm-commons-9.7.1.jar	9.7.
 asm-analysis	library	jar	org/ow2/asm/asm-analysis/9.7.1/asm-analysis-9.7.1.jar	9.7.1	85b29371884ba31bb76edf22323c2c24e172c3267a67152eba3d1ccc2e041ef2
 asm-tree	library	jar	org/ow2/asm/asm-tree/9.7.1/asm-tree-9.7.1.jar	9.7.1	9929881f59eb6b840e86d54570c77b59ce721d104e6dfd7a40978991c2d3b41f
 asm-util	library	jar	org/ow2/asm/asm-util/9.7.1/asm-util-9.7.1.jar	9.7.1	f885be71b5c90556f5f1ad1c4f9276b29b96057c497d46666fe4ddbec3cb43c6
+# --- unit 13 (wire/, search/, aot/; benchmark-reference spec §6.10-6.12) ---
+# --- wire/ (unit 13): Abseil for protobuf v36.2 (the version its cmake/dependencies.cmake names) ---
+abseil-cpp	library	git	https://github.com/abseil/abseil-cpp	20250512.1	76bb24329e8bf5f39704eb10d21b9a80befa7c81
+# --- wire/ Java jars (unit 13; Maven Central, sha1 cross-checked 2026-10-25). protobuf-java 4.36.2 is the
+# Java runtime of protobuf v36.2 (the C++ pin); Avro 1.12.2 runs on the pinned Jackson 2.22.0 (its pom asks
+# 2.22.1, binary-compatible) and slf4j-api (no binding: slf4j's NOP default). zstd-jni bundles libzstd 1.5.7.
+protobuf-java	library	jar	com/google/protobuf/protobuf-java/4.36.2/protobuf-java-4.36.2.jar	4.36.2	0773e72eaf375e1285df330575bfec5bda5da674d544d0e142a17f89c8f754da
+avro	library	jar	org/apache/avro/avro/1.12.2/avro-1.12.2.jar	1.12.2	6522e2a146b859ad158bb024dcc3b0bc826680794a2523b0881dafcbd59ce2df
+slf4j-api	library	jar	org/slf4j/slf4j-api/2.0.18/slf4j-api-2.0.18.jar	2.0.18	44508fd1576500688c790b190acdd16fec4f8c79a3e0b900afd70503cf055f55
+zstd-jni	library	jar	com/github/luben/zstd-jni/1.5.7-24/zstd-jni-1.5.7-24.jar	1.5.7-24	79f5e678ce437f09d5ab55df1c6e7fc8cf6a2eb8e73052f34b143464062fcb0b
+# --- search/ Java jars (unit 13): Lucene for fuzzy-topk (FuzzyQuery) and ngram-* (NGramTokenizer index); core has no deps ---
+lucene-core	library	jar	org/apache/lucene/lucene-core/10.5.2/lucene-core-10.5.2.jar	10.5.2	39210e1024da5c31d1ad7571d622ebb122a8c4e23ff42e9bc380124973d8c635
+lucene-analysis-common	library	jar	org/apache/lucene/lucene-analysis-common/10.5.2/lucene-analysis-common-10.5.2.jar	10.5.2	b1ee60ca6cd5951cc22dee71f8a0434e4f44e61e19495918c8ed7b5992c6cbea
+# --- aot/ Java jars (unit 13; Maven Central, transitive closure as resolved by Maven 3.8.7 on 2026-10-25) ---
+# Spring 7.0.10 (spring-context + closure), Guice 7.0.0 (+ closure), Dagger 2.60.1 runtime, and the
+# dagger-compiler 2.60.1 annotation-processor closure (build-time only; aot-daggerc-* items).
+aot-commons-logging-1.3.5	library	jar	commons-logging/commons-logging/1.3.5/commons-logging-1.3.5.jar	1.3.5	6d7a744e4027649fbb50895df9497d109f98c766a637062fe8d2eabbb3140ba4
+aot-micrometer-commons-1.16.8	library	jar	io/micrometer/micrometer-commons/1.16.8/micrometer-commons-1.16.8.jar	1.16.8	66ebb98b23ec65300b5b670f8ff49e1cc1400e71ebb7881390cd10bc6ed492ad
+aot-micrometer-observation-1.16.8	library	jar	io/micrometer/micrometer-observation/1.16.8/micrometer-observation-1.16.8.jar	1.16.8	e9640e8a4c77fe458deada6db9b8e1c094e519ebc333a3d005c15eebb1be942c
+aot-jspecify-1.0.1	library	jar	org/jspecify/jspecify/1.0.1/jspecify-1.0.1.jar	1.0.1	070d75f261fe4c5b8202508366715f7f2d4660f88c8ef7e6d3575e48c9683b66
+aot-spring-aop-7.0.10	library	jar	org/springframework/spring-aop/7.0.10/spring-aop-7.0.10.jar	7.0.10	babf50a645f4f788e1267078cf891e472f657cabf65518055cf5214220574e3f
+aot-spring-beans-7.0.10	library	jar	org/springframework/spring-beans/7.0.10/spring-beans-7.0.10.jar	7.0.10	bd67c6fc887afa30cbcb489ff4f82bf19f818e79ab1cf1bef98dff8a289108ec
+aot-spring-context-7.0.10	library	jar	org/springframework/spring-context/7.0.10/spring-context-7.0.10.jar	7.0.10	f0065166b6a5101a871ab8702d6c4011cf39faed370a64e7ef14a3ad2bf2a99a
+aot-spring-core-7.0.10	library	jar	org/springframework/spring-core/7.0.10/spring-core-7.0.10.jar	7.0.10	a236f31a7c07e3a1a8e7839ec5c0d47b5cc75709132db50416d5dad320341f12
+aot-spring-expression-7.0.10	library	jar	org/springframework/spring-expression/7.0.10/spring-expression-7.0.10.jar	7.0.10	12067b66548f7613fa8938ca6051a6d1dd8c397bf478e0bb1adb9936358ec81d
+aot-aopalliance-1.0	library	jar	aopalliance/aopalliance/1.0/aopalliance-1.0.jar	1.0	0addec670fedcd3f113c5c8091d783280d23f75e3acb841b61a9cdb079376a08
+aot-jsr305-3.0.2	library	jar	com/google/code/findbugs/jsr305/3.0.2/jsr305-3.0.2.jar	3.0.2	766ad2a0783f2687962c8ad74ceecc38a28b9f72a2d085ee438b7813e928d0c7
+aot-error_prone_annotations-2.7.1	library	jar	com/google/errorprone/error_prone_annotations/2.7.1/error_prone_annotations-2.7.1.jar	2.7.1	cd5257c08a246cf8628817ae71cb822be192ef91f6881ca4a3fcff4f1de1cff3
+aot-failureaccess-1.0.1	library	jar	com/google/guava/failureaccess/1.0.1/failureaccess-1.0.1.jar	1.0.1	a171ee4c734dd2da837e4b16be9df4661afab72a41adaf31eb84dfdaf936ca26
+aot-guava-31.0.1-jre	library	jar	com/google/guava/guava/31.0.1-jre/guava-31.0.1-jre.jar	31.0.1-jre	d5be94d65e87bd219fb3193ad1517baa55a3b88fc91d21cf735826ab5af087b9
+aot-listenablefuture-9999.0-empty-to-avoid-conflict-with-guava	library	jar	com/google/guava/listenablefuture/9999.0-empty-to-avoid-conflict-with-guava/listenablefuture-9999.0-empty-to-avoid-conflict-with-guava.jar	9999.0-empty-to-avoid-conflict-with-guava	b372a037d4230aa57fbeffdef30fd6123f9c0c2db85d0aced00c91b974f33f99
+aot-guice-7.0.0	library	jar	com/google/inject/guice/7.0.0/guice-7.0.0.jar	7.0.0	de5b0e359bd7b03ca42806b368846efd95484380fe05ae2a4ea71bc338c59c00
+aot-j2objc-annotations-1.3	library	jar	com/google/j2objc/j2objc-annotations/1.3/j2objc-annotations-1.3.jar	1.3	21af30c92267bd6122c0e0b4d20cccb6641a37eaf956c6540ec471d584e64a7b
+aot-jakarta.inject-api-2.0.1	library	jar	jakarta/inject/jakarta.inject-api/2.0.1/jakarta.inject-api-2.0.1.jar	2.0.1	f7dc98062fccf14126abb751b64fab12c312566e8cbdc8483598bffcea93af7c
+aot-checker-qual-3.12.0	library	jar	org/checkerframework/checker-qual/3.12.0/checker-qual-3.12.0.jar	3.12.0	ff10785ac2a357ec5de9c293cb982a2cbb605c0309ea4cc1cb9b9bc6dbe7f3cb
+aot-dagger-2.60.1	library	jar	com/google/dagger/dagger/2.60.1/dagger-2.60.1.jar	2.60.1	b012d0df527b51bfcd8953d5fcb4d022a45ebe66010d6f181ede68d1572b5cb2
+aot-javax.inject-1	library	jar	javax/inject/javax.inject/1/javax.inject-1.jar	1	91c77044a50c481636c32d916fd89c9118a72195390452c81065080f957de7ff
+aot-jspecify-1.0.0	library	jar	org/jspecify/jspecify/1.0.0/jspecify-1.0.0.jar	1.0.0	1fad6e6be7557781e4d33729d49ae1cdc8fdda6fe477bb0cc68ce351eafdfbab
+aot-daggerc-dagger-compiler-2.60.1	library	jar	com/google/dagger/dagger-compiler/2.60.1/dagger-compiler-2.60.1.jar	2.60.1	5894b1d5acfbfd11a9ef4cbbe3471a6697d50549b967576e123bd9cd397575a6
+aot-daggerc-dagger-spi-2.60.1	library	jar	com/google/dagger/dagger-spi/2.60.1/dagger-spi-2.60.1.jar	2.60.1	a101f27e6c6348fbb3198778970624b3ba2214ecc738b2146c7a1244cb42c417
+aot-daggerc-symbol-processing-api-2.3.7	library	jar	com/google/devtools/ksp/symbol-processing-api/2.3.7/symbol-processing-api-2.3.7.jar	2.3.7	bc5c7eca84d8142504f28bb1892bb4d1979feffcdbd6061924ef895510480a02
+aot-daggerc-error_prone_annotations-2.47.0	library	jar	com/google/errorprone/error_prone_annotations/2.47.0/error_prone_annotations-2.47.0.jar	2.47.0	5364bc6f22e72e98195e406a58d3ba1c09ffa11dea0729592cb870dc2de4056d
+aot-daggerc-google-java-format-1.33.0	library	jar	com/google/googlejavaformat/google-java-format/1.33.0/google-java-format-1.33.0.jar	1.33.0	1265aa761ec2908535324b114995a1c6debaedc8a9e2e8553127babcdb58567f
+aot-daggerc-failureaccess-1.0.3	library	jar	com/google/guava/failureaccess/1.0.3/failureaccess-1.0.3.jar	1.0.3	cbfc3906b19b8f55dd7cfd6dfe0aa4532e834250d7f080bd8d211a3e246b59cb
+aot-daggerc-guava-33.6.0-jre	library	jar	com/google/guava/guava/33.6.0-jre/guava-33.6.0-jre.jar	33.6.0-jre	dc573e1fca4fd5454f4a5fd3d7da2df03002876a4175bafc14a95980dd7713b3
+aot-daggerc-j2objc-annotations-3.1	library	jar	com/google/j2objc/j2objc-annotations/3.1/j2objc-annotations-3.1.jar	3.1	84d3a150518485f8140ea99b8a985656749629f6433c92b80c75b36aba3b099b
+aot-daggerc-javapoet-1.13.0	library	jar	com/squareup/javapoet/1.13.0/javapoet-1.13.0.jar	1.13.0	4c7517e848a71b36d069d12bb3bf46a70fd4cda3105d822b0ed2e19c00b69291
+aot-daggerc-kotlinpoet-1.11.0	library	jar	com/squareup/kotlinpoet/1.11.0/kotlinpoet-1.11.0.jar	1.11.0	2887ada1ca03dd83baa2758640d87e840d1907564db0ef88d2289c868a980492
+aot-daggerc-incap-0.2	library	jar	net/ltgt/gradle/incap/incap/0.2/incap-0.2.jar	0.2	b625b9806b0f1e4bc7a2e3457119488de3cd57ea20feedd513db070a573a4ffd
+aot-daggerc-checker-compat-qual-2.5.3	library	jar	org/checkerframework/checker-compat-qual/2.5.3/checker-compat-qual-2.5.3.jar	2.5.3	d76b9afea61c7c082908023f0cbc1427fab9abd2df915c8b8a3e7a509bccbc6d
+aot-daggerc-annotations-13.0	library	jar	org/jetbrains/annotations/13.0/annotations-13.0.jar	13.0	ace2a10dc8e2d5fd34925ecac03e4988b2c0f851650c94b8cef49ba1bd111478
+aot-daggerc-kotlin-metadata-jvm-2.3.21	library	jar	org/jetbrains/kotlin/kotlin-metadata-jvm/2.3.21/kotlin-metadata-jvm-2.3.21.jar	2.3.21	00590f26a5a768777f04252c6cf93c016a3361a6bc93636df67375ad4d19557d
+aot-daggerc-kotlin-reflect-1.6.10	library	jar	org/jetbrains/kotlin/kotlin-reflect/1.6.10/kotlin-reflect-1.6.10.jar	1.6.10	3277ac102ae17aad10a55abec75ff5696c8d109790396434b496e75087854203
+aot-daggerc-kotlin-stdlib-jdk7-1.6.10	library	jar	org/jetbrains/kotlin/kotlin-stdlib-jdk7/1.6.10/kotlin-stdlib-jdk7-1.6.10.jar	1.6.10	2aedcdc6b69b33bdf5cc235bcea88e7cf6601146bb6bcdffdb312bbacd7be261
+aot-daggerc-kotlin-stdlib-jdk8-1.6.10	library	jar	org/jetbrains/kotlin/kotlin-stdlib-jdk8/1.6.10/kotlin-stdlib-jdk8-1.6.10.jar	1.6.10	1456d82d039ea30d8485b032901f52bbf07e7cdbe8bb1f8708ad32a8574c41ce
+aot-daggerc-kotlin-stdlib-2.3.21	library	jar	org/jetbrains/kotlin/kotlin-stdlib/2.3.21/kotlin-stdlib-2.3.21.jar	2.3.21	6f64eac736db9434dd6925b4a518b9d1d17177652320c37916cf9ba3ce7d7d7a

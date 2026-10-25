@@ -1,0 +1,54 @@
+package bench.wire;
+
+import cajeta.collection.ArrayList;
+
+// The wire/ pages' inputs (bench/wire/*.md; description in
+// bench/scripts/gen_wire.py): a pool of the 1024 records r = 0..1023 of the
+// generated 100-field WireRecord, built in setup and cycled (record i of a run
+// is pool[i % 1024]), at the page's 1e6 records, or 1e5 under
+// CAJETA_BENCH_SMOKE=1 (noted on the row).
+public final class WireData {
+
+    public static boolean smoke() {
+        String s = System.env.get("CAJETA_BENCH_SMOKE");
+        if (s == null) {
+            return false;
+        }
+        return s.equals("1") || s.equals("true") || s.equals("yes");
+    }
+
+    // Records encoded / decoded / viewed per trial.
+    public static int32 records() {
+        if (WireData.smoke()) {
+            return 100000;
+        }
+        return 1000000;
+    }
+
+    public static #String sizeNote() {
+        if (WireData.smoke()) {
+            return "" + "; smoke size 1e5 records in place of 1e6";
+        }
+        return "" + "";
+    }
+
+    public static #ArrayList<WireRecord> pool() {
+        ArrayList<WireRecord> p = heap ArrayList<WireRecord>();
+        int32 r = 0;
+        while (r < 1024) {
+            WireRecord w #= WireRecord.fill(r);
+            p.add(#w);
+            r = r + 1;
+        }
+        return p;
+    }
+}
+
+// One encoded record, kept in a list (an owned byte array per slot).
+public final class WireBytes {
+    public int8[] b;
+
+    public WireBytes(#int8[] b) {
+        this.b #= b;
+    }
+}

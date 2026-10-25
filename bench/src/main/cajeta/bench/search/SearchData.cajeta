@@ -1,0 +1,220 @@
+package bench.search;
+
+import cajeta.collection.ArrayList;
+
+// The search/ pages' inputs (bench/search/**/*.md), generated the same way in
+// every language (bench/scripts/search_ref.py is the reference and prints the
+// constants the checks use). PRNG: LCG31 in int64 arithmetic,
+// x = (x * 1103515245 + 12345) & 0x7fffffff, rnd(m) = ((x >> 15) * m) >> 16.
+public final class SearchData {
+    public int64 x;
+
+    public SearchData(int64 seed) {
+        this.x = seed;
+    }
+
+    public int32 rnd(int32 m) {
+        this.x = (this.x * (int64) 1103515245 + (int64) 12345) & (int64) 2147483647;
+        return (int32) (((this.x >> 15) * (int64) m) >> 16);
+    }
+
+    public static boolean smoke() {
+        String s = System.env.get("CAJETA_BENCH_SMOKE");
+        if (s == null) {
+            return false;
+        }
+        return s.equals("1") || s.equals("true") || s.equals("yes");
+    }
+
+    // A string of n chars 'a' + rnd(alpha).
+    public #String word(int32 n, int32 alpha) {
+        int8[] b = heap int8[n];
+        int32 i = 0;
+        while (i < n) {
+            b[i] = (int8) (97 + this.rnd(alpha));
+            i = i + 1;
+        }
+        return heap String(#b, n);
+    }
+
+    // The keys: seed 777, L = 8 + rnd(9) chars 'a' + rnd(26) each.
+    public static #ArrayList<String> keys(int32 k) {
+        SearchData g = heap SearchData((int64) 777);
+        ArrayList<String> out = heap ArrayList<String>();
+        int32 i = 0;
+        while (i < k) {
+            int32 n = 8 + g.rnd(9);
+            String w #= g.word(n, 26);
+            out.add(#w);
+            i = i + 1;
+        }
+        return out;
+    }
+
+    // The queries: seed 999; a key with one substitution, transposition or deletion.
+    public static #ArrayList<String> queries(ArrayList<String> keys, int32 q) {
+        SearchData g = heap SearchData((int64) 999);
+        ArrayList<String> out = heap ArrayList<String>();
+        int32 kc = (int32) keys.count();
+        int32 i = 0;
+        while (i < q) {
+            String key = keys.get(g.rnd(kc));
+            int32 op = g.rnd(3);
+            int32 n = (int32) key.byteLength();
+            int32 len = n;
+            if (op == 2) {
+                len = n - 1;
+            }
+            int8[] b = heap int8[len];
+            if (op == 0) {
+                int32 p = g.rnd(n);
+                int8 c = (int8) (97 + g.rnd(26));
+                int32 j = 0;
+                while (j < n) {
+                    b[j] = key.charAt(j);
+                    j = j + 1;
+                }
+                b[p] = c;
+            } else if (op == 1) {
+                int32 p = g.rnd(n - 1);
+                int32 j = 0;
+                while (j < n) {
+                    b[j] = key.charAt(j);
+                    j = j + 1;
+                }
+                int8 t = b[p];
+                b[p] = b[p + 1];
+                b[p + 1] = t;
+            } else {
+                int32 p = g.rnd(n);
+                int32 j = 0;
+                int32 o = 0;
+                while (j < n) {
+                    if (j != p) {
+                        b[o] = key.charAt(j);
+                        o = o + 1;
+                    }
+                    j = j + 1;
+                }
+            }
+            String s = heap String(#b, len);
+            out.add(#s);
+            i = i + 1;
+        }
+        return out;
+    }
+
+    public static int32 keyCount() {
+        if (SearchData.smoke()) {
+            return 10000;
+        }
+        return 100000;
+    }
+}
+
+// Jaro-Winkler similarity, bench-local: cajeta.search.distance.Distance has
+// levenshtein and damerau only. Jaro with match window max(|a|,|b|)/2 - 1 and
+// half transpositions by integer division, Winkler prefix (at most 4, scale
+// 0.1) applied when jaro > 0.7: the definition strsim, rapidfuzz and
+// commons-text share.
+public final class JaroWinkler {
+    boolean[] ma;
+    boolean[] mb;
+
+    public JaroWinkler() {
+        this.ma = heap boolean[256];
+        this.mb = heap boolean[256];
+    }
+
+    public float64 similarity(String a, String b) {
+        int32 la = (int32) a.byteLength();
+        int32 lb = (int32) b.byteLength();
+        if (la == 0 && lb == 0) {
+            return 1.0;
+        }
+        if (la == 0 || lb == 0) {
+            return 0.0;
+        }
+        int32 mx = la;
+        if (lb > mx) {
+            mx = lb;
+        }
+        int32 w = mx / 2 - 1;
+        if (w < 0) {
+            w = 0;
+        }
+        boolean[] fa = this.ma;
+        boolean[] fb = this.mb;
+        int32 i = 0;
+        while (i < la) {
+            fa[i] = false;
+            i = i + 1;
+        }
+        i = 0;
+        while (i < lb) {
+            fb[i] = false;
+            i = i + 1;
+        }
+        int32 m = 0;
+        i = 0;
+        while (i < la) {
+            int32 lo = i - w;
+            if (lo < 0) {
+                lo = 0;
+            }
+            int32 hi = i + w + 1;
+            if (hi > lb) {
+                hi = lb;
+            }
+            int8 ca = a.charAt(i);
+            int32 j = lo;
+            while (j < hi) {
+                if (!fb[j] && b.charAt(j) == ca) {
+                    fa[i] = true;
+                    fb[j] = true;
+                    m = m + 1;
+                    j = hi;
+                } else {
+                    j = j + 1;
+                }
+            }
+            i = i + 1;
+        }
+        if (m == 0) {
+            return 0.0;
+        }
+        int32 t = 0;
+        int32 k = 0;
+        i = 0;
+        while (i < la) {
+            if (fa[i]) {
+                while (!fb[k]) {
+                    k = k + 1;
+                }
+                if (a.charAt(i) != b.charAt(k)) {
+                    t = t + 1;
+                }
+                k = k + 1;
+            }
+            i = i + 1;
+        }
+        int32 half = t / 2;
+        float64 fm = (float64) m;
+        float64 jaro = (fm / (float64) la + fm / (float64) lb + (fm - (float64) half) / fm) / 3.0;
+        if (jaro > 0.7) {
+            int32 lim = 4;
+            if (la < lim) {
+                lim = la;
+            }
+            if (lb < lim) {
+                lim = lb;
+            }
+            int32 p = 0;
+            while (p < lim && a.charAt(p) == b.charAt(p)) {
+                p = p + 1;
+            }
+            jaro = jaro + (float64) p * 0.1 * (1.0 - jaro);
+        }
+        return jaro;
+    }
+}
