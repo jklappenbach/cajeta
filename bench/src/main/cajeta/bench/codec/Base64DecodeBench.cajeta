@@ -1,8 +1,8 @@
-package profile.codec;
+package bench.codec;
 
 import cajeta.codec.Base64;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // Base64 decode throughput. setup() encodes a 1 MiB buffer once; each trial
 // decodes that string. The decoded length round-trips to the original size
@@ -18,7 +18,7 @@ public class Base64DecodeBench extends Benchmark {
     }
 
     public String area() {
-        return "codec";
+        return "codec/base64-decode";
     }
 
     public int32 warmupIters() {

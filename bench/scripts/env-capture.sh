@@ -4,7 +4,7 @@
 # via System.env); this driver-side helper appends the host block the language
 # can't reach without a subprocess — CPU model, core count, kernel, OS, the
 # scaling governor (pinning state), and total memory. Append to env.csv:
-#   scripts/env-capture.sh >> results/<ts>/env.csv
+#   scripts/env-capture.sh >> <out>/env.csv
 set -euo pipefail
 
 emit() { printf '%s,%s\n' "$1" "$2"; }
@@ -27,9 +27,11 @@ emit mem_total_kb "${memkb:-unknown}"
 # device-memory bandwidth ceiling — the honest denominator for GPU roofline
 # reporting. Best-effort: silent when no GPU / no cajeta binary.
 here="$(cd "$(dirname "$0")" && pwd)"
-cajeta_bin="${CAJETA:-${here}/../../../build-cajeta/src/cajeta}"
+cajeta_bin="${CAJETA:-${here}/../../build/src/cajeta}"
 gpu_json=""
-if [ -x "$cajeta_bin" ]; then
+# `gpu-profile` measures the device, so a smoke run (CAJETA_BENCH_SMOKE=1) or
+# CAJETA_BENCH_NO_GPU=1 never invokes it: smokes must not touch a GPU.
+if [ -x "$cajeta_bin" ] && [ -z "${CAJETA_BENCH_SMOKE:-}" ] && [ -z "${CAJETA_BENCH_NO_GPU:-}" ]; then
     gpu_json="$("$cajeta_bin" gpu-profile 2>/dev/null || true)"
 fi
 if [ -n "$gpu_json" ]; then

@@ -1,0 +1,64 @@
+package bench.math;
+
+import cajeta.math.Tensor;
+
+import bench.harness.Benchmark;
+
+// Per-element write cost of a 1-D Tensor<float64> through flatSet
+// (tensor-element-access 1.2.1, the write half of the old flat
+// bench/src/bench/ElementAccessBench). 1M elements per trial; ns/element =
+// min_ns / 1e6. Each trial writes a different base value so the store cannot
+// be hoisted. Cross-check: the last element holds what the last trial wrote.
+public class ElementSetBench extends Benchmark {
+
+    public Tensor<float64> w;
+    public int64 n;
+    public float64 written;
+    public boolean ok;
+
+    public String name() {
+        return "tensor-element-set";
+    }
+
+    public String area() {
+        return "math/tensor-element-set";
+    }
+
+    public int32 warmupIters() {
+        return 3;
+    }
+
+    public int32 measuredIters() {
+        return 20;
+    }
+
+    public int64 inputSize() {
+        return this.n;
+    }
+
+    public void setup() {
+        this.n = (int64) 1000000;
+        int64[] shape = heap int64[1];
+        shape[0] = this.n;
+        this.w #= Tensor.zeros<float64>(shape);
+        this.written = 0.0;
+        this.ok = true;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        this.written = this.written + 1.0;
+        int64 i = 0;
+        while (i < this.n) {
+            this.w.flatSet(i, this.written + (float64) i);
+            i = i + 1;
+        }
+        float64 tail = this.w.flatGet(this.n - (int64) 1);
+        if (tail != this.written + (float64) (this.n - (int64) 1)) {
+            this.ok = false;
+        }
+    }
+
+    public boolean checkResult() {
+        return this.ok;
+    }
+}

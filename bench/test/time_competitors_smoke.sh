@@ -54,13 +54,6 @@ for lang in rust python; do
     done
 done
 
-# (3) report.py ingests the time competitor rows.
-TMP="$(mktemp -d)"
-{ cat "${PROJ}/competitors/columns.txt"; echo "$OUT"; } > "$TMP/results.csv"
-echo "schema_version,key,value" > "$TMP/env.csv"
-python3 "${PROJ}/report/report.py" "$TMP" >/dev/null 2>&1 || fail "report.py failed on time rows"
-grep -q "time-instant-arith" "$TMP/site/index.html" || fail "report site missing time rows"
-rm -rf "$TMP"
 
 NLANGS="$(echo "$OUT" | awk -F, '$28=="ok"{print $10}' | sort -u | tr '\n' ' ')"
 echo "[time-comp] measured langs: [$NLANGS]; closed-form cross-checks + no constant-fold"

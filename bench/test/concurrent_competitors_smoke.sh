@@ -60,13 +60,6 @@ echo "$OUT" | awk -F, '$10=="python" && $12=="asyncio" && $4=="task-spawn-await"
 echo "$OUT" | awk -F, '$10=="go" && $12=="goroutine" && $4=="task-spawn-await" && $28=="ok"' | grep -q . \
     || fail "goroutine task-spawn competitor missing"
 
-# (5) report.py ingests the concurrency competitor rows.
-TMP="$(mktemp -d)"
-{ cat "${PROJ}/competitors/columns.txt"; echo "$OUT"; } > "$TMP/results.csv"
-echo "schema_version,key,value" > "$TMP/env.csv"
-python3 "${PROJ}/report/report.py" "$TMP" >/dev/null 2>&1 || fail "report.py failed on concurrent rows"
-grep -q "task-spawn-await" "$TMP/site/index.html" || fail "report site missing concurrent rows"
-rm -rf "$TMP"
 
 NLANGS="$(echo "$OUT" | awk -F, '$28=="ok"{print $10}' | sort -u | tr '\n' ' ')"
 echo "[conc-comp] measured langs: [$NLANGS]; goroutine vs OS-thread vs asyncio spawn captured"

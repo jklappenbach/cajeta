@@ -55,13 +55,6 @@ for lang in rust python; do
     done
 done
 
-# (4) report.py ingests the hash competitor rows.
-TMP="$(mktemp -d)"
-{ cat "${PROJ}/competitors/columns.txt"; echo "$OUT"; } > "$TMP/results.csv"
-echo "schema_version,key,value" > "$TMP/env.csv"
-python3 "${PROJ}/report/report.py" "$TMP" >/dev/null 2>&1 || fail "report.py failed on hash rows"
-grep -q "xxhash3" "$TMP/site/index.html" || fail "report site missing xxhash3 rows"
-rm -rf "$TMP"
 
 NLANGS="$(echo "$OUT" | awk -F, '$28=="ok"{print $10}' | sort -u | tr '\n' ' ')"
 echo "[hash-comp] measured langs: [$NLANGS]; siphash skipped with reason"

@@ -1,8 +1,8 @@
-package profile.collection;
+package bench.collection;
 
 import cajeta.collection.HashMap;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // HashMap<String,int32> build + lookup with string keys ("key"+i) — the string
 // hashing/equality cost dominates here, vs the integer-key benchmark. Cross-check:
@@ -17,7 +17,7 @@ public class HashMapStringBench extends Benchmark {
     }
 
     public String area() {
-        return "collection";
+        return "collection/hashmap-string";
     }
 
     public int32 warmupIters() {

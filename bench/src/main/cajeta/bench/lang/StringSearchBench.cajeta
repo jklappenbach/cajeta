@@ -1,6 +1,6 @@
-package profile.string;
+package bench.lang;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // Substring search: indexOf a needle that doesn't occur in a ~360 KB text (a
 // full scan). Cross-check: returns -1 (not found). The text is built by doubling
@@ -16,7 +16,7 @@ public class StringSearchBench extends Benchmark {
     }
 
     public String area() {
-        return "string";
+        return "lang/string-search";
     }
 
     public int32 warmupIters() {

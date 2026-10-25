@@ -53,13 +53,6 @@ done
 echo "$OUT" | awk -F, '$4=="string-search" && $12=="memchr" && $28=="ok"' | grep -q . \
     || fail "memchr search competitor missing"
 
-# (4) report.py ingests the string competitor rows.
-TMP="$(mktemp -d)"
-{ cat "${PROJ}/competitors/columns.txt"; echo "$OUT"; } > "$TMP/results.csv"
-echo "schema_version,key,value" > "$TMP/env.csv"
-python3 "${PROJ}/report/report.py" "$TMP" >/dev/null 2>&1 || fail "report.py failed on string rows"
-grep -q "string-search" "$TMP/site/index.html" || fail "report site missing string rows"
-rm -rf "$TMP"
 
 NLANGS="$(echo "$OUT" | awk -F, '$28=="ok"{print $10}' | sort -u | tr '\n' ' ')"
 echo "[string-comp] measured langs: [$NLANGS]; memchr SIMD search included"

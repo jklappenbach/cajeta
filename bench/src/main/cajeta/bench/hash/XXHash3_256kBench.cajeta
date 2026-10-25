@@ -1,8 +1,8 @@
-package profile.hash;
+package bench.hash;
 
 import cajeta.hash.XXHash3;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // XXHash3 (64-bit) COMPUTE-BOUND throughput over a 256 KiB buffer. The bulk
 // `xxhash3` bench hashes 1 MiB, which sits at the L2 boundary and bleeds into
@@ -25,7 +25,7 @@ public class XXHash3_256kBench extends Benchmark {
     }
 
     public String area() {
-        return "hash";
+        return "hash/xxhash3-256k";
     }
 
     public int32 warmupIters() {

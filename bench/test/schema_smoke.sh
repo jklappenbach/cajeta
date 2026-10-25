@@ -2,7 +2,7 @@
 # Unit 2 TDD smoke test — written before the report code.
 # Drives `profile --selftest --out <path>`, which writes a results CSV (+ a
 # sibling .env CSV) using the real reporting schema + a real /proc peak-RSS read.
-# Asserts: (1) header carries every schema column and exactly 30 columns;
+# Asserts: (1) header carries every schema column and exactly 32 columns;
 # (2) the ok row's peak_rss_kb is a positive integer (real /proc/self/status read);
 # (3) a status=skipped row is emitted; (4) env.csv captured a value read via
 # System.env.get (proving the env capability works).
@@ -10,22 +10,22 @@ set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
-REPO_ROOT="$( cd -- "${PROJ}/../.." &> /dev/null && pwd )"
-CAJETA="${CAJETA:-${REPO_ROOT}/build-cajeta/src/cajeta}"
+REPO_ROOT="$( cd -- "${PROJ}/.." &> /dev/null && pwd )"
+CAJETA="${CAJETA:-${REPO_ROOT}/build/src/cajeta}"
 
 fail() { echo "SCHEMA FAIL: $1" >&2; exit 1; }
 [[ -x "$CAJETA" ]] || fail "cajeta not found at $CAJETA"
 
 cd "$PROJ"
 echo "[schema] building..."
-"$CAJETA" build >/dev/null || fail "build failed"
+"$CAJETA" release >/dev/null || fail "release build failed"
 
 OUT="/tmp/profile-schema-test.csv"
 ENV="${OUT}.env"
 rm -f "$OUT" "$ENV"
 
 echo "[schema] running selftest..."
-PROFILE_RUN_TS=1750000000 PROFILE_RUN_ID=smoke-run "$PROJ/build/profile" --selftest --out "$OUT" || fail "selftest exited non-zero"
+PROFILE_RUN_TS=1750000000 PROFILE_RUN_ID=smoke-run "$PROJ/build/bench" --selftest --out "$OUT" || fail "selftest exited non-zero"
 
 [[ -f "$OUT" ]] || fail "results CSV not written: $OUT"
 HEADER="$(head -1 "$OUT")"
@@ -38,9 +38,10 @@ for col in schema_version run_id timestamp_unix benchmark area language library 
     echo "$HEADER" | tr ',' '\n' | grep -qx "$col" || fail "header missing column: $col"
 done
 
-# (1) exactly 31 columns
+# (1) exactly 32 columns (schema v1's 31 + backend, appended last)
 NCOLS="$(head -1 "$OUT" | awk -F, '{print NF}')"
-[[ "$NCOLS" == "31" ]] || fail "expected 31 columns, got $NCOLS"
+[[ "$NCOLS" == "32" ]] || fail "expected 32 columns, got $NCOLS"
+[[ "$(head -1 "$OUT" | awk -F, '{print $32}')" == "backend" ]] || fail "column 32 is not backend"
 
 # (2) ok row (line 2) peak_rss_kb (col 23) is a positive integer
 PEAK="$(awk -F, 'NR==2{print $23}' "$OUT")"

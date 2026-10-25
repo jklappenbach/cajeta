@@ -1,8 +1,8 @@
-package profile.hash;
+package bench.hash;
 
 import cajeta.hash.SipHash;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // SipHash (keyed, DoS-resistant) bulk throughput over a 1 MiB buffer.
 // Cross-check: digest non-zero.
@@ -17,7 +17,7 @@ public class SipHashBench extends Benchmark {
     }
 
     public String area() {
-        return "hash";
+        return "hash/siphash";
     }
 
     public int32 warmupIters() {

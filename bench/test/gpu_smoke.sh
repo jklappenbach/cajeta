@@ -9,10 +9,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
-REPO_ROOT="$( cd -- "${PROJ}/../.." &> /dev/null && pwd )"
-CAJETA="${CAJETA:-${REPO_ROOT}/build-cajeta/src/cajeta}"
+REPO_ROOT="$( cd -- "${PROJ}/.." &> /dev/null && pwd )"
+CAJETA="${CAJETA:-${REPO_ROOT}/build/src/cajeta}"
 
-# CSV columns (1-based): 4=benchmark 5=area 9=input_size 28=status 29=check_ok
+# CSV columns (1-based): 4=benchmark 5=area (xpu/gemm-f32, xpu/gemm-f16) 9=input_size 28=status 29=check_ok
 # 31=variant 32=backend  (backend is appended last to keep prior indices stable)
 COL_BENCH=4; COL_AREA=5; COL_STATUS=28; COL_CHECK=29; COL_VARIANT=31; COL_BACKEND=32
 
@@ -22,8 +22,8 @@ fail() { echo "GPU FAIL: $1" >&2; exit 1; }
 cd "$PROJ"
 echo "[gpu] building gpu flavor (amdgpu / gfx1151)..."
 "$CAJETA" gpu >/tmp/gpu-build.log 2>&1 || { tail -25 /tmp/gpu-build.log; fail "gpu build failed"; }
-EXE="$PROJ/build/profile-gpu"
-[[ -x "$EXE" ]] || EXE="$PROJ/build/profile"
+EXE="$PROJ/build/bench-gpu"
+[[ -x "$EXE" ]] || EXE="$PROJ/build/bench"
 [[ -x "$EXE" ]] || fail "gpu exe not found"
 
 # 1.1.b — per-backend run-asserts: each selected backend yields gpu/matmul rows
@@ -34,7 +34,7 @@ run_backend() {
     rm -f "$out"
     echo "[gpu] running CAJETA_XPU_BACKEND=$env_bk ..."
     if ! CAJETA_XPU_BACKEND="$env_bk" PROFILE_RUN_ID="gpu-$bk" \
-            "$EXE" --run --area gpu --out "$out" >/tmp/gpu-run-$bk.log 2>&1; then
+            "$EXE" --run --area xpu --out "$out" >/tmp/gpu-run-$bk.log 2>&1; then
         grep -vE "example:" /tmp/gpu-run-$bk.log | tail -15
         fail "--run crashed for backend $env_bk"
     fi
@@ -69,7 +69,7 @@ fi
 echo "[gpu] skip-clean check (bogus backend)..."
 OUT_SKIP="/tmp/profile-gpu-skip.csv"; rm -f "$OUT_SKIP"
 CAJETA_XPU_BACKEND="nonesuch" PROFILE_RUN_ID="gpu-skip" \
-    "$EXE" --run --area gpu --out "$OUT_SKIP" >/tmp/gpu-run-skip.log 2>&1 \
+    "$EXE" --run --area xpu --out "$OUT_SKIP" >/tmp/gpu-run-skip.log 2>&1 \
     || fail "suite crashed (should skip cleanly) for unavailable backend"
 skiprow="$(awk -F, -v b=matmul -v c="$COL_BENCH" 'NR>1 && $c==b {print; exit}' "$OUT_SKIP")"
 [[ -n "$skiprow" ]] || fail "no matmul row at all for unavailable backend"

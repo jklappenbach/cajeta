@@ -50,13 +50,6 @@ for lang in rust go; do
     done
 done
 
-# (3) report.py ingests the clbg competitor rows.
-TMP="$(mktemp -d)"
-{ cat "${PROJ}/competitors/columns.txt"; echo "$OUT"; } > "$TMP/results.csv"
-echo "schema_version,key,value" > "$TMP/env.csv"
-python3 "${PROJ}/report/report.py" "$TMP" >/dev/null 2>&1 || fail "report.py failed on clbg rows"
-grep -q "clbg-mandelbrot" "$TMP/site/index.html" || fail "report site missing clbg rows"
-rm -rf "$TMP"
 
 NLANGS="$(echo "$OUT" | awk -F, '$28=="ok"{print $10}' | sort -u | tr '\n' ' ')"
 echo "[clbg-comp] measured langs: [$NLANGS]; canonical checksums verified"

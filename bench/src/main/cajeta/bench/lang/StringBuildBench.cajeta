@@ -1,8 +1,8 @@
-package profile.string;
+package bench.lang;
 
 import cajeta.lang.StringBuilder;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // String build: append an 8-char piece N times via StringBuilder (amortized O(N)),
 // matching the competitors' builder pattern (Rust String::push_str, Java
@@ -19,7 +19,7 @@ public class StringBuildBench extends Benchmark {
     }
 
     public String area() {
-        return "string";
+        return "lang/string-build-concat";
     }
 
     public int32 warmupIters() {

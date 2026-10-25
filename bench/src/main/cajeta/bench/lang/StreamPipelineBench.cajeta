@@ -1,8 +1,8 @@
-package profile.stream;
+package bench.lang;
 
 import cajeta.collection.ArrayList;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // Sequential functional pipeline: filter (evens) -> map (+1) -> reduce (sum) over
 // N elements. Cross-check: the pipeline result equals a manual non-stream
@@ -18,7 +18,7 @@ public class StreamPipelineBench extends Benchmark {
     }
 
     public String area() {
-        return "stream";
+        return "lang/stream-filter-map-reduce";
     }
 
     public int32 warmupIters() {

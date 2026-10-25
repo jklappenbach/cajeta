@@ -1,6 +1,6 @@
-package profile.clbg;
+package bench.lang;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // Computer Language Benchmarks Game: mandelbrot. Escape-time membership over a
 // W×W grid (50 iterations, escape radius 2). Cross-check: the in-set pixel count
@@ -24,7 +24,7 @@ public class MandelbrotBench extends Benchmark {
     }
 
     public String area() {
-        return "clbg";
+        return "lang/clbg-mandelbrot";
     }
 
     public int32 warmupIters() {

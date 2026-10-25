@@ -1,10 +1,10 @@
-package profile.math;
+package bench.math;
 
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // Dense N×N matrix multiply C = A·B (flat row-major float64). A is the identity,
 // so C == B — a cheap, exact cross-check (checksum of C == checksum of B) while
@@ -38,6 +38,7 @@ public class MatMulBench extends Benchmark {
     // as a packed <8 x double> vload, FMA'd with the broadcast scalar A[row,k].
     // Each C block is written exactly once. Assumes n % 8 == 0 (n=200 ✓).
     @Kernel
+    @Occupancy(maxThreads = 512)   // the block the benchmark launches with
     public static void matmul(KernelBuffer<float64> c, KernelBuffer<float64> a,
                               KernelBuffer<float64> b, uint32 n) {
         uint32 nblk = n / 8;
@@ -63,7 +64,7 @@ public class MatMulBench extends Benchmark {
     }
 
     public String area() {
-        return "math";
+        return "math/matmul";
     }
 
     public int32 warmupIters() {

@@ -1,8 +1,8 @@
-package profile.clbg;
+package bench.lang;
 
 import cajeta.lang.Math;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // Computer Language Benchmarks Game: spectral-norm at N=100. Estimates the
 // largest singular value of the matrix A(i,j) = 1/((i+j)(i+j+1)/2 + i + 1) via
@@ -18,7 +18,7 @@ public class SpectralNormBench extends Benchmark {
     }
 
     public String area() {
-        return "clbg";
+        return "lang/clbg-spectral-norm";
     }
 
     public int32 warmupIters() {

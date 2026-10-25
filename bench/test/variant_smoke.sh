@@ -8,8 +8,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
-REPO_ROOT="$( cd -- "${PROJ}/../.." &> /dev/null && pwd )"
-CAJETA="${CAJETA:-${REPO_ROOT}/build-cajeta/src/cajeta}"
+REPO_ROOT="$( cd -- "${PROJ}/.." &> /dev/null && pwd )"
+CAJETA="${CAJETA:-${REPO_ROOT}/build/src/cajeta}"
 
 fail() { echo "VARIANT FAIL: $1" >&2; exit 1; }
 [[ -x "$CAJETA" ]] || fail "cajeta not found at $CAJETA"
@@ -20,7 +20,7 @@ echo "[variant] building..."
 
 OUT="/tmp/profile-variant.csv"
 rm -f "$OUT"
-PROFILE_RUN_ID=variant-run "$PROJ/build/profile" --run --out "$OUT" || fail "--run exited non-zero"
+CAJETA_BENCH_SMOKE=1 CAJETA_BENCH_SCAFFOLD=1 PROFILE_RUN_ID=variant-run "$PROJ/build/bench" --run --bench variant-demo --out "$OUT" >/dev/null || fail "--run exited non-zero"
 [[ -f "$OUT" ]] || fail "results CSV not written"
 
 # variant-demo rows: benchmark col 4, status col 28, variant col 31.

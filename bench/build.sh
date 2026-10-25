@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
-# Build the profile benchmark harness with the cajeta build tool.
+# Build the bench harness with the cajeta build tool.
 #
-# Reads cajeta.json and runs its `build` task → build/profile (a native binary).
+# Reads cajeta.json and runs its `build` task → build/bench (a native binary).
 # No hand-rolled compile/link steps — the build tool drives the compiler.
 #
-# Defaults to the fork-LLVM compiler at build-cajeta/src/cajeta (current; bundles
-# the TLS shim and is the same toolchain the GPU/XPU benchmarks need). Override
-# with CAJETA=/path/to/cajeta.
+# Defaults to the compiler at <repo>/build/src/cajeta. Override with
+# CAJETA=/path/to/cajeta.
 set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
-REPO_ROOT="$( cd -- "${SCRIPT_DIR}/../.." &> /dev/null && pwd )"
-CAJETA="${CAJETA:-${REPO_ROOT}/build-cajeta/src/cajeta}"
+REPO_ROOT="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
+CAJETA="${CAJETA:-${REPO_ROOT}/build/src/cajeta}"
 
 if [[ ! -x "$CAJETA" ]]; then
     echo "error: cajeta build tool not found at $CAJETA" >&2

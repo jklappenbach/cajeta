@@ -1,8 +1,8 @@
-package profile.collection;
+package bench.collection;
 
 import cajeta.collection.ArrayList;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // ArrayList grow-on-demand append: N pushes into a fresh list each trial.
 // Cross-check: final count == N. (Self-generating; no dataset.)
@@ -16,7 +16,7 @@ public class ArrayListAppendBench extends Benchmark {
     }
 
     public String area() {
-        return "collection";
+        return "collection/arraylist-append";
     }
 
     public int32 warmupIters() {

@@ -1,6 +1,6 @@
-package profile.string;
+package bench.lang;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // Case folding: toUpperCase over a ~360 KB ASCII text. Cross-check: the result
 // has the same length as the input (ASCII case-fold is length-preserving).
@@ -15,7 +15,7 @@ public class StringUpperBench extends Benchmark {
     }
 
     public String area() {
-        return "string";
+        return "lang/string-uppercase";
     }
 
     public int32 warmupIters() {

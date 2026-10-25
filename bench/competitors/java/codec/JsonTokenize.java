@@ -13,7 +13,7 @@ import java.nio.file.Paths;
 // JsonReader.next() loop: pull every token to end-of-document, count them, no
 // DOM, numbers read lazily (as raw text). Bytes are read once and parsed N times
 // against a warmed-up JIT. Same machine + same files as the Cajeta benchmark.
-public class Bench {
+public class JsonTokenize {
 
     static final JsonFactory JACKSON = new JsonFactory();
 

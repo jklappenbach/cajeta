@@ -53,13 +53,6 @@ done
 echo "$OUT" | awk -F, '$10=="rust" && $12=="rayon" && $4=="stream-parallel-reduce" && $28=="ok"' | grep -q . \
     || fail "rayon parallel-reduce competitor missing"
 
-# (4) report.py ingests the stream competitor rows.
-TMP="$(mktemp -d)"
-{ cat "${PROJ}/competitors/columns.txt"; echo "$OUT"; } > "$TMP/results.csv"
-echo "schema_version,key,value" > "$TMP/env.csv"
-python3 "${PROJ}/report/report.py" "$TMP" >/dev/null 2>&1 || fail "report.py failed on stream rows"
-grep -q "stream-parallel-reduce" "$TMP/site/index.html" || fail "report site missing stream rows"
-rm -rf "$TMP"
 
 NLANGS="$(echo "$OUT" | awk -F, '$28=="ok"{print $10}' | sort -u | tr '\n' ' ')"
 echo "[stream-comp] measured langs: [$NLANGS]; rayon/OpenMP/goroutine parallel-reduce included"

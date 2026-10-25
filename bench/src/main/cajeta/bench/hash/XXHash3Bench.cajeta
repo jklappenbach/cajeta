@@ -1,8 +1,8 @@
-package profile.hash;
+package bench.hash;
 
 import cajeta.hash.XXHash3;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // XXHash3 bulk throughput over a 1 MiB buffer (SMHasher's bulk-throughput metric).
 // Cross-check: the digest of a non-trivial 1 MiB buffer is non-zero.
@@ -17,7 +17,7 @@ public class XXHash3Bench extends Benchmark {
     }
 
     public String area() {
-        return "hash";
+        return "hash/xxhash3";
     }
 
     public int32 warmupIters() {

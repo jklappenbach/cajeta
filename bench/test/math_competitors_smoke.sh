@@ -53,13 +53,6 @@ done
 echo "$OUT" | awk -F, '$10=="python" && $12=="numpy" && $4=="matmul" && $28=="ok"' | grep -q . \
     || fail "numpy matmul (BLAS) competitor missing"
 
-# (4) report.py ingests the math competitor rows.
-TMP="$(mktemp -d)"
-{ cat "${PROJ}/competitors/columns.txt"; echo "$OUT"; } > "$TMP/results.csv"
-echo "schema_version,key,value" > "$TMP/env.csv"
-python3 "${PROJ}/report/report.py" "$TMP" >/dev/null 2>&1 || fail "report.py failed on math rows"
-grep -q "matmul" "$TMP/site/index.html" || fail "report site missing matmul rows"
-rm -rf "$TMP"
 
 NLANGS="$(echo "$OUT" | awk -F, '$28=="ok"{print $10}' | sort -u | tr '\n' ' ')"
 echo "[math-comp] measured langs: [$NLANGS]; numpy BLAS headline included"

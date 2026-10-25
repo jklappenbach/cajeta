@@ -1,4 +1,4 @@
-package profile.report;
+package bench.harness;
 
 // Minimal RFC-4180-ish CSV field escaping for the report writer. A field is
 // quoted only when it contains a comma, double-quote, CR or LF; inside a quoted

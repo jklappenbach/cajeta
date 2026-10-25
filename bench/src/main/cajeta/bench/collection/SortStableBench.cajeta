@@ -1,9 +1,9 @@
-package profile.sort;
+package bench.collection;
 
 import cajeta.collection.Sort;
 import cajeta.time.Clock;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // Stable (mergesort) sort of N random int64 — the Sort.sortStable path, vs the
 // unstable quicksort in sort-int64. Each trial copies the source and sorts.
@@ -23,7 +23,7 @@ public class SortStableBench extends Benchmark {
     }
 
     public String area() {
-        return "sort";
+        return "collection/sort-stable-int64";
     }
 
     public int32 warmupIters() {
@@ -74,7 +74,7 @@ public class SortStableBench extends Benchmark {
             i = i + 1;
         }
         Sort.sortStable<int64>(w, this.n);
-        this.out = w;
+        this.out #= w;
     }
 
     public boolean checkResult() {

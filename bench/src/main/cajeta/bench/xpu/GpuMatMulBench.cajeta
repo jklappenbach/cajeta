@@ -1,4 +1,4 @@
-package profile.gpu;
+package bench.xpu;
 
 import cajeta.collection.ArrayList;
 import cajeta.xpu.KernelBuffer;
@@ -8,7 +8,7 @@ import cajeta.xpu.Workgroup;
 import cajeta.xpu.Barrier;
 import cajeta.xpu.Shared;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // GPU dense N×N matrix multiply C = A·B (flat row-major float64), run as a real
 // device @Kernel — the first of the suite's GPU compute benchmarks. Built once
@@ -43,6 +43,7 @@ public class GpuMatMulBench extends Benchmark {
     public float64 cSum;
 
     @Kernel
+    @Occupancy(maxThreads = 256)   // the block the benchmark launches with
     @FastMath
     public static void gpuMatmul(KernelBuffer<float64> c, KernelBuffer<float64> a,
                               KernelBuffer<float64> b, uint32 n) {
@@ -119,7 +120,7 @@ public class GpuMatMulBench extends Benchmark {
     }
 
     public String area() {
-        return "gpu";
+        return "xpu/gemm-f32";
     }
 
     // The runtime-selected device backend, reported on the result row. The gpu

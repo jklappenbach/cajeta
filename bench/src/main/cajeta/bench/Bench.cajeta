@@ -1,81 +1,129 @@
-package profile;
+package bench;
 
 import cajeta.collection.ArrayList;
 
-import profile.Benchmark;
-import profile.ExampleBenchmark;
-import profile.SumBench;
-import profile.VariantBench;
-import profile.Harness;
-import profile.codec.JsonTokenizeBench;
-import profile.codec.JsonBindBench;
-import profile.codec.JsonDomBench;
-import profile.codec.JsonSerializeBench;
-import profile.codec.JsonRoundtripBench;
-import profile.codec.JsonConformanceBench;
-import profile.codec.Base64EncodeBench;
-import profile.codec.Base64DecodeBench;
-import profile.collection.ArrayListAppendBench;
-import profile.collection.HashMapIntBench;
-import profile.collection.HashMapStringBench;
-import profile.collection.HashSetDedupBench;
-import profile.collection.LinkedListBench;
-import profile.collection.HeapSortBench;
-import profile.collection.RedBlackTreeBench;
-import profile.sort.SortInt64Bench;
-import profile.sort.SortF64Bench;
-import profile.sort.SortStableBench;
-import profile.sort.BinarySearchBench;
-import profile.string.StringBuildBench;
-import profile.string.StringSearchBench;
-import profile.string.StringReplaceBench;
-import profile.string.StringUpperBench;
-import profile.hash.XXHash3Bench;
-import profile.hash.XXHash3_256kBench;
-import profile.hash.XXHash3_128Bench;
-import profile.hash.XXHash3_128_256kBench;
-import profile.hash.SipHashBench;
-import profile.stream.StreamPipelineBench;
-import profile.stream.StreamParallelReduceBench;
-import profile.math.SaxpyBench;
-import profile.math.DotProductBench;
-import profile.math.MatMulBench;
-import profile.gpu.GpuMatMulBench;
-import profile.gpu.GpuMatMulF16Bench;
-import profile.clbg.MandelbrotBench;
-import profile.clbg.FannkuchBench;
-import profile.clbg.SpectralNormBench;
-import profile.time.InstantArithmeticBench;
-import profile.time.LocalDateArithmeticBench;
-import profile.concurrent.AtomicBench;
-import profile.concurrent.TaskSpawnBench;
-import profile.report.Result;
-import profile.report.Report;
-import profile.report.Memory;
+import bench.harness.Benchmark;
+import bench.harness.Harness;
+import bench.harness.Result;
+import bench.harness.Report;
+import bench.harness.Memory;
+import bench.selftest.ExampleBenchmark;
+import bench.selftest.SumBench;
+import bench.selftest.VariantBench;
+import bench.lang.StringBuildBench;
+import bench.lang.StringSearchBench;
+import bench.lang.StringReplaceBench;
+import bench.lang.StringUpperBench;
+import bench.lang.StreamPipelineBench;
+import bench.lang.StreamParallelReduceBench;
+import bench.lang.SaxpyBench;
+import bench.lang.DotProductBench;
+import bench.lang.MandelbrotBench;
+import bench.lang.FannkuchBench;
+import bench.lang.SpectralNormBench;
+import bench.collection.ArrayListAppendBench;
+import bench.collection.HashMapIntBench;
+import bench.collection.HashMapStringBench;
+import bench.collection.HashSetDedupBench;
+import bench.collection.LinkedListBench;
+import bench.collection.HeapSortBench;
+import bench.collection.RedBlackTreeBench;
+import bench.collection.SortInt64Bench;
+import bench.collection.SortF64Bench;
+import bench.collection.SortStableBench;
+import bench.collection.BinarySearchBench;
+import bench.concurrent.AtomicBench;
+import bench.concurrent.TaskSpawnBench;
+import bench.time.InstantArithmeticBench;
+import bench.time.LocalDateArithmeticBench;
+import bench.hash.XXHash3Bench;
+import bench.hash.XXHash3_256kBench;
+import bench.hash.XXHash3_128Bench;
+import bench.hash.XXHash3_128_256kBench;
+import bench.hash.SipHashBench;
+import bench.codec.JsonTokenizeBench;
+import bench.codec.JsonBindBench;
+import bench.codec.JsonDomBench;
+import bench.codec.JsonSerializeBench;
+import bench.codec.JsonRoundtripBench;
+import bench.codec.JsonConformanceBench;
+import bench.codec.Base64EncodeBench;
+import bench.codec.Base64DecodeBench;
+import bench.math.ElementAccessBench;
+import bench.math.ElementSetBench;
+import bench.math.NpyLoadBench;
+import bench.math.MatMulBench;
+import bench.xpu.GpuMatMulBench;
+import bench.xpu.GpuMatMulF16Bench;
 
-// Entry point for the cross-language benchmark suite. Builds an
-// ArrayList<Benchmark>, pushes one instance of every benchmark into it, then
-// either lists them (`--list`) or drives each through its lifecycle
-// (setup → run → teardown → checkResult). This mirrors the tour's Tour.run():
-// adding a benchmark is a new Benchmark subclass plus one `benchmarks.add(...)`
-// line below — the registered list is the single source of what runs.
+// Entry point for the benchmark reference's language + stdlib catalog
+// (specs/benchmark-reference-spec.md §2.1). Every benchmark lives under
+// bench/<package>/ and its area() is the catalog path "<package>/<slug>", the
+// page under bench/<package>/ that carries it.
 //
-// Unit 1 is the scaffold: the measurement loop, CSV emission, dataset fetch,
-// selection by area/language, and competitor dispatch arrive in later units
-// (see agents/plans/profile-plan.md). Here the lifecycle is invoked once each
-// with a single iteration, enough to prove registration + ordered dispatch.
-public final class Profile {
+// Adding a benchmark: write a Benchmark subclass in
+// src/main/cajeta/bench/<package>/, give it area() = "<package>/<slug>", and
+// add one import + one `benchmarks.add(heap X());` line below.
+// test/layout_smoke.sh checks all three.
+//
+// Flags: --list, --run, --selftest, --out <path>, --area <package|package/slug>,
+// --bench <name>. Env: CAJETA_BENCH_SMOKE=1 (warmup 1, trials 3, rows tagged
+// `smoke`), CAJETA_BENCH_SCAFFOLD=1 (also register the harness's own selftest/
+// benchmarks), CAJETA_BENCH_MACHINE (recorded by bench.sh), PROFILE_DATA_DIR,
+// PROFILE_RUN_ID.
+public final class Bench {
 
     public static int32 main(String[] args) {
-        System.stdout.println("=== Cajeta profile — cross-language benchmark suite ===");
+        System.stdout.println("=== Cajeta bench — the benchmark reference ===");
 
         // Register every benchmark. The list owns each element; the drop
         // chain releases them at scope exit.
         ArrayList<Benchmark> benchmarks = heap ArrayList<Benchmark>();
-        benchmarks.add(heap ExampleBenchmark());
-        benchmarks.add(heap SumBench());
-        benchmarks.add(heap VariantBench());
-        // -- codec area (Unit 5) --
+        // The harness's own scaffold benchmarks (lifecycle order, trial count,
+        // variant rows) are not catalog entries; only the harness smokes see them.
+        String scaffold = System.env.get("CAJETA_BENCH_SCAFFOLD");
+        if (scaffold != null && scaffold.equals("1")) {
+            benchmarks.add(heap ExampleBenchmark());
+            benchmarks.add(heap SumBench());
+            benchmarks.add(heap VariantBench());
+        }
+        // -- lang/ --
+        benchmarks.add(heap StringBuildBench());
+        benchmarks.add(heap StringSearchBench());
+        benchmarks.add(heap StringReplaceBench());
+        benchmarks.add(heap StringUpperBench());
+        benchmarks.add(heap StreamPipelineBench());
+        benchmarks.add(heap StreamParallelReduceBench());
+        benchmarks.add(heap SaxpyBench());
+        benchmarks.add(heap DotProductBench());
+        benchmarks.add(heap MandelbrotBench());
+        benchmarks.add(heap FannkuchBench());
+        benchmarks.add(heap SpectralNormBench());
+        // -- collection/ --
+        benchmarks.add(heap ArrayListAppendBench());
+        benchmarks.add(heap HashMapIntBench());
+        benchmarks.add(heap HashMapStringBench());
+        benchmarks.add(heap HashSetDedupBench());
+        benchmarks.add(heap LinkedListBench());
+        benchmarks.add(heap HeapSortBench());
+        benchmarks.add(heap RedBlackTreeBench());
+        benchmarks.add(heap SortInt64Bench());
+        benchmarks.add(heap SortF64Bench());
+        benchmarks.add(heap SortStableBench());
+        benchmarks.add(heap BinarySearchBench());
+        // -- concurrent/ --
+        benchmarks.add(heap AtomicBench());
+        benchmarks.add(heap TaskSpawnBench());
+        // -- time/ --
+        benchmarks.add(heap InstantArithmeticBench());
+        benchmarks.add(heap LocalDateArithmeticBench());
+        // -- hash/ --
+        benchmarks.add(heap XXHash3Bench());
+        benchmarks.add(heap XXHash3_256kBench());
+        benchmarks.add(heap XXHash3_128Bench());
+        benchmarks.add(heap XXHash3_128_256kBench());
+        benchmarks.add(heap SipHashBench());
+        // -- codec/ --
         benchmarks.add(heap JsonTokenizeBench());
         benchmarks.add(heap JsonBindBench());
         benchmarks.add(heap JsonDomBench());
@@ -84,50 +132,14 @@ public final class Profile {
         benchmarks.add(heap JsonConformanceBench());
         benchmarks.add(heap Base64EncodeBench());
         benchmarks.add(heap Base64DecodeBench());
-        // -- collection area (Unit 6) --
-        benchmarks.add(heap ArrayListAppendBench());
-        benchmarks.add(heap HashMapIntBench());
-        benchmarks.add(heap HashMapStringBench());
-        benchmarks.add(heap HashSetDedupBench());
-        benchmarks.add(heap LinkedListBench());
-        benchmarks.add(heap HeapSortBench());
-        benchmarks.add(heap RedBlackTreeBench());
-        // -- sort area (Unit 7) --
-        benchmarks.add(heap SortInt64Bench());
-        benchmarks.add(heap SortF64Bench());
-        benchmarks.add(heap SortStableBench());
-        benchmarks.add(heap BinarySearchBench());
-        // -- string area (Unit 8) --
-        benchmarks.add(heap StringBuildBench());
-        benchmarks.add(heap StringSearchBench());
-        benchmarks.add(heap StringReplaceBench());
-        benchmarks.add(heap StringUpperBench());
-        // -- hash area (Unit 9) --
-        benchmarks.add(heap XXHash3Bench());
-        benchmarks.add(heap XXHash3_256kBench());
-        benchmarks.add(heap XXHash3_128Bench());
-        benchmarks.add(heap XXHash3_128_256kBench());
-        benchmarks.add(heap SipHashBench());
-        // -- stream area (Unit 10) --
-        benchmarks.add(heap StreamPipelineBench());
-        benchmarks.add(heap StreamParallelReduceBench());
-        // -- math area (Unit 11) --
-        benchmarks.add(heap SaxpyBench());
-        benchmarks.add(heap DotProductBench());
+        // -- math/ --
+        benchmarks.add(heap ElementAccessBench());
+        benchmarks.add(heap ElementSetBench());
+        benchmarks.add(heap NpyLoadBench());
         benchmarks.add(heap MatMulBench());
-        // -- gpu area (gpu-matmul-profiling) — real device @Kernel matmul --
+        // -- xpu/ --
         benchmarks.add(heap GpuMatMulBench());
         benchmarks.add(heap GpuMatMulF16Bench());
-        // -- CLBG classics (Unit 12) --
-        benchmarks.add(heap MandelbrotBench());
-        benchmarks.add(heap FannkuchBench());
-        benchmarks.add(heap SpectralNormBench());
-        // -- time area (Unit 13) --
-        benchmarks.add(heap InstantArithmeticBench());
-        benchmarks.add(heap LocalDateArithmeticBench());
-        // -- concurrency area (Unit 14) --
-        benchmarks.add(heap AtomicBench());
-        benchmarks.add(heap TaskSpawnBench());
 
         // Flags: --list, --selftest, --run, --out <path>, and selection by
         // --area <area> / --bench <name> (Unit 17). Language selection is a
@@ -171,14 +183,14 @@ public final class Profile {
         // (Unit 2). Writes a results CSV (with a real /proc peak-RSS read) and a
         // sibling env CSV, then exits.
         if (selfTest) {
-            return Profile.runSelfTest(outPath);
+            return Bench.runSelfTest(outPath);
         }
 
         // --run: measure every registered benchmark through the Harness loop
         // (Unit 3) and write the results CSV. (Selection by area/lang/bench
         // lands in Unit 17; for now it runs all registered benchmarks.)
         if (runMode) {
-            return Profile.runMeasured(benchmarks, outPath, areaFilter, benchFilter);
+            return Bench.runMeasured(benchmarks, outPath, areaFilter, benchFilter);
         }
 
         int32 n = benchmarks.count();
@@ -192,14 +204,18 @@ public final class Profile {
                 System.stdout.println("  " + b.name() + " [" + b.area() + "]");
                 k = k + 1;
             }
-            System.stdout.println("=== profile complete ===");
+            System.stdout.println("=== bench complete ===");
             return 0;
         }
 
-        // Default: drive each benchmark through its lifecycle, in order.
+        // Default: drive each selected benchmark through its lifecycle once, in order.
         int32 j = 0;
         while (j < n) {
             Benchmark b = benchmarks.get(j);
+            if (!Bench.selected(b, areaFilter, benchFilter)) {
+                j = j + 1;
+                continue;
+            }
             System.stdout.println("");
             System.stdout.println("-- " + b.name() + " [" + b.area() + "] --");
             b.setup();
@@ -213,7 +229,7 @@ public final class Profile {
         }
 
         System.stdout.println("");
-        System.stdout.println("=== profile complete ===");
+        System.stdout.println("=== bench complete ===");
         return 0;
     }
 
@@ -224,7 +240,7 @@ public final class Profile {
                                     String areaFilter, String benchFilter) {
         String results = outPath;
         if (results == null) {
-            results = "/tmp/profile-results.csv";
+            results = "/tmp/cajeta-bench-results.csv";
         }
         String runId = System.env.get("PROFILE_RUN_ID");
         if (runId == null) {
@@ -236,19 +252,7 @@ public final class Profile {
         int32 n = benchmarks.count();
         while (i < n) {
             Benchmark b = benchmarks.get(i);
-            // Selection: skip benchmarks not matching --area / --bench (if set).
-            boolean keep = true;
-            if (areaFilter != null) {
-                if (!b.area().equals(areaFilter)) {
-                    keep = false;
-                }
-            }
-            if (benchFilter != null) {
-                if (!b.name().equals(benchFilter)) {
-                    keep = false;
-                }
-            }
-            if (keep) {
+            if (Bench.selected(b, areaFilter, benchFilter)) {
                 // measureInto appends one row per variant (the owned Results go
                 // straight into the list — add stores a reference, so a named
                 // owning local would drop and dangle it).
@@ -274,6 +278,37 @@ public final class Profile {
         return 0;
     }
 
+    // Selection by --area (package or catalog path) and --bench (name).
+    public static boolean selected(Benchmark b, String areaFilter, String benchFilter) {
+        if (areaFilter != null) {
+            if (!Bench.areaMatches(b.area(), areaFilter)) {
+                return false;
+            }
+        }
+        if (benchFilter != null) {
+            if (!b.name().equals(benchFilter)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // --area selects a whole package ("collection") or one catalog path
+    // ("collection/hashmap-int"): an exact match, or the area under the package.
+    public static boolean areaMatches(String area, String filter) {
+        if (area.equals(filter)) {
+            return true;
+        }
+        int32 fn = (int32) filter.count();
+        if ((int32) area.count() <= fn) {
+            return false;
+        }
+        if (area.byteAt(fn) != 47) {
+            return false;
+        }
+        return area.startsWith(filter);
+    }
+
     // Unit 2 self-test: emit the reporting CSVs using the real schema, a real
     // /proc peak-RSS read, and env values pulled via System.env.get. Proves the
     // schema, memory capture, env capture, and skip-row shape before the
@@ -281,7 +316,7 @@ public final class Profile {
     public static int32 runSelfTest(String outPath) {
         String results = outPath;
         if (results == null) {
-            results = "/tmp/profile-selftest.csv";
+            results = "/tmp/cajeta-bench-selftest.csv";
         }
         String envPath = results + ".env";
 
@@ -298,11 +333,11 @@ public final class Profile {
 
         // An OK row with a genuine peak-RSS reading.
         Result ok = heap Result();
-        ok.runId = runId;
+        ok.runId #= runId;
         ok.benchmark = "example";
-        ok.area = "scaffold";
+        ok.area = "selftest/example";
         ok.language = "cajeta";
-        ok.languageVersion = cajVer;
+        ok.languageVersion #= cajVer;
         ok.library = "stdlib";
         ok.flags = "--release -O3 -march=native";
         ok.warmup = 20;
@@ -318,9 +353,9 @@ public final class Profile {
 
         // A skipped row (missing-toolchain shape) — recorded, never silent.
         Result skip = heap Result();
-        skip.runId = runId;
+        skip.runId #= runId;
         skip.benchmark = "example";
-        skip.area = "scaffold";
+        skip.area = "selftest/example";
         skip.language = "rust";
         skip.status = "skipped";
         skip.checkOk = false;

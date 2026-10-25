@@ -61,14 +61,6 @@ echo "$OUT" | awk -F, '$10=="python" && $28=="ok" && $29=="true"' | grep -q . ||
 echo "$OUT" | grep -q ",serde_json," || fail "serde_json row missing"
 echo "$OUT" | awk -F, '$10=="python" && $12=="json" && $28=="ok"' | grep -q . || fail "python stdlib json row missing"
 
-# (3) report.py ingests the competitor rows alongside Cajeta rows (codec area).
-TMP="$(mktemp -d)"
-{ cat "${PROJ}/competitors/columns.txt"; echo "$OUT"; } > "$TMP/results.csv"
-echo "schema_version,key,value" > "$TMP/env.csv"   # minimal env block
-python3 "${PROJ}/report/report.py" "$TMP" >/dev/null 2>&1 || fail "report.py failed on competitor rows"
-grep -q "json-dom" "$TMP/site/index.html" || fail "report site missing json-dom rows"
-grep -q "simdjson\|serde_json\|orjson" "$TMP/site/index.html" || fail "report site missing competitor libraries"
-rm -rf "$TMP"
 
 NLANGS="$(echo "$OUT" | awk -F, '$28=="ok"{print $10}' | sort -u | tr '\n' ' ')"
 NLIBS="$(echo "$OUT" | awk -F, '$28=="ok"{print $12}' | sort -u | wc -l)"

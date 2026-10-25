@@ -1,0 +1,66 @@
+package bench.math;
+
+import cajeta.math.Tensor;
+import cajeta.math.npio.Npy;
+
+import bench.harness.Benchmark;
+
+// `.npy` load (decode from an in-memory image) of a 2^23-element int32 tensor (32 MiB of payload) through
+// Npy.decodeI32 — the npio row of spec §6.8, split out of the old flat
+// ElementAccessBench. The image is encoded once in setup; each trial decodes it
+// into a fresh tensor. Cross-check: the decoded tensor has 2^23 elements and
+// its first and last values round-trip.
+public class NpyLoadBench extends Benchmark {
+
+    public int8[] img;
+    public int64 m;
+    public int64 imgBytes;
+    public boolean ok;
+
+    public String name() {
+        return "npy-load-i32";
+    }
+
+    public String area() {
+        return "math/npy-load-i32";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public int64 inputSize() {
+        return this.imgBytes;
+    }
+
+    public void setup() {
+        this.m = (int64) 8388608;
+        int64[] ms = heap int64[1];
+        ms[0] = this.m;
+        Tensor<int32> big #= Tensor.zeros<int32>(ms);
+        big.flatSet((int64) 0, 7);
+        big.flatSet(this.m - (int64) 1, 8247);
+        this.img #= Npy.encodeI32(big);
+        this.imgBytes = (int64) this.img.count();
+        this.ok = true;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        Tensor<int32> back #= Npy.decodeI32(this.img);
+        if (back.size() != this.m) {
+            this.ok = false;
+            return;
+        }
+        if (back.flatGet((int64) 0) != 7 || back.flatGet(this.m - (int64) 1) != 8247) {
+            this.ok = false;
+        }
+    }
+
+    public boolean checkResult() {
+        return this.ok;
+    }
+}

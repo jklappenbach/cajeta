@@ -8,8 +8,8 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release
 ./target/release/rustjson-bench
 ```
 
-Methodology mirrors `bench/src/bench/BindBench.cajeta`: peak-of-batches MB/s, and
+Methodology mirrors the Cajeta `codec/json-bind-skip` benchmark (`bench/src/main/cajeta/bench/codec/JsonBindBench.cajeta`): peak-of-batches MB/s, and
 a copy-only baseline is subtracted for `simd-json` (it mutates its input in
 place). The apples-to-apples row for Cajeta's skip-all `parse<BBEmpty>` is
 serde_json's `IgnoredAny` (structural skip-all). Results table:
-[`docs/specification/codec/json/Json.md`](../../docs/specification/codec/json/Json.md).
+[`docs/specification/codec/json/Json.md`](../../../../../docs/specification/codec/json/Json.md).

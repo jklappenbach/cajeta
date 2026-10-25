@@ -1,8 +1,8 @@
-package profile.codec;
+package bench.codec;
 
 import cajeta.codec.Base64;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // Base64 encode throughput over a 1 MiB buffer. The output length is a structural
 // cross-check (4*ceil(N/3)). Self-generating, so it needs no dataset.
@@ -17,7 +17,7 @@ public class Base64EncodeBench extends Benchmark {
     }
 
     public String area() {
-        return "codec";
+        return "codec/base64-encode";
     }
 
     public int32 warmupIters() {

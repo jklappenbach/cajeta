@@ -1,11 +1,11 @@
-package profile.codec;
+package bench.codec;
 
 import cajeta.collection.ArrayList;
 import cajeta.codec.json.Json;
 import cajeta.io.file.File;
 import cajeta.time.Clock;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // Empty bind target — maps no fields, so Json.parse<BindSkip> structurally walks
 // (and skips) the whole document via the index depth-walk WITHOUT decoding
@@ -32,7 +32,7 @@ public class JsonBindBench extends Benchmark {
     }
 
     public String area() {
-        return "codec";
+        return "codec/json-bind-skip";
     }
 
     public int32 warmupIters() {

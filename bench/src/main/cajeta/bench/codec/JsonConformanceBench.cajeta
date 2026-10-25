@@ -1,11 +1,11 @@
-package profile.codec;
+package bench.codec;
 
 import cajeta.collection.ArrayList;
 import cajeta.codec.json.Json;
 import cajeta.codec.json.JsonValue;
 import cajeta.error.Exception;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // JSON conformance (the JSON_checker accept/reject idea): feed a vector of
 // clearly-valid and clearly-malformed documents and assert the parser's verdict
@@ -25,7 +25,7 @@ public class JsonConformanceBench extends Benchmark {
     }
 
     public String area() {
-        return "codec";
+        return "codec/json-conformance";
     }
 
     public int32 warmupIters() {

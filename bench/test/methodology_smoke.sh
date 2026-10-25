@@ -8,8 +8,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
-REPO_ROOT="$( cd -- "${PROJ}/../.." &> /dev/null && pwd )"
-CAJETA="${CAJETA:-${REPO_ROOT}/build-cajeta/src/cajeta}"
+REPO_ROOT="$( cd -- "${PROJ}/.." &> /dev/null && pwd )"
+CAJETA="${CAJETA:-${REPO_ROOT}/build/src/cajeta}"
 
 fail() { echo "METHOD FAIL: $1" >&2; exit 1; }
 [[ -x "$CAJETA" ]] || fail "cajeta not found at $CAJETA"
@@ -21,7 +21,7 @@ echo "[method] building..."
 OUT="/tmp/profile-method.csv"
 rm -f "$OUT"
 echo "[method] running --run..."
-PROFILE_RUN_ID=method-run "$PROJ/build/profile" --run --out "$OUT" || fail "--run exited non-zero"
+CAJETA_BENCH_SCAFFOLD=1 PROFILE_RUN_ID=method-run "$PROJ/build/bench" --run --bench sum --out "$OUT" >/dev/null || fail "--run exited non-zero"
 [[ -f "$OUT" ]] || fail "results CSV not written"
 
 # Pull the SumBench row (benchmark col 4 == "sum").
@@ -44,4 +44,18 @@ WS="$(get 27)"; STATUS="$(get 28)"; CHECK="$(get 29)"
 [[ "$CHECK" == "true" ]]          || fail "check_ok not true: $CHECK"
 
 echo "[method] trials=$TRIALS min=$MIN median=$MED mean=$MEAN p95=$P95 ws_kb=$WS"
+[[ "$(get 30)" == "" ]]           || fail "a full-mode row carries notes '$(get 30)' (smoke tag leaked?)"
+
+# Short mode (spec §3.3.3): CAJETA_BENCH_SMOKE=1 collapses warmup to 1 and
+# trials to 3, and tags the row `smoke` so the publish step can never ship it.
+OUTS="/tmp/cajeta-bench-method-smoke.csv"; rm -f "$OUTS"
+CAJETA_BENCH_SMOKE=1 CAJETA_BENCH_SCAFFOLD=1 PROFILE_RUN_ID=method-smoke "$PROJ/build/bench" --run --bench sum --out "$OUTS" >/dev/null \
+    || fail "--run (smoke) exited non-zero"
+ROW="$(awk -F, 'NR>1 && $4=="sum"{print; exit}' "$OUTS")"
+[[ -n "$ROW" ]] || fail "no sum row in smoke CSV"
+[[ "$(get 15)" == "1" ]]     || fail "smoke warmup expected 1, got $(get 15)"
+[[ "$(get 16)" == "3" ]]     || fail "smoke trials expected 3, got $(get 16)"
+[[ "$(get 30)" == "smoke" ]] || fail "smoke row notes expected 'smoke', got '$(get 30)'"
+[[ "$(get 28)" == "ok" ]]    || fail "smoke row status not ok: $(get 28)"
+echo "[method] smoke mode: warmup=1 trials=3 notes=smoke"
 echo "METHOD OK"

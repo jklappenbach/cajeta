@@ -1,8 +1,8 @@
-package profile.time;
+package bench.time;
 
 import cajeta.time.Instant;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // Instant arithmetic throughput: N iterations of plusSeconds + getEpochSecond
 // (value-type time math). Cross-check: the accumulated epoch sum is the closed
@@ -26,7 +26,7 @@ public class InstantArithmeticBench extends Benchmark {
     }
 
     public String area() {
-        return "time";
+        return "time/time-instant-arith";
     }
 
     public int32 warmupIters() {
@@ -46,8 +46,11 @@ public class InstantArithmeticBench extends Benchmark {
     }
 
     public void run(int32 iterations) {
-        // Create a fresh Instant each iteration (in-place reassignment of a
-        // value-type local in a loop does not persist — see reference memory).
+        // Create a fresh Instant each iteration. This shape was forced at 0.7.1
+        // (in-place reassignment of a value-type local in a loop did not
+        // persist); at 0.46.3 `t = t.plusSeconds(7)` in a loop is correct for
+        // Instant (re-tested, benchmark-reference 2.2.4). The shape is kept so
+        // the row stays the same work as the competitors' runners.
         int64 acc = 0;
         int32 i = 0;
         while (i < this.n) {

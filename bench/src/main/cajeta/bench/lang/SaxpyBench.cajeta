@@ -1,6 +1,6 @@
-package profile.math;
+package bench.lang;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // SAXPY: z = a*x + y over N float64. Vectorized with Vector<float64,8> load /
 // broadcast-scalar FMA / store, plus a Vector checksum accumulator horizontal-
@@ -20,7 +20,7 @@ public class SaxpyBench extends Benchmark {
     }
 
     public String area() {
-        return "math";
+        return "lang/saxpy";
     }
 
     public int32 warmupIters() {

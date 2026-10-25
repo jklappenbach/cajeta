@@ -1,4 +1,4 @@
-package profile.report;
+package bench.harness;
 
 import cajeta.io.file.File;
 import cajeta.io.file.FileReader;

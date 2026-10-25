@@ -1,11 +1,13 @@
-package profile.concurrent;
+package bench.concurrent;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // Task spawn/await overhead: spawn N trivial async fibers, await each, accumulate
 // the results. Each spawn allocates a stackful fiber; spawning then awaiting
-// immediately keeps only one live at a time (the canonical 1M-LIVE-task footprint
-// is blocked by the 65536 live-allocation cap + fiber memory — see reference).
+// immediately keeps only one live at a time. The 1M-LIVE-task footprint was
+// blocked at 0.7.1 by the 65536 live-allocation cap; at 0.46.3 the cap is gone
+// (1M simultaneously live objects tracked exactly, re-tested in
+// benchmark-reference 2.2.4), so it is a separate benchmark for concurrent/.
 // Cross-check: sum of (i+1) == N*(N+1)/2.
 public class TaskSpawnBench extends Benchmark {
 
@@ -21,7 +23,7 @@ public class TaskSpawnBench extends Benchmark {
     }
 
     public String area() {
-        return "concurrent";
+        return "concurrent/task-spawn-await";
     }
 
     public int32 warmupIters() {

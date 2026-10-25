@@ -1,31 +1,88 @@
-package bench;
+package bench.math;
 
+import cajeta.collection.ArrayList;
 import cajeta.math.Tensor;
-import cajeta.math.npio.Npy;
-import cajeta.time.Clock;
 
-/** tensor-element-access 1.2.1: per-element cost of flatGet, flatSet, a plain array, hostBuffer and Npy decode. */
-public class ElementAccessBench {
+import bench.harness.Benchmark;
 
-    public ElementAccessBench() { return; }
+// Per-element read cost of a 1-D Tensor<float64> (tensor-element-access 1.2.1,
+// from the old flat bench/src/bench/ElementAccessBench): read through flatGet,
+// against a plain float64[] of the same values and the tensor's host buffer
+// from hostBase (the variants). Each read narrows to float32 and back, as the
+// xgboost binner does. 1M elements per trial; ns/element = min_ns / 1e6.
+// Cross-check: every read path sums to the same value. The write side is
+// ElementSetBench (math/tensor-element-set).
+public class ElementAccessBench extends Benchmark {
 
-    /** Median of three. */
-    static int64 med3(int64 a, int64 b, int64 c) {
-        if (a > b) { int64 t = a; a = b; b = t; }
-        if (b > c) { b = c; }
-        if (a > b) { return a; }
-        return b;
+    public Tensor<float64> t;
+    public float64[] a;
+    public int64 n;
+    public float64 expected;
+    public float64 last;
+    public boolean ok;
+
+    public String name() {
+        return "tensor-element-get";
     }
 
-    /** `ns` over `count` elements as "N.NN". */
-    static #String perElem(int64 ns, int64 count) {
-        int64 c = ns * (int64) 100 / count;
-        int64 frac = c % (int64) 100;
-        String pad #= frac < (int64) 10 ? "0" : "";
-        return "" + c / (int64) 100 + "." + pad + frac;
+    public String area() {
+        return "math/tensor-element-get";
     }
 
-    /** Sums `n` elements of `t` read through flatGet, narrowed as the xgboost binner does. */
+    public int32 warmupIters() {
+        return 3;
+    }
+
+    public int32 measuredIters() {
+        return 20;
+    }
+
+    public int64 inputSize() {
+        return this.n;
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("flat-get");
+        v.add("array");
+        v.add("host-buffer");
+        return v;
+    }
+
+    public void setup() {
+        this.n = (int64) 1000000;
+        int64[] shape = heap int64[1];
+        shape[0] = this.n;
+        this.t #= Tensor.zeros<float64>(shape);
+        this.a = heap float64[this.n];
+        int64 i = 0;
+        while (i < this.n) {
+            this.t.flatSet(i, (float64) i * 0.5);
+            this.a[i] = (float64) i * 0.5;
+            i = i + 1;
+        }
+        this.expected = ElementAccessBench.sumArray(this.a, this.n);
+        this.ok = true;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        if (variant.equals("flat-get")) {
+            this.last = ElementAccessBench.sumGet(this.t, this.n);
+        } else if (variant.equals("array")) {
+            this.last = ElementAccessBench.sumArray(this.a, this.n);
+        } else {
+            this.last = ElementAccessBench.sumView(this.t, this.n);
+        }
+        if (this.last != this.expected) {
+            this.ok = false;
+        }
+    }
+
+    public boolean checkResult() {
+        return this.ok;
+    }
+
+    // Sums `n` elements of `t` read through flatGet, narrowed as the xgboost binner does.
     static float64 sumGet(Tensor<float64> t, int64 n) {
         float64 s = 0.0;
         int64 i = 0;
@@ -33,7 +90,7 @@ public class ElementAccessBench {
         return s;
     }
 
-    /** Sums `n` elements of a plain array. */
+    // Sums `n` elements of a plain array.
     static float64 sumArray(float64[] a, int64 n) {
         float64 s = 0.0;
         int64 i = 0;
@@ -41,7 +98,7 @@ public class ElementAccessBench {
         return s;
     }
 
-    /** Sums `n` elements of `t` through its host buffer from hostBase. */
+    // Sums `n` elements of `t` through its host buffer from hostBase.
     static float64 sumView(Tensor<float64> t, int64 n) {
         float64[] hb = t.hostBuffer();
         int64 base = t.hostBase();
@@ -49,79 +106,5 @@ public class ElementAccessBench {
         int64 i = 0;
         while (i < n) { s = s + (float64)(float32) hb[base + i]; i = i + 1; }
         return s;
-    }
-
-    /** Writes `n` elements of `t` through flatSet. */
-    static void fillSet(Tensor<float64> t, int64 n, float64 v) {
-        int64 i = 0;
-        while (i < n) { t.flatSet(i, v + (float64) i); i = i + 1; }
-        return;
-    }
-
-    /** Runs the bench; returns 1 when the read paths disagree, before any timing. */
-    public static int32 run() {
-        int64 n = (int64) 1000000;
-        int64 reps = (int64) 20;
-        int64[] shape = heap int64[1];
-        shape[0] = n;
-        Tensor<float64> t #= Tensor.zeros<float64>(shape);
-        Tensor<float64> w #= Tensor.zeros<float64>(shape);
-        float64[] a = heap float64[n];
-        int64 i = 0;
-        while (i < n) { t.flatSet(i, (float64) i * 0.5); a[i] = (float64) i * 0.5; i = i + 1; }
-        float64 g = ElementAccessBench.sumGet(t, n);
-        float64 r = ElementAccessBench.sumArray(a, n);
-        float64 v = ElementAccessBench.sumView(t, n);
-        if (g != r || r != v) {
-            System.stdout.println("element-access: sums disagree, flatGet " + g + " array " + r + " hostBuffer " + v);
-            return 1;
-        }
-        int64[] tg = heap int64[3];
-        int64[] ta = heap int64[3];
-        int64[] tv = heap int64[3];
-        int64[] ts = heap int64[3];
-        int64[] td = heap int64[3];
-        float64 sink = 0.0;
-        int32 k = 0;
-        while (k < 3) {
-            int64 t0 = Clock.nanoTime();
-            int64 p = 0;
-            while (p < reps) { sink = sink + ElementAccessBench.sumGet(t, n); p = p + 1; }
-            tg[k] = Clock.nanoTime() - t0;
-            t0 = Clock.nanoTime();
-            p = 0;
-            while (p < reps) { sink = sink + ElementAccessBench.sumArray(a, n); p = p + 1; }
-            ta[k] = Clock.nanoTime() - t0;
-            t0 = Clock.nanoTime();
-            p = 0;
-            while (p < reps) { sink = sink + ElementAccessBench.sumView(t, n); p = p + 1; }
-            tv[k] = Clock.nanoTime() - t0;
-            t0 = Clock.nanoTime();
-            p = 0;
-            while (p < reps) { ElementAccessBench.fillSet(w, n, (float64) p); p = p + 1; }
-            ts[k] = Clock.nanoTime() - t0;
-            k = k + 1;
-        }
-        int64 m = (int64) 8388608;
-        int64[] ms = heap int64[1];
-        ms[0] = m;
-        Tensor<int32> big #= Tensor.zeros<int32>(ms);
-        int8[] img #= Npy.encodeI32(big);
-        k = 0;
-        while (k < 3) {
-            int64 t1 = Clock.nanoTime();
-            Tensor<int32> back #= Npy.decodeI32(img);
-            td[k] = Clock.nanoTime() - t1;
-            if (back.size() != m) { return 1; }
-            k = k + 1;
-        }
-        int64 tot = n * reps;
-        String sg #= ElementAccessBench.perElem(ElementAccessBench.med3(tg[0], tg[1], tg[2]), tot);
-        String sa #= ElementAccessBench.perElem(ElementAccessBench.med3(ta[0], ta[1], ta[2]), tot);
-        String sv #= ElementAccessBench.perElem(ElementAccessBench.med3(tv[0], tv[1], tv[2]), tot);
-        String ss #= ElementAccessBench.perElem(ElementAccessBench.med3(ts[0], ts[1], ts[2]), tot);
-        int64 dm = ElementAccessBench.med3(td[0], td[1], td[2]) / (int64) 1000000;
-        System.stdout.println("element-access ns/elem: flatGet " + sg + ", flatSet " + ss + ", array " + sa + ", hostBuffer " + sv + "; Npy.decodeI32 2^23 " + dm + " ms; median of 3 (sink " + (sink > 0.0) + ")");
-        return 0;
     }
 }

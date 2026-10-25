@@ -1,20 +1,22 @@
 {
-    // Cajeta cross-language benchmark suite — built with the cajeta build tool.
-    // Sibling of samples/tour. Layout follows the standard project shape
-    // (see samples/buildtool/basic and docs/BuildTool.md):
-    //   cajeta.json                          ← this manifest
-    //   src/main/cajeta/profile/*.cajeta     ← sources (package `profile`)
-    //   build/profile                        ← built binary (gitignored)
+    // The benchmark reference's harness project for the language + stdlib
+    // catalog (specs/benchmark-reference-spec.md §2.1), built with the cajeta
+    // build tool. Formerly samples/profile.
+    //   cajeta.json                                 ← this manifest
+    //   src/main/cajeta/bench/<package>/*Bench.cajeta ← one directory per catalog package
+    //   src/main/cajeta/bench/Bench.cajeta          ← entry: registers every benchmark
+    //   build/bench                                 ← built binary (gitignored)
     //
-    // Build + run from this directory:
-    //   cajeta build     → build/profile
-    //   cajeta run       → build + execute (what run.sh does)
+    // The compiler is <repo>/build/src/cajeta (scripts default to it; override
+    // with CAJETA=). Build + run from this directory:
+    //   cajeta release   → build/bench (what bench.sh and the smokes use)
+    //   cajeta run       → debug build + execute (what run.sh does)
     //   cajeta clean     → wipe build/
 
     "details": {
-        "name":                "profile",
+        "name":                "bench",
         "version":             "0.1.0",
-        "description":         "Cajeta cross-language benchmark & diagnostic suite",
+        "description":         "Cajeta benchmark reference — language and stdlib catalog",
         "license":             "Apache-2.0",
         "authors":             ["cajeta"],
         "cajeta-lang-version": "1.0"
@@ -32,41 +34,41 @@
         "build": {
             "source-root":  "src/main/cajeta",
             "target":       "host",
-            "entry-method": "profile.Profile::main"
+            "entry-method": "bench.Bench::main"
         }
     },
 
     "tasks": {
 
-        // output-path puts the binary at build/profile rather than the
-        // default build/exe/<name>: the project name `profile` matches the
-        // top-level package `profile`, so the default would collide with the
-        // build/exe/profile/ object directory (same reasoning as the tour).
+        // output-path puts the binary at build/bench rather than the
+        // default build/exe/<name>: the project name `bench` matches the
+        // top-level package `bench`, so the default would collide with the
+        // build/exe/bench/ object directory (same reasoning as the tour).
         "build": {
-            "description": "Build the profile harness to a native binary (build/profile)",
+            "description": "Build the bench harness to a native binary (build/bench)",
             "actions": [
                 // xpu-backend=cpu so the MatMulBench @Kernel matmul compiles +
                 // registers for the CPU kernel-pool dispatcher (else .launch
                 // finds no registered kernel and silently skips).
                 { "action": "build",
                   "flavor": { "base": "debug", "xpu-backend": "cpu" },
-                  "output-path": "build/profile", "id": "art" }
+                  "output-path": "build/bench", "id": "art" }
             ],
             "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
         },
 
         "run": {
-            "description": "Build the profile harness and run it",
+            "description": "Build the bench harness and run it",
             "actions": [
                 { "action": "build",
                   "flavor": { "base": "debug", "xpu-backend": "cpu" },
-                  "output-path": "build/profile", "id": "art" },
+                  "output-path": "build/bench", "id": "art" },
                 { "action": "exec", "command": "${art.path}" }
             ]
         },
 
         "release": {
-            "description": "Optimized release build of the profile harness",
+            "description": "Optimized release build of the bench harness",
             "actions": [
                 // O3 + host-native CPU (AVX2/FMA on this machine) so the Cajeta
                 // benchmarks compete on the same footing as the competitors'
@@ -75,18 +77,18 @@
                 { "action": "build",
                   "flavor": { "base": "release", "opt": "O3", "cpu": "native",
                               "xpu-backend": "cpu" },
-                  "output-path": "build/profile", "id": "art" }
+                  "output-path": "build/bench", "id": "art" }
             ],
             "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
         },
 
         "gpu": {
-            "description": "Release build with GPU backend (amdgpu, gfx1151) for the gpu-area @Kernel benchmarks; the active backend is chosen at runtime via CAJETA_XPU_BACKEND=hip. Output build/profile-gpu so it does not collide with the cpu-only build/profile. cpu is NOT in this flavor: the LDS-tiled matmul kernel has a barrier in its K-loop, which OOMs the CPU barrier-fission pass (see reference_cpu_barrier_fission_loop_oom); HIP compiles it natively. Vulkan is deferred (agents/gpu-vulkan-f64-plan.md).",
+            "description": "Release build with GPU backend (amdgpu, gfx1151) for the gpu-area @Kernel benchmarks; the active backend is chosen at runtime via CAJETA_XPU_BACKEND=hip. Output build/bench-gpu so it does not collide with the cpu-only build/bench. cpu is NOT in this flavor: the LDS-tiled matmul kernel has a barrier in its K-loop, which OOMs the CPU barrier-fission pass (see reference_cpu_barrier_fission_loop_oom); HIP compiles it natively. Vulkan is deferred (agents/gpu-vulkan-f64-plan.md).",
             "actions": [
                 { "action": "build",
                   "flavor": { "base": "release", "opt": "O3", "cpu": "native",
                               "xpu-backend": "amdgpu", "xpu-arch": "gfx1151" },
-                  "output-path": "build/profile-gpu", "id": "art" }
+                  "output-path": "build/bench-gpu", "id": "art" }
             ],
             "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
         },

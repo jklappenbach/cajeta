@@ -1,6 +1,6 @@
-package profile.report;
+package bench.harness;
 
-import profile.report.Csv;
+import bench.harness.Csv;
 
 // One row of the reproducibility record (spec §3.1). Every field a third party
 // needs to reproduce a measurement: benchmark/language/library identity +

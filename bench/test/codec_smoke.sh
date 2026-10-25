@@ -4,14 +4,15 @@
 #  - json-tokenize produces 3 ok rows (twitter/citm_catalog/canada) — status ok
 #    means the Cajeta tokenizer hit the EXACT expected token count per file;
 #  - input_size (file bytes) is recorded so the report can derive MB/s;
+#  - json-dom / json-serialize / json-roundtrip are ok on all three files;
 #  - base64-encode + base64-decode are ok (round-trip cross-checks);
 #  - without PROFILE_DATA_DIR, json-tokenize records a skip (no crash).
 set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
-REPO_ROOT="$( cd -- "${PROJ}/../.." &> /dev/null && pwd )"
-CAJETA="${CAJETA:-${REPO_ROOT}/build-cajeta/src/cajeta}"
+REPO_ROOT="$( cd -- "${PROJ}/.." &> /dev/null && pwd )"
+CAJETA="${CAJETA:-${REPO_ROOT}/build/src/cajeta}"
 DATA="/tmp/profile-codec-data"
 
 fail() { echo "CODEC FAIL: $1" >&2; exit 1; }
@@ -36,7 +37,7 @@ PROFILE_DATA_DIR="$DATA" bash "$PROJ/datasets/fetch.sh" >/dev/null || fail "data
 OUT="/tmp/profile-codec.csv"
 rm -f "$OUT"
 echo "[codec] running with corpus..."
-PROFILE_RUN_ID=codec-run PROFILE_DATA_DIR="$DATA" "$PROJ/build/profile" --run --out "$OUT" >/tmp/codec-run.log 2>&1 \
+CAJETA_BENCH_SMOKE=1 PROFILE_RUN_ID=codec-run PROFILE_DATA_DIR="$DATA" "$PROJ/build/bench" --run --area codec --out "$OUT" >/tmp/codec-run.log 2>&1 \
     || { tail -20 /tmp/codec-run.log; fail "--run crashed"; }
 grep -E "measured json-tokenize|measured base64" /tmp/codec-run.log | sed 's/^/  /'
 
@@ -62,19 +63,20 @@ for vrt in twitter citm_catalog canada; do
     echo "[codec] json-bind-skip/$vrt ok  min_ns=$mn"
 done
 
-# json DOM-family: citm (integer-only) runs ok; twitter/canada skip (v1 DOM
-# doesn't parse floats) — the limitation surfaced as data, not a crash.
+# json DOM-family: all three corpus files run ok. The 0.7.1-era skip ("v1 DOM
+# doesn't parse floats", twitter/canada) is gone (re-tested at 0.46.3,
+# benchmark-reference 2.2.4).
 for bench in json-dom json-serialize json-roundtrip; do
-    st="$(col "$bench" citm_catalog 28)"
-    [[ "$st" == "ok" ]] || fail "$bench/citm_catalog status=$st"
-    mn="$(col "$bench" citm_catalog 17)"
-    echo "[codec] $bench/citm_catalog ok  min_ns=$mn"
-    for vrt in twitter canada; do
+    for vrt in twitter citm_catalog canada; do
         st="$(col "$bench" "$vrt" 28)"
-        [[ "$st" == "skipped" ]] || fail "$bench/$vrt expected skip (floats), got $st"
-        echo "[codec] $bench/$vrt skipped (floats) ✓"
+        [[ "$st" == "ok" ]] || fail "$bench/$vrt status=$st"
+        echo "[codec] $bench/$vrt ok  min_ns=$(col "$bench" "$vrt" 17)"
     done
 done
+
+# Every row carries its catalog path and the smoke tag.
+bad="$(awk -F, 'NR>1 && ($5 !~ /^codec\// || $30 !~ /^smoke/)' "$OUT" | wc -l)"
+[[ "$bad" == "0" ]] || fail "$bad codec rows without a codec/ area or the smoke tag"
 
 # json-conformance: accept/reject vector all correct (self-contained)
 cst="$(awk -F, 'NR>1 && $4=="json-conformance"{print $28; exit}' "$OUT")"
@@ -91,7 +93,7 @@ done
 # Without PROFILE_DATA_DIR, json-tokenize records a skip (no crash).
 echo "[codec] no-dataset skip path..."
 OUT2="/tmp/profile-codec-nodata.csv"; rm -f "$OUT2"
-PROFILE_RUN_ID=nd "$PROJ/build/profile" --run --out "$OUT2" >/dev/null 2>&1 || fail "--run crashed without data dir"
+CAJETA_BENCH_SMOKE=1 PROFILE_RUN_ID=nd "$PROJ/build/bench" --run --area codec --out "$OUT2" >/dev/null 2>&1 || fail "--run crashed without data dir"
 ST="$(awk -F, 'NR>1 && $4=="json-tokenize" {print $28; exit}' "$OUT2")"
 [[ "$ST" == "skipped" ]] || fail "json-tokenize should skip without dataset, got status=$ST"
 

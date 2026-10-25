@@ -1,4 +1,4 @@
-package profile.gpu;
+package bench.xpu;
 
 import cajeta.collection.ArrayList;
 import cajeta.xpu.KernelBuffer;
@@ -10,7 +10,7 @@ import cajeta.xpu.Shared;
 import cajeta.xpu.BlockPadded;
 import cajeta.xpu.CooperativeMatrix;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // Torch-recipe f16 WMMA GEMM (gpu-f16-torch-recipe) — implements torch's VERIFIED gfx1151
 // kernel shape: MT 96x128, depthU 64, MIWT 3x4 = 12 accumulators/wave, 4 waves (128 threads).
@@ -173,7 +173,7 @@ public class GpuMatMulF16Bench extends Benchmark {
     }
 
     public String area() {
-        return "gpu";
+        return "xpu/gemm-f16";
     }
 
     public String backend() {

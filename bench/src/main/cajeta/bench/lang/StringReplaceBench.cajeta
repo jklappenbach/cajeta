@@ -1,6 +1,6 @@
-package profile.string;
+package bench.lang;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // Global replace: replace every "fox" (3 chars) with "feline" (6) in a ~360 KB
 // text. Cross-check: the output is longer than the input (the replacements grew
@@ -16,7 +16,7 @@ public class StringReplaceBench extends Benchmark {
     }
 
     public String area() {
-        return "string";
+        return "lang/string-replace";
     }
 
     public int32 warmupIters() {

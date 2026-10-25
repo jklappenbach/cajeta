@@ -1,8 +1,8 @@
-package profile.collection;
+package bench.collection;
 
 import cajeta.collection.RedBlackTree;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // RedBlackTree<int32,int32> ordered map: N ordered inserts, then N point
 // lookups summing values. Cross-check: value sum == N*(N-1). Smaller N + fewer
@@ -17,7 +17,7 @@ public class RedBlackTreeBench extends Benchmark {
     }
 
     public String area() {
-        return "collection";
+        return "collection/redblacktree-insert-lookup";
     }
 
     public int32 warmupIters() {

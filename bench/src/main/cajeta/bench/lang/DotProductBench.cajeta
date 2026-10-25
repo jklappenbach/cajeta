@@ -1,6 +1,6 @@
-package profile.math;
+package bench.lang;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // Dot product: sum(x[i]*y[i]) over N float64. Vectorized with 4 independent
 // Vector<float64,8> accumulators (32-wide unroll) to hide FMA latency on this
@@ -19,7 +19,7 @@ public class DotProductBench extends Benchmark {
     }
 
     public String area() {
-        return "math";
+        return "lang/dot-product";
     }
 
     public int32 warmupIters() {

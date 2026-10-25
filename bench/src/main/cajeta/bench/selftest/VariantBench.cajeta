@@ -1,8 +1,8 @@
-package profile;
+package bench.selftest;
 
 import cajeta.collection.ArrayList;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // Exercises the variant matrix: two variants ("small"/"large") with different
 // input sizes, each producing its own result row with the variant label. The
@@ -19,7 +19,7 @@ public class VariantBench extends Benchmark {
     }
 
     public String area() {
-        return "selftest";
+        return "selftest/variant-demo";
     }
 
     public int32 warmupIters() {

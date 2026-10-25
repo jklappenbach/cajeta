@@ -1,11 +1,11 @@
-package profile;
+package bench.harness;
 
 import cajeta.collection.ArrayList;
 import cajeta.time.Clock;
 
-import profile.Benchmark;
-import profile.report.Result;
-import profile.report.Memory;
+import bench.harness.Benchmark;
+import bench.harness.Result;
+import bench.harness.Memory;
 
 // The measurement loop (spec §4). Runs a benchmark through idiomatic warmup
 // then N measured trials, timing each with Clock.nanoTime and subtracting the
@@ -48,6 +48,14 @@ public class Harness {
 
         int32 warm = b.warmupIters();
         int32 trials = b.measuredIters();
+        // CAJETA_BENCH_SMOKE=1 (spec §3.3.3): prove the benchmark builds, runs,
+        // checks and emits a row, in seconds. Rows are tagged `smoke` so the
+        // publish step can never ship them.
+        boolean smoke = Harness.smokeMode();
+        if (smoke) {
+            warm = 1;
+            trials = 3;
+        }
         int64 baseline = b.baselineNanos();
 
         // Warmup — reach steady state before measuring.
@@ -134,6 +142,9 @@ public class Harness {
         r.workingSetKb = ws;
         r.allocBytes = allocBytes;
         r.checkOk = ok;
+        if (smoke) {
+            r.notes = "smoke";
+        }
         if (ok) {
             r.status = "ok";
         } else {
@@ -157,8 +168,21 @@ public class Harness {
         r.backend = "" + be;
         r.status = "skipped";
         r.checkOk = false;
-        r.notes = "" + reason;
+        if (Harness.smokeMode()) {
+            r.notes = "smoke; " + reason;
+        } else {
+            r.notes = "" + reason;
+        }
         return r;
+    }
+
+    // True under CAJETA_BENCH_SMOKE=1: warmup 1, trials 3, rows tagged `smoke`.
+    public static boolean smokeMode() {
+        String v = System.env.get("CAJETA_BENCH_SMOKE");
+        if (v == null) {
+            return false;
+        }
+        return v.equals("1");
     }
 
     public static int32 p95Index(int32 n) {

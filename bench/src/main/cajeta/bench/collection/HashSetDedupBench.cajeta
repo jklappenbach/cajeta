@@ -1,8 +1,8 @@
-package profile.collection;
+package bench.collection;
 
 import cajeta.collection.HashSet;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // HashSet dedup: insert N values where each distinct value appears twice
 // (i % (N/2)), so the set must absorb the duplicates. Cross-check: the final
@@ -17,7 +17,7 @@ public class HashSetDedupBench extends Benchmark {
     }
 
     public String area() {
-        return "collection";
+        return "collection/hashset-dedup";
     }
 
     public int32 warmupIters() {

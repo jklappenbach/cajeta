@@ -1,8 +1,8 @@
-package profile.stream;
+package bench.lang;
 
 import cajeta.collection.ArrayList;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // Parallel reduce via .parallel() (fork/join over Splittable shares). Cross-check:
 // the parallel sum equals the sequential sum (associativity + correct splitting).
@@ -17,7 +17,7 @@ public class StreamParallelReduceBench extends Benchmark {
     }
 
     public String area() {
-        return "stream";
+        return "lang/stream-parallel-reduce";
     }
 
     public int32 warmupIters() {

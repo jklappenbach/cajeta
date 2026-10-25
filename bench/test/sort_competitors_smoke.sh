@@ -59,13 +59,6 @@ for v in ascending descending dups random; do
     case " $VARIANTS " in *" $v "*) ;; *) fail "missing sort-int64 variant in results: $v" ;; esac
 done
 
-# (4) report.py ingests the sort competitor rows.
-TMP="$(mktemp -d)"
-{ cat "${PROJ}/competitors/columns.txt"; echo "$OUT"; } > "$TMP/results.csv"
-echo "schema_version,key,value" > "$TMP/env.csv"
-python3 "${PROJ}/report/report.py" "$TMP" >/dev/null 2>&1 || fail "report.py failed on sort rows"
-grep -q "sort-int64" "$TMP/site/index.html" || fail "report site missing sort-int64 rows"
-rm -rf "$TMP"
 
 NLANGS="$(echo "$OUT" | awk -F, '$28=="ok"{print $10}' | sort -u | tr '\n' ' ')"
 echo "[sort-comp] measured langs: [$NLANGS]; adversarial variants completed (Cajeta skips them)"

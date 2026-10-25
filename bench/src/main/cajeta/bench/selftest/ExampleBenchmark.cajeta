@@ -1,6 +1,6 @@
-package profile;
+package bench.selftest;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // Scaffold example benchmark — exercises the harness lifecycle end-to-end.
 // It prints a marker in each lifecycle method so the Unit 1 smoke test can
@@ -15,7 +15,7 @@ public class ExampleBenchmark extends Benchmark {
     }
 
     public String area() {
-        return "scaffold";
+        return "selftest/example";
     }
 
     public void setup() {

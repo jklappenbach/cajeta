@@ -1,12 +1,12 @@
-package profile.report;
+package bench.harness;
 
 import cajeta.collection.ArrayList;
 import cajeta.io.file.File;
 import cajeta.io.file.FileWriter;
 import cajeta.io.file.OpenMode;
 
-import profile.report.Csv;
-import profile.report.Result;
+import bench.harness.Csv;
+import bench.harness.Result;
 
 // Writes the report CSVs. `writeResults` emits the schema header + one row per
 // Result; `writeEnv` emits a small key,value env.csv capturing the run id plus

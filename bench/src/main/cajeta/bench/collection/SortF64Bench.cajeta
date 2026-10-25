@@ -1,9 +1,9 @@
-package profile.sort;
+package bench.collection;
 
 import cajeta.collection.Sort;
 import cajeta.time.Clock;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // Unstable sort of N random float64. Each trial copies the source and sorts it
 // (copy subtracted). Cross-check: non-decreasing.
@@ -22,7 +22,7 @@ public class SortF64Bench extends Benchmark {
     }
 
     public String area() {
-        return "sort";
+        return "collection/sort-f64";
     }
 
     public int32 warmupIters() {
@@ -73,7 +73,7 @@ public class SortF64Bench extends Benchmark {
             i = i + 1;
         }
         Sort.sort<float64>(w, this.n);
-        this.out = w;
+        this.out #= w;
     }
 
     public boolean checkResult() {

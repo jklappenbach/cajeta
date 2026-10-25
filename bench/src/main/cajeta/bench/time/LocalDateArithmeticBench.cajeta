@@ -1,8 +1,8 @@
-package profile.time;
+package bench.time;
 
 import cajeta.time.LocalDate;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // LocalDate arithmetic throughput: N iterations of plusDays + toEpochDay
 // (calendar math). Cross-check: the accumulated epoch-day sum is the closed form
@@ -25,7 +25,7 @@ public class LocalDateArithmeticBench extends Benchmark {
     }
 
     public String area() {
-        return "time";
+        return "time/time-localdate-arith";
     }
 
     public int32 warmupIters() {
@@ -45,8 +45,12 @@ public class LocalDateArithmeticBench extends Benchmark {
     }
 
     public void run(int32 iterations) {
-        // Fresh LocalDate each iteration (value-type in-place reassignment in a
-        // loop doesn't persist).
+        // Fresh LocalDate each iteration: in-place reassignment in a loop is
+        // still wrong at 0.46.3 (re-tested, benchmark-reference 2.2.4):
+        // `d = d.plusDays(1)` 366 times from 2000-01-01 ends at 1970-01-02 in
+        // both --debug and --release, while the straight-line form and
+        // of(2000,1,1).plusDays(366) are right. plusDays returns
+        // `stack LocalDate(...)`; Instant, the same shape, is now correct.
         int64 acc = 0;
         int32 i = 0;
         while (i < this.n) {

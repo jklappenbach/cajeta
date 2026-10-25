@@ -1,4 +1,4 @@
-package profile.codec;
+package bench.codec;
 
 import cajeta.collection.ArrayList;
 import cajeta.codec.json.Json;
@@ -6,7 +6,7 @@ import cajeta.codec.json.JsonValue;
 import cajeta.io.file.File;
 import cajeta.time.Clock;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // JSON serialize throughput: parse the corpus to a DOM, then Json.toBytes back
 // to a byte buffer. Each trial reads + parses + serializes; the read+parse
@@ -24,7 +24,7 @@ public class JsonSerializeBench extends Benchmark {
     }
 
     public String area() {
-        return "codec";
+        return "codec/json-serialize";
     }
 
     public int32 warmupIters() {

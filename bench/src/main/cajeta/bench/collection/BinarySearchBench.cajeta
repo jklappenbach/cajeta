@@ -1,8 +1,8 @@
-package profile.sort;
+package bench.collection;
 
 import cajeta.collection.Sort;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // Binary search throughput: build a sorted array (a[i] = 2*i), then run N
 // searches for keys that all exist. Cross-check: every search finds its key
@@ -17,7 +17,7 @@ public class BinarySearchBench extends Benchmark {
     }
 
     public String area() {
-        return "sort";
+        return "collection/binary-search";
     }
 
     public int32 warmupIters() {

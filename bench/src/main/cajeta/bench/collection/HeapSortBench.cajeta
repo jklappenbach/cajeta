@@ -1,8 +1,8 @@
-package profile.collection;
+package bench.collection;
 
 import cajeta.collection.Heap;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // Binary min-heap as a priority queue (heapsort): push N pseudo-random values,
 // then pop all and verify they come out non-decreasing. Cross-check: the pop
@@ -17,7 +17,7 @@ public class HeapSortBench extends Benchmark {
     }
 
     public String area() {
-        return "collection";
+        return "collection/heap-sort";
     }
 
     public int32 warmupIters() {

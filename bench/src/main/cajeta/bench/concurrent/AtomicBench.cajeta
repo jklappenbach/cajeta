@@ -1,8 +1,8 @@
-package profile.concurrent;
+package bench.concurrent;
 
 import cajeta.concurrent.AtomicInt64;
 
-import profile.Benchmark;
+import bench.harness.Benchmark;
 
 // Atomic counter throughput: N fetchAdd(1) on an AtomicInt64. Cross-check: the
 // final load() equals N (every increment landed).
@@ -16,7 +16,7 @@ public class AtomicBench extends Benchmark {
     }
 
     public String area() {
-        return "concurrent";
+        return "concurrent/atomic-fetchadd";
     }
 
     public int32 warmupIters() {
