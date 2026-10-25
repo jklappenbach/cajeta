@@ -74,6 +74,18 @@ const char* kSource =
     "            int64 sy = (t4 - t3) / 1000000L;\n"
     "            if (v != 20) { rec = 9999L; }\n"
     "            result = (rec << 40) | (rd << 20) | sy;\n"
+    "        } else if (mode == 4) {\n"
+    "            group(s, a, 20, iters);\n"
+    "            ev.recordOn(s);\n"
+    "            group(s, b, 5, iters);\n"
+    "            ev.waitHost();\n"
+    "            int64 t0 = Clock.nanoTime();\n"
+    "            while (Clock.nanoTime() - t0 < 300000000L) { }\n"
+    "            int64 t1 = Clock.nanoTime();\n"
+    "            s.sync();\n"
+    "            int64 t2 = Clock.nanoTime();\n"
+    "            result = (t2 - t1) / 1000000L;\n"
+    "            if (readOne(b) != 5) { result = 9999L; }\n"
     "        } else if (mode == 2) {\n"
     "            group(s, a, 20, iters);\n"
     "            ev.recordOn(s);\n"
@@ -174,4 +186,16 @@ TEST(XpuVulkanBatchEvent, withoutEventsTheSentinelRemains) {
     unsetenv("CAJETA_XPU_FAULT");
     EXPECT_EQ(r2, 20 * 1000 + 40);
     EXPECT_EQ(r3, 6 * 10000 + 1200);
+}
+
+// 6.1.5 — a host about to block on an event first hands the device what it recorded after it.
+TEST(XpuVulkanBatchEvent, aWaitSubmitsWhatWasRecordedAfterTheEvent) {
+    CAJETA_SKIP_IF_NO_VULKAN();
+    Prog p = compile();
+    ASSERT_NE(p.run, nullptr);
+    // Chunks of 21: A and B's first spin fly with the event; B's other four stay in the open chunk.
+    setenv("CAJETA_XPU_VK_CHUNK", "21", 1);
+    const int64_t sy = p.run(4, kIters);
+    unsetenv("CAJETA_XPU_VK_CHUNK");
+    EXPECT_LT(sy, 40) << "B waited in the open chunk through the host's 300 ms (" << sy << " ms sync)";
 }

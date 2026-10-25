@@ -95,6 +95,7 @@ struct cajeta_vk {
     PFN_vkCreateFence vkCreateFence;
     PFN_vkWaitForFences vkWaitForFences;
     PFN_vkResetFences vkResetFences;
+    PFN_vkGetFenceStatus vkGetFenceStatus;
     PFN_vkResetDescriptorPool vkResetDescriptorPool;
     PFN_vkResetCommandBuffer vkResetCommandBuffer;
     // Ray query: extensions resolved and enabled only where supported, else 0.
@@ -848,6 +849,7 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     CAJ_VKD(vkCreateFence);
     CAJ_VKD(vkWaitForFences);
     CAJ_VKD(vkResetFences);
+    CAJ_VKD(vkGetFenceStatus);
     CAJ_VKD(vkResetDescriptorPool);
     CAJ_VKD(vkResetCommandBuffer);
     CAJ_VKD(vkCreateQueryPool);
@@ -1185,6 +1187,14 @@ static void* cajeta_xpu_vk_mapped(int64_t handle) {
 // need results: KernelStream.sync, or a host read/write of a touched buffer.
 struct caj_vk_dpool { VkDescriptorPool pool; };
 #define CAJ_VK_BATCH_POOLS 64
+// One command-buffer ring slot: its chunk's fence, descriptor pools and scalar-arena end.
+struct caj_vk_ring_slot {
+    VkFence fence;
+    int inflight;                  // submitted, not yet reclaimed
+    uint64_t scalarEnd;            // scalar arena position when its chunk was submitted
+    struct caj_vk_dpool pools[CAJ_VK_BATCH_POOLS];
+    int npools, poolCursor;
+};
 #define CAJ_VK_BOUND_SLOTS 8192
 #define CAJ_VK_PENDING_FREES 16384
 #define CAJ_VK_PENDING_SAMPLERS 256
@@ -1206,10 +1216,8 @@ static struct {
     unsigned ramp;                 // growth factor of each chunk after the first, up to chunk (0 = fixed)
     int cur;                       // ring index of the open command buffer
     VkCommandBuffer cmds[CAJ_VK_BATCH_CMDS];
-    VkFence fence;
-    struct caj_vk_dpool pools[CAJ_VK_BATCH_POOLS];
-    int npools;                    // pools created (kept across batches)
-    int poolCursor;                // pool currently allocating from
+    VkFence fence;                 // the flush's final submit
+    struct caj_vk_ring_slot slot[CAJ_VK_BATCH_CMDS];
     // Open-addressing set of VkBuffer handles the open batch references.
     void* bound[CAJ_VK_BOUND_SLOTS];
     uint64_t boundWriteSeq[CAJ_VK_BOUND_SLOTS];   // the last dispatch (sequence) writing it
@@ -1281,7 +1289,9 @@ static int caj_vk_bprof_ready(void) {
 // mapping the durations chain back from the fence (flagged UNCORRELATED); with one, the
 // whole set is translated into [first launch, fence] within the dispersion cap, as the
 // eager bracket does for a single dispatch.
-static void caj_vk_bprof_resolve(int64_t fenceNs) {
+// `only` >= 0 collects that ring slot alone; sets are placed once a ring's worth is
+// collected (or at a flush), so the placement sees the same span of launches as a wrap.
+static void caj_vk_bprof_resolve(int64_t fenceNs, int only) {
     if (g_vk_bprof.ready <= 0) return;
     const char* faultEnv = getenv("CAJETA_XPU_FAULT");   // per resolve: a test flips it
     const int fault = (faultEnv && strstr(faultEnv, "vk-query-unavailable")) ? 1 : 0;
@@ -1295,10 +1305,10 @@ static void caj_vk_bprof_resolve(int64_t fenceNs) {
     static int64_t ids[MAXN], startNs[MAXN], endNs[MAXN];
     static int32_t flags[MAXN];   // -1 = unavailable
     static uint64_t rr[4 * CAJ_VK_PROF_CHUNK_MAX];
-    int total = 0;
+    static int total = 0, collected = 0;
     for (int i = 0; i < CAJ_VK_BATCH_CMDS; ++i) {
         struct caj_vk_prof_slot* ps = &g_vk_bprof.slot[i];
-        if (ps->n == 0) continue;
+        if (ps->n == 0 || (only >= 0 && i != only)) continue;
         const VkResult qr = g_xpu_vk.vkGetQueryPoolResults(
             g_xpu_vk.device, ps->pool, 0, 2 * ps->n, sizeof(uint64_t) * 4 * ps->n, rr,
             /*stride=*/2 * sizeof(uint64_t),
@@ -1325,7 +1335,11 @@ static void caj_vk_bprof_resolve(int64_t fenceNs) {
             g_xpu_vk.vkResetQueryPool(g_xpu_vk.device, ps->pool, 0, 2 * ps->n);
 #endif
         ps->n = 0;
+        collected++;
     }
+    if (only >= 0 && collected < CAJ_VK_BATCH_CMDS && total + CAJ_VK_PROF_CHUNK_MAX <= MAXN)
+        return;
+    collected = 0;
     if (total == 0) return;
     if (!mapped) {
         int64_t anchor = fenceNs;
@@ -1374,6 +1388,7 @@ static void caj_vk_bprof_resolve(int64_t fenceNs) {
                                                      CAJETA_PROF_TIER_EVENT, flags[k]))
             __cajeta_prof_vk_note_resolved();
     }
+    total = 0;
 }
 
 static void cajeta_xpu_vk_flush(void);          // defined with the launch path
@@ -1452,15 +1467,51 @@ static void cajeta_xpu_vk_note_host_access(int64_t handle, int write) {
 // flushes when headroom is short.
 #define CAJ_VK_SCALAR_ARENA_BYTES (16ull * 1024u * 1024u)
 #define CAJ_VK_SCALAR_SLOT 256u
-static struct { int64_t handle; uint64_t cur; int staging; } g_vk_scalar_arena;
+// `cur` and `retired` are monotonic positions: the bytes between them are in flight.
+static struct { int64_t handle; uint64_t cur, retired; int staging; } g_vk_scalar_arena;
+
+// Reclaim ring slot `i`: wait its chunk's fence if in flight, then free its sets and arena bytes.
+static void caj_vk_ring_reclaim(int i) {
+    struct caj_vk_ring_slot* sl = &g_vk_batch.slot[i];
+    if (sl->inflight) {
+        if (g_xpu_vk.vkGetFenceStatus(g_xpu_vk.device, sl->fence) != VK_SUCCESS) {
+            const int64_t waitStart = __cajeta_currentTimeNanos();
+            g_xpu_vk.vkWaitForFences(g_xpu_vk.device, 1, &sl->fence, VK_TRUE, ~0ull);
+            __cajeta_prof_vk_note_wait(0, waitStart, __cajeta_currentTimeNanos());
+        }
+        g_xpu_vk.vkResetFences(g_xpu_vk.device, 1, &sl->fence);
+        caj_vk_bprof_resolve(__cajeta_currentTimeNanos(), i);
+        g_vk_scalar_arena.retired = sl->scalarEnd;
+        sl->inflight = 0;
+    }
+    for (int k = 0; k < sl->npools; ++k)
+        g_xpu_vk.vkResetDescriptorPool(g_xpu_vk.device, sl->pools[k].pool, 0);
+    sl->poolCursor = 0;
+}
+
+// Reclaim the oldest slot in flight; 0 when none is.
+static int caj_vk_ring_reclaim_oldest(void) {
+    for (int k = 1; k < CAJ_VK_BATCH_CMDS; ++k) {
+        const int i = (g_vk_batch.cur + k) % CAJ_VK_BATCH_CMDS;
+        if (g_vk_batch.slot[i].inflight) { caj_vk_ring_reclaim(i); return 1; }
+    }
+    return 0;
+}
+
+static int caj_vk_arena_short(void) {
+    return g_vk_scalar_arena.cur + 64ull * CAJ_VK_SCALAR_SLOT - g_vk_scalar_arena.retired
+        > CAJ_VK_SCALAR_ARENA_BYTES;
+}
+
 static void cajeta_xpu_vk_scalar_begin_launch(void) {
     pthread_mutex_lock(&g_xpu_vk_submit_mu);
-    if (!g_vk_batch.open && g_vk_scalar_arena.staging == 0)
+    if (!g_vk_batch.open && g_vk_scalar_arena.staging == 0) {
         g_vk_scalar_arena.cur = 0;
-    else if (g_vk_scalar_arena.handle &&
-             g_vk_scalar_arena.cur + 64ull * CAJ_VK_SCALAR_SLOT
-                 > CAJ_VK_SCALAR_ARENA_BYTES)
-        cajeta_xpu_vk_flush();          // rewinds the cursor
+        g_vk_scalar_arena.retired = 0;
+    } else if (g_vk_scalar_arena.handle && caj_vk_arena_short()) {
+        while (caj_vk_arena_short() && caj_vk_ring_reclaim_oldest()) {}
+        if (caj_vk_arena_short()) cajeta_xpu_vk_flush();   // the open chunk alone fills it
+    }
     g_vk_scalar_arena.staging++;
     pthread_mutex_unlock(&g_xpu_vk_submit_mu);
 }
@@ -1476,13 +1527,14 @@ static int64_t cajeta_xpu_vk_scalar_push(const void* p, uint32_t sz) {
         g_vk_scalar_arena.handle =
             caj_vk_alloc_pref(CAJ_VK_SCALAR_ARENA_BYTES, 0);
         g_vk_scalar_arena.cur = 0;
+        g_vk_scalar_arena.retired = 0;
     }
     int64_t v = 0;
     if (g_vk_scalar_arena.handle && sz <= CAJ_VK_SCALAR_SLOT &&
-        g_vk_scalar_arena.cur + CAJ_VK_SCALAR_SLOT
+        g_vk_scalar_arena.cur + CAJ_VK_SCALAR_SLOT - g_vk_scalar_arena.retired
             <= CAJ_VK_SCALAR_ARENA_BYTES) {
         v = cajeta_xpu_vk_slice(g_vk_scalar_arena.handle,
-                                g_vk_scalar_arena.cur);
+                                g_vk_scalar_arena.cur % CAJ_VK_SCALAR_ARENA_BYTES);
         if (v) {
             void* m = cajeta_xpu_vk_mapped(v);
             if (m) memcpy(m, p, sz);
@@ -1597,8 +1649,9 @@ static void cajeta_xpu_vk_read(int64_t handle, void* dst, uint64_t bytes) {
 static void cajeta_xpu_vk_free(int64_t handle) {
     pthread_mutex_lock(&g_xpu_vk_submit_mu);
     // A recorded-but-unexecuted dispatch may hold this buffer in a baked descriptor
-    // set: park the handle (the slot stays live) until the batch lands.
-    if (g_vk_batch.open) {
+    // set: park the handle (the slot stays live) until the batch lands. A view owns nothing.
+    struct cajeta_vk_buf* fr = cajeta_xpu_vk_rec(handle);
+    if (g_vk_batch.open && !(fr && fr->is_view)) {
         if (g_vk_batch.npendingFree < CAJ_VK_PENDING_FREES) {
             g_vk_batch.pendingFree[g_vk_batch.npendingFree++] = handle;
             pthread_mutex_unlock(&g_xpu_vk_submit_mu);
@@ -3164,22 +3217,23 @@ static VkDescriptorPool caj_vk_batch_make_pool(void) {
 static int caj_vk_batch_alloc_set(VkDescriptorSetLayout layout,
                                   VkDescriptorSet* out) {
     for (;;) {
-        if (g_vk_batch.poolCursor >= g_vk_batch.npools) {
-            if (g_vk_batch.npools >= CAJ_VK_BATCH_POOLS) return 0;
+        struct caj_vk_ring_slot* sl = &g_vk_batch.slot[g_vk_batch.cur];
+        if (sl->poolCursor >= sl->npools) {
+            if (sl->npools >= CAJ_VK_BATCH_POOLS) return 0;
             VkDescriptorPool pool = caj_vk_batch_make_pool();
             if (!pool) return 0;
-            g_vk_batch.pools[g_vk_batch.npools++].pool = pool;
+            sl->pools[sl->npools++].pool = pool;
         }
         VkDescriptorSetAllocateInfo dsai;
         memset(&dsai, 0, sizeof(dsai));
         dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        dsai.descriptorPool = g_vk_batch.pools[g_vk_batch.poolCursor].pool;
+        dsai.descriptorPool = sl->pools[sl->poolCursor].pool;
         dsai.descriptorSetCount = 1;
         dsai.pSetLayouts = &layout;
         VkResult r = g_xpu_vk.vkAllocateDescriptorSets(g_xpu_vk.device, &dsai,
                                                        out);
         if (r == VK_SUCCESS) return 1;
-        g_vk_batch.poolCursor++;   // pool exhausted (or fragmented): next
+        sl->poolCursor++;   // pool exhausted (or fragmented): next
     }
 }
 
@@ -3228,6 +3282,10 @@ static int caj_vk_batch_begin(void) {
         if (g_xpu_vk.vkCreateFence(g_xpu_vk.device, &fci, NULL,
                                    &g_vk_batch.fence) != VK_SUCCESS)
             return 0;
+        for (int i = 0; i < CAJ_VK_BATCH_CMDS; ++i)
+            if (g_xpu_vk.vkCreateFence(g_xpu_vk.device, &fci, NULL,
+                                       &g_vk_batch.slot[i].fence) != VK_SUCCESS)
+                return 0;
         g_vk_batch.inited = 1;
     }
     VkCommandBufferBeginInfo cbbi;
@@ -3258,7 +3316,6 @@ static int caj_vk_batch_begin(void) {
         g_vk_stat_disp = 0;      // the flush line counts this batch alone
         g_vk_stat_barrier = 0;
     }
-    g_vk_batch.poolCursor = 0;
     memset(g_vk_batch.bound, 0, sizeof(g_vk_batch.bound));
     memset(g_vk_batch.boundWriteSeq, 0, sizeof(g_vk_batch.boundWriteSeq));
     memset(g_vk_batch.boundTouchSeq, 0, sizeof(g_vk_batch.boundTouchSeq));
@@ -3279,33 +3336,18 @@ static void caj_vk_batch_submit_chunk(void) {
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &g_vk_batch.cmds[g_vk_batch.cur];
-    if (g_xpu_vk.vkQueueSubmit(g_xpu_vk.queue, 1, &si, VK_NULL_HANDLE)
-            != VK_SUCCESS)
+    struct caj_vk_ring_slot* sl = &g_vk_batch.slot[g_vk_batch.cur];
+    if (g_xpu_vk.vkQueueSubmit(g_xpu_vk.queue, 1, &si, sl->fence) == VK_SUCCESS) {
+        sl->inflight = 1;
+        sl->scalarEnd = g_vk_scalar_arena.cur;
+    } else {
         fprintf(stderr, "cajeta.xpu.vulkan: chunk submit FAILED "
                 "(%u dispatches dropped)\n", g_vk_batch.chunkDispatches);
+    }
     g_vk_batch.chunksFlown++;
     g_vk_batch.chunkDispatches = 0;
-    g_vk_batch.cur++;
-    if (g_vk_batch.cur >= CAJ_VK_BATCH_CMDS) {
-        VkSubmitInfo empty;
-        memset(&empty, 0, sizeof(empty));
-        empty.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        if (g_xpu_vk.vkQueueSubmit(g_xpu_vk.queue, 1, &empty,
-                                   g_vk_batch.fence) == VK_SUCCESS) {
-            const int64_t waitStart = __cajeta_currentTimeNanos();
-            g_xpu_vk.vkWaitForFences(g_xpu_vk.device, 1, &g_vk_batch.fence,
-                                     VK_TRUE, ~0ull);
-            const int64_t waitEnd = __cajeta_currentTimeNanos();
-            g_xpu_vk.vkResetFences(g_xpu_vk.device, 1, &g_vk_batch.fence);
-            __cajeta_prof_vk_note_wait(0, waitStart, waitEnd);
-            caj_vk_bprof_resolve(waitEnd);
-        }
-        for (int i = 0; i < g_vk_batch.npools; ++i)
-            g_xpu_vk.vkResetDescriptorPool(g_xpu_vk.device,
-                                           g_vk_batch.pools[i].pool, 0);
-        g_vk_batch.poolCursor = 0;
-        g_vk_batch.cur = 0;
-    }
+    g_vk_batch.cur = (g_vk_batch.cur + 1) % CAJ_VK_BATCH_CMDS;
+    caj_vk_ring_reclaim(g_vk_batch.cur);   // the oldest chunk: long done when the ring is deep
     VkCommandBufferBeginInfo cbbi;
     memset(&cbbi, 0, sizeof(cbbi));
     cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -3359,7 +3401,7 @@ static void cajeta_xpu_vk_flush(void) {
             __cajeta_prof_vk_note_wait(0, waitStart, waitEnd);
             if (wr == VK_SUCCESS) {
                 g_vk_awaited_seq = g_vk_dispatch_seq;
-                caj_vk_bprof_resolve(waitEnd);
+                caj_vk_bprof_resolve(waitEnd, -1);
             }
         } else {
             fprintf(stderr, "cajeta.xpu.vulkan: batch submit FAILED "
@@ -3376,10 +3418,8 @@ static void cajeta_xpu_vk_flush(void) {
         g_vk_stat_disp = 0;
         g_vk_stat_barrier = 0;
     }
-    for (int i = 0; i < g_vk_batch.npools; ++i)
-        g_xpu_vk.vkResetDescriptorPool(g_xpu_vk.device,
-                                       g_vk_batch.pools[i].pool, 0);
-    g_vk_batch.poolCursor = 0;
+    for (int i = 0; i < CAJ_VK_BATCH_CMDS; ++i)
+        caj_vk_ring_reclaim(i);   // the final fence covered every chunk: no wait
     for (int i = 0; i < g_vk_batch.npendingFree; ++i)
         cajeta_xpu_vk_free_now(g_vk_batch.pendingFree[i]);
     g_vk_batch.npendingFree = 0;
@@ -3390,6 +3430,7 @@ static void cajeta_xpu_vk_flush(void) {
     g_vk_batch.npendingSampler = 0;
     g_vk_batch.dispatches = 0;
     g_vk_scalar_arena.cur = 0;   // fence waited: every slot is consumed
+    g_vk_scalar_arena.retired = 0;
     pthread_mutex_unlock(&g_xpu_vk_submit_mu);
 }
 
@@ -3770,7 +3811,11 @@ static int64_t cajeta_xpu_vk_event_create(void) {
 // Wait for a pending event: submit its chunk if still open, then poll. Caller holds the mutex.
 static void caj_vk_event_wait_locked(struct caj_vk_event* e) {
     if (!e->pending) return;
-    if (g_vk_batch.open && e->chunkNo == g_vk_batch.chunksFlown) caj_vk_batch_submit_chunk();
+    // The host is about to block: the device gets the open chunk too, or it runs dry behind the event.
+    if (g_vk_batch.open && (e->chunkNo == g_vk_batch.chunksFlown ||
+            (g_vk_batch.chunkDispatches > 0 &&
+             g_xpu_vk.vkGetEventStatus(g_xpu_vk.device, e->ev) != VK_EVENT_SET)))
+        caj_vk_batch_submit_chunk();
     const int64_t t0 = __cajeta_currentTimeNanos();
     for (;;) {
         VkResult st = g_xpu_vk.vkGetEventStatus(g_xpu_vk.device, e->ev);
