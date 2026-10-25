@@ -101,6 +101,11 @@ sequences decoding, `cajeta-llm` bench):
   unpipelined step where fixed 100 lost 1.3%, and took the 1-seq gain).
   `CAJETA_XPU_VK_CHUNK=N` still means both sizes N, so the ramp has nothing
   to grow; `CAJETA_XPU_VK_CHUNK_RAMP=1` turns the ramp off.
+- **2.8** When the command-buffer ring wraps, or the scalar arena runs short,
+  the host waits only for the oldest chunk in flight and reclaims that
+  chunk's command buffer, descriptor sets and arena bytes; the device keeps
+  the rest of its queue. Only a flush, or one chunk too large for the ring's
+  resources, waits for the whole queue.
 
 ## 3. In-stream device timing under the profiler
 
