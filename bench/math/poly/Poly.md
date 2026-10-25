@@ -7,7 +7,7 @@
 | id | workload | against | check |
 |---|---|---|---|
 | `math/poly-eval` | evaluate a degree-8 polynomial at 1e8 points | NumPy `polyval`, Rust, Go, Java, C++ Horner | checksum |
-| `math/poly-fit` | least-squares fit of degree 8 to 1e6 points, 1e2 times | NumPy `polyfit`, Eigen, `nalgebra`, `gonum` | coefficients within epsilon |
+| `math/poly-fit` | least-squares fit of degree 8 to 1e6 points, 1e2 times (a Vandermonde tensor through `LinAlg.lstsq`; `Poly` defers fitting) | NumPy `polyfit`, Eigen, `nalgebra`, `gonum` | coefficients within epsilon |
 
 ## Results
 

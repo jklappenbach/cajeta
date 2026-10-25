@@ -6,8 +6,8 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `math/fft-1d` | complex 1-D FFT; variants 2^16 and 2^20 | FFTW, pocketfft (NumPy), Rust `rustfft`, `gonum/fourier`, JTransforms | against a direct DFT at small N and round-trip at full N |
-| `math/fft-2d` | 2-D FFT of 2048 × 2048 | same | round-trip within epsilon |
+| `math/fft-1d` | complex64 1-D FFT (`Fft` is float32 interleaved); variants 2^16 and 2^20; NumPy and gonum rows are complex128 and say so | FFTW (float), pocketfft, Rust `rustfft`, `gonum/fourier`, JTransforms | against a direct DFT at small N and round-trip at full N |
+| `math/fft-2d` | 2-D complex64 FFT of 2048 × 2048 | same | round-trip within epsilon |
 
 ## Results
 

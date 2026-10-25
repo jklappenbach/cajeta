@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `math/stats-moments` | mean, variance, skew and kurtosis of 1e8 float64 | NumPy and SciPy, Rust `statrs`, `gonum/stat`, Apache Commons Math | within epsilon |
+| `math/stats-moments` | mean, variance, skew and kurtosis of 1e8 float64 (mean and variance from `Tensor`; skew and kurtosis in one explicit pass, `Stats` has neither) | NumPy and SciPy, Rust `statrs`, `gonum/stat`, Apache Commons Math | within epsilon |
 | `math/stats-histogram` | 1e8 values into 1e3 bins | NumPy `histogram`, same libraries | bin counts |
 
 ## Results

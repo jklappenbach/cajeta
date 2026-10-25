@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `math/transform-apply` | apply a 4 × 4 transform to 1e8 points | Eigen, `glam`, Go, `JOML`, NumPy | checksum |
+| `math/transform-apply` | apply a `Transform` (translation, rotation, scale) to 1e6 points, 100 passes; competitors apply the equivalent 4 × 4 | Eigen, `glam`, Go, `JOML`, NumPy | checksum |
 
 ## Results
 

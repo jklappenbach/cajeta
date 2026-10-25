@@ -6,8 +6,8 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `math/random-uniform` | 1e8 uniform float64 draws | NumPy `Generator`, Rust `rand`, Go `math/rand/v2`, Java `RandomGenerator`, C++ `std::mt19937_64` | mean and variance |
-| `math/random-normal` | 1e8 normal draws | same | mean and variance |
+| `math/random-uniform` | 1e8 uniform float32 draws (`Generator` yields 24-bit uniforms; a fresh tensor per trial, there is no out-parameter form) | NumPy `Generator`, Rust `rand`, Go `math/rand/v2`, Java `RandomGenerator`, C++ `std::mt19937_64` | mean and variance |
+| `math/random-normal` | 1e8 normal float32 draws | same | mean and variance |
 
 ## Results
 

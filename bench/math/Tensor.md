@@ -12,8 +12,8 @@
 | `math/tensor-broadcast` | add a 1e3 row to a 1e4 × 1e3 matrix | NumPy, Eigen, Rust `ndarray`, Go `gonum`, Java EJML | within epsilon |
 | `math/tensor-reduce` | sum, max and mean along each axis of 1e4 × 1e3 | NumPy, Eigen, Rust `ndarray`, Go `gonum`, Java EJML | within epsilon |
 | `math/tensor-transpose` | materialized transpose of 4096 × 4096 float32 | NumPy, Eigen, Rust `ndarray`, Go `gonum`, Java EJML | equality |
-| `math/tensor-cast` | float32 → float64 → int32 over 1e7 | NumPy, Eigen, Rust `ndarray`, Go `gonum`, Java EJML | checksum |
-| `math/matmul` | 1024 × 1024 float32 GEMM on the host | OpenBLAS through NumPy, Eigen, `ndarray` with BLAS, `gonum`, EJML | within epsilon |
+| `math/tensor-cast` | float32 → float64 → int32 over 1e7 (an element loop over the host buffers: `Tensor` has no cast yet) | NumPy, Eigen, Rust `ndarray`, Go `gonum`, Java EJML | checksum |
+| `math/matmul` | 200 × 200 float64 matrix multiply on the host kernel-pool path (the first suite's shape, kept) | OpenBLAS through NumPy, Eigen, `ndarray` with BLAS, `gonum`, EJML | within epsilon |
 
 ## Results
 

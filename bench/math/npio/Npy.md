@@ -7,7 +7,7 @@
 | id | workload | against | check |
 |---|---|---|---|
 | `math/npy-load-i32` | decode a 2^23 int32 `.npy` image held in memory (no disk read in the measured window) | NumPy `load` from a `BytesIO`, Rust `npyz`, Java `npy` | checksum |
-| `math/npy-save-i32` | encode it back to a `.npy` image in memory | same | byte equality |
+| `math/npy-save-i32` | encode it back to a `.npy` image in memory | same | payload byte-equal and the header parses as `<i4`, C-order, shape (8388608,); Cajeta and NumPy are byte-exact, `npyz` and Java `npy` differ in header spelling |
 
 ## Results
 

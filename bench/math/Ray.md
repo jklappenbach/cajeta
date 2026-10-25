@@ -6,8 +6,8 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `math/ray-sphere` | 1e8 ray-sphere tests | C++, Rust `glam`, Go, Java `JOML` | hit count |
-| `math/ray-aabb` | 1e8 ray-box tests | same | hit count |
+| `math/ray-sphere` | 1e8 ray-sphere tests through `Sphere.intersectsRay` | C++, Rust `glam`, Go, Java `JOML` | hit count |
+| `math/ray-aabb` | 1e8 ray-box tests through `Aabb.intersectsRay` | same | hit count |
 
 ## Results
 
