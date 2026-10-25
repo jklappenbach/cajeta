@@ -1,55 +1,78 @@
 # 25 — Writing XPU Kernels
 
-How to write a kernel against `cajeta.xpu` so that it runs at the
-device's ceiling in the regime it serves, whether that is decode,
-prefill, bind or a fused chain, and how to know that it does. Every rule here was
-measured, not reasoned. Where a number is quoted it was taken on
-gfx1151 (Radeon 8060S, wave32, shared LPDDR5X, ~206 GB/s practical
-streaming ceiling) and the record that holds it is named. The
-substrate itself is in [cajeta.xpu — Accelerator Substrate](../specification/xpu/CajetaXPU.md).
-how the layer picks among kernels is in [Kernel Routing](../specification/xpu/CajetaXPU-Routing.md).
+How to write a kernel against `cajeta.xpu` so that it runs at the device's
+ceiling on a device you have never measured, in the regime it serves
+(decode, prefill, bind, or a fused chain), and how to know that it does.
+The substrate's contract is [cajeta.xpu — one kernel, any device](../specification/xpu/CajetaXPU.md);
+the reader's map, with the catalogs of every kernel in the LLM and XGBoost
+libraries, is [Kernels](../kernels/README.md); how the layer picks among
+kernels is [Kernel Routing](../specification/xpu/CajetaXPU-Routing.md).
+
+Two kinds of rule follow. **The adaptation rules** (25.1, 25.8, 25.9) say how
+a kernel declares what only its author knows and leaves the rest to the
+compiler's measurement, the device's facts and a timed choice; break them and
+the kernel is frozen to the part on your desk. **The performance rules**
+(25.2 through 25.7) were each measured, not reasoned; where a number is
+quoted it was taken on gfx1151 (Radeon 8060S, wave32, shared LPDDR5X,
+~206 GB/s practical streaming ceiling) or an RTX 4090 (sm_89), and the record
+that holds it is named.
 
 ## 25.1 What the layer gives you
 
-Ask the device, never a backend name.
+Ask the device, never a backend name. The one place a backend name is tested
+in the LLM library is a documented watchdog workaround, not a capability.
 
 | you need | ask |
 |---|---|
-| lanes in a wave | `Device.waveSize()`, in-kernel `Wave.width()` |
-| how many waves fill the device | `Device.simdCount()`, `Device.dispatchBlocks(wavesPerBlock)` |
-| LDS you may take | `Device.sharedBytesPerBlock()` |
-| L2 size, integrated or discrete | `Device.l2CacheBytes()`, `Device.integrated()` |
-| memory you may resident | `Device.memoryBytes()`, `Device.freeMemoryBytes()` (the live figure) |
+| lanes in a wave | `Group.width()` in the kernel (folded to the built width), `Device.waveSize()` on the host, `Group.laneBlockOf(kernel)` for the width a kernel was built at |
+| how many blocks fill the device | `Device.simdCount()`, `Device.dispatchBlocks(wavesPerBlock)`, a floor to start from |
+| shared memory you may take | `Device.sharedBytesPerBlock()`; the opt-in ceiling `sharedBytesPerBlockOptIn()` only where the launch asks for it |
+| registers, threads and blocks a multiprocessor holds | `Device.registersPerMultiprocessor()`, `threadsPerMultiprocessor()`, `maxBlocksPerMultiprocessor()` |
+| L2 size, integrated or discrete, memory | `Device.l2CacheBytes()`, `integrated()`, `memoryBytes()`, `freeMemoryBytes()` (live), `peakBandwidthGBps()` |
 | can I use a feature | `Device.supports(Capability)` |
-| is this kernel on this build | `Device.kernelAvailable(name)` |
-| a measured per-device setting | `Autotune.recall / remember`, `rememberFor / recallFor`, `reportUnderperforming` |
-| what the compiler measured about your kernel | the kernel manifest: `vgpr`, `spillBytes`, `ldsStaticBytes`, `residentGroupsPerCu` |
+| is this kernel on this build and does it fit here | `Device.kernelAvailable(name)` |
+| what the compiler measured about your kernel | `KernelManifest.of(name)`: `vgpr`, `spillBytes`, `ldsStaticBytes`, `threadsPerGroup`, `residentGroupsPerCu`, `occupancyLimiter`, the native ops and their tiers |
+| which of my shapes fit here, and which is fastest | `ShapeFilter` over `DeviceFacts.current()` and `KernelFacts.measured`, then `ShapeChoice.choose` (25.8) |
+| a measured per-device setting | `Autotune.recallFor / rememberFor` with a build id; `reportUnderperforming` |
+| is another process on the device | `Device.foreignLoadPercent()` |
+| a device-side timing | `KernelTimer` at its tier (device events on CUDA and HIP, the host clock on cpu, unavailable on Vulkan) |
 
 Inside a kernel body:
 
-- `KernelThread.x()` is the lane and `KernelThread.globalIdX()` the flat
-  item.
-- `Wave.laneId()`, `Wave.shuffleSync`, `Wave.reduceSumF32` and the
-  segmented reductions.
-- `Workgroup.reduce(GroupOp.Add, x)` (and `Max`, `Min`) across every
-  wave of the workgroup, with no wave width or count in the source
-  (25.2.3), and `Workgroup.scan`, its exclusive prefix (25.2.4).
-- The `int64` forms of the wave verbs, spelled with an `I64` suffix
-  (`Wave.reduceSumI64`, `prefixSumI64`, `shuffleSyncI64` and the rest),
+- `KernelThread.x()` is the thread in its workgroup and
+  `KernelThread.globalIdX()` the flat item; `Workgroup.x()` the workgroup.
+- `Group.width()` and `Group.laneId()`; `Wave.shuffleSync`,
+  `Wave.reduceSumF32` and the segmented reductions; the `int64` forms with
+  an `I64` suffix (`Wave.reduceSumI64`, `prefixSumI64`, `shuffleSyncI64`),
   exact on every backend at every wave width.
-- `Shared<T> t = shared T[n]` for LDS.
-- `Vector<T,N>` with `vload<N>`, `asWords` / `asBytes`, and `lut4`, a
-  16-entry byte table in one `v_perm_b32`.
+- `Workgroup.reduce(GroupOp.Add, x)` (and `Max`, `Min`) across every wave of
+  the workgroup with no wave width or count in the source (25.2.3), and
+  `Workgroup.scan`, its exclusive prefix (25.2.4).
+- `Shared<T> t = shared T[n]` for LDS; `Barrier.workgroup()`.
+- `Vector<T,N>` with `vload<N>`, `vstore`, `asWords` / `asBytes`, and `lut4`,
+  a 16-entry byte table in one `v_perm_b32`.
 - The integer dot products `dotSum` (signed × signed) and `dotAccum`
   (unsigned × signed). See
   [IntegerDotProduct](../specification/gpu/IntegerDotProduct.md).
+- `CooperativeMatrix<T,16,16,Use>` with `load`, `store`, `mma`, `fromWords`,
+  and the epilogues `TileOps.scaledAccumI32`, `rank1Accum`,
+  `scaledAccumInto`.
 
 Launch with `k.launch(stream, grid: [workgroups], block: [threads])(args)`.
-`grid` counts **workgroups**, not threads.
+`grid` counts **workgroups**, not threads. Every launch is checked, and a
+refusal names its reason.
 
-Bandwidth is not on the geometry surface yet. Measure it once per
-device (a streaming copy at a size well past L2) and keep it in
-`Autotune`. Every rule below is stated against it.
+Declare what only you know, on the kernel: `@Occupancy(maxThreads = N)` or
+`maxWaves = N`, the structural block the design assumes, so the backend
+budgets registers for it and never for a worst-case 1024; `@Wave(width = N)`
+only where the indexing cannot be written against `Group.width()`;
+`@Unlowered(backend, tracked)` for a construct a backend cannot lower, against
+the plan item that tracks it. A kernel design that has a shape is a class
+template with `@Instantiate` and `@Requires` (25.8), never a hand-picked tile.
+
+Bandwidth is not on the geometry surface as a measurement. Measure it once per
+device (a streaming copy at a size well past L2) and keep it in `Autotune`.
+Every rule below is stated against it.
 
 ## 25.2 Decode: one row, one wave, the bus is the ceiling
 
@@ -602,7 +625,8 @@ public static void splitLaunch(KernelBuffer<int8> out,
 ## 25.5 Execution: launches, syncs, and what the compiler will not tell you
 
 - **A sync per launch is a round trip.** Chain launches on one stream
-  with `NoSync` launchers and wait once at the read side. A fused tail
+  (the LLM library's `*LaunchNoSync` launchers are this convention) and
+  wait once at the read side. A fused tail
   (down-projection + combine + the next layer's norm and pack in one
   launch) removes the gaps between them as well as the launches.
 - **Keep the launch a top-level statement.** A kernel launched inside a
@@ -626,13 +650,13 @@ public static void splitLaunch(KernelBuffer<int8> out,
 - **A launch is a driver call before it is a kernel.** 6 to 13
   microseconds on an RTX 4090 under WSL2, whatever the kernel does; a
   decode token is hundreds of them. `KernelStream.setDeferred(true)`
-  queues a stream's launches and replays a sequence it has seen before
-  as one recorded submission (a CUDA graph on nvptx), submitting at the
-  next sync, transfer, event or release. Results are unchanged; the
+  queues a stream's launches and replays a sequence it has seen three
+  times as one recorded submission (a CUDA graph; a no-op on the other
+  backends), submitting at the next sync, transfer, event or release. Results are unchanged; the
   token's submit cost goes from milliseconds to a fraction of one. The
   same floor sits under a timing loop: a bracket around back-to-back
   launches of a kernel faster than the submit reads the submit rate,
-  not the kernel. Defer the timed stream (`ParityLeg --deferred`).
+  not the kernel. Defer the timed stream (the LLM parity harness's `--deferred`).
 - **Byte vectors are words on NVPTX when the offset is provable.**
   `vload<32>` on a `KernelBuffer<int8>` is a byte-by-byte load unless
   the index is a multiple of four, and the compiler proves that from
@@ -1126,3 +1150,103 @@ The twin, `theScaleSplitKeepsTheBlockKernelOnAChunkThatEndsMidRow`,
 splits at `first = 2000` with `bpr = 317` and asserts the counter did
 not move. Red first at "0 times, wanted 2". The byte-exactness half of
 the same test passed while red. That is the pair every route row gets.
+
+## 25.8 Shapes as families: the filter and the timed choice
+
+A tile kernel has a shape, and the right shape is a property of the device
+and the problem, not of the author. Write the design once over its shape and
+let the layer choose the member.
+
+```cajeta
+@Instantiate({QkTile<64, 64, 32, 32, 128>, QkTile<128, 128, 32, 64, 128>})
+@Requires(TM == TN && TM % WM == 0 && TN % WN == 0 && WM % 16 == 0
+    && WN % 16 == 0 && (TM / WM) * (TN / WN) * 16 == TN && KS == 128)
+public final class QkTile<uint32 TM, uint32 TN, uint32 WM, uint32 WN, uint32 KS>
+        implements Q4TileShape {
+    public #String kernel() { return "QkTile_" + TM + "_" + TN + "_" + WM + "_" + WN + "_" + KS + "_q4kQ8"; }
+    public int32 threads() { return (int32) (2 * TN); }
+    public boolean fits(int64 rows, int64 outDim, int64 cols) { ... }
+
+    @Occupancy(maxThreads = 2 * TN)
+    @Kernel @FastMath
+    public static void q4kQ8(...) { ... }
+}
+```
+
+- **`@Instantiate` builds the members; `@Requires` refuses by name** the
+  shapes the body cannot serve, at instantiation, with the failing clause.
+  A member that would miscompile does not exist.
+- **The `@Occupancy` bound travels with the shape** as an expression over
+  the template's values: `maxThreads = 2 * TN` here, `maxWaves = (TM / WM)
+  * (TN / WN)` on a multi-wave design.
+- **Each member registers its own kernel**, named with its arguments, so the
+  registry, the manifest and the census see members, not the template.
+
+At a problem, the family builds a `ShapeFilter` over `DeviceFacts.current()`
+and considers each member with `KernelFacts.measured(kernel, dynamicShared)`:
+
+```cajeta
+ShapeFilter f #= heap ShapeFilter("q4kTcTile", DeviceFacts.current(), m, n, k);
+for each member sh that fits and Device.kernelAvailable(sh.kernel()):
+    f.consider(#heap ShapeCandidate(sh.kernel(), sh.tileM(), sh.tileN(), sh.threads(), 256, 8),
+               #KernelFacts.measured(sh.kernel(), 0));
+if (f.survivorCount() == 0) { throw heap XpuLaunchException(f.refusal()); }
+ShapeResult r #= ShapeChoice.choose(tuneDir, f, probe);
+```
+
+The filter prunes a spilling member, a member whose threads × registers
+exceed the register file, one whose shared bytes exceed the per-block limit,
+and one with no resident workgroup, each with its rule kept; it records,
+without pruning, whether the grid fills the device (or the split-K that would)
+and the padding the shape wastes. A fact the backend does not report prunes
+nothing, which is why every member survives on the CPU backend and the timer
+decides there. `ShapeChoice` then takes a lone survivor outright, or recalls
+the remembered winner for this exact problem and build, or times the
+survivors through your `ShapeProbe` (five interleaved rounds, fastest median,
+a lead under three percent is a tie) and remembers it, unless another process
+held the device. An override (`ShapeChoice.setShapeOverride`) wins for a
+sweep.
+
+Two rules about the probe. **Prewarm at load** (`ShapeChoice.prewarm`) at
+every shape the program will meet, so the first real launch is the settled
+choice. **A probe that times the running program in place** (the LLM
+library's Id families bracket real mixture-of-experts layers with
+`KernelTimer`) costs stream synchronisations for its samples; hold the trial
+through the warm-up, and read the program's throughput only after the store
+has settled. A 30B-parameter prefill measured before the store settled read
+three times its kernel time (2026-10-24).
+
+Every remembered value carries a build id made from the survivors' code
+hashes, so a rebuild that changes any candidate measures again and a value
+tuned for a kernel that no longer exists is discarded and reported. Tests run
+with the store off and pin the answer they assert (`setShapeOverride`, the
+libraries' `setPays` pins).
+
+## 25.9 The gates, and what each one would have let through
+
+- **The reference interpreter** decides what the kernel means; every backend
+  is compared to it, and recorded launches replay through it. A kernel's
+  meaning is never what one vendor's compiler produced.
+- **The build gates** refuse a spilling kernel, a kernel with no device code
+  for a declared backend, an unbounded block and a vectorisation that hung,
+  each by name; each has one declared escape, tracked, that goes STALE when
+  its cause is gone. `[xpu-kernel-spill]` tells you whether the cause is
+  register pressure or a construct legalised through memory; believe it.
+- **The launch check** refuses the scalar twin of a wave kernel, an
+  unsupported declared wave, a block that differs from the pinned one, a
+  misaligned buffer base. A refused launch that fell through would have been
+  a slow or wrong kernel that looked like a run.
+- **The census** (the libraries' test gates) requires every registered kernel
+  to be value-checked by some test or excused by name; a kernel that ran is
+  not covered. Add a kernel and the census names it until a test holds it.
+- **Device-memory poisoning** (`CAJETA_XPU_POISON=1`, the suites' default)
+  fills fresh buffers with 0xFF so an unwritten read answers NaN at once. An
+  order-dependent red is an unwritten read; a readiness answer that did not
+  launch would otherwise hand the next layer whatever the allocator left.
+- **The route gate.** A change to which kernel serves a weight passes only
+  when the program's greedy walk agrees token for token with the reference;
+  a batched throughput is read beside its tokens. Four quant formats once
+  decoded garbage at full speed for a morning because the batched route's
+  dispatcher knew two kernels while its admission knew six; a test through
+  the route, not the kernels, is what caught it.
+

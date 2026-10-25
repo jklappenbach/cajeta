@@ -50,6 +50,6 @@ One chapter per package area, mirroring the tour. *(Planned.)*
 | Chapter | |
 |---|---|
 | [23 Profiling](23-profiling.md) | The sampling profiler, `.pftrace` output, reading a trace |
-| [25 Writing XPU Kernels](25-xpu-kernels.md) | Kernels at the device's ceiling for decode, prefill, bind and fused chains — every rule measured — and the routing contract that admits them |
+| [25 Writing XPU Kernels](25-xpu-kernels.md) | How a kernel written once finds its shape on any device: the declarations, the filter and the timed choice, then the measured rules for decode, prefill, bind and fused chains, and the routing contract that admits them. The kernel catalogs are under [Kernels](../kernels/README.md) |
 
 GPU kernels, graphics, embedded targets, further toolchain deep-dives. *(Planned.)*

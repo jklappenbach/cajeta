@@ -41,6 +41,8 @@ const SECTION_LABELS = {
   buildtool: 'Build Tool',
   cajeta: 'Cajeta',
   gpu: 'GPU',
+  kernels: 'Kernels',
+  llm: 'Language models',
   specification: 'Specification',
   specs: 'Work Specs',
   history: 'History',

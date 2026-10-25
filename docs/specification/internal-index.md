@@ -113,11 +113,13 @@ Core semantics: types, ownership, memory, dispatch.
   [OptiX M3 multi-impl](gpu/rayquery/rayquery-optix-m3-multiimpl-spec.md).
 - Cooperative matrix — `gpu/coopmatrix/`:
   [NVPTX tensor cores](gpu/coopmatrix/nvptx-tensorcore-coopmatrix-spec.md).
-- [cajeta.xpu](xpu/CajetaXPU.md) — the accelerator substrate (kernels, launch, buffers).
-- [CajetaXPU-Matrix](xpu/CajetaXPU-Matrix.md) — the capability matrix across backends.
-- [CajetaXPU-FFI](xpu/CajetaXPU-FFI.md) — launch and kernel-arg FFI contract.
-- [CajetaXPU-Variance](xpu/CajetaXPU-Variance.md) — variance discipline.
-- [CajetaCPU](xpu/CajetaCPU.md) — CPU backend and graceful degradation.
+- [cajeta.xpu — one kernel, any device](xpu/CajetaXPU.md) — the accelerator substrate: the kernel model, compile-time adaptation (wave, tiers, occupancy, templates, the gates), the manifest, the device surface, the feasibility filter and the measured choice. Rewritten 2026-10-24.
+- [Kernel Routing](xpu/CajetaXPU-Routing.md) — which kernel serves which format in which regime, declared and audited.
+- [Kernels](../kernels/README.md) — the reader's map of the above, with the complete catalogs of the cajeta-llm and cajeta-xgboost kernels.
+- [CajetaXPU-Matrix](xpu/CajetaXPU-Matrix.md) — the capability matrix across backends (2026-07; predates virtual waves, the host wave and the coop tiers).
+- [CajetaXPU-FFI](xpu/CajetaXPU-FFI.md) — launch and kernel-arg FFI contract (ABI v3 today; deferral not covered).
+- [CajetaXPU-Variance](xpu/CajetaXPU-Variance.md) — the variance discipline of the pre-AMD bring-up (historical).
+- [CajetaCPU](xpu/CajetaCPU.md) — the CPU backend bring-up log (historical; the current model is CajetaXPU §3.7).
 - Wave/subgroup ops (`cajeta.xpu`): [WaveReductions](xpu/WaveReductions.md),
   [WavePrefixScan](xpu/WavePrefixScan.md), [SubgroupRotate](xpu/SubgroupRotate.md),
   [QuadControl](xpu/QuadControl.md), [IntegerAtomics](xpu/IntegerAtomics.md),
