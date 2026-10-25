@@ -1,0 +1,71 @@
+package bench.hash;
+
+import dev.cajeta.bench.Benchmark;
+
+// hash/defaulthasher-int (bench/hash/DefaultHasher.md): hash 1e8 int64 per
+// trial (the keys 0 .. 1e8-1). Timed: `key.hash()`, which is what
+// HashMap<int64, V> calls: the __cajeta_hash_int64 intrinsic, process-seeded.
+// It is NOT the DefaultHasher digest (DefaultHasher.writeInt64 + finish
+// differs, measured 2026-10-25); a map never builds a DefaultHasher for a
+// primitive key. Fold: acc ^= h; low += h & 0xFFFF. Check: a second untimed
+// pass reproduces acc and low, and neighbouring keys hash apart.
+public class DefaultHasherIntBench extends Benchmark {
+
+    public int64 n;
+    public int64 acc;
+    public int64 low;
+
+    public String name() {
+        return "defaulthasher-int";
+    }
+
+    public String area() {
+        return "hash";
+    }
+
+    public int32 warmupIters() {
+        return 3;
+    }
+
+    public int32 measuredIters() {
+        return 20;
+    }
+
+    public void setup() {
+        this.n = 100000000;
+    }
+
+    public int64 inputSize() {
+        return this.n;
+    }
+
+    public String competitorNote() {
+        return "int64.hash() intrinsic (the HashMap path); not DefaultHasher.writeInt64";
+    }
+
+    public void run(int32 iterations) {
+        int64 a = 0;
+        int64 l = 0;
+        int64 i = 0;
+        while (i < this.n) {
+            int64 h = i.hash();
+            a = a ^ h;
+            l = l + (h & 0xFFFF);
+            i = i + 1;
+        }
+        this.acc = a;
+        this.low = l;
+    }
+
+    public boolean checkResult() {
+        int64 z = 0;
+        int64 o = 1;
+        if (z.hash() == o.hash()) {
+            return false;
+        }
+        int64 a = this.acc;
+        int64 l = this.low;
+        this.run(1);
+        return a == this.acc && l == this.low && l > 0;
+    }
+}

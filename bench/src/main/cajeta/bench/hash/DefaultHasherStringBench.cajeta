@@ -1,0 +1,88 @@
+package bench.hash;
+
+import cajeta.collection.ArrayList;
+import cajeta.hash.DefaultHasher;
+
+import dev.cajeta.bench.Benchmark;
+
+// hash/defaulthasher-string (bench/hash/DefaultHasher.md): hash 1e7 16-byte
+// strings per trial, cycling a pool of 1024 keys "k-" + (10000000000000 + k)
+// (the same keys every competitor hashes). Timed: `key.hash()`, which is what
+// HashMap<String, V> calls — process-seeded XXH3-64, the DefaultHasher digest.
+// Fold: acc ^= h; low += h & 0xFFFF. Check (the hashes are process-seeded, so
+// there is no cross-language constant): for every pool key, key.hash() equals
+// a fresh DefaultHasher's writeString + finish, and a second untimed pass
+// reproduces acc and low.
+public class DefaultHasherStringBench extends Benchmark {
+
+    public ArrayList<String> pool;
+    public int32 n;
+    public int64 acc;
+    public int64 low;
+
+    public String name() {
+        return "defaulthasher-string";
+    }
+
+    public String area() {
+        return "hash";
+    }
+
+    public int32 warmupIters() {
+        return 5;
+    }
+
+    public int32 measuredIters() {
+        return 30;
+    }
+
+    public void setup() {
+        this.n = 10000000;
+        this.pool #= heap ArrayList<String>();
+        int32 k = 0;
+        while (k < 1024) {
+            String s = "k-" + (10000000000000L + (int64) k);
+            this.pool.add(#s);
+            k = k + 1;
+        }
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public String competitorNote() {
+        return "key.hash() (the HashMap path) == DefaultHasher.writeString+finish (checked per key)";
+    }
+
+    public void run(int32 iterations) {
+        int64 a = 0;
+        int64 l = 0;
+        int32 i = 0;
+        while (i < this.n) {
+            int64 h = this.pool.get(i & 1023).hash();
+            a = a ^ h;
+            l = l + (h & 0xFFFF);
+            i = i + 1;
+        }
+        this.acc = a;
+        this.low = l;
+    }
+
+    public boolean checkResult() {
+        int32 k = 0;
+        while (k < 1024) {
+            String s = this.pool.get(k);
+            DefaultHasher d = heap DefaultHasher();
+            d.writeString(s);
+            if (d.finish() != s.hash() || s.byteLength() != 16) {
+                return false;
+            }
+            k = k + 1;
+        }
+        int64 a = this.acc;
+        int64 l = this.low;
+        this.run(1);
+        return a == this.acc && l == this.low && l > 0;
+    }
+}

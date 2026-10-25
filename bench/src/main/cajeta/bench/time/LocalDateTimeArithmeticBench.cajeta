@@ -1,0 +1,60 @@
+package bench.time;
+
+import cajeta.time.LocalDateTime;
+
+import dev.cajeta.bench.Benchmark;
+
+// time/localdatetime-arith (bench/time/LocalDateTime.md): 1e7 plusHours
+// crossing day, month and year boundaries. Per i: x = 2024-01-01T00:00 +
+// (i % 50000) hours; acc += year*1000000 + month*10000 + day*100 + hour.
+// Check: the constant every competitor checks, 20264337423627200.
+public class LocalDateTimeArithmeticBench extends Benchmark {
+
+    public int32 n;
+    public int64 result;
+
+    public String name() {
+        return "localdatetime-arith";
+    }
+
+    public String area() {
+        return "time";
+    }
+
+    public int32 warmupIters() {
+        return 5;
+    }
+
+    public int32 measuredIters() {
+        return 30;
+    }
+
+    public void setup() {
+        this.n = 10000000;
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public String competitorNote() {
+        return "a fresh value per step: a loop-carried x = x.plusHours(1) is wrong for LocalDateTime on v0.46.3 (measured 2026-10-25; the specs/localdate-loop-reassign-spec.md defect)";
+    }
+
+    public void run(int32 iterations) {
+        LocalDateTime base = LocalDateTime.of(2024, 1, 1, 0, 0);
+        int64 acc = 0;
+        int32 i = 0;
+        while (i < this.n) {
+            LocalDateTime x = base.plusHours((int64) (i % 50000));
+            acc = acc + (int64) x.getYear() * 1000000 + (int64) x.getMonthValue() * 10000
+                + (int64) x.getDayOfMonth() * 100 + (int64) x.getHour();
+            i = i + 1;
+        }
+        this.result = acc;
+    }
+
+    public boolean checkResult() {
+        return this.result == 20264337423627200;
+    }
+}

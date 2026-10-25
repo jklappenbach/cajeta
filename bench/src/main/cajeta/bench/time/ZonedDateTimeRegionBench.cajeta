@@ -1,0 +1,67 @@
+package bench.time;
+
+import cajeta.time.Instant;
+import cajeta.time.ZoneId;
+import cajeta.time.ZonedDateTime;
+import cajeta.time.ZoneOffset;
+
+import dev.cajeta.bench.Benchmark;
+
+// time/zoneddatetime-region (bench/time/ZonedDateTime.md): 1e6 conversions of
+// an Instant into America/Los_Angeles, 2020-01-01T00:00Z + i*307 s, which runs
+// through twenty DST transitions. acc += offset seconds + local hour*100 +
+// local day. Check: the constant every competitor checks (Python zoneinfo
+// computed it), -25266031177.
+public class ZonedDateTimeRegionBench extends Benchmark {
+
+    public int32 n;
+    public int64 result;
+    public ZoneId la;
+
+    public String name() {
+        return "zoneddatetime-region";
+    }
+
+    public String area() {
+        return "time";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public void setup() {
+        this.n = 1000000;
+        this.la #= ZoneId.of("America/Los_Angeles");
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public String competitorNote() {
+        return "ZoneId.offsetAt opens and parses /usr/share/zoneinfo/<id> on every call (no cached rules) and scans the transitions linearly";
+    }
+
+    public void run(int32 iterations) {
+        int64 acc = 0;
+        int32 i = 0;
+        while (i < this.n) {
+            Instant t = Instant.ofEpochSecond(1577836800 + (int64) i * 307);
+            ZonedDateTime z = this.la.resolve(t);
+            ZoneOffset off = z.getOffset();
+            acc = acc + (int64) off.getTotalSeconds() + (int64) z.getHour() * 100
+                + (int64) z.getDayOfMonth();
+            i = i + 1;
+        }
+        this.result = acc;
+    }
+
+    public boolean checkResult() {
+        return this.result == -25266031177;
+    }
+}

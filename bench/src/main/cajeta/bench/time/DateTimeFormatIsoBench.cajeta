@@ -1,0 +1,69 @@
+package bench.time;
+
+import cajeta.time.DateTimeFormatter;
+import cajeta.time.ZonedDateTime;
+
+import dev.cajeta.bench.Benchmark;
+
+// time/datetime-format-iso (bench/time/DateTimeFormatter.md): format 1e6
+// instants as ISO-8601 with nanoseconds, `2024-01-01T00:00:00.000000001Z`
+// (30 bytes). Instant i: second 1704067200 + i*997, nano
+// (i*1000003 % 100000000)*10 + 1 (last digit never 0, so no library trims).
+// Check: total length 30e6, and instant 0 renders exactly as above.
+public class DateTimeFormatIsoBench extends Benchmark {
+
+    public int32 n;
+    public int64 total;
+    public boolean firstOk;
+    public DateTimeFormatter fmt;
+
+    public String name() {
+        return "datetime-format-iso";
+    }
+
+    public String area() {
+        return "time";
+    }
+
+    public int32 warmupIters() {
+        return 3;
+    }
+
+    public int32 measuredIters() {
+        return 20;
+    }
+
+    public void setup() {
+        this.n = 1000000;
+        this.fmt #= DateTimeFormatter.ofPattern("%Y-%m-%dT%H:%M:%S.%f%Z");
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public String competitorNote() {
+        return "DateTimeFormatter.ofPattern(%Y-%m-%dT%H:%M:%S.%f%Z).formatZoned at offset 0; the pattern is re-parsed on each call";
+    }
+
+    public void run(int32 iterations) {
+        int64 len = 0;
+        int32 i = 0;
+        while (i < this.n) {
+            int64 ii = (int64) i;
+            int32 nano = (int32) ((ii * 1000003) % 100000000) * 10 + 1;
+            ZonedDateTime z = stack ZonedDateTime(1704067200 + ii * 997, nano, 0);
+            String s #= this.fmt.formatZoned(z);
+            len = len + (int64) s.byteLength();
+            if (i == 0) {
+                this.firstOk = s.equals("2024-01-01T00:00:00.000000001Z");
+            }
+            i = i + 1;
+        }
+        this.total = len;
+    }
+
+    public boolean checkResult() {
+        return this.firstOk && this.total == (int64) this.n * 30;
+    }
+}

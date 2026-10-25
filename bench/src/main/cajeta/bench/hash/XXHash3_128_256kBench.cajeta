@@ -4,18 +4,20 @@ import cajeta.hash.XXHash3;
 
 import dev.cajeta.bench.Benchmark;
 
-// XXH3-128 COMPUTE-BOUND throughput over a 256 KiB (L2-resident) buffer — the
-// 128-bit sibling of XXHash3_256kBench. Same rationale: 256 KiB runs the
-// pure-Cajeta AVX-512 accumulator loop (hashLong128Into) at the compute ceiling
-// rather than the memory-bound 1 MiB regime, so it separates from the AVX2
-// library ports. One hash per timed trial.
+// hash/xxhash3_128-256k (bench/hash/XXHash3.md): XXH3-128 of a 256 KB buffer,
+// 1e4 times per trial; the buffer and per-hash key are xxhash3-256k's.
+// Timed path: XXHash3.hash128Into, which routes > 240 B to the pure-Cajeta
+// SIMD long path (hashLong128Into). Check: the XOR of the low and of the high
+// halves equal the reference xxHash 0.8.3 values every competitor checks
+// (0x4f52c915522f9fe0, 0x3c843c6da63e2dc3; seed 0).
 public class XXHash3_128_256kBench extends Benchmark {
 
     public int8[] data;
+    public int8[] digest;
     public int64 len;
-    public int8[] digest;   // reusable 16-byte digest buffer (zero-alloc hot path)
-    public int64 lastLow;
-    public int64 lastHigh;
+    public int32 n;
+    public int64 accLow;
+    public int64 accHigh;
 
     public String name() {
         return "xxhash3_128-256k";
@@ -26,40 +28,54 @@ public class XXHash3_128_256kBench extends Benchmark {
     }
 
     public int32 warmupIters() {
-        return 30;
+        return 3;
     }
 
     public int32 measuredIters() {
-        return 200;
+        return 20;
+    }
+
+    public String unit() {
+        return "MB/s";
     }
 
     public void setup() {
+        this.n = 10000;
         this.len = 262144;
         this.data = heap int8[(int32) this.len];
         this.digest = heap int8[16];
-        int32 i = 0;
-        int32 n = (int32) this.len;
-        while (i < n) {
-            this.data[i] = (int8) ((i * 31 + 7) & 0xFF);
-            i = i + 1;
+        int32 j = 0;
+        int32 m = (int32) this.len;
+        while (j < m) {
+            this.data[j] = (int8) ((j * 31 + 7) & 0xFF);
+            j = j + 1;
         }
     }
 
     public int64 inputSize() {
-        return this.len;
+        return (int64) this.n * this.len;
+    }
+
+    public String competitorNote() {
+        return "XXHash3.hash128Into at seed 0 (> 240 B: the pure-Cajeta Vector<int64> long path)";
     }
 
     public void run(int32 iterations) {
-        XXHash3.hashLong128Into(this.data, this.len, 0xABCDEF01L, this.digest);
-        this.lastLow = Cajeta.loadU64(this.digest, 0);
-        this.lastHigh = Cajeta.loadU64(this.digest, 8);
+        int64 lo = 0;
+        int64 hi = 0;
+        int32 i = 0;
+        while (i < this.n) {
+            Cajeta.storeU64(this.data, 0, (int64) i);
+            XXHash3.hash128Into(this.data, this.len, 0, this.digest);
+            lo = lo ^ Cajeta.loadU64(this.digest, 0);
+            hi = hi ^ Cajeta.loadU64(this.digest, 8);
+            i = i + 1;
+        }
+        this.accLow = lo;
+        this.accHigh = hi;
     }
 
     public boolean checkResult() {
-        // Pin both halves to the @Native C reference XXH3_128bits_withSeed(buf,
-        // 256 KiB, 0xABCDEF01) for this exact (i*31+7)&0xFF buffer (hash128Into
-        // would route >240 B to the same SIMD path, so it can't self-oracle).
-        return this.lastLow == 0xb10a3712807caef8L
-            && this.lastHigh == 0x8fb289ed4d6f5a14L;
+        return this.accLow == 0x4f52c915522f9fe0L && this.accHigh == 0x3c843c6da63e2dc3L;
     }
 }

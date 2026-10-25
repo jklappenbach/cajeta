@@ -1,127 +1,94 @@
-// Java hash competitors — bulk throughput over a deterministic 1 MiB buffer
-// (buf[i] = i & 0xFF), the SMHasher bulk metric — the same xxhash3/sha256/md5
-// benchmark names the Cajeta side emits. One schema-conformant CSV row per
-// algorithm (competitors/columns.txt order). Cross-check: each digest matches
-// the cross-language reference (the identical Go/Rust/C++ runners check).
-//
-// Libraries: sha256 + md5 via the JDK stdlib java.security.MessageDigest. There
-// is NO xxHash in the JDK and no jar is provisioned, so xxhash3 is emitted as a
-// `skipped` row with a reason (mirroring how hash.sh skips siphash for all
-// langs) — this one runner owns all three rows.
-//
-// timings honor PROFILE_WARMUP/TRIALS (the inner MessageDigest loops JIT well
-// within a trial); alloc_bytes is per-thread bytes allocated for one execution
-// via the HotSpot com.sun.management.ThreadMXBean — the Java-native analog of
-// Go's TotalAlloc delta / Rust's global allocator / C++ operator new override.
-import com.sun.management.ThreadMXBean;
+// Java hash competitors (benchmark-reference unit 8): the hash/ ids of
+// bench/hash/XXHash3.md and SipHash.md, same inputs, folds and checks as
+// bench/src/main/cajeta/bench/hash/:
+//   xxhash3 / xxhash3_128 / siphash: 1e7 hashes of a 32-byte key whose first 8
+//     bytes are i little-endian (byte j = (j*31+7) & 0xFF);
+//   xxhash3-256k / xxhash3_128-256k: 1e4 hashes of a 256 KB buffer, same rule.
+// Libraries (jars pinned by sha256 in competitors/pins.tsv, read from
+// competitors/third_party/java/): OpenHFT zero-allocation-hashing 2026.0 for
+// XXH3-64/128, Guava 33.7.2 Hashing.sipHash24 for SipHash-2-4 (the JDK has
+// neither). JIT-warmed by the warmup calls.
+import com.google.common.hash.HashFunction;
+import com.google.common.hash.Hashing;
 import java.lang.management.ManagementFactory;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.security.MessageDigest;
 import java.util.Arrays;
+import java.util.function.Supplier;
+import net.openhft.hashing.LongHashFunction;
+import net.openhft.hashing.LongTupleHashFunction;
 
 public class HashBench {
-    static final int N = 1048576;
-    static final ThreadMXBean TMX = (ThreadMXBean) ManagementFactory.getThreadMXBean();
+    static final long N_KEYS = 10_000_000L, N_BIG = 10_000L;
+    static final int BIG = 262_144;
+    static volatile Object sink;
+    static String runId, ts, ver; static int warmup, trials;
 
-    // Cross-language reference digests over buf[i] = i & 0xFF, N = 1 MiB.
-    static final String SHA256_REF = "fbbab289f7f94b25736c58be46a994c441fd02552cc6022352e3d86d2fab7c83";
-    static final String MD5_REF    = "c35cc7d8d91728a0cb052831bc4ef372";
-
-    static String env(String k, String d) { String v = System.getenv(k); return (v == null || v.isEmpty()) ? d : v; }
-
+    static String env(String k, String d) { String v = System.getenv(k); return v == null || v.isEmpty() ? d : v; }
     static long peakRssKb() {
         try {
-            for (String line : Files.readAllLines(Path.of("/proc/self/status")))
-                if (line.startsWith("VmHWM:")) return Long.parseLong(line.replaceAll("[^0-9]", ""));
+            for (String l : java.nio.file.Files.readAllLines(java.nio.file.Path.of("/proc/self/status")))
+                if (l.startsWith("VmHWM:")) return Long.parseLong(l.replaceAll("[^0-9]", ""));
         } catch (Exception e) { }
         return -1;
     }
-
-    static long allocOf(Runnable r) {
-        long id = Thread.currentThread().threadId();
-        long b = TMX.getThreadAllocatedBytes(id);
-        r.run();
-        return TMX.getThreadAllocatedBytes(id) - b;
+    static long allocated() {
+        return ((com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean()).getCurrentThreadAllocatedBytes();
     }
 
-    static String hex(byte[] d) {
-        StringBuilder sb = new StringBuilder(d.length * 2);
-        for (byte x : d) sb.append(Character.forDigit((x >> 4) & 0xF, 16)).append(Character.forDigit(x & 0xF, 16));
-        return sb.toString();
-    }
-
-    static void emit(String runId, String ts, String bench, String lib, String ver,
-                     int warmup, int trials, long[] samples, boolean checkOk) {
-        Arrays.sort(samples);
-        int n = samples.length;
-        long sum = 0; for (long x : samples) sum += x;
-        int idx = Math.min(n - 1, n * 95 / 100);
-        long mn = samples[0], med = samples[n / 2], mean = sum / n, p95 = samples[idx];
-        double mbps = med > 0 ? (double) N / (double) med * 1e9 / 1048576.0 : 0.0;
-        String status = checkOk ? "ok" : "invalid";
-        long alloc = lastAlloc;
-        System.out.printf(
-            "1,%s,%s,%s,hash,,%d,,%d,java,%s,%s,%s,-server,%d,%d,%d,%d,%d,%d,%.1f,MB/s,%d,-1,%d,-1,-1,%s,%b,,%n",
-            runId, ts, bench, N, N, env("PROFILE_LANG_VERSION", ""), lib, ver,
-            warmup, trials, mn, med, mean, p95, mbps, peakRssKb(), alloc, status, checkOk);
-    }
-
-    // xxhash3 skip row — same shape as hash.sh's skip rows (status=skipped,
-    // metric columns -1, reason in the notes column).
-    static void emitSkip(String runId, String ts, String bench, String reason) {
-        System.out.printf(
-            "1,%s,%s,%s,hash,,%d,,%d,java,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,,%s,%n",
-            runId, ts, bench, N, N, reason);
-    }
-
-    static long lastAlloc = -1;
-
-    interface Digester { byte[] digest() throws Exception; }
-
-    static long[] bench(int warmup, int trials, Digester d) throws Exception {
-        for (int i = 0; i < warmup; i++) d.digest();
-        long[] s = new long[trials];
-        for (int i = 0; i < trials; i++) {
-            long t0 = System.nanoTime();
-            byte[] sink = d.digest();
-            s[i] = System.nanoTime() - t0;
-            if (sink == null) throw new IllegalStateException();
+    static void measure(String bench, long bytes, String lib, String libver, String notes, Supplier<long[]> f, long[] want) {
+        for (int w = 0; w < warmup; w++) sink = f.get();
+        long[] s = new long[trials]; boolean ok = true;
+        for (int t = 0; t < trials; t++) {
+            long t0 = System.nanoTime(); long[] r = f.get(); s[t] = System.nanoTime() - t0;
+            sink = r; ok &= Arrays.equals(r, want);
         }
-        lastAlloc = allocOf(() -> { try { d.digest(); } catch (Exception e) { throw new RuntimeException(e); } });
-        return s;
+        long a0 = allocated(); sink = f.get(); long alloc = allocated() - a0;
+        Arrays.sort(s); int k = s.length; long sum = 0; for (long v : s) sum += v;
+        long med = s[k / 2];
+        double mbps = med > 0 ? (double) bytes / med * 1e9 / 1048576.0 : 0.0;
+        System.out.printf("1,%s,%s,%s,hash,,%d,,%d,java,%s,%s,%s,-server,%d,%d,%d,%d,%d,%d,%.1f,MB/s,%d,-1,%d,-1,-1,%s,%s,%s,%n",
+            runId, ts, bench, bytes, bytes, ver, lib, libver, warmup, trials, s[0], med, sum / k, s[Math.min(k - 1, k * 95 / 100)],
+            mbps, peakRssKb(), alloc, ok ? "ok" : "invalid", ok, notes);
     }
 
-    static void runDigest(String runId, String ts, String bench, String algo, String ref,
-                          byte[] buf, int warmup, int trials) throws Exception {
-        MessageDigest md = MessageDigest.getInstance(algo);
-        long[] s = bench(warmup, trials, () -> { md.reset(); return md.digest(buf); });
-        md.reset();
-        boolean checkOk = hex(md.digest(buf)).equals(ref);
-        emit(runId, ts, bench, "java.security.MessageDigest", System.getProperty("java.version"),
-             warmup, trials, s, checkOk);
-    }
+    static byte[] buf(int n) { byte[] b = new byte[n]; for (int j = 0; j < n; j++) b[j] = (byte) ((j * 31 + 7) & 0xFF); return b; }
+    static void putLe(byte[] b, long v) { for (int j = 0; j < 8; j++) b[j] = (byte) (v >>> (8 * j)); }
 
-    public static void main(String[] args) throws Exception {
-        String runId = env("PROFILE_RUN_ID", "local");
-        String ts = env("PROFILE_RUN_TS", "");
-        int warmup = Integer.parseInt(env("PROFILE_WARMUP", "3"));
-        int trials = Integer.parseInt(env("PROFILE_TRIALS", "10"));
+    public static void main(String[] args) {
+        runId = env("PROFILE_RUN_ID", "local"); ts = env("PROFILE_RUN_TS", ""); ver = env("PROFILE_LANG_VERSION", "");
+        warmup = Integer.parseInt(env("PROFILE_WARMUP", "3")); trials = Integer.parseInt(env("PROFILE_TRIALS", "10"));
+        byte[] key = buf(32), big = buf(BIG);
+        LongHashFunction x64 = LongHashFunction.xx3();
+        LongTupleHashFunction x128 = LongTupleHashFunction.xx128();
+        String zv = "2026.0";
 
-        byte[] buf = new byte[N];
-        for (int i = 0; i < N; i++) buf[i] = (byte) (i & 0xFF);
+        measure("xxhash3", N_KEYS * 32, "zero-allocation-hashing", zv, "LongHashFunction.xx3", () -> {
+            long a = 0;
+            for (long i = 0; i < N_KEYS; i++) { putLe(key, i); a ^= x64.hashBytes(key); }
+            return new long[] {a, 0};
+        }, new long[] {0x15ae4a024a0e82deL, 0});
+        measure("xxhash3_128", N_KEYS * 32, "zero-allocation-hashing", zv, "LongTupleHashFunction.xx128 into a reused long[2]", () -> {
+            long lo = 0, hi = 0; long[] h = new long[2];
+            for (long i = 0; i < N_KEYS; i++) { putLe(key, i); x128.hashBytes(key, h); lo ^= h[0]; hi ^= h[1]; }
+            return new long[] {lo, hi};
+        }, new long[] {0x7f4adb2d9f387c7fL, 0xb318fb3ec50537efL});
+        measure("xxhash3-256k", N_BIG * BIG, "zero-allocation-hashing", zv, "LongHashFunction.xx3", () -> {
+            long a = 0;
+            for (long i = 0; i < N_BIG; i++) { putLe(big, i); a ^= x64.hashBytes(big); }
+            return new long[] {a, 0};
+        }, new long[] {0x4f52c915522f9fe0L, 0});
+        measure("xxhash3_128-256k", N_BIG * BIG, "zero-allocation-hashing", zv, "LongTupleHashFunction.xx128 into a reused long[2]", () -> {
+            long lo = 0, hi = 0; long[] h = new long[2];
+            for (long i = 0; i < N_BIG; i++) { putLe(big, i); x128.hashBytes(big, h); lo ^= h[0]; hi ^= h[1]; }
+            return new long[] {lo, hi};
+        }, new long[] {0x4f52c915522f9fe0L, 0x3c843c6da63e2dc3L});
 
-        // xxhash3 / xxhash3_128 (+ their 256k compute-bound variants) — no JDK
-        // stdlib xxHash; jar not provisioned.
-        emitSkip(runId, ts, "xxhash3", "no JDK stdlib xxHash; jar not provisioned");
-        emitSkip(runId, ts, "xxhash3_128", "no JDK stdlib xxHash; jar not provisioned");
-        emitSkip(runId, ts, "xxhash3-256k", "no JDK stdlib xxHash; jar not provisioned");
-        emitSkip(runId, ts, "xxhash3_128-256k", "no JDK stdlib xxHash; jar not provisioned");
-
-        runDigest(runId, ts, "sha256", "SHA-256", SHA256_REF, buf, warmup, trials);
-        runDigest(runId, ts, "md5", "MD5", MD5_REF, buf, warmup, trials);
-
-        // blake3 — no JDK stdlib BLAKE3; jar not provisioned.
-        emitSkip(runId, ts, "blake3", "no JDK stdlib BLAKE3; jar not provisioned");
+        HashFunction sip = Hashing.sipHash24(0x0706050403020100L, 0x0f0e0d0c0b0a0908L);
+        byte[] vec = new byte[15]; for (int j = 0; j < 15; j++) vec[j] = (byte) j;
+        boolean vecOk = sip.hashBytes(vec).asLong() == 0xa129ca6149be45e5L;
+        measure("siphash", N_KEYS * 32, "guava", "33.7.2-jre", "Hashing.sipHash24(k0 k1).hashBytes (key 00..0f)", () -> {
+            long a = 0;
+            for (long i = 0; i < N_KEYS; i++) { putLe(key, i); a ^= sip.hashBytes(key).asLong(); }
+            return new long[] {vecOk ? a : 0, 0};
+        }, new long[] {0x1a6999cca3276432L, 0});
     }
 }

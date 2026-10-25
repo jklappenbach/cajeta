@@ -15,5 +15,8 @@ public final class HashRegistry {
         b.add(heap XXHash3_128Bench());
         b.add(heap XXHash3_128_256kBench());
         b.add(heap SipHashBench());
+        b.add(heap DefaultHasherStringBench());
+        b.add(heap DefaultHasherIntBench());
+        b.add(heap HashStructBench());
     }
 }

@@ -1,0 +1,11 @@
+package bench.hash;
+
+// The three-field user type hash/hash-struct hashes through the protocol:
+// @AutoHash has the compiler synthesize hash() over (id, x, y), the way
+// Rust's #[derive(Hash)] does.
+@AutoHash
+public class HashKey3 {
+    public int64 id;
+    public int32 x;
+    public int32 y;
+}

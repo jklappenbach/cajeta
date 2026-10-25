@@ -1,0 +1,89 @@
+package bench.hash;
+
+import cajeta.collection.ArrayList;
+
+import dev.cajeta.bench.Benchmark;
+
+// hash/hash-struct (bench/hash/Hash.md): hash 1e7 three-field structs per
+// trial through the protocol — HashKey3 is @AutoHash, so hash() is the
+// compiler-synthesized structural fold over (int64 id, int32 x, int32 y).
+// Pool of 4096 keys, key k = (k*7919, k, k ^ 0x5bd1), cycled; the same keys
+// every competitor hashes. Fold: acc ^= h; low += h & 0xFFFF. Check (the
+// synthesized hash is process-seeded, so there is no cross-language
+// constant): an equal-content fresh object hashes equal for every pool key,
+// neighbouring keys hash apart, and a second untimed pass reproduces acc.
+public class HashStructBench extends Benchmark {
+
+    public ArrayList<HashKey3> pool;
+    public int32 n;
+    public int64 acc;
+    public int64 low;
+
+    public String name() {
+        return "hash-struct";
+    }
+
+    public String area() {
+        return "hash";
+    }
+
+    public int32 warmupIters() {
+        return 5;
+    }
+
+    public int32 measuredIters() {
+        return 30;
+    }
+
+    public void setup() {
+        this.n = 10000000;
+        this.pool #= heap ArrayList<HashKey3>();
+        int32 k = 0;
+        while (k < 4096) {
+            HashKey3 p = heap HashKey3 { id: (int64) k * 7919, x: k, y: k ^ 0x5bd1 };
+            this.pool.add(#p);
+            k = k + 1;
+        }
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public String competitorNote() {
+        return "@AutoHash synthesized hash() (process-seeded)";
+    }
+
+    public void run(int32 iterations) {
+        int64 a = 0;
+        int64 l = 0;
+        int32 i = 0;
+        while (i < this.n) {
+            int64 h = this.pool.get(i & 4095).hash();
+            a = a ^ h;
+            l = l + (h & 0xFFFF);
+            i = i + 1;
+        }
+        this.acc = a;
+        this.low = l;
+    }
+
+    public boolean checkResult() {
+        int32 k = 0;
+        int64 prev = 0;
+        while (k < 4096) {
+            HashKey3 p = this.pool.get(k);
+            HashKey3 q = heap HashKey3 { id: (int64) k * 7919, x: k, y: k ^ 0x5bd1 };
+            int64 h = p.hash();
+            if (h != q.hash() || (k > 0 && h == prev)) {
+                return false;
+            }
+            prev = h;
+            k = k + 1;
+        }
+        int64 a = this.acc;
+        int64 l = this.low;
+        this.run(1);
+        return a == this.acc && l == this.low && l > 0;
+    }
+}

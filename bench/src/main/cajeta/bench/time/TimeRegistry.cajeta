@@ -10,7 +10,14 @@ import dev.cajeta.bench.Benchmark;
 public final class TimeRegistry {
 
     public static void register(ArrayList<Benchmark> b) {
+        b.add(heap ClockNowBench());
         b.add(heap InstantArithmeticBench());
+        b.add(heap DurationArithmeticBench());
         b.add(heap LocalDateArithmeticBench());
+        b.add(heap LocalTimeArithmeticBench());
+        b.add(heap LocalDateTimeArithmeticBench());
+        b.add(heap ZonedDateTimeRegionBench());
+        b.add(heap DateTimeFormatIsoBench());
+        b.add(heap DateTimeParseIsoBench());
     }
 }

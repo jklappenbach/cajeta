@@ -1,0 +1,21 @@
+[package]
+name = "bench-datetime"
+version = "0.1.0"
+edition = "2021"
+
+# time/ competitors for bench/time/{Clock,Duration,LocalTime,LocalDateTime,
+# ZonedDateTime,DateTimeFormatter}.md (benchmark-reference unit 8): jiff and
+# chrono, the two Rust date-time libraries the pages name; std::time::Instant
+# for clock-now. jiff reads the system tz database (/usr/share/zoneinfo).
+[dependencies]
+jiff = "=0.2.38"
+chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
+
+[[bin]]
+name = "bench-datetime"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

@@ -3,13 +3,13 @@ name = "profile-hash"
 version = "0.1.0"
 edition = "2021"
 
-# Bulk hash-throughput competitors (SMHasher's bulk metric). xxhash-rust is the
-# canonical XXH3 port; sha2 / md-5 are the RustCrypto reference implementations.
+# hash/ competitors for bench/hash/{XXHash3,SipHash}.md (benchmark-reference
+# unit 8): xxhash-rust, the canonical XXH3 port, and siphasher's SipHash-2-4.
+# (The sha2 / md-5 / blake3 rows this program used to print have no catalog
+# page; they belong to a later crypto/ page for dev.cajeta.crypto.)
 [dependencies]
-xxhash-rust = { version = "0.8", features = ["xxh3"] }
-sha2 = "0.10"
-md-5 = "0.10"
-blake3 = "1"
+xxhash-rust = { version = "=0.8.19", features = ["xxh3"] }
+siphasher = "=1.0.4"
 
 [[bin]]
 name = "profile-hash"

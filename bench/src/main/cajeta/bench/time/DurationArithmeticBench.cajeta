@@ -1,0 +1,68 @@
+package bench.time;
+
+import cajeta.time.Duration;
+
+import dev.cajeta.bench.Benchmark;
+
+// time/duration-arith (bench/time/Duration.md): 1e7 additions, scalings and
+// comparisons. Per i: d = (ofNanos(i) + ofMillis(3)) * 2; acc += d.toNanos();
+// count d > 10 ms. Check: the closed form every competitor checks,
+// acc + count = 159999990000000 + 7999999.
+public class DurationArithmeticBench extends Benchmark {
+
+    public int32 n;
+    public int64 result;
+
+    public String name() {
+        return "duration-arith";
+    }
+
+    public String area() {
+        return "time";
+    }
+
+    public int32 warmupIters() {
+        return 5;
+    }
+
+    public int32 measuredIters() {
+        return 30;
+    }
+
+    public void setup() {
+        this.n = 10000000;
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public String competitorNote() {
+        return "a fresh value per step: a loop-carried d = d.plus(one) is wrong for Duration on v0.46.3 (measured 2026-10-25; the specs/localdate-loop-reassign-spec.md defect)";
+    }
+
+    public void run(int32 iterations) {
+        Duration three = Duration.ofMillis(3);
+        Duration limit = Duration.ofMillis(10);
+        int64 acc = 0;
+        int64 cnt = 0;
+        int32 i = 0;
+        while (i < this.n) {
+            // A fresh value per step: no loop-carried reassignment
+            // (specs/localdate-loop-reassign-spec.md).
+            Duration d = Duration.ofNanos((int64) i);
+            Duration s = d.plus(three);
+            Duration m = s.multipliedBy(2);
+            acc = acc + m.toNanos();
+            if (m.compareTo(limit) > 0) {
+                cnt = cnt + 1;
+            }
+            i = i + 1;
+        }
+        this.result = acc + cnt;
+    }
+
+    public boolean checkResult() {
+        return this.result == 159999997999999;
+    }
+}

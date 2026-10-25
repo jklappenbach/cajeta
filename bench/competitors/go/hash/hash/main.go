@@ -1,31 +1,34 @@
-// Go hash competitors — bulk throughput over a deterministic 1 MiB buffer
-// (buf[i] = i & 0xFF), the SMHasher bulk metric. One schema-conformant CSV row
-// per algorithm (xxhash3 via zeebo/xxh3; sha256 + md5 via the stdlib crypto
-// packages). Cross-check: the digest matches the cross-language reference.
+// Go hash competitors (benchmark-reference unit 8): the hash/ ids of
+// bench/hash/XXHash3.md and SipHash.md, same inputs, folds and checks as
+// bench/src/main/cajeta/bench/hash/:
+//   xxhash3 / xxhash3_128 / siphash: 1e7 hashes of a 32-byte key whose first 8
+//     bytes are i little-endian (byte j = (j*31+7) & 0xFF);
+//   xxhash3-256k / xxhash3_128-256k: 1e4 hashes of a 256 KB buffer, same rule.
+// Libraries: zeebo/xxh3 v1.0.2, dchest/siphash v1.2.3 (SipHash-2-4).
 package main
 
 import (
-	"crypto/md5"
-	"crypto/sha256"
-	"encoding/hex"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"runtime"
 	"sort"
+	"strings"
 	"time"
 
+	"github.com/dchest/siphash"
 	"github.com/zeebo/xxh3"
-	"lukechampine.com/blake3"
 )
-
-const N = 1048576
 
 const (
-	sha256Ref = "fbbab289f7f94b25736c58be46a994c441fd02552cc6022352e3d86d2fab7c83"
-	md5Ref    = "c35cc7d8d91728a0cb052831bc4ef372"
-	xxh3Ref   = uint64(0xd36c0e13a3df139e)
-	blake3Ref = "64479cf7293960210547db8d982359e0c4ce054525ed7086cf93030828fc0533"
+	nKeys = 10000000
+	nBig  = 10000
+	big   = 262144
 )
+
+type u2 struct{ a, b uint64 }
+
+var sink u2
 
 func env(k, d string) string {
 	if v := os.Getenv(k); v != "" {
@@ -39,123 +42,121 @@ func peakRSSKb() int64 {
 	if err != nil {
 		return -1
 	}
-	start := 0
-	for i := 0; i < len(b); i++ {
-		if b[i] == '\n' {
-			line := string(b[start:i])
-			if len(line) > 6 && line[:6] == "VmHWM:" {
-				var kb int64
-				fmt.Sscanf(line, "VmHWM: %d", &kb)
-				return kb
-			}
-			start = i + 1
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(l, "VmHWM:") {
+			var kb int64
+			fmt.Sscanf(l, "VmHWM: %d", &kb)
+			return kb
 		}
 	}
 	return -1
 }
 
-func atoiDefault(s string, d int) int {
-	var v int
-	if _, err := fmt.Sscanf(s, "%d", &v); err != nil {
-		return d
-	}
-	return v
-}
+var runID, ts, ver string
+var warmup, trials = 3, 10
 
-func emit(runID, ts, bench, lib, ver string, warmup, trials int, samples []int64, checkOK bool, sz int) {
-	sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
-	n := len(samples)
-	var sum int64
-	for _, x := range samples {
-		sum += x
-	}
-	idx := n * 95 / 100
-	if idx >= n {
-		idx = n - 1
-	}
-	mn, med, mean, p95 := samples[0], samples[n/2], sum/int64(n), samples[idx]
-	mbps := 0.0
-	if med > 0 {
-		mbps = float64(sz) / float64(med) * 1e9 / 1048576.0
-	}
-	status := "ok"
-	if !checkOK {
-		status = "invalid"
-	}
-	fmt.Printf(
-		"1,%s,%s,%s,hash,,%d,,%d,go,%s,%s,%s,GOAMD64=v4,%d,%d,%d,%d,%d,%d,%.1f,MB/s,%d,-1,%d,-1,-1,%s,%t,,\n",
-		runID, ts, bench, sz, sz, env("PROFILE_LANG_VERSION", ""), lib, ver,
-		warmup, trials, mn, med, mean, p95, mbps, peakRSSKb(), gAlloc, status, checkOK)
-}
-
-func benchU64(warmup, trials int, f func() uint64) []int64 {
-	for i := 0; i < warmup; i++ {
-		f()
+func measure(bench string, bytes int64, lib, libver, notes string, f func() u2, want u2) {
+	for w := 0; w < warmup; w++ {
+		sink = f()
 	}
 	s := make([]int64, 0, trials)
-	for i := 0; i < trials; i++ {
+	ok := true
+	for t := 0; t < trials; t++ {
 		t0 := time.Now()
-		sink := f()
+		r := f()
 		s = append(s, time.Since(t0).Nanoseconds())
-		_ = sink
+		sink = r
+		ok = ok && r == want
 	}
-	measAlloc(func() { f() })
-	return s
+	var m0, m1 runtime.MemStats
+	runtime.ReadMemStats(&m0)
+	sink = f()
+	runtime.ReadMemStats(&m1)
+	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
+	k := len(s)
+	var sum int64
+	for _, v := range s {
+		sum += v
+	}
+	med := s[k/2]
+	mbps := 0.0
+	if med > 0 {
+		mbps = float64(bytes) / float64(med) * 1e9 / 1048576.0
+	}
+	st := "ok"
+	if !ok {
+		st = "invalid"
+	}
+	fmt.Printf("1,%s,%s,%s,hash,,%d,,%d,go,%s,%s,%s,GOAMD64=v3,%d,%d,%d,%d,%d,%d,%.1f,MB/s,%d,-1,%d,-1,-1,%s,%t,%s,\n",
+		runID, ts, bench, bytes, bytes, ver, lib, libver, warmup, trials, s[0], med, sum/int64(k), s[min(k-1, k*95/100)],
+		mbps, peakRSSKb(), m1.TotalAlloc-m0.TotalAlloc, st, ok, notes)
 }
 
-var gAlloc uint64
-
-func measAlloc(run func()) {
-	var a, b runtime.MemStats
-	runtime.ReadMemStats(&a)
-	run()
-	runtime.ReadMemStats(&b)
-	gAlloc = b.TotalAlloc - a.TotalAlloc
+func buf(n int) []byte {
+	b := make([]byte, n)
+	for j := range b {
+		b[j] = byte((j*31 + 7) & 0xFF)
+	}
+	return b
 }
 
 func main() {
-	runID := env("PROFILE_RUN_ID", "local")
-	ts := env("PROFILE_RUN_TS", "")
-	warmup := atoiDefault(env("PROFILE_WARMUP", "3"), 3)
-	trials := atoiDefault(env("PROFILE_TRIALS", "10"), 10)
-	buf := make([]byte, N)
-	for i := range buf {
-		buf[i] = byte(i & 0xFF)
+	runID, ts, ver = env("PROFILE_RUN_ID", "local"), env("PROFILE_RUN_TS", ""), env("PROFILE_LANG_VERSION", "")
+	fmt.Sscanf(env("PROFILE_WARMUP", "3"), "%d", &warmup)
+	fmt.Sscanf(env("PROFILE_TRIALS", "10"), "%d", &trials)
+	key, bb := buf(32), buf(big)
+
+	measure("xxhash3", nKeys*32, "zeebo/xxh3", "v1.0.2", "xxh3.Hash", func() u2 {
+		var a uint64
+		for i := uint64(0); i < nKeys; i++ {
+			binary.LittleEndian.PutUint64(key, i)
+			a ^= xxh3.Hash(key)
+		}
+		return u2{a, 0}
+	}, u2{0x15ae4a024a0e82de, 0})
+	measure("xxhash3_128", nKeys*32, "zeebo/xxh3", "v1.0.2", "xxh3.Hash128", func() u2 {
+		var lo, hi uint64
+		for i := uint64(0); i < nKeys; i++ {
+			binary.LittleEndian.PutUint64(key, i)
+			h := xxh3.Hash128(key)
+			lo ^= h.Lo
+			hi ^= h.Hi
+		}
+		return u2{lo, hi}
+	}, u2{0x7f4adb2d9f387c7f, 0xb318fb3ec50537ef})
+	measure("xxhash3-256k", nBig*big, "zeebo/xxh3", "v1.0.2", "xxh3.Hash", func() u2 {
+		var a uint64
+		for i := uint64(0); i < nBig; i++ {
+			binary.LittleEndian.PutUint64(bb, i)
+			a ^= xxh3.Hash(bb)
+		}
+		return u2{a, 0}
+	}, u2{0x4f52c915522f9fe0, 0})
+	measure("xxhash3_128-256k", nBig*big, "zeebo/xxh3", "v1.0.2", "xxh3.Hash128", func() u2 {
+		var lo, hi uint64
+		for i := uint64(0); i < nBig; i++ {
+			binary.LittleEndian.PutUint64(bb, i)
+			h := xxh3.Hash128(bb)
+			lo ^= h.Lo
+			hi ^= h.Hi
+		}
+		return u2{lo, hi}
+	}, u2{0x4f52c915522f9fe0, 0x3c843c6da63e2dc3})
+	const k0, k1 = uint64(0x0706050403020100), uint64(0x0f0e0d0c0b0a0908)
+	vec := make([]byte, 15)
+	for j := range vec {
+		vec[j] = byte(j)
 	}
-
-	// xxhash3
-	s := benchU64(warmup, trials, func() uint64 { return xxh3.Hash(buf) })
-	emit(runID, ts, "xxhash3", "zeebo/xxh3", "v1.0.2", warmup, trials, s, xxh3.Hash(buf) == xxh3Ref, N)
-
-	// xxhash3_128 (XXH3-128; time + cross-check the low64)
-	s = benchU64(warmup, trials, func() uint64 { return xxh3.Hash128(buf).Lo })
-	emit(runID, ts, "xxhash3_128", "zeebo/xxh3", "v1.0.2", warmup, trials, s, xxh3.Hash128(buf).Lo == xxh3Ref, N)
-
-	// xxhash3-256k / xxhash3_128-256k — compute-bound (L2-resident) throughput.
-	const N256 = 262144
-	s = benchU64(warmup, trials, func() uint64 { return xxh3.Hash(buf[:N256]) })
-	emit(runID, ts, "xxhash3-256k", "zeebo/xxh3", "v1.0.2", warmup, trials, s, xxh3.Hash(buf[:N256]) != 0, N256)
-	s = benchU64(warmup, trials, func() uint64 { return xxh3.Hash128(buf[:N256]).Lo })
-	emit(runID, ts, "xxhash3_128-256k", "zeebo/xxh3", "v1.0.2", warmup, trials, s, xxh3.Hash128(buf[:N256]).Lo != 0, N256)
-
-	// sha256
-	s = benchU64(warmup, trials, func() uint64 { h := sha256.Sum256(buf); return uint64(h[0]) })
-	d := sha256.Sum256(buf)
-	emit(runID, ts, "sha256", "crypto/sha256", runtime.Version(), warmup, trials, s,
-		hex.EncodeToString(d[:]) == sha256Ref, N)
-
-	// md5
-	s = benchU64(warmup, trials, func() uint64 { h := md5.Sum(buf); return uint64(h[0]) })
-	m := md5.Sum(buf)
-	emit(runID, ts, "md5", "crypto/md5", runtime.Version(), warmup, trials, s,
-		hex.EncodeToString(m[:]) == md5Ref, N)
-
-	// blake3 (lukechampine.com/blake3 — SIMD-accelerated)
-	s = benchU64(warmup, trials, func() uint64 {
-		h := blake3.Sum256(buf)
-		return uint64(h[0])
-	})
-	b3 := blake3.Sum256(buf)
-	emit(runID, ts, "blake3", "lukechampine/blake3", "v1", warmup, trials, s,
-		hex.EncodeToString(b3[:]) == blake3Ref, N)
+	vecOK := siphash.Hash(k0, k1, vec) == 0xa129ca6149be45e5
+	measure("siphash", nKeys*32, "dchest/siphash", "v1.2.3", "siphash.Hash (key 00..0f)", func() u2 {
+		var a uint64
+		for i := uint64(0); i < nKeys; i++ {
+			binary.LittleEndian.PutUint64(key, i)
+			a ^= siphash.Hash(k0, k1, key)
+		}
+		if !vecOK {
+			a = 0
+		}
+		return u2{a, 0}
+	}, u2{0x1a6999cca3276432, 0})
 }

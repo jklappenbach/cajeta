@@ -4,13 +4,18 @@ import cajeta.hash.SipHash;
 
 import dev.cajeta.bench.Benchmark;
 
-// SipHash (keyed, DoS-resistant) bulk throughput over a 1 MiB buffer.
-// Cross-check: digest non-zero.
+// hash/siphash (bench/hash/SipHash.md): SipHash-2-4 of 32-byte keys, 1e7 per
+// trial, under the 128-bit key 00 01 .. 0f (the reference test-vector key).
+// The 32-byte inputs are xxhash3's (first 8 bytes = i little-endian). Every
+// digest is XORed into `acc`. Check: acc equals the value the reference C
+// implementation and every competitor check, 0x1a6999cca3276432, and the
+// reference vector (bytes 00..0e) hashes to 0xa129ca6149be45e5.
 public class SipHashBench extends Benchmark {
 
-    public int8[] data;
-    public int64 len;
-    public int64 lastHash;
+    public int8[] key;
+    public int8[] vector;
+    public int32 n;
+    public int64 acc;
 
     public String name() {
         return "siphash";
@@ -21,34 +26,54 @@ public class SipHashBench extends Benchmark {
     }
 
     public int32 warmupIters() {
-        return 20;
+        return 5;
     }
 
     public int32 measuredIters() {
-        return 100;
+        return 30;
+    }
+
+    public String unit() {
+        return "MB/s";
     }
 
     public void setup() {
-        this.len = 1048576;
-        this.data = heap int8[(int32) this.len];
-        int32 i = 0;
-        int32 n = (int32) this.len;
-        while (i < n) {
-            this.data[i] = (int8) ((i * 31 + 7) & 0xFF);
-            i = i + 1;
+        this.n = 10000000;
+        this.key = heap int8[32];
+        this.vector = heap int8[15];
+        int32 j = 0;
+        while (j < 32) {
+            this.key[j] = (int8) ((j * 31 + 7) & 0xFF);
+            j = j + 1;
+        }
+        j = 0;
+        while (j < 15) {
+            this.vector[j] = (int8) j;
+            j = j + 1;
         }
     }
 
     public int64 inputSize() {
-        return this.len;
+        return (int64) this.n * 32;
+    }
+
+    public String competitorNote() {
+        return "SipHash.hashKeyed (@Native SipHash-2-4)";
     }
 
     public void run(int32 iterations) {
-        this.lastHash = SipHash.hashKeyed(this.data, this.len,
-            0x0706050403020100, 0x0f0e0d0c0b0a0908);
+        int64 a = 0;
+        int32 i = 0;
+        while (i < this.n) {
+            Cajeta.storeU64(this.key, 0, (int64) i);
+            a = a ^ SipHash.hashKeyed(this.key, 32, 0x0706050403020100L, 0x0f0e0d0c0b0a0908L);
+            i = i + 1;
+        }
+        this.acc = a;
     }
 
     public boolean checkResult() {
-        return this.lastHash != 0;
+        int64 v = SipHash.hashKeyed(this.vector, 15, 0x0706050403020100L, 0x0f0e0d0c0b0a0908L);
+        return v == 0xa129ca6149be45e5L && this.acc == 0x1a6999cca3276432L;
     }
 }

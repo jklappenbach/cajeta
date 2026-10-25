@@ -32,6 +32,9 @@
 # wrk in competitors/bin, the Python venv in competitors/python/.venv, pinned
 # sources and jars in competitors/third_party. Each install step logs to
 # competitors/logs/<step>.log and is capped at CAJETA_SETUP_STEP_CAP seconds.
+# The package drivers (competitors/drivers/<package>/*.sh) read every pinned
+# library from third_party/<item>, the path this script fetches it to; vendor.sh's
+# clones under vendor/<name> are an optional fallback, never required.
 #
 # Nothing here touches a GPU: CUDA and ROCm are detected from files and compiler
 # version strings (never nvidia-smi or rocminfo), torch is checked through its

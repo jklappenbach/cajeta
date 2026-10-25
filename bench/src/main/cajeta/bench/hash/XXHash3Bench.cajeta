@@ -4,13 +4,17 @@ import cajeta.hash.XXHash3;
 
 import dev.cajeta.bench.Benchmark;
 
-// XXHash3 bulk throughput over a 1 MiB buffer (SMHasher's bulk-throughput metric).
-// Cross-check: the digest of a non-trivial 1 MiB buffer is non-zero.
+// hash/xxhash3 (bench/hash/XXHash3.md): XXH3-64 of 32-byte keys, 1e7 per
+// trial — the per-key cost a hash map pays. Key i is a 32-byte buffer
+// (byte j = (j*31+7) & 0xFF) whose first 8 bytes are i little-endian, so no
+// two hashes share an input and none can be hoisted. Every digest is XORed
+// into `acc`. Check: acc equals the reference xxHash 0.8.3 value every
+// competitor checks, 0x15ae4a024a0e82de (seed 0).
 public class XXHash3Bench extends Benchmark {
 
-    public int8[] data;
-    public int64 len;
-    public int64 lastHash;
+    public int8[] key;
+    public int32 n;
+    public int64 acc;
 
     public String name() {
         return "xxhash3";
@@ -21,44 +25,47 @@ public class XXHash3Bench extends Benchmark {
     }
 
     public int32 warmupIters() {
-        return 20;
+        return 5;
     }
 
     public int32 measuredIters() {
-        return 100;
+        return 30;
+    }
+
+    public String unit() {
+        return "MB/s";
     }
 
     public void setup() {
-        this.len = 1048576;
-        this.data = heap int8[(int32) this.len];
-        int32 i = 0;
-        int32 n = (int32) this.len;
-        while (i < n) {
-            this.data[i] = (int8) ((i * 31 + 7) & 0xFF);
-            i = i + 1;
+        this.n = 10000000;
+        this.key = heap int8[32];
+        int32 j = 0;
+        while (j < 32) {
+            this.key[j] = (int8) ((j * 31 + 7) & 0xFF);
+            j = j + 1;
         }
     }
 
     public int64 inputSize() {
-        return this.len;
+        return (int64) this.n * 32;
+    }
+
+    public String competitorNote() {
+        return "XXHash3.hashSeeded(key 32 0): inputs <= 240 B go to the @Native xxHash reference";
     }
 
     public void run(int32 iterations) {
-        // Measure the pure-Cajeta SIMD long path directly (hash() currently
-        // routes long inputs to it in production, but the conditional-call branch
-        // is dropped by the optimizer when hashLong isn't inlined — tracked
-        // separately; here we exercise the SIMD path under test).
-        this.lastHash = XXHash3.hashLong(this.data, this.len, 0xABCDEF01L);
+        int64 a = 0;
+        int32 i = 0;
+        while (i < this.n) {
+            Cajeta.storeU64(this.key, 0, (int64) i);
+            a = a ^ XXHash3.hashSeeded(this.key, 32, 0);
+            i = i + 1;
+        }
+        this.acc = a;
     }
 
     public boolean checkResult() {
-        // Prove the timed SIMD result is the CANONICAL XXH3: re-hash the exact
-        // timed input (1 MiB, same seed) with both the pure-Cajeta SIMD long path
-        // and the @Native C xxHash 0.8.3 reference, and require bit-for-bit
-        // agreement. Done outside the timed loop, so it doesn't contaminate the
-        // measurement; this also keeps hashLong reachable for the tree-shaker.
-        int64 simd = XXHash3.hashLong(this.data, this.len, 0xABCDEF01L);
-        int64 ref = XXHash3.hashSeeded(this.data, this.len, 0xABCDEF01L);
-        return this.lastHash != 0 && simd == ref && this.lastHash == ref;
+        return this.acc == 0x15ae4a024a0e82deL;
     }
 }

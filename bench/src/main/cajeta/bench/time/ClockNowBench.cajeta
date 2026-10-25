@@ -1,0 +1,76 @@
+package bench.time;
+
+import cajeta.time.Clock;
+import cajeta.time.Instant;
+
+import dev.cajeta.bench.Benchmark;
+
+// time/clock-now (bench/time/Clock.md): 1e7 `Clock.now()` per trial. Check:
+// monotonic — no reading is earlier than the one before it, and the last is
+// later than the first (the loop takes far longer than the clock's
+// resolution). Every reading is folded into `acc`, so none can be dropped.
+public class ClockNowBench extends Benchmark {
+
+    public int32 n;
+    public int64 backwards;
+    public int64 first;
+    public int64 last;
+    public int64 acc;
+
+    public String name() {
+        return "clock-now";
+    }
+
+    public String area() {
+        return "time";
+    }
+
+    public int32 warmupIters() {
+        return 3;
+    }
+
+    public int32 measuredIters() {
+        return 20;
+    }
+
+    public void setup() {
+        this.n = 10000000;
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public String competitorNote() {
+        return "Clock.now() reads CLOCK_REALTIME at millisecond resolution (Clock.millisTime); the competitors' monotonic clocks read nanoseconds";
+    }
+
+    public void run(int32 iterations) {
+        int64 back = 0;
+        int64 x = 0;
+        Instant t0 = Clock.now();
+        int64 prevS = t0.getEpochSecond();
+        int32 prevN = t0.getNano();
+        this.first = prevS * 1000000000 + (int64) prevN;
+        int32 i = 1;
+        while (i < this.n) {
+            Instant t = Clock.now();
+            int64 s = t.getEpochSecond();
+            int32 ns = t.getNano();
+            if (s < prevS || (s == prevS && ns < prevN)) {
+                back = back + 1;
+            }
+            x = x ^ (s + (int64) ns);
+            prevS = s;
+            prevN = ns;
+            i = i + 1;
+        }
+        this.backwards = back;
+        this.last = prevS * 1000000000 + (int64) prevN;
+        this.acc = x;
+    }
+
+    public boolean checkResult() {
+        return this.backwards == 0 && this.last > this.first;
+    }
+}

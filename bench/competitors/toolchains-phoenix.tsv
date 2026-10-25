@@ -29,6 +29,12 @@ pocketfft	library	cpp @ 4d865cba24359b05b37da4e75aee24498c3b78e7	/home/julian/co
 fftw	library	3.3.11	/home/julian/code/cpp/cajeta/bench/competitors/third_party/fftw-3.3.11	sha256 of fftw-3.3.11.tar.gz == pins.tsv (5630c24cdeb3…)
 simdutf	library	v9.3.2 @ 8d82299606e675b50de8dc16fd118aae4b65bfde	/home/julian/code/cpp/cajeta/bench/competitors/third_party/simdutf	git rev-parse HEAD == pins.tsv (v9.3.2)
 fast-cpp-csv-parser	library	master @ 574a9fe4d323ba63416877a4a5fe59088d37aa34	/home/julian/code/cpp/cajeta/bench/competitors/third_party/fast-cpp-csv-parser	git rev-parse HEAD == pins.tsv (master)
+date	library	v3.0.4 @ f94b8f36c6180be0021876c4a397a054fe50c6f2	/home/julian/code/cpp/cajeta/bench/competitors/third_party/date	git rev-parse HEAD == pins.tsv (v3.0.4)
+siphash	library	master @ 32d067603b93b47828700880649198e0bfbbcffa	/home/julian/code/cpp/cajeta/bench/competitors/third_party/siphash	git rev-parse HEAD == pins.tsv (master)
+boost-container_hash	library	boost-1.89.0 @ 5d8b8ac2b9d9d7cb3818f88fd7e6372e5f072ff5	/home/julian/code/cpp/cajeta/bench/competitors/third_party/boost-container_hash	git rev-parse HEAD == pins.tsv (boost-1.89.0)
+boost-config	library	boost-1.89.0 @ bf8c8bd7960cd8505210838f86bd28fb4fb71071	/home/julian/code/cpp/cajeta/bench/competitors/third_party/boost-config	git rev-parse HEAD == pins.tsv (boost-1.89.0)
+boost-describe	library	boost-1.89.0 @ b64177c39f929998e3a145992d0328712e095c29	/home/julian/code/cpp/cajeta/bench/competitors/third_party/boost-describe	git rev-parse HEAD == pins.tsv (boost-1.89.0)
+boost-mp11	library	boost-1.89.0 @ 2fb81c24534663a99f9570b99a3c748393a23dba	/home/julian/code/cpp/cajeta/bench/competitors/third_party/boost-mp11	git rev-parse HEAD == pins.tsv (boost-1.89.0)
 babelstream	checkout	v5.0 @ f6ae48de899408cf50c24079417dc71a03dbb5a8	/home/julian/code/cpp/cajeta/bench/competitors/third_party/babelstream	git rev-parse HEAD == pins.tsv (v5.0)
 mixbench	checkout	master @ 06297d6b4882729079fef586407e3ff7ecba437b	/home/julian/code/cpp/cajeta/bench/competitors/third_party/mixbench	git rev-parse HEAD == pins.tsv (master)
 jackson-annotations	library	2.22	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/com/fasterxml/jackson/core/jackson-annotations/2.22/jackson-annotations-2.22.jar	sha256 == pins.tsv (21ddb598807d…), from https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-annotations/2.22/jackson-annotations-2.22.jar
@@ -61,6 +67,8 @@ ejml-simple	library	0.46.1	/home/julian/code/cpp/cajeta/bench/competitors/third_
 ejml-zdense	library	0.46.1	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/org/ejml/ejml-zdense/0.46.1/ejml-zdense-0.46.1.jar	sha256 == pins.tsv (6c0b124b7cdc…), from https://repo1.maven.org/maven2/org/ejml/ejml-zdense/0.46.1/ejml-zdense-0.46.1.jar
 commons-codec	library	1.23.0	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/commons-codec/commons-codec/1.23.0/commons-codec-1.23.0.jar	sha256 == pins.tsv (47504a3ce71d…), from https://repo1.maven.org/maven2/commons-codec/commons-codec/1.23.0/commons-codec-1.23.0.jar
 univocity-parsers	library	2.9.1	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/com/univocity/univocity-parsers/2.9.1/univocity-parsers-2.9.1.jar	sha256 == pins.tsv (31685122d5e3…), from https://repo1.maven.org/maven2/com/univocity/univocity-parsers/2.9.1/univocity-parsers-2.9.1.jar
+zero-allocation-hashing	library	2026.0	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/net/openhft/zero-allocation-hashing/2026.0/zero-allocation-hashing-2026.0.jar	sha256 == pins.tsv (22b4328b4cd7…), from https://repo1.maven.org/maven2/net/openhft/zero-allocation-hashing/2026.0/zero-allocation-hashing-2026.0.jar
+guava	library	33.7.2-jre	/home/julian/code/cpp/cajeta/bench/competitors/third_party/java/com/google/guava/guava/33.7.2-jre/guava-33.7.2-jre.jar	sha256 == pins.tsv (b530942257fb…), from https://repo1.maven.org/maven2/com/google/guava/guava/33.7.2-jre/guava-33.7.2-jre.jar
 python-venv	toolchain	3.12.3	/home/julian/code/cpp/cajeta/bench/competitors/python/.venv	venv python runs
 py-numpy	library	2.5.4	/home/julian/code/cpp/cajeta/bench/competitors/python/.venv	importlib.metadata.version == requirements.txt pin
 py-scipy	library	1.18.1	/home/julian/code/cpp/cajeta/bench/competitors/python/.venv	importlib.metadata.version == requirements.txt pin
@@ -75,5 +83,6 @@ py-orjson	library	3.13.0	/home/julian/code/cpp/cajeta/bench/competitors/python/.
 py-whenever	library	0.11.0	/home/julian/code/cpp/cajeta/bench/competitors/python/.venv	importlib.metadata.version == requirements.txt pin
 py-uvicorn	library	0.54.0	/home/julian/code/cpp/cajeta/bench/competitors/python/.venv	importlib.metadata.version == requirements.txt pin
 py-fastapi	library	0.162.0	/home/julian/code/cpp/cajeta/bench/competitors/python/.venv	importlib.metadata.version == requirements.txt pin
+py-siphash24	library	1.9	/home/julian/code/cpp/cajeta/bench/competitors/python/.venv	importlib.metadata.version == requirements.txt pin
 llama.cpp	checkout	67a17c17caa95742186f8b1ecadd1b5abd6d5ebb (llama-bench built: build-cuda)	/home/julian/code/cpp/llama.cpp	git rev-parse HEAD; ls */bin/llama-bench (not built here)
 py-torch	library	2.14.1+cu130	/home/julian/code/cpp/cajeta/bench/competitors/python/.venv	importlib.metadata.version (wheel tag +cu130; not imported, GPU untouched)

@@ -1,0 +1,64 @@
+package bench.time;
+
+import cajeta.time.LocalTime;
+
+import dev.cajeta.bench.Benchmark;
+
+// time/localtime-arith (bench/time/LocalTime.md): 1e7 plusSeconds and
+// comparisons. Per i: t = ofSecondOfDay(i % 86400).plusSeconds(18007) (wraps
+// past midnight); acc += t.toSecondOfDay(); count t < noon. Check: the
+// constant every competitor checks, 432430648000 + 4993193.
+public class LocalTimeArithmeticBench extends Benchmark {
+
+    public int32 n;
+    public int64 result;
+
+    public String name() {
+        return "localtime-arith";
+    }
+
+    public String area() {
+        return "time";
+    }
+
+    public int32 warmupIters() {
+        return 5;
+    }
+
+    public int32 measuredIters() {
+        return 30;
+    }
+
+    public void setup() {
+        this.n = 10000000;
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public String competitorNote() {
+        return "a fresh value per step like the other time rows (a loop-carried t = t.plusSeconds(1) is correct for LocalTime on v0.46.3; LocalDate Duration and LocalDateTime are not: specs/localdate-loop-reassign-spec.md)";
+    }
+
+    public void run(int32 iterations) {
+        LocalTime noon = LocalTime.noon();
+        int64 acc = 0;
+        int64 cnt = 0;
+        int32 i = 0;
+        while (i < this.n) {
+            LocalTime t = LocalTime.ofSecondOfDay((int64) (i % 86400));
+            LocalTime u = t.plusSeconds(18007);
+            acc = acc + u.toSecondOfDay();
+            if (u.isBefore(noon)) {
+                cnt = cnt + 1;
+            }
+            i = i + 1;
+        }
+        this.result = acc + cnt;
+    }
+
+    public boolean checkResult() {
+        return this.result == 432435641193;
+    }
+}
