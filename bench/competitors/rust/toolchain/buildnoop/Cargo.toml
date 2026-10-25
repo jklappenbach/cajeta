@@ -1,0 +1,5 @@
+# toolchain/build-noop (bench/toolchain/BuildTool.md): `cargo build` after a first build, no edits.
+[package]
+name = "hello"
+version = "0.1.0"
+edition = "2021"

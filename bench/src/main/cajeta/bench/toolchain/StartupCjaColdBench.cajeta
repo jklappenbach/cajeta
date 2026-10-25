@@ -1,0 +1,68 @@
+package bench.toolchain;
+
+// toolchain/startup-cja-cold (bench/toolchain/Startup.md): hello-world through
+// the JIT with an empty JIT cache: `cajeta jit-run --cache-dir=<empty dir>
+// <src> hello.Hello.main`, a fresh cache directory per execution. Check: it
+// printed "hello, world".
+//
+// The page says a `.cja`; no cajeta command runs a .cja through the JIT on
+// v0.46.3 (jit-run and the DAP launch take a source root; an uber .cja has no
+// runner), so this row JITs the hello-world source root, whose whole-program
+// JIT cache is what "cold" and "warm" refer to.
+public class StartupCjaColdBench extends ToolchainExternal {
+    public String src;
+    public String caches;
+
+    public StartupCjaColdBench() {
+        super();
+        this.src = "";
+        this.caches = "";
+        this.iterations(1, 5);
+        this.timeoutMillis((int64) 1800000);
+        this.addNote("cajeta jit-run of the hello-world source root with an empty --cache-dir (a fresh one per execution)");
+        this.addNote("no cajeta command runs a .cja through the JIT on v0.46.3; so the source root is JIT-compiled");
+    }
+
+    public String name() {
+        return "startup-cja-cold";
+    }
+
+    public String area() {
+        return "toolchain";
+    }
+
+    public void prepare(String variant) {
+        this.used = 0;
+        ToolchainSupport.prep("hello", "");
+        ToolchainSupport.prep("clean", "jit-cold");
+        String w #= ToolchainSupport.work();
+        this.src = w + "/hello/src";
+        this.caches = w + "/jit-cold";
+    }
+
+    // A cache directory no execution has used: every launch, including the
+    // harness's extra untimed peak-RSS run, starts cold.
+    public #String[] argvFor(String variant) {
+        String c #= ToolchainSupport.cajeta();
+        String[] argv = heap String[5];
+        argv[0] = "" + c;
+        argv[1] = "jit-run";
+        argv[2] = "--cache-dir=" + this.caches + "/" + this.used;
+        argv[3] = "" + this.src;
+        argv[4] = "hello.Hello.main";
+        this.used = this.used + 1;
+        return argv;
+    }
+
+    public boolean checkResult() {
+        if (this.lastExitCode != 0) {
+            return false;
+        }
+        String out = this.stdout();
+        return out.contains("hello, world");
+    }
+
+    public void teardown() {
+        ToolchainSupport.prep("clean", "jit-cold");
+    }
+}

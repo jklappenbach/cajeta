@@ -1,0 +1,44 @@
+package bench.toolchain;
+
+// toolchain/startup-exe (bench/toolchain/Startup.md): exec to exit of a
+// hello-world native executable (cajeta --release --emit=exe), one launch per
+// trial, 1e2 trials. Check: it printed "hello, world".
+public class StartupExeBench extends ToolchainExternal {
+    public String bin;
+
+    public StartupExeBench() {
+        super();
+        this.bin = "";
+        this.iterations(3, 100);
+        this.timeoutMillis((int64) 60000);
+        this.addNote("hello-world built --release --emit=exe; one launch per trial");
+    }
+
+    public String name() {
+        return "startup-exe";
+    }
+
+    public String area() {
+        return "toolchain";
+    }
+
+    public void prepare(String variant) {
+        ToolchainSupport.prep("hello", "");
+        String w #= ToolchainSupport.work();
+        this.bin = w + "/hello/build/hello";
+    }
+
+    public #String[] argvFor(String variant) {
+        String[] argv = heap String[1];
+        argv[0] = "" + this.bin;
+        return argv;
+    }
+
+    public boolean checkResult() {
+        if (this.lastExitCode != 0) {
+            return false;
+        }
+        String out = this.stdout();
+        return out.contains("hello, world");
+    }
+}

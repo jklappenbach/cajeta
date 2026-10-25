@@ -1,0 +1,162 @@
+package bench.toolchain;
+
+import cajeta.collection.ArrayList;
+import cajeta.io.file.Path;
+
+// toolchain/compile-lto (bench/toolchain/Compile.md): the compile-10k program
+// compiled straight through the compiler (no build tool, so no cache) at
+// --release with --lto=off, thin and full, --emit=exe; one fresh output
+// directory per execution. Check: the binary prints the generator's line.
+//
+// Thin LTO links with lld. The compiler finds ld.lld on PATH; the cajeta-llvm
+// fork ships one (llvm-install/bin, CAJETA_LLVM_BIN), which this benchmark puts
+// first on the child's PATH, as setup.sh does for a build shell. Without it
+// the compiler silently builds without LTO (it warns "--lto=thin needs lld"),
+// so the variant skips when no ld.lld can be found, and the check fails a
+// thin row whose compiler printed that warning.
+public class CompileLtoBench extends ToolchainExternal {
+    public String src;
+    public String root;
+    public String expected;
+    public String forkBin;
+
+    public CompileLtoBench() {
+        super();
+        this.src = "";
+        this.root = "";
+        this.expected = "";
+        this.forkBin = "";
+        this.iterations(1, 5);
+        this.timeoutMillis((int64) 3600000);
+        this.addNote("cajeta --release (O2) --lto=<variant> --emit=exe of the compile-10k program; direct compiler invocation: no build cache; fresh output directory per execution");
+        this.addNote("the cajeta-llvm fork's bin (ld.lld) first on PATH");
+    }
+
+    public String name() {
+        return "compile-lto";
+    }
+
+    public String area() {
+        return "toolchain";
+    }
+
+    public String datasetInfo() {
+        return "synth-10k (datasets/gen_synth.py)";
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("off");
+        v.add("thin");
+        v.add("full");
+        return v;
+    }
+
+    public #String llvmBin() {
+        String r #= ToolchainSupport.repo();
+        return ToolchainSupport.env("CAJETA_LLVM_BIN", r + "/../cajeta-llvm/llvm-install/bin");
+    }
+
+    public boolean haveLld() {
+        String b #= this.llvmBin();
+        Path p #= Path.of(b + "/ld.lld");
+        if (p.exists()) {
+            return true;
+        }
+        String[] argv = heap String[2];
+        argv[0] = "ld.lld";
+        argv[1] = "--version";
+        String out #= ToolchainSupport.output(#argv, (int64) 10000);
+        return out.contains("LLD");
+    }
+
+    public boolean supportsVariant(String variant) {
+        if (variant.equals("thin")) {
+            return this.haveLld();
+        }
+        return true;
+    }
+
+    // dev.cajeta.bench 0.1.1 (the repo's pin) reads skipReason(); 0.1.2+ skipReasonFor.
+    public String skipReason() {
+        return this.skipReasonFor("thin");
+    }
+
+    public String skipReasonFor(String variant) {
+        return "thin LTO needs lld: no ld.lld in the cajeta-llvm fork's llvm-install/bin (CAJETA_LLVM_BIN) or on PATH";
+    }
+
+    public void prepare(String variant) {
+        this.used = 0;
+        ToolchainSupport.prep("synth-src", "");
+        String w #= ToolchainSupport.work();
+        this.src = w + "/lto/src";
+        this.root = w + "/lto/" + variant;
+        this.expected #= ToolchainSupport.readTrim(w + "/synth-expected");
+        String b #= this.llvmBin();
+        this.forkBin #= ToolchainSupport.abs(b);
+    }
+
+    public #String[] argvFor(String variant) {
+        String c #= ToolchainSupport.cajeta();
+        String path = System.env.get("PATH");
+        String p = "/usr/bin:/bin";
+        if (path != null) {
+            p = "" + path;
+        }
+        String[] inner = heap String[10];
+        inner[0] = "/usr/bin/env";
+        inner[1] = "PATH=" + this.forkBin + ":" + p;
+        inner[2] = "" + c;
+        inner[3] = "--release";
+        inner[4] = "--lto=" + variant;
+        inner[5] = "--emit=exe";
+        inner[6] = "-o";
+        inner[7] = this.cmdCwd + "/synth";
+        inner[8] = "synth.Main.main";
+        inner[9] = "" + this.src;
+        String[] argv #= ToolchainSupport.withTime(inner, ".maxrss");
+        int32 n = (int32) argv.count();
+        String[] out = heap String[n + 1];
+        int32 i = 0;
+        while (i < n) {
+            out[i] = "" + argv[i];
+            i = i + 1;
+        }
+        out[n] = this.cmdCwd + "/obj";
+        return out;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        int32 i = 0;
+        while (i < iterations) {
+            this.cmdCwd = this.root + "/" + this.used;
+            Path d #= Path.of(this.cmdCwd);
+            d.mkdirs();
+            this.lastVariant = "" + variant;
+            this.execute(variant);
+            this.takeRss(this.cmdCwd + "/.maxrss");
+            this.used = this.used + 1;
+            i = i + 1;
+        }
+    }
+
+    public int64 measuredPeakRssKb() {
+        return this.maxRss;
+    }
+
+    public boolean checkResult() {
+        if (this.lastExitCode != 0 || this.used == 0 || this.expected.isEmpty()) {
+            return false;
+        }
+        if (this.lastVariant.equals("thin")) {
+            String e = this.stderr();
+            if (e.contains("needs lld")) {
+                return false;
+            }
+        }
+        String bin = this.root + "/" + (this.used - 1) + "/synth";
+        String out #= ToolchainSupport.output1(bin, (int64) 60000);
+        return out.contains(this.expected);
+    }
+}

@@ -1,0 +1,36 @@
+package bench.toolchain;
+
+// toolchain/build-noop (bench/toolchain/BuildTool.md): `cajeta build` of a
+// hello-world project that is already built and unchanged, 1e2 times. Check:
+// exit 0.
+public class BuildNoopBench extends ToolchainExternal {
+
+    public BuildNoopBench() {
+        super();
+        this.iterations(3, 100);
+        this.timeoutMillis((int64) 600000);
+        this.addNote("cajeta build of a hello-world cajeta.json project built once before; no edits; one build per trial");
+    }
+
+    public String name() {
+        return "build-noop";
+    }
+
+    public String area() {
+        return "toolchain";
+    }
+
+    public void prepare(String variant) {
+        ToolchainSupport.prep("hello-project", "");
+        String w #= ToolchainSupport.work();
+        this.cmdCwd = w + "/hello-project";
+    }
+
+    public #String[] argvFor(String variant) {
+        String c #= ToolchainSupport.cajeta();
+        String[] argv = heap String[2];
+        argv[0] = "" + c;
+        argv[1] = "build";
+        return argv;
+    }
+}

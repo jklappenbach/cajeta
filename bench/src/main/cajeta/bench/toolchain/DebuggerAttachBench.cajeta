@@ -1,0 +1,74 @@
+package bench.toolchain;
+
+// toolchain/debugger-attach (bench/toolchain/Debugger.md): one debugger
+// session against `cajeta dap` per trial, 20 trials: initialize, launch the
+// tour (samples/tour, a copy), set one breakpoint (Tour.cajeta, the first
+// demos.add line), wait for the `stopped` event with reason `breakpoint`,
+// disconnect. Check: the breakpoint was reported.
+//
+// The page says "attach to a running tour process". `cajeta dap` has no
+// `attach` request on v0.46.3 (Debugging.md lists it; DapServer handles
+// launch only), so this is the closest honest row: a launch against a warm
+// JIT cache (one untimed session fills it), so a trial pays start-up, the
+// cached build and the breakpoint, not a cold compile. The competitors attach.
+public class DebuggerAttachBench extends ToolchainExternal {
+    public String src;
+    public String cache;
+    public String line;
+
+    public DebuggerAttachBench() {
+        super();
+        this.src = "";
+        this.cache = "";
+        this.line = "";
+        this.iterations(1, 20);
+        this.timeoutMillis((int64) 1800000);
+        this.addNote("cajeta dap has no attach request on v0.46.3: launch of the tour against a warm JIT cache to one reported breakpoint; disconnect");
+        this.addNote("one dap_breakpoint.py process per trial (Python DAP client)");
+    }
+
+    public String name() {
+        return "debugger-attach";
+    }
+
+    public String area() {
+        return "toolchain";
+    }
+
+    public String datasetInfo() {
+        return "samples/tour";
+    }
+
+    public void prepare(String variant) {
+        ToolchainSupport.prep("dap", "");
+        String w #= ToolchainSupport.work();
+        this.src = w + "/dap/tour/src/main/cajeta";
+        this.cache = w + "/dap/cache";
+        this.line #= ToolchainSupport.readTrim(w + "/dap/line");
+    }
+
+    public #String[] argvFor(String variant) {
+        String c #= ToolchainSupport.cajeta();
+        String py #= ToolchainSupport.python();
+        String d #= ToolchainSupport.script("toolchain/scripts/dap_breakpoint.py");
+        String[] argv = heap String[9];
+        argv[0] = "" + py;
+        argv[1] = "" + d;
+        argv[2] = "" + c;
+        argv[3] = "" + this.src;
+        argv[4] = "tour.Tour.main";
+        argv[5] = "Tour.cajeta";
+        argv[6] = "" + this.line;
+        argv[7] = "" + this.cache;
+        argv[8] = "600";
+        return argv;
+    }
+
+    public boolean checkResult() {
+        if (this.lastExitCode != 0) {
+            return false;
+        }
+        String out = this.stdout();
+        return out.contains("breakpoint reported");
+    }
+}

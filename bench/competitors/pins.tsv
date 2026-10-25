@@ -7,6 +7,7 @@
 #   git         source = clone URL; pin = tag or branch; check = the commit it resolved to
 #   jar         source = Maven Central path; pin = version; check = sha256 of the jar
 #   tarball     source = URL; pin = version; check = sha256 of the tarball
+#   zip         source = URL; pin = version; check = sha256 of the archive, unpacked into third_party/<item>/
 # Everything is fetched into competitors/third_party/ (gitignored); nothing here is built.
 #
 # --- existing pins (competitors/vendor/manifest.tsv + *.lock) ---
@@ -167,3 +168,9 @@ aot-daggerc-kotlin-reflect-1.6.10	library	jar	org/jetbrains/kotlin/kotlin-reflec
 aot-daggerc-kotlin-stdlib-jdk7-1.6.10	library	jar	org/jetbrains/kotlin/kotlin-stdlib-jdk7/1.6.10/kotlin-stdlib-jdk7-1.6.10.jar	1.6.10	2aedcdc6b69b33bdf5cc235bcea88e7cf6601146bb6bcdffdb312bbacd7be261
 aot-daggerc-kotlin-stdlib-jdk8-1.6.10	library	jar	org/jetbrains/kotlin/kotlin-stdlib-jdk8/1.6.10/kotlin-stdlib-jdk8-1.6.10.jar	1.6.10	1456d82d039ea30d8485b032901f52bbf07e7cdbe8bb1f8708ad32a8574c41ce
 aot-daggerc-kotlin-stdlib-2.3.21	library	jar	org/jetbrains/kotlin/kotlin-stdlib/2.3.21/kotlin-stdlib-2.3.21.jar	2.3.21	6f64eac736db9434dd6925b4a518b9d1d17177652320c37916cf9ba3ce7d7d7a
+# --- toolchain/ (unit 15): fetched release archives (method zip: sha256 of the archive,
+#     unpacked into third_party/<item>/) ---
+# IJava 1.3.0, the notebook-kernel row's Java kernel (java -jar java/ijava-1.3.0.jar).
+ijava	library	zip	https://github.com/SpencerPark/IJava/releases/download/v1.3.0/ijava-1.3.0.zip	1.3.0	484cc62579cb77510b0f0c78283f043794396d8ae9d76a8f2ab5d7368ec246b2
+# Gradle 9.8.2, the build-noop row (the sdkman Gradle 8.10.2 cannot run on Java 25).
+gradle	toolchain	zip	https://services.gradle.org/distributions/gradle-9.8.2-bin.zip	9.8.2	21bd5da2de49b642904077f38c0efdc7778e92b3ed0889392dca61b97e389607

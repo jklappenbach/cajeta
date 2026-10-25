@@ -1,0 +1,97 @@
+package bench.toolchain;
+
+import cajeta.collection.ArrayList;
+
+// toolchain/binary-size-tour (bench/toolchain/BinarySize.md): the size on disk
+// of the tour, variant `exe` (cajeta build, stripped) and variant `cja`
+// (cajeta --emit=cja). The `memory` metric: peak_rss_kb holds the size in KiB
+// (rounded up), the note the exact bytes. Time is the check: one run of the
+// stripped tour to "tour complete" (exe), one `cajeta archive verify` (cja: no
+// command runs a .cja on v0.46.3).
+//
+// The exe is the debug flavor stripped: the release and debug-release
+// flavors do not link the tour on v0.46.3 (undefined __cajeta_stack_*_drop).
+public class BinarySizeTourBench extends ToolchainExternal {
+    public String exe;
+    public String cja;
+    public int64 exeBytes;
+    public int64 cjaBytes;
+    public boolean built;
+
+    public BinarySizeTourBench() {
+        super();
+        this.exe = "";
+        this.cja = "";
+        this.exeBytes = (int64) -1;
+        this.cjaBytes = (int64) -1;
+        this.built = false;
+        this.iterations(1, 5);
+        this.timeoutMillis((int64) 300000);
+    }
+
+    public String name() {
+        return "binary-size-tour";
+    }
+
+    public String area() {
+        return "toolchain";
+    }
+
+    public String datasetInfo() {
+        return "samples/tour";
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("exe");
+        v.add("cja");
+        return v;
+    }
+
+    public void prepare(String variant) {
+        if (!this.built) {
+            ToolchainSupport.prep("tour-size", "");
+            String w #= ToolchainSupport.work();
+            this.exe = w + "/tour-size/tour.stripped";
+            this.cja = w + "/tour-size/tour.cja";
+            this.exeBytes = ToolchainSupport.fileBytes(this.exe);
+            this.cjaBytes = ToolchainSupport.fileBytes(this.cja);
+            this.built = true;
+            this.addNote("peak_rss_kb holds the size on disk in KiB: exe " + this.exeBytes + " bytes (cajeta build then strip; the release flavor does not link the tour on v0.46.3); cja " + this.cjaBytes + " bytes (--emit=cja)");
+            this.addNote("time is the check: exe runs the tour; cja is cajeta archive verify (nothing runs a .cja)");
+        }
+    }
+
+    public #String[] argvFor(String variant) {
+        if (variant.equals("cja")) {
+            String c #= ToolchainSupport.cajeta();
+            String[] v = heap String[4];
+            v[0] = "" + c;
+            v[1] = "archive";
+            v[2] = "verify";
+            v[3] = "" + this.cja;
+            return v;
+        }
+        String[] argv = heap String[1];
+        argv[0] = "" + this.exe;
+        return argv;
+    }
+
+    public int64 measuredPeakRssKb() {
+        if (this.lastVariant.equals("cja")) {
+            return ToolchainSupport.kibOf(this.cjaBytes);
+        }
+        return ToolchainSupport.kibOf(this.exeBytes);
+    }
+
+    public boolean checkResult() {
+        if (this.lastExitCode != 0) {
+            return false;
+        }
+        if (this.lastVariant.equals("cja")) {
+            return this.cjaBytes > 0;
+        }
+        String out = this.stdout();
+        return this.exeBytes > 0 && out.contains("tour complete");
+    }
+}

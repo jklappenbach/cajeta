@@ -7,9 +7,30 @@ import dev.cajeta.bench.Benchmark;
 // Registers every toolchain/ benchmark, in catalog order. A unit adds a toolchain/
 // benchmark by writing the class in this directory and one `b.add(heap X());`
 // line here; Bench.cajeta calls this and is never edited for it.
+//
+// Every toolchain/ benchmark is an ExternalBenchmark (dev.cajeta.bench 0.1.1+)
+// timing a child process; toolchain/scripts/prep.sh does the untimed
+// preparation (copies, builds, caches) under build/toolchain/.
 public final class ToolchainRegistry {
 
     public static void register(ArrayList<Benchmark> b) {
-        // No toolchain/ benchmarks yet.
+        // Compile.md
+        b.add(heap CompileTourColdBench());
+        b.add(heap CompileTourWarmBench());
+        b.add(heap Compile10kBench());
+        b.add(heap CompileLtoBench());
+        // Startup.md
+        b.add(heap StartupExeBench());
+        b.add(heap StartupCjaColdBench());
+        b.add(heap StartupCjaWarmBench());
+        // BinarySize.md
+        b.add(heap BinarySizeHelloBench());
+        b.add(heap BinarySizeTourBench());
+        // BuildTool.md
+        b.add(heap BuildNoopBench());
+        // NotebookKernel.md
+        b.add(heap KernelStartupBench());
+        // Debugger.md
+        b.add(heap DebuggerAttachBench());
     }
 }

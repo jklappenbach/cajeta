@@ -1,0 +1,96 @@
+package bench.toolchain;
+
+import cajeta.process.Command;
+import cajeta.process.ProcessResult;
+
+// toolchain/kernel-startup (bench/toolchain/NotebookKernel.md): launch `cajeta
+// kernel` through a kernelspec, wait for its kernel_info reply, run two cells,
+// shut it down; one launch per trial, 20 trials. The launch is the original
+// measurement script's (toolchain/kernel-startup/measure.py, wrapped by
+// kernel_once.py, which the competitor rows run too). Check: every reply ok.
+//
+// Skips when this compiler cannot serve a kernel: a cajeta built without
+// libzmq answers `cajeta kernel` with "built without libzmq".
+public class KernelStartupBench extends ToolchainExternal {
+    public String why;
+
+    public KernelStartupBench() {
+        super();
+        this.why = "";
+        this.iterations(1, 20);
+        this.timeoutMillis((int64) 1800000);
+        this.addNote("one kernel_once.py process per trial: kernelspec launch to the kernel_info reply and two cells (measure.py's run_once); the wrapper's Python start-up is on every row");
+    }
+
+    public String name() {
+        return "kernel-startup";
+    }
+
+    public String area() {
+        return "toolchain";
+    }
+
+    // A compiler built without libzmq answers `cajeta kernel` with "built
+    // without libzmq" once it has read the connection file; prep.sh
+    // kernel-probe gives it one and reports which it is.
+    public boolean supportsVariant(String variant) {
+        String[] argv = heap String[3];
+        argv[0] = "bash";
+        argv[1] #= ToolchainSupport.script("toolchain/scripts/prep.sh");
+        argv[2] = "kernel-probe";
+        String out #= ToolchainSupport.output(#argv, (int64) 60000);
+        if (out.contains("kernel: nozmq")) {
+            this.why = "this cajeta was built without libzmq; so `cajeta kernel` is unavailable (needs libzmq3-dev at build time)";
+            return false;
+        }
+        if (!out.contains("kernel: serves")) {
+            this.why = "prep.sh kernel-probe failed";
+            return false;
+        }
+        String py #= ToolchainSupport.python();
+        String[] probe = heap String[3];
+        probe[0] = "" + py;
+        probe[1] = "-c";
+        probe[2] = "import jupyter_client";
+        Command pc = heap Command(#probe);
+        pc.captureStdout();
+        pc.captureStderr();
+        ProcessResult pr #= pc.run();
+        if (!pr.launched() || pr.exitCode() != 0) {
+            this.why = "jupyter_client is not importable by " + py + " (competitors/setup.sh installs it in the venv)";
+            return false;
+        }
+        return true;
+    }
+
+    // dev.cajeta.bench 0.1.1 (the repo's pin) reads skipReason(); 0.1.2+ skipReasonFor.
+    public String skipReason() {
+        return this.skipReasonFor("");
+    }
+
+    public String skipReasonFor(String variant) {
+        return this.why;
+    }
+
+    public #String[] argvFor(String variant) {
+        String c #= ToolchainSupport.cajeta();
+        String py #= ToolchainSupport.python();
+        String k #= ToolchainSupport.script("toolchain/kernel-startup/kernel_once.py");
+        String[] argv = heap String[6];
+        argv[0] = "" + py;
+        argv[1] = "" + k;
+        argv[2] = "--kernel";
+        argv[3] = "cajeta";
+        argv[4] = "--binary";
+        argv[5] = "" + c;
+        return argv;
+    }
+
+    public boolean checkResult() {
+        if (this.lastExitCode != 0) {
+            return false;
+        }
+        String out = this.stdout();
+        return out.contains("reply ok");
+    }
+}

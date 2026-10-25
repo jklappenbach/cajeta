@@ -84,6 +84,8 @@ JAVA_MAJOR=25
 NODE_MIN=22
 PYTHON_MM=3.12
 TORCH_VERSION=2.14.1     # the wheel tag (+cu130 / +rocmX.Y / +cpu) is picked per machine
+EVCXR_VERSION=0.22.0     # toolchain/kernel-startup's Rust kernel (cargo install, into third_party/evcxr)
+DLV_VERSION=v1.25.2      # toolchain/debugger-attach's Go debugger (go install, into bin/); go.mod says go 1.22
 
 export PATH="$HOME/.cargo/bin:$HOME/.dotnet:$BIN:$PATH"
 export DOTNET_ROOT="$HOME/.dotnet" DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
@@ -321,6 +323,28 @@ check_llama() {
     out "$c (llama-bench built: ${built:-none})" "$(cd "$LLAMA" && pwd)" "git rev-parse HEAD; ls */bin/llama-bench (not built here)"
 }
 
+check_evcxr() {
+    local e="$TP/evcxr/bin/evcxr_jupyter"
+    [[ -x "$e" && -f "$TP/evcxr/.crates.toml" ]] || return 1
+    grep -q "evcxr_jupyter $EVCXR_VERSION" "$TP/evcxr/.crates.toml" || return 1
+    out "$EVCXR_VERSION" "$e" "third_party/evcxr/.crates.toml lists evcxr_jupyter $EVCXR_VERSION"
+}
+install_evcxr() {
+    [[ -x "$CARGO_HOME/bin/cargo" ]] || { echo "cargo missing"; return 1; }
+    "$CARGO_HOME/bin/cargo" install evcxr_jupyter --version "$EVCXR_VERSION" --locked --root "$TP/evcxr"
+}
+
+check_dlv() {
+    [[ -x "$BIN/dlv" ]] || return 1
+    local v; v="$("$BIN/dlv" version 2>/dev/null | sed -n 's/^Version: //p')"
+    [[ "v$v" == "$DLV_VERSION" ]] || return 1
+    out "$v" "$BIN/dlv" "dlv version == $DLV_VERSION"
+}
+install_dlv() {
+    command -v go >/dev/null || { echo "go missing"; return 1; }
+    mkdir -p "$BIN" && GOTOOLCHAIN=local GOBIN="$BIN" go install "github.com/go-delve/delve/cmd/dlv@$DLV_VERSION"
+}
+
 # ---- pinned libraries (pins.tsv) ----------------------------------------------
 lock_of() { [[ -n "$VENDOR_DIR" && -f "$VENDOR_DIR/$1.lock" ]] && head -1 "$VENDOR_DIR/$1.lock"; }
 url_of_vendor() { awk -F'\t' -v n="$1" '!/^#/ && $1==n {print $2; exit}' "$VENDOR_DIR/manifest.tsv"; }
@@ -343,6 +367,10 @@ check_pin() {  # item
             local f="$TP/$(basename "$src")"
             [[ "$(sha_of "$f")" == "$chk" && -d "${f%.tar.gz}" ]] || return 1
             out "$pin" "${f%.tar.gz}" "sha256 of $(basename "$src") == pins.tsv (${chk:0:12}…)" ;;
+        zip)
+            local f="$TP/$item/$(basename "$src")"
+            [[ "$(sha_of "$f")" == "$chk" && -f "$TP/$item/.unpacked" ]] || return 1
+            out "$pin" "$TP/$item" "sha256 of $(basename "$src") == pins.tsv (${chk:0:12}…), unpacked" ;;
         *) return 1 ;;
     esac
 }
@@ -364,6 +392,11 @@ install_pin() {  # item
             curl -sSfL -o "$f.part" "$src" || return 1
             [[ "$(sha_of "$f.part")" == "$chk" ]] || { echo "sha256 mismatch for $src"; rm -f "$f.part"; return 1; }
             mv "$f.part" "$f" && tar -xzf "$f" -C "$TP" ;;
+        zip)
+            local d="$TP/$item" f="$TP/$item/$(basename "$src")"; mkdir -p "$d"
+            curl -sSfL -o "$f.part" "$src" || return 1
+            [[ "$(sha_of "$f.part")" == "$chk" ]] || { echo "sha256 mismatch for $src"; rm -f "$f.part"; return 1; }
+            mv "$f.part" "$f" && unzip -q -o "$f" -d "$d" && touch "$d/.unpacked" ;;
     esac
 }
 
@@ -469,6 +502,8 @@ REGISTRY=(
     "rocm-hipcc|toolchain|check_rocm|-|-"
     "oha|toolchain|check_oha|install_oha|-"
     "wrk|toolchain|check_wrk|install_wrk|prereq_wrk"
+    "evcxr_jupyter|toolchain|check_evcxr|install_evcxr|-"
+    "dlv|toolchain|check_dlv|install_dlv|prereq_go"
 )
 while IFS=$'\t' read -r n k _rest; do
     [[ -z "$n" || "$n" == \#* ]] && continue

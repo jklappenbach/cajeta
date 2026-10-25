@@ -1,0 +1,53 @@
+package bench.toolchain;
+
+// toolchain/binary-size-hello (bench/toolchain/BinarySize.md): the size on disk
+// of the hello-world executable (cajeta --release --emit=exe, then strip). The
+// page's metric is `memory`: this row's peak_rss_kb holds that size in KiB
+// (rounded up) and the note gives the exact bytes. The time columns are one
+// launch of the stripped binary, which is the "runs" check.
+public class BinarySizeHelloBench extends ToolchainExternal {
+    public String bin;
+    public int64 bytes;
+
+    public BinarySizeHelloBench() {
+        super();
+        this.bin = "";
+        this.bytes = (int64) -1;
+        this.iterations(1, 5);
+        this.timeoutMillis((int64) 60000);
+    }
+
+    public String name() {
+        return "binary-size-hello";
+    }
+
+    public String area() {
+        return "toolchain";
+    }
+
+    public void prepare(String variant) {
+        ToolchainSupport.prep("hello", "");
+        String w #= ToolchainSupport.work();
+        this.bin = w + "/hello/build/hello.stripped";
+        this.bytes = ToolchainSupport.fileBytes(this.bin);
+        this.addNote("peak_rss_kb holds the size on disk in KiB (" + this.bytes + " bytes) of the stripped --release --emit=exe binary; time is one launch");
+    }
+
+    public #String[] argvFor(String variant) {
+        String[] argv = heap String[1];
+        argv[0] = "" + this.bin;
+        return argv;
+    }
+
+    public int64 measuredPeakRssKb() {
+        return ToolchainSupport.kibOf(this.bytes);
+    }
+
+    public boolean checkResult() {
+        if (this.lastExitCode != 0 || this.bytes <= 0) {
+            return false;
+        }
+        String out = this.stdout();
+        return out.contains("hello, world");
+    }
+}

@@ -1,0 +1,53 @@
+package bench.toolchain;
+
+// toolchain/compile-tour-warm (bench/toolchain/Compile.md): `cajeta build` of
+// a tour copy that has been built once, with no edits since: the warm
+// compile cache (.cajeta/cache) and build/ are both present. Check: the tour
+// runs to "tour complete".
+public class CompileTourWarmBench extends ToolchainExternal {
+    public String dir;
+
+    public CompileTourWarmBench() {
+        super();
+        this.dir = "";
+        this.iterations(2, 10);
+        this.timeoutMillis((int64) 3600000);
+        this.addNote("cajeta build of a tour copy built once before (untimed); warm .cajeta/cache and no edits");
+    }
+
+    public String name() {
+        return "compile-tour-warm";
+    }
+
+    public String area() {
+        return "toolchain";
+    }
+
+    public String datasetInfo() {
+        return "samples/tour";
+    }
+
+    public void prepare(String variant) {
+        ToolchainSupport.prep("tour-warm", "");
+        String w #= ToolchainSupport.work();
+        this.dir = w + "/tour-warm";
+        this.cmdCwd = "" + this.dir;
+    }
+
+    public #String[] argvFor(String variant) {
+        String c #= ToolchainSupport.cajeta();
+        String[] argv = heap String[2];
+        argv[0] = "" + c;
+        argv[1] = "build";
+        return argv;
+    }
+
+    public boolean checkResult() {
+        if (this.lastExitCode != 0) {
+            return false;
+        }
+        String bin = this.dir + "/build/tour";
+        String out #= ToolchainSupport.output1(bin, (int64) 300000);
+        return out.contains("tour complete");
+    }
+}

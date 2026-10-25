@@ -1,0 +1,49 @@
+package bench.toolchain;
+
+import dev.cajeta.bench.ExternalBenchmark;
+
+// The toolchain/ benchmarks' common base (bench/toolchain/*.md): an
+// ExternalBenchmark with a page note, an execution counter for the rows that
+// need a fresh copy per execution (cold compiles), and a peak RSS gathered
+// from the timed runs themselves when `/usr/bin/time -o` wraps them.
+public class ToolchainExternal extends ExternalBenchmark {
+    public String note;
+    public int32 used;
+    public int64 maxRss;
+
+    // Explicit: a subclass with no constructor of its own is unusable after
+    // `heap` on v0.46.3 (specs/inherited-constructor-heap-segv-spec.md).
+    public ToolchainExternal() {
+        super();
+        this.note = "";
+        this.used = 0;
+        this.maxRss = (int64) -1;
+    }
+
+    public String competitorNote() {
+        return this.note;
+    }
+
+    public void addNote(String s) {
+        String clean #= ToolchainSupport.noCommas(s);
+        if (this.note.isEmpty()) {
+            this.note = "" + clean;
+        } else {
+            this.note = this.note + "; " + clean;
+        }
+    }
+
+    // Fold the KiB /usr/bin/time wrote to `rssFile` into maxRss.
+    public void takeRss(String rssFile) {
+        int64 k = ToolchainSupport.rssFrom(rssFile);
+        if (k > this.maxRss) {
+            this.maxRss = k;
+        }
+    }
+
+    // The first line of the last stderr, comma-free, for a note.
+    public #String lastErrLine() {
+        String e = this.stderr();
+        return ToolchainSupport.lastLine(e);
+    }
+}

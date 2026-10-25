@@ -1,0 +1,231 @@
+package bench.toolchain;
+
+import cajeta.io.file.Path;
+import cajeta.process.Command;
+import cajeta.process.ProcessResult;
+
+import dev.cajeta.bench.ExternalBenchmark;
+import dev.cajeta.bench.detect.Sys;
+
+// Paths, environment and the untimed preparation step the toolchain/
+// benchmarks share (bench/toolchain/*.md). The bench binary runs from the
+// bench/ project directory, so relative defaults resolve against it.
+//
+// Environment:
+//   CAJETA                        the compiler under test (default <repo>/build/src/cajeta)
+//   CAJETA_BENCH_REPO             the compiler repo root (default "..", bench/'s parent)
+//   CAJETA_BENCH_TOOLCHAIN_WORK   scratch for copies, builds and caches (default build/toolchain)
+//   CAJETA_BENCH_PYTHON           the Python that runs the DAP and kernel drivers
+//                                 (default competitors/python/.venv/bin/python, which
+//                                 has jupyter_client; else /usr/bin/python3)
+public final class ToolchainSupport {
+
+    public static #String env(String name, String dflt) {
+        String v = System.env.get(name);
+        if (v == null || v.isEmpty()) {
+            return "" + dflt;
+        }
+        return "" + v;
+    }
+
+    // `p` made absolute against this process's working directory (no symlink
+    // resolution: a venv's python must keep its own path). The benchmarks
+    // change the child's directory, so every path they hand it is absolute.
+    public static #String abs(String p) {
+        if (p.startsWith("/")) {
+            return "" + p;
+        }
+        Path here #= Path.of(".");
+        Path c #= here.canonical();
+        String h #= c.toString();
+        return h + "/" + p;
+    }
+
+    public static #String repo() {
+        String r #= ToolchainSupport.env("CAJETA_BENCH_REPO", "..");
+        return ToolchainSupport.abs(r);
+    }
+
+    public static #String cajeta() {
+        String r #= ToolchainSupport.repo();
+        String c #= ToolchainSupport.env("CAJETA", r + "/build/src/cajeta");
+        return ToolchainSupport.abs(c);
+    }
+
+    public static #String work() {
+        String w #= ToolchainSupport.env("CAJETA_BENCH_TOOLCHAIN_WORK", "build/toolchain");
+        Path p #= Path.of(w);
+        p.mkdirs();
+        return ToolchainSupport.abs(w);
+    }
+
+    public static #String python() {
+        Path venv #= Path.of("competitors/python/.venv/bin/python");
+        if (venv.exists()) {
+            String d #= ToolchainSupport.env("CAJETA_BENCH_PYTHON", "competitors/python/.venv/bin/python");
+            return ToolchainSupport.abs(d);
+        }
+        return ToolchainSupport.env("CAJETA_BENCH_PYTHON", "/usr/bin/python3");
+    }
+
+    // A bench/-relative script path made absolute.
+    public static #String script(String rel) {
+        return ToolchainSupport.abs(rel);
+    }
+
+    public static boolean smoke() {
+        String s = System.env.get("CAJETA_BENCH_SMOKE");
+        if (s == null) {
+            return false;
+        }
+        return s.equals("1") || s.equals("true");
+    }
+
+    // How many executions the harness will make: warmup + trials (1 + 3 in
+    // smoke mode), for benchmarks that need a fresh copy per execution.
+    public static int32 executions(int32 warm, int32 trials) {
+        if (ToolchainSupport.smoke()) {
+            return 4;
+        }
+        return warm + trials;
+    }
+
+    // Run `bash toolchain/scripts/prep.sh <task> [<arg>]`, untimed; throw with
+    // its last stderr line when it fails (the row becomes `failed` with it).
+    public static void prep(String task, String arg) {
+        int32 n = 3;
+        if (!arg.isEmpty()) {
+            n = 4;
+        }
+        String[] argv = heap String[n];
+        argv[0] = "bash";
+        argv[1] #= ToolchainSupport.script("toolchain/scripts/prep.sh");
+        argv[2] = "" + task;
+        if (!arg.isEmpty()) {
+            argv[3] = "" + arg;
+        }
+        Command c = heap Command(#argv);
+        c.captureStdout();
+        c.captureStderr();
+        c.timeoutMillis((int64) 3600000);
+        ProcessResult r #= c.run();
+        if (!r.launched()) {
+            throw heap Exception("could not run toolchain/scripts/prep.sh " + task);
+        }
+        if (r.timedOut()) {
+            throw heap Exception("prep.sh " + task + " timed out");
+        }
+        if (r.exitCode() != 0) {
+            String err #= Sys.copyText(r.stderr());
+            String last #= ToolchainSupport.lastLine(err);
+            throw heap Exception("prep.sh " + task + " exited " + r.exitCode() + ": " + last);
+        }
+    }
+
+    // The last non-empty line of `text`.
+    public static #String lastLine(String text) {
+        int32 n = text.byteLength();
+        int32 end = n;
+        while (end > 0 && (text.byteAt(end - 1) == 10 || text.byteAt(end - 1) == 13)) {
+            end = end - 1;
+        }
+        int32 start = end;
+        while (start > 0 && text.byteAt(start - 1) != 10) {
+            start = start - 1;
+        }
+        String line #= text.substring(start, end);
+        return ToolchainSupport.noCommas(line);
+    }
+
+    // `s` with commas replaced by semicolons: dev.cajeta.bench 0.1.2 writes
+    // notes unquoted, so a comma would shift the CSV columns.
+    public static #String noCommas(String s) {
+        int32 n = s.byteLength();
+        int8[] b = heap int8[n];
+        int32 i = 0;
+        while (i < n) {
+            int8 c = s.byteAt(i);
+            if (c == 44 || c == 10 || c == 13) {
+                c = 59;
+            }
+            b[i] = c;
+            i = i + 1;
+        }
+        return heap String(#b, n);
+    }
+
+    // The trimmed text of a small file ("" when missing).
+    public static #String readTrim(String path) {
+        String t #= Sys.readText(path);
+        String w #= t.trim();
+        return "" + w;
+    }
+
+    // stdout of argv run to completion (up to `ms`), "" when it fails.
+    public static #String output(#String[] argv, int64 ms) {
+        Command c = heap Command(#argv);
+        c.captureStdout();
+        c.captureStderr();
+        c.timeoutMillis(ms);
+        ProcessResult r #= c.run();
+        if (!r.launched() || r.timedOut() || r.exitCode() != 0) {
+            return "";
+        }
+        return Sys.copyText(r.stdout());
+    }
+
+    public static #String output1(String prog, int64 ms) {
+        String[] argv = heap String[1];
+        argv[0] = "" + prog;
+        return ToolchainSupport.output(#argv, ms);
+    }
+
+    // Size on disk in bytes (stat -c %s), -1 when it cannot be read.
+    public static int64 fileBytes(String path) {
+        String[] argv = heap String[3];
+        argv[0] = "stat";
+        argv[1] = "-c%s";
+        argv[2] = "" + path;
+        String out #= ToolchainSupport.output(#argv, (int64) 10000);
+        String t #= out.trim();
+        return ExternalBenchmark.parseKb(t);
+    }
+
+    // KiB rounded up, for the `memory` metric of a binary-size row.
+    public static int64 kibOf(int64 bytes) {
+        if (bytes < 0) {
+            return (int64) -1;
+        }
+        return (bytes + 1023) / 1024;
+    }
+
+    // argv prefixed with `/usr/bin/time -o <rssFile> -f %M` when GNU time is
+    // there, so one timed run also records the child's peak RSS (wait4
+    // rusage). The compile rows use this instead of the harness's extra
+    // untimed execution, which for a cold compile would be one more full build.
+    public static #String[] withTime(String[] inner, String rssFile) {
+        Path gt #= Path.of("/usr/bin/time");
+        int32 n = (int32) inner.count();
+        if (!gt.exists()) {
+            return ExternalBenchmark.copyOf(inner);
+        }
+        String[] argv = heap String[n + 5];
+        argv[0] = "/usr/bin/time";
+        argv[1] = "-o";
+        argv[2] = "" + rssFile;
+        argv[3] = "-f";
+        argv[4] = "%M";
+        int32 i = 0;
+        while (i < n) {
+            argv[i + 5] = "" + inner[i];
+            i = i + 1;
+        }
+        return argv;
+    }
+
+    // The KiB /usr/bin/time wrote to `rssFile`, -1 when absent.
+    public static int64 rssFrom(String rssFile) {
+        String t #= ToolchainSupport.readTrim(rssFile);
+        return ExternalBenchmark.parseKb(t);
+    }
+}

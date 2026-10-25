@@ -1,0 +1,55 @@
+package bench.toolchain;
+
+// toolchain/startup-cja-warm (bench/toolchain/Startup.md): hello-world through
+// the JIT with the machine code cached: `cajeta jit-run --cache-dir=<dir>`
+// against a cache one untimed run filled. Check: it printed "hello, world".
+// Like startup-cja-cold, the JIT runs the source root (no command runs a .cja).
+public class StartupCjaWarmBench extends ToolchainExternal {
+    public String src;
+    public String cache;
+
+    public StartupCjaWarmBench() {
+        super();
+        this.src = "";
+        this.cache = "";
+        this.iterations(3, 20);
+        this.timeoutMillis((int64) 600000);
+        this.addNote("cajeta jit-run of the hello-world source root against a --cache-dir one untimed run filled");
+        this.addNote("no cajeta command runs a .cja through the JIT on v0.46.3; so the source root");
+    }
+
+    public String name() {
+        return "startup-cja-warm";
+    }
+
+    public String area() {
+        return "toolchain";
+    }
+
+    public void prepare(String variant) {
+        ToolchainSupport.prep("hello", "");
+        ToolchainSupport.prep("jit-warm", "");
+        String w #= ToolchainSupport.work();
+        this.src = w + "/hello/src";
+        this.cache = w + "/jit-warm";
+    }
+
+    public #String[] argvFor(String variant) {
+        String c #= ToolchainSupport.cajeta();
+        String[] argv = heap String[5];
+        argv[0] = "" + c;
+        argv[1] = "jit-run";
+        argv[2] = "--cache-dir=" + this.cache;
+        argv[3] = "" + this.src;
+        argv[4] = "hello.Hello.main";
+        return argv;
+    }
+
+    public boolean checkResult() {
+        if (this.lastExitCode != 0) {
+            return false;
+        }
+        String out = this.stdout();
+        return out.contains("hello, world");
+    }
+}

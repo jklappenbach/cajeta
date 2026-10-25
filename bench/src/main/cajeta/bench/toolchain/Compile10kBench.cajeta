@@ -1,0 +1,76 @@
+package bench.toolchain;
+
+// toolchain/compile-10k (bench/toolchain/Compile.md): `cajeta build` (debug
+// flavor) of the generated 10k-line, 200-class program
+// (bench/datasets/gen_synth.py; the same description is rendered in Java,
+// Rust, Go, C++ and Python for the competitor rows), cold: one fresh copy per
+// execution, no build/ and no .cajeta/ cache. Check: the binary prints the
+// line the generator computed (datasets/cache/synth-10k/EXPECTED).
+public class Compile10kBench extends ToolchainExternal {
+    public String root;
+    public String expected;
+
+    public Compile10kBench() {
+        super();
+        this.root = "";
+        this.expected = "";
+        this.iterations(1, 5);
+        this.timeoutMillis((int64) 3600000);
+        this.addNote("cajeta build (debug flavor) of datasets/gen_synth.py's program; cold: one fresh copy per execution");
+    }
+
+    public String name() {
+        return "compile-10k";
+    }
+
+    public String area() {
+        return "toolchain";
+    }
+
+    public String datasetInfo() {
+        return "synth-10k (datasets/gen_synth.py)";
+    }
+
+    public void prepare(String variant) {
+        this.used = 0;
+        int32 n = ToolchainSupport.executions(this.warmupIters(), this.measuredIters());
+        ToolchainSupport.prep("synth-copies", "" + n);
+        String w #= ToolchainSupport.work();
+        this.root = w + "/synth-cold";
+        this.expected #= ToolchainSupport.readTrim(w + "/synth-expected");
+        String lines #= ToolchainSupport.readTrim(w + "/synth-lines");
+        this.addNote(lines + " Cajeta lines in 202 files");
+    }
+
+    public #String[] argvFor(String variant) {
+        String c #= ToolchainSupport.cajeta();
+        String[] inner = heap String[2];
+        inner[0] = "" + c;
+        inner[1] = "build";
+        return ToolchainSupport.withTime(inner, ".maxrss");
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        int32 i = 0;
+        while (i < iterations) {
+            this.cmdCwd = this.root + "/" + this.used;
+            this.execute(variant);
+            this.takeRss(this.cmdCwd + "/.maxrss");
+            this.used = this.used + 1;
+            i = i + 1;
+        }
+    }
+
+    public int64 measuredPeakRssKb() {
+        return this.maxRss;
+    }
+
+    public boolean checkResult() {
+        if (this.lastExitCode != 0 || this.used == 0 || this.expected.isEmpty()) {
+            return false;
+        }
+        String bin = this.root + "/" + (this.used - 1) + "/build/synth";
+        String out #= ToolchainSupport.output1(bin, (int64) 60000);
+        return out.contains(this.expected);
+    }
+}
