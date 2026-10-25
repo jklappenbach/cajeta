@@ -1,0 +1,169 @@
+package bench.lang;
+
+import cajeta.collection.ArrayList;
+import cajeta.error.RecoverableException;
+import cajeta.error.UnrecoverableException;
+
+
+// bench/lang/Exceptions.md: a try that never throws, throw-and-catch across
+// 1, 10 and 100 frames, RecoverableException against UnrecoverableException,
+// and throws caught inside a spawned fiber. The workloads of the page, one kind per id; each id is a
+// Benchmark subclass of its own (e.g. TryNoThrowBench) that delegates here.
+//
+// Every throw site is reached through @NoInline frames, and the innermost
+// throws only when its argument is non-negative (always), so the compiler
+// cannot see that the throw is unconditional. The release mode builds with
+// stack-trace capture off; a Cajeta try is a setjmp-registered frame.
+public class ExceptionsCase {
+
+    public int32 kind;
+    public int64 n;
+    public int64 mask;
+    public int64 result;
+
+    public ExceptionsCase(int32 kind) {
+        this.kind = kind;
+    }
+
+    public String name() {
+        if (this.kind == 0) { return "try-no-throw"; }
+        if (this.kind == 1) { return "throw-catch-1"; }
+        if (this.kind == 2) { return "throw-catch-10"; }
+        if (this.kind == 3) { return "throw-catch-100"; }
+        if (this.kind == 4) { return "throw-recoverable"; }
+        return "throw-in-fiber";
+    }
+
+
+
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        if (this.kind == 4) {
+            v.add("recoverable");
+            v.add("unrecoverable");
+        } else {
+            v.add("");
+        }
+        return v;
+    }
+
+    public String competitorNote() {
+        if (this.kind == 0) { return "a try registers a setjmp frame per entry; the callee is @NoInline"; }
+        if (this.kind == 5) { return "one fiber (await spawn) runs 1e5 throw-catch at depth 1"; }
+        return "heap RecoverableException per throw; release builds with stack-trace capture off";
+    }
+
+    public void setup() {
+        this.mask = (int64) -1;
+        if (this.kind == 0) {
+            this.n = (int64) 100000000;
+        } else if (this.kind == 3 || this.kind == 5) {
+            this.n = (int64) 100000;
+        } else {
+            this.n = (int64) 1000000;
+        }
+    }
+
+    public int64 inputSize() {
+        return this.n;
+    }
+
+    @NoInline
+    public static int64 maybe(int64 i, int64 mask) throws RecoverableException {
+        if (i < 0) {
+            throw heap RecoverableException("negative");
+        }
+        return i & mask;
+    }
+
+    // depth frames: depth 1 is the callee of the catching frame.
+    @NoInline
+    public static int64 thrower(int32 depth, int64 i) throws RecoverableException {
+        if (depth <= 1) {
+            if (i >= 0) {
+                throw heap RecoverableException("thrown");
+            }
+            return i;
+        }
+        return ExceptionsCase.thrower(depth - 1, i) + 1;
+    }
+
+    @NoInline
+    public static int64 throwerU(int64 i) {
+        if (i >= 0) {
+            throw heap UnrecoverableException("thrown");
+        }
+        return i;
+    }
+
+    public static int64 catchLoop(int64 n, int32 depth) {
+        int64 caught = 0;
+        for (int64 i = 0; i < n; i = i + 1) {
+            try {
+                ExceptionsCase.thrower(depth, i);
+            } catch (RecoverableException e) {
+                caught = caught + 1;
+            }
+        }
+        return caught;
+    }
+
+    public static async int64 fiberBody(int64 n) {
+        int64 caught = 0;
+        for (int64 i = 0; i < n; i = i + 1) {
+            try {
+                ExceptionsCase.thrower(1, i);
+            } catch (RecoverableException e) {
+                caught = caught + 1;
+            }
+        }
+        return caught;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        int64 n = this.n;
+        if (this.kind == 0) {
+            int64 s = 0;
+            int64 mask = this.mask;
+            for (int64 i = 0; i < n; i = i + 1) {
+                try {
+                    s = s + ExceptionsCase.maybe(i, mask);
+                } catch (RecoverableException e) {
+                    s = s - 1;
+                }
+            }
+            this.result = s;
+        } else if (this.kind == 1) {
+            this.result = ExceptionsCase.catchLoop(n, 1);
+        } else if (this.kind == 2) {
+            this.result = ExceptionsCase.catchLoop(n, 10);
+        } else if (this.kind == 3) {
+            this.result = ExceptionsCase.catchLoop(n, 100);
+        } else if (this.kind == 4) {
+            if (variant == "unrecoverable") {
+                int64 caught = 0;
+                for (int64 i = 0; i < n; i = i + 1) {
+                    try {
+                        ExceptionsCase.throwerU(i);
+                    } catch (UnrecoverableException e) {
+                        caught = caught + 1;
+                    }
+                }
+                this.result = caught;
+            } else {
+                this.result = ExceptionsCase.catchLoop(n, 1);
+            }
+        } else {
+            int64 r = await spawn fiberBody(n);
+            this.result = r;
+        }
+    }
+
+    public boolean checkResult() {
+        if (this.kind == 0) {
+            return this.result == 4999999950000000L;
+        }
+        return this.result == this.n;
+    }
+}

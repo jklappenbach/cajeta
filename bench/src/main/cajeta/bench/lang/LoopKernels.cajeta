@@ -1,0 +1,103 @@
+package bench.lang;
+
+// The measured loop bodies of bench/lang/Loops.md, one @NoInline static method
+// each, so the release IR keeps every loop as a named function and
+// test/lang_smoke.sh can grep the optimized IR of this file for each loop's
+// back-edge (plan 5.1.3). This file depends on nothing but the language, so the
+// smoke compiles it alone at --release --opt=O3 --emit=ir in seconds.
+//
+// Every bound and mask arrives as a parameter read from a benchmark field, so
+// no optimizer can replace a loop with its closed form: `i & mask` with an
+// opaque all-ones mask defeats the n(n-1)/2 rewrite.
+public final class LoopKernels {
+
+    // Entry point for the smoke's standalone --emit=obj compile only; the
+    // bench binary's entry is bench.Bench::main.
+    public static int32 main() {
+        return 0;
+    }
+
+    // lang/loop-counted: sum (i & mask) for i in [0, n).
+    @NoInline
+    public static int64 countedSum(int64 n, int64 mask) {
+        int64 s = 0;
+        for (int64 i = 0; i < n; i = i + 1) {
+            s = s + (i & mask);
+        }
+        return s;
+    }
+
+    // lang/loop-counted-nobounds: `passes` sweeps of a[k], indexed. Under the
+    // release flavor (bounds-check off) the access is unchecked; under the
+    // release-bounds-on task the compiler emits its bounds check.
+    @NoInline
+    public static int64 indexedSum(int32[] a, int32 n, int32 passes) {
+        int64 s = 0;
+        for (int32 r = 0; r < passes; r = r + 1) {
+            for (int32 k = 0; k < n; k = k + 1) {
+                s = s + (int64) a[k];
+            }
+        }
+        return s;
+    }
+
+    // lang/loop-nested: sum (i ^ j) over an n x n square.
+    @NoInline
+    public static int64 nestedXor(int64 n) {
+        int64 s = 0;
+        for (int64 i = 0; i < n; i = i + 1) {
+            for (int64 j = 0; j < n; j = j + 1) {
+                s = s + (i ^ j);
+            }
+        }
+        return s;
+    }
+
+    // lang/loop-foreach-array: the enhanced for over an int32[].
+    @NoInline
+    public static int64 foreachSum(int32[] a) {
+        int64 s = 0;
+        for (int32 x : a) {
+            s = s + (int64) x;
+        }
+        return s;
+    }
+
+    // lang/loop-range: Cajeta has no range construct, so the range [lo, hi)
+    // is the counted for written over its two ends.
+    @NoInline
+    public static int64 rangeSum(int64 lo, int64 hi, int64 mask) {
+        int64 s = 0;
+        for (int64 i = lo; i < hi; i = i + 1) {
+            s = s + (i & mask);
+        }
+        return s;
+    }
+
+    // lang/loop-reduce: a loop-carried float64 sum, in order.
+    @NoInline
+    public static float64 reduceF64(float64[] x, int32 n) {
+        float64 s = 0.0;
+        for (int32 k = 0; k < n; k = k + 1) {
+            s = s + x[k];
+        }
+        return s;
+    }
+
+    // lang/loop-early-exit: `reps` scans for the first negative element.
+    @NoInline
+    public static int64 earlyExit(int32[] a, int32 n, int32 reps) {
+        int64 s = 0;
+        for (int32 r = 0; r < reps; r = r + 1) {
+            int32 found = -1;
+            for (int32 k = 0; k < n; k = k + 1) {
+                if (a[k] < 0) {
+                    found = k;
+                    break;
+                }
+            }
+            s = s + (int64) found;
+        }
+        return s;
+    }
+}

@@ -1,0 +1,102 @@
+package bench.lang;
+
+import cajeta.collection.ArrayList;
+
+
+// bench/lang/Math.md, the scalar rows (saxpy and dot-product are SaxpyBench
+// and DotProductBench). The workloads of the page, one kind per id; each id is a
+// Benchmark subclass of its own (e.g. MathTranscendentalBench) that delegates here:
+//   0 math-transcendental  1 math-intdiv  2 math-intrinsics
+public class MathScalarCase {
+
+    public int32 kind;
+    public int64 n;
+    public float64[] x;
+    public int32 xLen;
+    public int64 result;
+    public float64 fresult;
+
+    public MathScalarCase(int32 kind) {
+        this.kind = kind;
+    }
+
+    public String name() {
+        if (this.kind == 0) { return "math-transcendental"; }
+        if (this.kind == 1) { return "math-intdiv"; }
+        return "math-intrinsics";
+    }
+
+
+
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("");
+        return v;
+    }
+
+    public String competitorNote() {
+        if (this.kind == 0) { return "Math.sin/exp/sqrt (compiler intrinsics; libm on the host)"; }
+        if (this.kind == 1) { return "divisor (i & 7) + 1 varies per iteration so it stays a hardware divide"; }
+        return "Math.fma is kernel-only today (no host lowering): the row computes a * 0.5 + 1.0; every term is exact so the sum is too";
+    }
+
+    public void setup() {
+        if (this.kind == 0) {
+            this.xLen = 10000000;
+            this.x = heap float64[this.xLen];
+            for (int32 k = 0; k < this.xLen; k = k + 1) {
+                this.x[k] = (float64) (k % 1000) * 0.001;
+            }
+            this.n = (int64) this.xLen;
+        } else {
+            this.n = (int64) 100000000;
+        }
+    }
+
+    public int64 inputSize() {
+        return this.n;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        this.run(iterations);
+    }
+
+    public void run(int32 iterations) {
+        int64 n = this.n;
+        if (this.kind == 0) {
+            float64[] x = this.x;
+            int32 len = this.xLen;
+            float64 s = 0.0;
+            for (int32 k = 0; k < len; k = k + 1) {
+                float64 v = x[k];
+                s = s + Math.sin(v) + Math.exp(v) + Math.sqrt(v);
+            }
+            this.fresult = s;
+        } else if (this.kind == 1) {
+            int64 s = 0;
+            for (int64 i = 0; i < n; i = i + 1) {
+                int64 d = (i & 7) + 1;
+                s = s + i / d + i % d;
+            }
+            this.result = s;
+        } else {
+            float64 s = 0.0;
+            for (int64 i = 0; i < n; i = i + 1) {
+                float64 a = (float64) ((i & 1023) - 512);
+                s = s + Math.abs(a) + Math.min(a, 100.0) + Math.max(a, -100.0) + (a * 0.5 + 1.0);
+            }
+            this.fresult = s;
+        }
+    }
+
+    public boolean checkResult() {
+        if (this.kind == 0) {
+            float64 d = this.fresult - 28428598.85459962;
+            if (d < 0.0) { d = -d; }
+            return d <= 0.0285;
+        }
+        if (this.kind == 1) { return this.result == 1698660847083334L; }
+        return this.fresult == 25615094240.0;
+    }
+}

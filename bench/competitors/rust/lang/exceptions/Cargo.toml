@@ -1,0 +1,16 @@
+[package]
+name = "lang-exceptions"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+
+[[bin]]
+name = "lang-exceptions"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

@@ -1,0 +1,51 @@
+package bench.lang;
+
+// Two subclasses behind a base-class reference (lang/call-virtual).
+public class LangVBase {
+    public int64 f(int64 x) {
+        return x;
+    }
+}
+
+public class LangVPlusOne extends LangVBase {
+    public int64 f(int64 x) {
+        return x + 1;
+    }
+}
+
+public class LangVPlusTwo extends LangVBase {
+    public int64 f(int64 x) {
+        return x + 2;
+    }
+}
+
+// Two implementations behind an interface reference (lang/call-interface).
+public interface LangStep {
+    int64 step(int64 x);
+}
+
+public class LangStepOne implements LangStep {
+    public int64 step(int64 x) {
+        return x + 1;
+    }
+}
+
+public class LangStepTwo implements LangStep {
+    public int64 step(int64 x) {
+        return x + 2;
+    }
+}
+
+// The three-level hierarchy of lang/instanceof.
+public class LangLevel0 {
+    public int32 tag;
+    public LangLevel0() {
+        this.tag = 0;
+    }
+}
+
+public class LangLevel1 extends LangLevel0 {
+}
+
+public class LangLevel2 extends LangLevel1 {
+}

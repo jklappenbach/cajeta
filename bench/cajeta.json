@@ -87,6 +87,50 @@
             "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
         },
 
+        // bench/lang/Loops.md, lang/loop-counted-nobounds: the release build
+        // above has bounds-check off (the release flavor's default), so its
+        // row is the bounds-off variant; this build is the same program with
+        // the compiler's bounds checks on, and its binary name is what
+        // LoopsBench reads to label the bounds-on variant.
+        "release-bounds-on": {
+            "description": "Release build with bounds-check on (build/bench-bounds-on): the bounds-on variant of lang/loop-counted-nobounds",
+            "actions": [
+                { "action": "build",
+                  "flavor": { "base": "release", "opt": "O3", "cpu": "native",
+                              "xpu-backend": "cpu", "bounds-check": "on" },
+                  "output-path": "build/bench-bounds-on", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+
+        // bench/lang/Allocation.md, lang/alloc-live-set-on and -off: the same
+        // program under the two live-allocation-set modes. "on" is bounded,
+        // the release mode's set; "off" registers nothing. AllocBench measures
+        // which one it was built with (Cajeta.liveCount() across one heap
+        // allocation) and names its row from that. The flavor key needs a
+        // compiler with `live-set` in its flavor vocabulary.
+        "release-live-set-on": {
+            "description": "Release build with --live-set=bounded (build/bench-live-set-on): lang/alloc-live-set-on",
+            "actions": [
+                { "action": "build",
+                  "flavor": { "base": "release", "opt": "O3", "cpu": "native",
+                              "xpu-backend": "cpu", "live-set": "bounded" },
+                  "output-path": "build/bench-live-set-on", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+
+        "release-live-set-off": {
+            "description": "Release build with --live-set=off (build/bench-live-set-off): lang/alloc-live-set-off",
+            "actions": [
+                { "action": "build",
+                  "flavor": { "base": "release", "opt": "O3", "cpu": "native",
+                              "xpu-backend": "cpu", "live-set": "off" },
+                  "output-path": "build/bench-live-set-off", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+
         "gpu": {
             "description": "Release build with GPU backend (amdgpu, gfx1151) for the gpu-area @Kernel benchmarks; the active backend is chosen at runtime via CAJETA_XPU_BACKEND=hip. Output build/bench-gpu so it does not collide with the cpu-only build/bench. cpu is NOT in this flavor: the LDS-tiled matmul kernel has a barrier in its K-loop, which OOMs the CPU barrier-fission pass (see reference_cpu_barrier_fission_loop_oom); HIP compiles it natively. Vulkan is deferred (agents/gpu-vulkan-f64-plan.md).",
             "actions": [

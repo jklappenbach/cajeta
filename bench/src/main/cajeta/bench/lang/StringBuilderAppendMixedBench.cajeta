@@ -1,0 +1,56 @@
+package bench.lang;
+
+import cajeta.collection.ArrayList;
+
+import dev.cajeta.bench.Benchmark;
+
+// lang/stringbuilder-append-mixed, bench/lang/String.md and StringBuilder.md. The workload, its size and its check are
+// TextCase kind 5; this class gives the id and hands the lifecycle over.
+public class StringBuilderAppendMixedBench extends Benchmark {
+
+    public TextCase c;
+
+    public StringBuilderAppendMixedBench() {
+        this.c = heap TextCase(5);
+    }
+
+    public String name() {
+        return "stringbuilder-append-mixed";
+    }
+
+    public String area() {
+        return "lang";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public #ArrayList<String> variants() {
+        return this.c.variants();
+    }
+
+    public String competitorNote() {
+        return this.c.competitorNote();
+    }
+
+    public void setup() {
+        this.c.setup();
+    }
+
+    public int64 inputSize() {
+        return this.c.inputSize();
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        this.c.runVariant(variant, iterations);
+    }
+
+    public boolean checkResult() {
+        return this.c.checkResult();
+    }
+}

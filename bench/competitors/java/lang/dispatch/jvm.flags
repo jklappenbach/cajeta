@@ -1,0 +1,1 @@
+-XX:CompileCommand=quiet -XX:CompileCommand=dontinline,DispatchBench::direct

@@ -10,14 +10,71 @@ import dev.cajeta.bench.Benchmark;
 public final class LangRegistry {
 
     public static void register(ArrayList<Benchmark> b) {
+        // Loops.md
+        b.add(heap LoopCountedBench());
+        b.add(heap LoopCountedNoBoundsBench());
+        b.add(heap LoopNestedBench());
+        b.add(heap LoopForeachArrayBench());
+        b.add(heap LoopForeachArrayListBench());
+        b.add(heap LoopRangeBench());
+        b.add(heap LoopReduceBench());
+        b.add(heap LoopEarlyExitBench());
+        // Exceptions.md
+        b.add(heap TryNoThrowBench());
+        b.add(heap ThrowCatch1Bench());
+        b.add(heap ThrowCatch10Bench());
+        b.add(heap ThrowCatch100Bench());
+        b.add(heap ThrowRecoverableBench());
+        b.add(heap ThrowInFiberBench());
+        // Allocation.md (AllocLiveSetBench is alloc-live-set-on or -off, by build)
+        b.add(heap AllocSmallObjectBench());
+        b.add(heap AllocChurn1Bench());
+        b.add(heap AllocChurn10Bench());
+        b.add(heap AllocTransferChainBench());
+        b.add(heap AllocLiveSetBench());
+        b.add(heap AllocArrayBench());
+        b.add(heap AllocStructValueBench());
+        // Dispatch.md
+        b.add(heap CallDirectBench());
+        b.add(heap CallVirtualBench());
+        b.add(heap CallInterfaceBench());
+        b.add(heap CallTemplateBench());
+        b.add(heap CallLambdaBench());
+        b.add(heap CallMethodRefBench());
+        b.add(heap InstanceofBench());
+        // String.md
         b.add(heap StringBuildBench());
         b.add(heap StringSearchBench());
         b.add(heap StringReplaceBench());
         b.add(heap StringUpperBench());
-        b.add(heap StreamPipelineBench());
-        b.add(heap StreamParallelReduceBench());
+        b.add(heap StringCodepointWalkBench());
+        b.add(heap StringByteAtScanBench());
+        b.add(heap StringSplitBench());
+        b.add(heap StringCompareBench());
+        // StringBuilder.md
+        b.add(heap StringBuilderAppendBench());
+        b.add(heap StringBuilderAppendMixedBench());
+        b.add(heap StringBuilderToStringBench());
+        // Optional.md, Pair.md, Slice.md
+        b.add(heap OptionalMapUnwrapBench());
+        b.add(heap PairConstructBench());
+        b.add(heap SliceWindowBench());
+        b.add(heap SliceIterateBench());
+        // Math.md
+        b.add(heap MathTranscendentalBench());
+        b.add(heap MathIntDivBench());
+        b.add(heap MathIntrinsicsBench());
         b.add(heap SaxpyBench());
         b.add(heap DotProductBench());
+        // Guid.md
+        b.add(heap GuidGenerateBench());
+        b.add(heap GuidParseBench());
+        b.add(heap GuidFormatBench());
+        // stream/Stream.md, stream/ArrayStream.md
+        b.add(heap StreamPipelineBench());
+        b.add(heap StreamParallelReduceBench());
+        b.add(heap ArrayStreamIterateBench());
+        // Programs.md
         b.add(heap MandelbrotBench());
         b.add(heap FannkuchBench());
         b.add(heap SpectralNormBench());

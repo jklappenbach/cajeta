@@ -2270,6 +2270,7 @@ at manifest-load (catches typos).
 | `bounds-check`      | `"on"` / `"off"` / `"trap"` |
 | `null-checks`       | `"on"` / `"off"` / `"trap"` |
 | `overflow-checks`   | `"on"` / `"off"` / `"wrapping"` |
+| `live-set`          | `"strict"` / `"bounded"` / `"off"` (the live-allocation set; `--live-set`) |
 | `asan` / `tsan` / `msan` / `ubsan` | `true` / `false` |
 | `analytics`         | `true` / `false` (async-profiler hooks) |
 | `source-tags`       | `true` / `false` (carry source positions on the drop chain) |

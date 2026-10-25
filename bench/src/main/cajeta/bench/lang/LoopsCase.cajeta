@@ -1,0 +1,188 @@
+package bench.lang;
+
+import cajeta.collection.ArrayList;
+import cajeta.io.file.Path;
+
+
+// bench/lang/Loops.md: eight loop benchmarks, one instance per id (the kind
+// passed by LangRegistry). The measured bodies are LoopKernels' @NoInline
+// methods; each result lands in `result`/`fresult` and checkResult compares
+// it with the closed form, so nothing can be elided.
+//
+// loop-counted-nobounds has one variant per binary: `bounds-off` from
+// build/bench (the release flavor sets bounds-check off) and `bounds-on` from
+// build/bench-bounds-on (the release-bounds-on task). The bounds mode is a
+// compile flag with no runtime query, and an out-of-bounds probe aborts when
+// checks are on, so the variant is read from the running binary's name
+// (/proc/self/exe): the bounds-on task is the only one that writes
+// bench-bounds-on.
+public class LoopsCase {
+
+    public int32 kind;
+    public int64 n;
+    public int64 mask;
+    public int32[] arr;
+    public int32 arrLen;
+    public float64[] farr;
+    public ArrayList<int32> list;
+    public int64 result;
+    public float64 fresult;
+    public int32 boundsMode;
+
+    public LoopsCase(int32 kind) {
+        this.kind = kind;
+        this.boundsMode = 0;
+    }
+
+    public String name() {
+        if (this.kind == 0) { return "loop-counted"; }
+        if (this.kind == 1) { return "loop-counted-nobounds"; }
+        if (this.kind == 2) { return "loop-nested"; }
+        if (this.kind == 3) { return "loop-foreach-array"; }
+        if (this.kind == 4) { return "loop-foreach-arraylist"; }
+        if (this.kind == 5) { return "loop-range"; }
+        if (this.kind == 6) { return "loop-reduce"; }
+        return "loop-early-exit";
+    }
+
+
+
+
+    // 1 = bounds-off, 2 = bounds-on (see the header).
+    public int32 detectBounds() {
+        if (this.boundsMode == 0) {
+            Path self #= Path.of("/proc/self/exe");
+            Path real #= self.canonical();
+            String nm #= real.name();
+            if (nm.indexOf("bounds-on") >= 0) {
+                this.boundsMode = 2;
+            } else {
+                this.boundsMode = 1;
+            }
+        }
+        return this.boundsMode;
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        if (this.kind == 1) {
+            if (this.detectBounds() == 2) {
+                v.add("bounds-on");
+            } else {
+                v.add("bounds-off");
+            }
+        } else {
+            v.add("");
+        }
+        return v;
+    }
+
+    public String competitorNote() {
+        if (this.kind == 0) { return "sum of (i & mask) with an opaque all-ones mask so no compiler can use n(n-1)/2"; }
+        if (this.kind == 1) {
+            if (this.detectBounds() == 2) { return "build/bench-bounds-on: release flavor with bounds-check on; 100 sweeps of a 1e6 int32[]"; }
+            return "build/bench: the release flavor sets bounds-check off; 100 sweeps of a 1e6 int32[]";
+        }
+        if (this.kind == 2) { return "sum of (i ^ j)"; }
+        if (this.kind == 4) { return "indexed get(i): for-each over an ArrayList compiles and iterates zero times today (filed as a defect); the enhanced for walks arrays only"; }
+        if (this.kind == 5) { return "Cajeta has no range construct: the counted for over [lo; hi) with (i & mask)"; }
+        if (this.kind == 6) { return "sequential; no fast-math"; }
+        if (this.kind == 7) { return "1e3 scans of 1e7 with the sentinel at 5e6"; }
+        return "";
+    }
+
+    public void setup() {
+        this.mask = (int64) -1;
+        if (this.kind == 0 || this.kind == 5) {
+            this.n = (int64) 100000000;
+        } else if (this.kind == 1) {
+            this.arrLen = 1000000;
+            this.arr = heap int32[this.arrLen];
+            for (int32 k = 0; k < this.arrLen; k = k + 1) {
+                this.arr[k] = k;
+            }
+            this.n = (int64) 100000000;
+        } else if (this.kind == 2) {
+            this.n = (int64) 10000;
+        } else if (this.kind == 3 || this.kind == 7) {
+            this.arrLen = 10000000;
+            this.arr = heap int32[this.arrLen];
+            for (int32 k = 0; k < this.arrLen; k = k + 1) {
+                if (this.kind == 3) {
+                    this.arr[k] = k % 1000;
+                } else {
+                    this.arr[k] = k;
+                }
+            }
+            if (this.kind == 7) {
+                this.arr[5000000] = -1;
+                this.n = 10000000000L;
+            } else {
+                this.n = (int64) this.arrLen;
+            }
+        } else if (this.kind == 4) {
+            this.arrLen = 10000000;
+            this.list = heap ArrayList<int32>();
+            for (int32 k = 0; k < this.arrLen; k = k + 1) {
+                this.list.add(k % 1000);
+            }
+            this.n = (int64) this.arrLen;
+        } else {
+            this.arrLen = 10000000;
+            this.farr = heap float64[this.arrLen];
+            for (int32 k = 0; k < this.arrLen; k = k + 1) {
+                this.farr[k] = (float64) (k % 1000) * 0.5;
+            }
+            this.n = (int64) this.arrLen;
+        }
+    }
+
+    public int64 inputSize() {
+        if (this.kind == 2) {
+            return this.n * this.n;
+        }
+        return this.n;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        this.run(iterations);
+    }
+
+    public void run(int32 iterations) {
+        if (this.kind == 0) {
+            this.result = LoopKernels.countedSum(this.n, this.mask);
+        } else if (this.kind == 1) {
+            this.result = LoopKernels.indexedSum(this.arr, this.arrLen, 100);
+        } else if (this.kind == 2) {
+            this.result = LoopKernels.nestedXor(this.n);
+        } else if (this.kind == 3) {
+            this.result = LoopKernels.foreachSum(this.arr);
+        } else if (this.kind == 4) {
+            int64 s = 0;
+            int32 len = this.list.count();
+            for (int32 k = 0; k < len; k = k + 1) {
+                s = s + (int64) this.list.get(k);
+            }
+            this.result = s;
+        } else if (this.kind == 5) {
+            this.result = LoopKernels.rangeSum((int64) 0, this.n, this.mask);
+        } else if (this.kind == 6) {
+            this.fresult = LoopKernels.reduceF64(this.farr, this.arrLen);
+        } else {
+            this.result = LoopKernels.earlyExit(this.arr, this.arrLen, 1000);
+        }
+    }
+
+    public boolean checkResult() {
+        if (this.kind == 0 || this.kind == 5) { return this.result == 4999999950000000L; }
+        if (this.kind == 1) { return this.result == 49999950000000L; }
+        if (this.kind == 2) { return this.result == 642122061696L; }
+        if (this.kind == 3 || this.kind == 4) { return this.result == 4995000000L; }
+        if (this.kind == 6) {
+            float64 d = this.fresult - 2497500000.0;
+            if (d < 0.0) { d = -d; }
+            return d <= 2497.5;
+        }
+        return this.result == 5000000000L;
+    }
+}

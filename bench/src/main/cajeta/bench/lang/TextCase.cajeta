@@ -1,0 +1,234 @@
+package bench.lang;
+
+import cajeta.collection.ArrayList;
+
+
+// bench/lang/String.md (the four rows added by unit 5) and
+// bench/lang/StringBuilder.md. The workloads of the page, one kind per id; each id is a
+// Benchmark subclass of its own (e.g. StringCodepointWalkBench) that delegates here:
+//   0 string-codepoint-walk  1 string-byteat-scan  2 string-split
+//   3 string-compare  4 stringbuilder-append  5 stringbuilder-append-mixed
+//   6 stringbuilder-tostring
+// The texts are built once in setup with a StringBuilder; byte offsets
+// throughout (byteAt, indexOfFrom, substringView take byte offsets).
+public class TextCase {
+
+    public int32 kind;
+    public String text;
+    public int32 textLen;
+    public String piece;
+    public String[] ca;
+    public String[] cb;
+    public StringBuilder big;
+    public int64 count;
+    public int64 sum;
+
+    public TextCase(int32 kind) {
+        this.kind = kind;
+    }
+
+    public String name() {
+        if (this.kind == 0) { return "string-codepoint-walk"; }
+        if (this.kind == 1) { return "string-byteat-scan"; }
+        if (this.kind == 2) { return "string-split"; }
+        if (this.kind == 3) { return "string-compare"; }
+        if (this.kind == 4) { return "stringbuilder-append"; }
+        if (this.kind == 5) { return "stringbuilder-append-mixed"; }
+        return "stringbuilder-tostring";
+    }
+
+
+
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("");
+        return v;
+    }
+
+    public String competitorNote() {
+        if (this.kind == 0) { return "hand-decoded UTF-8 over byteAt: String has no codepoint iterator (count() is cached and codepointAt is O(n))"; }
+        if (this.kind == 1) { return "byteAt(i) over 1 MB counting newlines"; }
+        if (this.kind == 2) { return "String has no split: indexOfFrom + substringView per piece (views; no list is built)"; }
+        if (this.kind == 3) { return "String == compares content; 64 pairs built at runtime"; }
+        if (this.kind == 5) { return "StringBuilder has no append(int32)/append(float64): each number is appended as its String conversion"; }
+        if (this.kind == 6) { return "toString copies the 16 MiB builder"; }
+        return "";
+    }
+
+    public static #String repeat(String base, int32 times, String tail) {
+        StringBuilder sb = heap StringBuilder();
+        for (int32 k = 0; k < times; k = k + 1) {
+            sb.append(base);
+        }
+        sb.append(tail);
+        return sb.toString();
+    }
+
+    public static #String twoDigits(int32 k) {
+        if (k < 10) {
+            return "0" + k;
+        }
+        return "" + k;
+    }
+
+    public void setup() {
+        this.piece = "0123456789abcdef";
+        if (this.kind == 0) {
+            this.text #= TextCase.repeat("Hello, wörld! Καλημέρα κόσμε, こんにちは世界 🚀✨ ", 14170, "");
+        } else if (this.kind == 1) {
+            this.text #= TextCase.repeat("the quick brown fox jumps over the lazy dog\n", 23832, "");
+        } else if (this.kind == 2) {
+            this.text #= TextCase.repeat("alpha,beta,gamma,delta,epsilon,zeta,eta,theta,iota,kappa,", 18397, "end");
+        } else if (this.kind == 3) {
+            this.ca = heap String[64];
+            this.cb = heap String[64];
+            String prefix = "abcdefghijklmnopqrstuvwxyz0123";
+            for (int32 k = 0; k < 64; k = k + 1) {
+                String d #= TextCase.twoDigits(k);
+                this.ca[k] = prefix + d;
+                if (k % 2 == 0) {
+                    this.cb[k] = prefix + d;
+                } else {
+                    String first #= d.substring(0, 1);
+                    this.cb[k] = prefix + first + "x";
+                }
+            }
+        } else if (this.kind == 6) {
+            this.big = heap StringBuilder();
+            for (int32 k = 0; k < 1048576; k = k + 1) {
+                this.big.append(this.piece);
+            }
+        }
+        if (this.kind <= 2) {
+            this.textLen = this.text.byteLength();
+        }
+    }
+
+    public int64 inputSize() {
+        if (this.kind <= 1) { return (int64) this.textLen; }
+        if (this.kind == 2) { return (int64) this.textLen * 100L; }
+        if (this.kind == 3) { return 10000000L; }
+        if (this.kind == 6) { return 100L; }
+        return 1000000L;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        this.run(iterations);
+    }
+
+    public void run(int32 iterations) {
+        if (this.kind == 0) {
+            String t = this.text;
+            int32 n = this.textLen;
+            int64 cnt = 0;
+            int64 sum = 0;
+            int32 i = 0;
+            while (i < n) {
+                int32 b0 = ((int32) t.byteAt(i)) & 255;
+                int32 cp = b0;
+                if (b0 < 128) {
+                    i = i + 1;
+                } else if (b0 < 224) {
+                    cp = ((b0 & 31) << 6) | (((int32) t.byteAt(i + 1)) & 63);
+                    i = i + 2;
+                } else if (b0 < 240) {
+                    cp = ((b0 & 15) << 12) | ((((int32) t.byteAt(i + 1)) & 63) << 6)
+                        | (((int32) t.byteAt(i + 2)) & 63);
+                    i = i + 3;
+                } else {
+                    cp = ((b0 & 7) << 18) | ((((int32) t.byteAt(i + 1)) & 63) << 12)
+                        | ((((int32) t.byteAt(i + 2)) & 63) << 6) | (((int32) t.byteAt(i + 3)) & 63);
+                    i = i + 4;
+                }
+                cnt = cnt + 1;
+                sum = sum + (int64) cp;
+            }
+            this.count = cnt;
+            this.sum = sum;
+        } else if (this.kind == 1) {
+            String t = this.text;
+            int32 n = this.textLen;
+            int64 c = 0;
+            for (int32 i = 0; i < n; i = i + 1) {
+                if (t.byteAt(i) == (int8) 10) {
+                    c = c + 1;
+                }
+            }
+            this.count = c;
+        } else if (this.kind == 2) {
+            String t = this.text;
+            int64 total = 0;
+            int64 bytes = 0;
+            for (int32 r = 0; r < 100; r = r + 1) {
+                int64 pos = 0;
+                boolean more = true;
+                while (more) {
+                    int64 idx = t.indexOfFrom(",", pos);
+                    int64 end = idx;
+                    if (idx < 0) {
+                        end = (int64) this.textLen;
+                        more = false;
+                    }
+                    String p #= t.substringView((int32) pos, (int32) end);
+                    bytes = bytes + (int64) p.byteLength();
+                    total = total + 1;
+                    pos = end + 1;
+                }
+            }
+            this.count = total;
+            this.sum = bytes;
+        } else if (this.kind == 3) {
+            int64 eq = 0;
+            for (int64 i = 0; i < 10000000L; i = i + 1) {
+                int32 k = (int32) (i & 63);
+                if (this.ca[k] == this.cb[k]) {
+                    eq = eq + 1;
+                }
+            }
+            this.count = eq;
+        } else if (this.kind == 4) {
+            StringBuilder sb = heap StringBuilder();
+            String pc = this.piece;
+            for (int32 k = 0; k < 1000000; k = k + 1) {
+                sb.append(pc);
+            }
+            String out #= sb.toString();
+            this.count = (int64) out.byteLength();
+        } else if (this.kind == 5) {
+            StringBuilder sb = heap StringBuilder();
+            for (int32 k = 0; k < 1000000; k = k + 1) {
+                int32 r = k % 3;
+                if (r == 0) {
+                    String s #= "" + k;
+                    sb.append(s);
+                } else if (r == 1) {
+                    float64 f = (float64) (k % 1000) + 0.5;
+                    String s #= "" + f;
+                    sb.append(s);
+                } else {
+                    sb.append("abc");
+                }
+            }
+            String out #= sb.toString();
+            this.count = (int64) out.byteLength();
+        } else {
+            int64 total = 0;
+            for (int32 r = 0; r < 100; r = r + 1) {
+                String out #= this.big.toString();
+                total = total + (int64) out.byteLength();
+            }
+            this.count = total;
+        }
+    }
+
+    public boolean checkResult() {
+        if (this.kind == 0) { return this.count == 580970L && this.sum == 3748489290L && this.textLen == 1048580; }
+        if (this.kind == 1) { return this.count == 23832L && this.textLen == 1048608; }
+        if (this.kind == 2) { return this.count == 18397100L && this.textLen == 1048632; }
+        if (this.kind == 3) { return this.count == 5000000L; }
+        if (this.kind == 4) { return this.count == 16000000L; }
+        if (this.kind == 5) { return this.count == 4592962L; }
+        return this.count == 1677721600L;
+    }
+}

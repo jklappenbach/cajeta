@@ -1,0 +1,56 @@
+package bench.lang;
+
+import cajeta.collection.ArrayList;
+
+import dev.cajeta.bench.Benchmark;
+
+// lang/optional-map-unwrap, bench/lang/Optional.md, Pair.md, Slice.md, stream/ArrayStream.md. The workload, its size and its check are
+// ValuesCase kind 0; this class gives the id and hands the lifecycle over.
+public class OptionalMapUnwrapBench extends Benchmark {
+
+    public ValuesCase c;
+
+    public OptionalMapUnwrapBench() {
+        this.c = heap ValuesCase(0);
+    }
+
+    public String name() {
+        return "optional-map-unwrap";
+    }
+
+    public String area() {
+        return "lang";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public #ArrayList<String> variants() {
+        return this.c.variants();
+    }
+
+    public String competitorNote() {
+        return this.c.competitorNote();
+    }
+
+    public void setup() {
+        this.c.setup();
+    }
+
+    public int64 inputSize() {
+        return this.c.inputSize();
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        this.c.runVariant(variant, iterations);
+    }
+
+    public boolean checkResult() {
+        return this.c.checkResult();
+    }
+}

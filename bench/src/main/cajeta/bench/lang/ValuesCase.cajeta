@@ -1,0 +1,125 @@
+package bench.lang;
+
+import cajeta.collection.ArrayList;
+
+import cajeta.lang.stream.ArrayStream;
+
+
+// bench/lang/{Optional,Pair,Slice}.md and stream/ArrayStream.md. One
+// instance per id (kind):
+//   0 optional-map-unwrap  1 pair-construct  2 slice-window
+//   3 slice-iterate  4 arraystream-iterate
+public class ValuesCase {
+
+    public int32 kind;
+    public int64 n;
+    public int64 mask;
+    public int32[] arr;
+    public int32 arrLen;
+    public int64 result;
+
+    public ValuesCase(int32 kind) {
+        this.kind = kind;
+    }
+
+    public String name() {
+        if (this.kind == 0) { return "optional-map-unwrap"; }
+        if (this.kind == 1) { return "pair-construct"; }
+        if (this.kind == 2) { return "slice-window"; }
+        if (this.kind == 3) { return "slice-iterate"; }
+        return "arraystream-iterate";
+    }
+
+
+
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("");
+        return v;
+    }
+
+    public String competitorNote() {
+        if (this.kind == 0) { return "Optional has no map yet: map(x -> x * 2) is written isPresent + construct; unwrap is orElse(0)"; }
+        if (this.kind == 1) { return "stack Pair<int32;int64> per iteration"; }
+        if (this.kind == 2) { return "arr[a:b] is a zero-copy Slice<int32> window"; }
+        if (this.kind == 3) { return "indexed s[k] over a Slice (window-checked on every read): for-each over a Slice compiles and iterates zero times today (filed as a defect)"; }
+        return "stream().fold<int64> over an int32[]";
+    }
+
+    public void setup() {
+        this.mask = (int64) -1;
+        if (this.kind <= 1) {
+            this.n = (int64) 100000000;
+        } else if (this.kind == 2) {
+            this.arrLen = 1000000;
+            this.arr = heap int32[this.arrLen];
+            for (int32 k = 0; k < this.arrLen; k = k + 1) {
+                this.arr[k] = k;
+            }
+            this.n = (int64) 10000000;
+        } else {
+            this.arrLen = 10000000;
+            this.arr = heap int32[this.arrLen];
+            for (int32 k = 0; k < this.arrLen; k = k + 1) {
+                this.arr[k] = k % 1000;
+            }
+            this.n = (int64) 100000000;
+        }
+    }
+
+    public int64 inputSize() {
+        return this.n;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        this.run(iterations);
+    }
+
+    public void run(int32 iterations) {
+        int64 n = this.n;
+        int64 mask = this.mask;
+        int64 s = 0;
+        if (this.kind == 0) {
+            for (int64 i = 0; i < n; i = i + 1) {
+                Optional<int32> o = stack Optional<int32>((i & 1) == 0, (int32) (i & mask));
+                Optional<int32> m = stack Optional<int32>(o.isPresent(), o.orElse(0) * 2);
+                s = s + (int64) m.orElse(0);
+            }
+        } else if (this.kind == 1) {
+            for (int64 i = 0; i < n; i = i + 1) {
+                Pair<int32, int64> p = stack Pair<int32, int64>((int32) (i & 1023), i & mask);
+                s = s + (int64) p.first() + p.second();
+            }
+        } else if (this.kind == 2) {
+            int32[] a = this.arr;
+            for (int64 i = 0; i < n; i = i + 1) {
+                int32 start = (int32) (i % 999936);
+                Slice<int32> w = a[start:start + 64];
+                s = s + (int64) w[0];
+            }
+        } else if (this.kind == 3) {
+            int32[] a = this.arr;
+            for (int32 r = 0; r < 10; r = r + 1) {
+                Slice<int32> w = a[0:this.arrLen];
+                int64 len = w.count();
+                for (int64 k = 0; k < len; k = k + 1) {
+                    s = s + (int64) w[k];
+                }
+            }
+        } else {
+            int32[] a = this.arr;
+            for (int32 r = 0; r < 10; r = r + 1) {
+                s = s + a.stream().fold<int64>((int64) 0, (acc, e) -> acc + (int64) e);
+            }
+        }
+        this.result = s;
+    }
+
+    public boolean checkResult() {
+        if (this.kind == 0) { return this.result == 4999999900000000L; }
+        if (this.kind == 1) { return this.result == 5000051099901696L; }
+        if (this.kind == 2) { return this.result == 4999355225280L; }
+        return this.result == 49950000000L;
+    }
+}

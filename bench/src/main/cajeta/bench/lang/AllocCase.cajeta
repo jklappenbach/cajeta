@@ -1,0 +1,199 @@
+package bench.lang;
+
+import cajeta.collection.ArrayList;
+
+
+// The 32-byte object of bench/lang/Allocation.md: four int64 fields.
+public class LangObj32 {
+    public int64 a;
+    public int64 b;
+    public int64 c;
+    public int64 d;
+
+    public LangObj32(int64 v) {
+        this.a = v;
+        this.b = v;
+        this.c = v;
+        this.d = v;
+    }
+}
+
+// The stack value of lang/alloc-struct-value: a record, the value type with no
+// header and no vtable.
+public record LangPoint {
+    int64 x;
+    int64 y;
+}
+
+// bench/lang/Allocation.md. The workloads of the page, one kind per id; each id is a
+// Benchmark subclass of its own (e.g. AllocSmallObjectBench) that delegates here:
+//   0 alloc-small-object   1 alloc-churn-1   2 alloc-churn-10
+//   3 alloc-transfer-chain 4 alloc-live-set-{on,off}   5 alloc-array
+//   6 alloc-struct-value
+//
+// Kind 4 is alloc-small-object's workload under whichever live-allocation set
+// the binary was compiled with. Its id is MEASURED, not declared: the first
+// call allocates one object and reads Cajeta.liveCount() around it; a build
+// with --live-set=off registers nothing, so the population does not move.
+// build/bench-live-set-on (task release-live-set-on, live-set bounded, the
+// release default) reports alloc-live-set-on and build/bench-live-set-off
+// (task release-live-set-off) reports alloc-live-set-off; build/bench, the
+// plain release build, reports alloc-live-set-on.
+public class AllocCase {
+
+    public int32 kind;
+    public int64 n;
+    public int64 mask;
+    public int64 result;
+    public int32 liveSet;
+
+    public AllocCase(int32 kind) {
+        this.kind = kind;
+        this.liveSet = 0;
+    }
+
+    // 1 = live set tracking (bounded or strict), 2 = off.
+    public int32 detectLiveSet() {
+        if (this.liveSet == 0) {
+            int64 before = Cajeta.liveCount();
+            LangObj32 probe = heap LangObj32((int64) 1);
+            int64 after = Cajeta.liveCount();
+            if (after > before && probe.a == (int64) 1) {
+                this.liveSet = 1;
+            } else {
+                this.liveSet = 2;
+            }
+        }
+        return this.liveSet;
+    }
+
+    public String name() {
+        if (this.kind == 0) { return "alloc-small-object"; }
+        if (this.kind == 1) { return "alloc-churn-1"; }
+        if (this.kind == 2) { return "alloc-churn-10"; }
+        if (this.kind == 3) { return "alloc-transfer-chain"; }
+        if (this.kind == 4) {
+            if (this.detectLiveSet() == 2) { return "alloc-live-set-off"; }
+            return "alloc-live-set-on";
+        }
+        if (this.kind == 5) { return "alloc-array"; }
+        return "alloc-struct-value";
+    }
+
+
+
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("");
+        return v;
+    }
+
+    public String competitorNote() {
+        if (this.kind == 3) { return "a heap object moved with # through ten @NoInline calls; the last frame drops it"; }
+        if (this.kind == 4) {
+            if (this.detectLiveSet() == 2) { return "--live-set=off (measured: Cajeta.liveCount() does not move across a heap allocation)"; }
+            return "--live-set=bounded (the release default; measured: Cajeta.liveCount() moves across a heap allocation)";
+        }
+        if (this.kind == 5) { return "heap int32[1024] per iteration; dropped at scope end"; }
+        if (this.kind == 6) { return "record values; never touch the heap"; }
+        return "heap LangObj32 (4 x int64) dropped by the scope or the slot it is replaced in";
+    }
+
+    public void setup() {
+        this.mask = (int64) -1;
+        if (this.kind == 3) {
+            this.n = (int64) 1000000;
+        } else if (this.kind == 5) {
+            this.n = (int64) 100000;
+        } else if (this.kind == 6) {
+            this.n = (int64) 100000000;
+        } else {
+            this.n = (int64) 10000000;
+        }
+    }
+
+    public int64 inputSize() {
+        return this.n;
+    }
+
+    @NoInline
+    public static int64 passOn(#LangObj32 o, int32 depth) {
+        if (depth <= 0) {
+            return o.a;
+        }
+        return AllocCase.passOn(#o, depth - 1);
+    }
+
+    @NoInline
+    public static int64 smallObjects(int64 n) {
+        int64 s = 0;
+        for (int64 i = 0; i < n; i = i + 1) {
+            LangObj32 o = heap LangObj32(i);
+            s = s + o.a;
+        }
+        return s;
+    }
+
+    @NoInline
+    public static int64 churn(int64 n, int32 live) {
+        LangObj32[] ring = heap LangObj32[live];
+        int64 s = 0;
+        int32 slot = 0;
+        for (int64 i = 0; i < n; i = i + 1) {
+            ring[slot] = heap LangObj32(i);
+            s = s + ring[slot].a;
+            slot = slot + 1;
+            if (slot == live) {
+                slot = 0;
+            }
+        }
+        return s;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        this.run(iterations);
+    }
+
+    public void run(int32 iterations) {
+        int64 n = this.n;
+        if (this.kind == 0 || this.kind == 4) {
+            this.result = AllocCase.smallObjects(n);
+        } else if (this.kind == 1) {
+            this.result = AllocCase.churn(n, 1);
+        } else if (this.kind == 2) {
+            this.result = AllocCase.churn(n, 10);
+        } else if (this.kind == 3) {
+            int64 s = 0;
+            for (int64 i = 0; i < n; i = i + 1) {
+                LangObj32 o = heap LangObj32(i);
+                s = s + AllocCase.passOn(#o, 10);
+            }
+            this.result = s;
+        } else if (this.kind == 5) {
+            int64 s = 0;
+            for (int64 i = 0; i < n; i = i + 1) {
+                int32[] arr = heap int32[1024];
+                arr[0] = (int32) i;
+                arr[1023] = 1;
+                s = s + (int64) arr[0] + (int64) arr[1023];
+            }
+            this.result = s;
+        } else {
+            int64 s = 0;
+            int64 mask = this.mask;
+            for (int64 i = 0; i < n; i = i + 1) {
+                LangPoint p = LangPoint { x: i, y: i & mask };
+                s = s + p.x + p.y;
+            }
+            this.result = s;
+        }
+    }
+
+    public boolean checkResult() {
+        if (this.kind == 3) { return this.result == 499999500000L; }
+        if (this.kind == 5) { return this.result == 5000050000L; }
+        if (this.kind == 6) { return this.result == 9999999900000000L; }
+        return this.result == 49999995000000L;
+    }
+}

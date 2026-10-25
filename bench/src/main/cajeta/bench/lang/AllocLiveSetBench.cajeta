@@ -1,0 +1,58 @@
+package bench.lang;
+
+import cajeta.collection.ArrayList;
+
+import dev.cajeta.bench.Benchmark;
+
+// lang/alloc-live-set-on and lang/alloc-live-set-off (one per build), bench/lang/Allocation.md. The workload, its size and its check are
+// AllocCase kind 4; this class gives the id and hands the lifecycle over.
+public class AllocLiveSetBench extends Benchmark {
+
+    public AllocCase c;
+
+    public AllocLiveSetBench() {
+        this.c = heap AllocCase(4);
+    }
+
+    public String name() {
+        // measured, not declared (AllocCase.detectLiveSet): the build's --live-set
+        if (this.c.detectLiveSet() == 2) { return "alloc-live-set-off"; }
+        return "alloc-live-set-on";
+    }
+
+    public String area() {
+        return "lang";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public #ArrayList<String> variants() {
+        return this.c.variants();
+    }
+
+    public String competitorNote() {
+        return this.c.competitorNote();
+    }
+
+    public void setup() {
+        this.c.setup();
+    }
+
+    public int64 inputSize() {
+        return this.c.inputSize();
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        this.c.runVariant(variant, iterations);
+    }
+
+    public boolean checkResult() {
+        return this.c.checkResult();
+    }
+}

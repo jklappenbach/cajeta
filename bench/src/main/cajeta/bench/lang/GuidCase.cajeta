@@ -1,0 +1,112 @@
+package bench.lang;
+
+import cajeta.collection.ArrayList;
+
+import cajeta.collection.HashSet;
+
+
+// bench/lang/Guid.md. The workloads of the page, one kind per id; each id is a
+// Benchmark subclass of its own (e.g. GuidGenerateBench) that delegates here:
+//   0 guid-generate  1 guid-parse  2 guid-format
+public class GuidCase {
+
+    public int32 kind;
+    public int32 n;
+    public uint64[] hi;
+    public uint64[] lo;
+    public String[] strs;
+    public int64 result;
+
+    public GuidCase(int32 kind) {
+        this.kind = kind;
+    }
+
+    public String name() {
+        if (this.kind == 0) { return "guid-generate"; }
+        if (this.kind == 1) { return "guid-parse"; }
+        return "guid-format";
+    }
+
+
+
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("");
+        return v;
+    }
+
+    public String competitorNote() {
+        if (this.kind == 0) { return "Guid.random(); distinct count over high ^ low"; }
+        if (this.kind == 1) { return "Guid.parse takes #String: each parse is handed a fresh clone of the stored string (the copy is in the measured time)"; }
+        return "Guid.toString per value";
+    }
+
+    public void setup() {
+        this.n = 1000000;
+        this.hi = heap uint64[this.n];
+        this.lo = heap uint64[this.n];
+        for (int32 k = 0; k < this.n; k = k + 1) {
+            Guid g #= Guid.random();
+            this.hi[k] = g.high();
+            this.lo[k] = g.low();
+        }
+        if (this.kind == 1) {
+            this.strs = heap String[this.n];
+            for (int32 k = 0; k < this.n; k = k + 1) {
+                Guid g #= Guid.fromHalves(this.hi[k], this.lo[k]);
+                this.strs[k] #= g.toString();
+            }
+        }
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        this.run(iterations);
+    }
+
+    public void run(int32 iterations) {
+        int32 n = this.n;
+        if (this.kind == 0) {
+            for (int32 k = 0; k < n; k = k + 1) {
+                Guid g #= Guid.random();
+                this.hi[k] = g.high();
+                this.lo[k] = g.low();
+            }
+            this.result = (int64) n;
+        } else if (this.kind == 1) {
+            int64 eq = 0;
+            for (int32 k = 0; k < n; k = k + 1) {
+                String c #= this.strs[k].clone();
+                Guid g #= Guid.parse(#c);
+                if (g.high() == this.hi[k] && g.low() == this.lo[k]) {
+                    eq = eq + 1;
+                }
+            }
+            this.result = eq;
+        } else {
+            int64 total = 0;
+            for (int32 k = 0; k < n; k = k + 1) {
+                Guid g #= Guid.fromHalves(this.hi[k], this.lo[k]);
+                String s #= g.toString();
+                total = total + (int64) s.byteLength();
+            }
+            this.result = total;
+        }
+    }
+
+    public boolean checkResult() {
+        if (this.kind == 0) {
+            HashSet<uint64> seen = heap HashSet<uint64>();
+            for (int32 k = 0; k < this.n; k = k + 1) {
+                seen.add(this.hi[k] ^ this.lo[k]);
+            }
+            return seen.count() == (int64) this.n;
+        }
+        if (this.kind == 1) { return this.result == (int64) this.n; }
+        return this.result == 36000000L;
+    }
+}

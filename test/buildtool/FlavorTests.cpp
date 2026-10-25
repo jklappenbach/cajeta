@@ -147,3 +147,29 @@ TEST(FlavorTests, xpuBackendSpecIsKnownEnum) {
 
 
 
+
+// benchmark-reference unit 5 (Allocation.md, lang/alloc-live-set-on/-off): a
+// flavor can set the live-allocation set, so a bench project builds the same
+// program under --live-set=bounded and --live-set=off as two tasks.
+TEST(FlavorTests, liveSetLowersToCompilerFlag) {
+    using cajeta::buildtool::toCompilerFlags;
+    using cajeta::buildtool::validateFlavorProperty;
+    using cajeta::buildtool::findFlavorPropertySpec;
+    const auto* spec = findFlavorPropertySpec("live-set");
+    ASSERT_TRUE(spec);
+    EXPECT_EQ(spec->kind, cajeta::buildtool::FlavorPropertySpec::Kind::EnumString);
+    EXPECT_FALSE((bool)validateFlavorProperty("live-set", llvm::json::Value("off"), "test"));
+    EXPECT_FALSE((bool)validateFlavorProperty("live-set", llvm::json::Value("bounded"), "test"));
+    EXPECT_FALSE((bool)validateFlavorProperty("live-set", llvm::json::Value("strict"), "test"));
+    auto bad = validateFlavorProperty("live-set", llvm::json::Value("on"), "test");
+    ASSERT_TRUE((bool)bad);
+    consumeError(std::move(bad));
+    llvm::json::Object props{
+        {"opt",      "O3"},
+        {"live-set", "off"},
+    };
+    auto flags = toCompilerFlags(props);
+    ASSERT_EQ(flags.size(), 2u);
+    EXPECT_EQ(flags[0], "--opt=O3");
+    EXPECT_EQ(flags[1], "--live-set=off");
+}

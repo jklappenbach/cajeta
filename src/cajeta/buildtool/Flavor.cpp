@@ -102,6 +102,7 @@ namespace cajeta::buildtool {
             {"bounds-check",    K::EnumString, {"on", "off", "trap"},          "bounds"},
             {"null-checks",     K::EnumString, {"on", "off", "trap"},          "null-checks"},
             {"overflow-checks", K::EnumString, {"on", "off", "wrapping"},      "overflow-checks"},
+            {"live-set",        K::EnumString, {"strict", "bounded", "off"},   "live-set"},
             {"asan",            K::Boolean,    {},                            ""},
             {"tsan",            K::Boolean,    {},                            ""},
             {"msan",            K::Boolean,    {},                            ""},

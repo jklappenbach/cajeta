@@ -1,0 +1,143 @@
+package bench.lang;
+
+import cajeta.collection.ArrayList;
+
+
+// bench/lang/Dispatch.md. The workloads of the page, one kind per id; each id is a
+// Benchmark subclass of its own (e.g. CallDirectBench) that delegates here:
+//   0 call-direct  1 call-virtual  2 call-interface  3 call-template
+//   4 call-lambda  5 call-method-ref  6 instanceof
+// The receivers live in arrays read with an index the compiler cannot
+// predict (i & 1, i % 3), so the calls stay virtual.
+public class DispatchCase {
+
+    public int32 kind;
+    public int64 n;
+    public int64 mask;
+    public int64 one;
+    public int64 result;
+    public LangVBase[] vobjs;
+    public LangStep[] iobjs;
+    public LangLevel0[] levels;
+
+    public DispatchCase(int32 kind) {
+        this.kind = kind;
+    }
+
+    public String name() {
+        if (this.kind == 0) { return "call-direct"; }
+        if (this.kind == 1) { return "call-virtual"; }
+        if (this.kind == 2) { return "call-interface"; }
+        if (this.kind == 3) { return "call-template"; }
+        if (this.kind == 4) { return "call-lambda"; }
+        if (this.kind == 5) { return "call-method-ref"; }
+        return "instanceof";
+    }
+
+
+
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("");
+        return v;
+    }
+
+    public String competitorNote() {
+        if (this.kind == 0) { return "@NoInline static method"; }
+        if (this.kind == 1) { return "base-class reference over two subclasses; receiver chosen by i & 1"; }
+        if (this.kind == 2) { return "interface reference over two implementations; receiver chosen by i & 1"; }
+        if (this.kind == 3) { return "combine<T> monomorphized at int32 (no boxing); compare Java's erased generic over Integer"; }
+        if (this.kind == 4) { return "(int64) -> int64 lambda capturing one local"; }
+        if (this.kind == 5) { return "(int64) -> int64 bound to DispatchCase::inc"; }
+        return "instanceof LangLevel1 over a three-level hierarchy; receiver chosen by i % 3";
+    }
+
+    public void setup() {
+        this.mask = (int64) -1;
+        this.one = (int64) 1;
+        this.n = (int64) 100000000;
+        this.vobjs = heap LangVBase[2];
+        this.vobjs[0] = heap LangVPlusOne();
+        this.vobjs[1] = heap LangVPlusTwo();
+        this.iobjs = heap LangStep[2];
+        this.iobjs[0] = heap LangStepOne();
+        this.iobjs[1] = heap LangStepTwo();
+        this.levels = heap LangLevel0[3];
+        this.levels[0] = heap LangLevel0();
+        this.levels[1] = heap LangLevel1();
+        this.levels[2] = heap LangLevel2();
+    }
+
+    public int64 inputSize() {
+        return this.n;
+    }
+
+    @NoInline
+    public static int64 direct(int64 x) {
+        return x + 1;
+    }
+
+    public static int64 inc(int64 x) {
+        return x + 1;
+    }
+
+    public static T combine<T>(T a, T b) {
+        return a + b;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        this.run(iterations);
+    }
+
+    public void run(int32 iterations) {
+        int64 n = this.n;
+        int64 mask = this.mask;
+        int64 s = 0;
+        if (this.kind == 0) {
+            for (int64 i = 0; i < n; i = i + 1) {
+                s = s + DispatchCase.direct(i & mask);
+            }
+        } else if (this.kind == 1) {
+            LangVBase[] objs = this.vobjs;
+            for (int64 i = 0; i < n; i = i + 1) {
+                s = s + objs[(int32) (i & 1)].f(i);
+            }
+        } else if (this.kind == 2) {
+            LangStep[] objs = this.iobjs;
+            for (int64 i = 0; i < n; i = i + 1) {
+                s = s + objs[(int32) (i & 1)].step(i);
+            }
+        } else if (this.kind == 3) {
+            for (int64 i = 0; i < n; i = i + 1) {
+                s = s + (int64) DispatchCase.combine<int32>((int32) (i & 1023), 1);
+            }
+        } else if (this.kind == 4) {
+            int64 k = this.one;
+            (int64) -> int64 f = (int64 x) -> x + k;
+            for (int64 i = 0; i < n; i = i + 1) {
+                s = s + f(i);
+            }
+        } else if (this.kind == 5) {
+            (int64) -> int64 g = DispatchCase::inc;
+            for (int64 i = 0; i < n; i = i + 1) {
+                s = s + g(i);
+            }
+        } else {
+            LangLevel0[] objs = this.levels;
+            for (int64 i = 0; i < n; i = i + 1) {
+                if (objs[(int32) (i % 3)] instanceof LangLevel1) {
+                    s = s + 1;
+                }
+            }
+        }
+        this.result = s;
+    }
+
+    public boolean checkResult() {
+        if (this.kind == 0 || this.kind == 4 || this.kind == 5) { return this.result == 5000000050000000L; }
+        if (this.kind == 1 || this.kind == 2) { return this.result == 5000000100000000L; }
+        if (this.kind == 3) { return this.result == 51249901696L; }
+        return this.result == 66666666L;
+    }
+}
