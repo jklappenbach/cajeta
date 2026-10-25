@@ -1,0 +1,97 @@
+package bench.nucleo;
+
+import cajeta.nucleo.column.Column;
+import cajeta.nucleo.column.NullableColumn;
+
+import dev.cajeta.bench.Benchmark;
+
+// nucleo/column-filter (bench/nucleo/Column.md): filter a 1e8 int64 column by
+// a mask. Values v[i] = (i * 7919) % 10007; the mask keeps row i when
+// v[i] < 5004 (~50%), held as an Arrow bit-packed bitmap (LSB first), the
+// layout pyarrow's BooleanArray mask has. cajeta.nucleo.column has no filter
+// kernel, so the trial composes the nearest thing the API has: the mask
+// becomes the validity bitmap of a zero-copy NullableColumn over the values
+// (Column.alias, no data copied) and dropNulls() materializes the kept rows,
+// order preserved, into a dense Column<int64>. Smoke: 1e6 rows. Check: the
+// kept count and the sum of the kept values equal the reference computed in
+// setup.
+public class ColumnFilterBench extends Benchmark {
+
+    public Column<int64> vals;
+    public Column<uint8> mask;
+    public Column<int64> out;
+    public int64 n;
+    public int64 refCount;
+    public int64 refSum;
+
+    public String name() { return "column-filter"; }
+    public String area() { return "nucleo"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 5; }
+    public int64 inputSize() { return this.n; }
+    public String unit() { return "items/s"; }
+
+    public String competitorNote() {
+        String s = "mask as a bit-packed validity bitmap over a zero-copy alias; NullableColumn.dropNulls() gathers the kept rows (nucleo.column has no filter kernel); check: count="
+            + this.refCount + " and sum of kept values";
+        if (NucleoData.smoke()) {
+            return s + "; smoke size n=1e6 in place of 1e8";
+        }
+        return #= s;
+    }
+
+    public void setup() {
+        this.n = (int64) 100000000;
+        if (NucleoData.smoke()) {
+            this.n = (int64) 1000000;
+        }
+        this.vals #= Column.zeros<int64>(this.n);
+        int64 nb = (this.n + (int64) 7) / (int64) 8;
+        this.mask #= Column.zeros<uint8>(nb);
+        int64 cnt = 0;
+        int64 sum = 0;
+        int64 j = 0;
+        while (j < nb) {
+            int32 byte = 0;
+            int32 k = 0;
+            while (k < 8) {
+                int64 i = j * (int64) 8 + (int64) k;
+                if (i < this.n) {
+                    int64 v = (i * (int64) 7919) % (int64) 10007;
+                    this.vals.set(i, v);
+                    if (v < (int64) 5004) {
+                        byte = byte | (1 << k);
+                        cnt = cnt + 1;
+                        sum = sum + v;
+                    }
+                }
+                k = k + 1;
+            }
+            this.mask.set(j, (uint8) byte);
+            j = j + 1;
+        }
+        this.refCount = cnt;
+        this.refSum = sum;
+    }
+
+    public void run(int32 iterations) {
+        Column<int64> va #= this.vals.alias();
+        Column<uint8> ma #= this.mask.alias();
+        NullableColumn<int64> nc = heap NullableColumn<int64>(#va, #ma, this.n);
+        Column<int64> o #= nc.dropNulls();
+        this.out #= o;
+    }
+
+    public boolean checkResult() {
+        if (this.out == null || this.out.size() != this.refCount) {
+            return false;
+        }
+        int64 s = 0;
+        int64 i = 0;
+        while (i < this.refCount) {
+            s = s + this.out.get(i);
+            i = i + 1;
+        }
+        return s == this.refSum;
+    }
+}

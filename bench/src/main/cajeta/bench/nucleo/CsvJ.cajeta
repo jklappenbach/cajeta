@@ -1,0 +1,18 @@
+package bench.nucleo;
+
+// One CSV record of any db-benchmark join table (x, small, medium, big): the
+// union of their columns. A column absent from a file stays at its default
+// (0 / null) and is not read; `v` is v1 in x and v2 in the right tables, so
+// the record binds both names.
+public class CsvJ {
+    public int64 id1;
+    public int64 id2;
+    public int64 id3;
+    public String id4;
+    public String id5;
+    public String id6;
+    public float64 v1;
+    public float64 v2;
+
+    public CsvJ() {}
+}

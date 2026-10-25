@@ -1,0 +1,115 @@
+package bench.nucleo;
+
+import cajeta.collection.ArrayList;
+import cajeta.math.Tensor;
+
+import dev.cajeta.bench.Benchmark;
+
+// nucleo/fuse-elementwise-chain (bench/nucleo/Fuse.md): the chain
+// (a * b + c) / d - e over 1e7 float32, fused (the Fuse intrinsic: one loop,
+// one result allocation) and unfused (the same four Tensor ops, a fresh
+// temporary per op), as variants.
+//
+// Fuse v1 fuses a single-parameter tensor expression
+// (CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY for five tensor parameters, and a
+// captured tensor does not resolve inside the body), so b, c, d, e are the
+// scalar-broadcast operands Fuse does take (mulScalar, addScalar, divScalar,
+// subScalar): b = 1.5, c = 0.25, d = 2.0, e = 0.125, a[i] = u(i) + 0.5. The
+// competitors evaluate the same scalar-operand chain. Smoke: 1e6. Check:
+// sum(r) within 1e-5 relative of the float64 reference and r[0], r[n-1]
+// within 1e-6.
+public class FuseBench extends Benchmark {
+
+    public Tensor<float32> a;
+    public Tensor<float32> r;
+    public int64 n;
+    public float64 ref;
+    public float64 r0;
+    public float64 rn;
+
+    public String name() { return "fuse-elementwise-chain"; }
+    public String area() { return "nucleo"; }
+    public int32 warmupIters() { return 2; }
+    public int32 measuredIters() { return 10; }
+    public int64 inputSize() { return this.n; }
+    public String unit() { return "items/s"; }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("fused");
+        v.add("unfused");
+        return v;
+    }
+
+    public String competitorNote() {
+        String s = "(a*b + c)/d - e with b..e scalar operands (Fuse v1 takes one tensor parameter); fused = Fuse intrinsic; unfused = Tensor.mulScalar/addScalar/divScalar/subScalar; check: sum within 1e-5";
+        if (NucleoData.smoke()) {
+            return s + "; smoke size n=1e6 in place of 1e7";
+        }
+        return #= s;
+    }
+
+    public void setup() {
+        this.n = (int64) 10000000;
+        if (NucleoData.smoke()) {
+            this.n = (int64) 1000000;
+        }
+        int64[] shp = heap int64[1];
+        shp[0] = this.n;
+        this.a #= Tensor.zeros<float32>(shp);
+        float64 s = 0.0;
+        int64 i = 0;
+        while (i < this.n) {
+            float32 x = (float32) (NucleoData.u(i) + 0.5);
+            this.a.flatSet(i, x);
+            s = s + ((float64) x * 1.5 + 0.25) / 2.0 - 0.125;
+            if (i == 0) {
+                this.r0 = ((float64) x * 1.5 + 0.25) / 2.0 - 0.125;
+            }
+            if (i == this.n - 1) {
+                this.rn = ((float64) x * 1.5 + 0.25) / 2.0 - 0.125;
+            }
+            i = i + 1;
+        }
+        this.ref = s;
+    }
+
+    public void prepare(String variant) {
+        this.r = null;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        if (variant.equals("fused")) {
+            (Tensor<float32>) -> #Tensor<float32> g =
+                Fuse((Tensor<float32> t) ->
+                    Tensor.subScalar<float32>(
+                        Tensor.divScalar<float32>(
+                            Tensor.addScalar<float32>(Tensor.mulScalar<float32>(t, 1.5f), 0.25f), 2.0f), 0.125f));
+            Tensor<float32> o #= g(this.a);
+            this.r #= o;
+        } else {
+            Tensor<float32> m #= Tensor.mulScalar<float32>(this.a, 1.5f);
+            Tensor<float32> p #= Tensor.addScalar<float32>(m, 0.25f);
+            Tensor<float32> q #= Tensor.divScalar<float32>(p, 2.0f);
+            Tensor<float32> o #= Tensor.subScalar<float32>(q, 0.125f);
+            this.r #= o;
+        }
+    }
+
+    public boolean checkResult() {
+        if (this.r == null || this.r.size() != this.n) {
+            return false;
+        }
+        float32[] hb = this.r.hostBuffer();
+        int64 base = this.r.hostBase();
+        float64 s = 0.0;
+        int64 i = 0;
+        while (i < this.n) {
+            s = s + (float64) hb[base + i];
+            i = i + 1;
+        }
+        return NucleoData.relErr(s, this.ref) <= 0.00001
+            && NucleoData.absf((float64) hb[base] - this.r0) <= 0.000001
+            && NucleoData.absf((float64) hb[base + this.n - (int64) 1] - this.rn) <= 0.000001;
+    }
+}

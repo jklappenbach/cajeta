@@ -1,0 +1,17 @@
+package bench.nucleo;
+
+// One CSV record of G1_<N>_1e2_0_0.csv, bound by Csv.parse by field name
+// (reading is outside every timed region; the columns are built from these).
+public class CsvG {
+    public String id1;
+    public String id2;
+    public String id3;
+    public int64 id4;
+    public int64 id5;
+    public int64 id6;
+    public int64 v1;
+    public int64 v2;
+    public float64 v3;
+
+    public CsvG() {}
+}

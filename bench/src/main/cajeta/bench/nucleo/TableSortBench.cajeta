@@ -1,0 +1,120 @@
+package bench.nucleo;
+
+import cajeta.nucleo.frame.Table;
+import cajeta.nucleo.frame.Sorts;
+
+import dev.cajeta.bench.Benchmark;
+
+// nucleo/table-sort (bench/nucleo/Table.md): sort the 1e7-row db-benchmark
+// groupby table by two keys, id4 ascending then v3 descending, a lazy sort
+// forced by collect() inside the trial (a stable merge sort over every
+// column). Smoke: the 1e5 set. Check, "ordered": the result has every row,
+// every adjacent pair is in (id4 asc, v3 desc) order, sum(v3) is unchanged
+// (a permutation), and the first and last v3 equal DuckDB's ORDER BY answer.
+public class TableSortBench extends Benchmark {
+
+    public Table<DbG> g;
+    public Table<DbG> lastH;     // the forced handle; collect() on it is the cached result
+    public int64 lastRows;
+    public CsvAnswer ans;
+    public float64 v3Sum;
+    public int64 rowsIn;
+
+    public String name() { return "table-sort"; }
+    public String area() { return "nucleo"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 5; }
+    public int64 inputSize() { return this.rowsIn; }
+    public String unit() { return "rows/s"; }
+
+    public static #String size() {
+        if (NucleoData.smoke()) {
+            return "" + "1e6";    // fileLabel maps it to the 1e5 set
+        }
+        return "" + "1e7";
+    }
+
+    public String skipWhy;
+
+    // dev.cajeta.bench 0.1.1 gives available() == false a fixed reason, so the
+    // size gate is the single variant's supportsVariant, whose skipReason the
+    // harness records.
+    public boolean supportsVariant(String variant) {
+        String sz #= TableSortBench.size();
+        String why #= NucleoData.sizeSkip(sz);
+        if (why != null) {
+            this.skipWhy #= why;
+            return false;
+        }
+        return true;
+    }
+
+    public String skipReason() {
+        if (this.skipWhy == null) {
+            return "variant not supported";
+        }
+        return this.skipWhy;
+    }
+
+    public void setup() {
+        String sz #= TableSortBench.size();
+        String why #= NucleoData.sizeSkip(sz);
+        if (why != null) {
+            return;    // the variant skips with the reason
+        }
+        this.g #= NucleoData.loadG(sz);
+        this.ans #= NucleoData.answer(sz, "sort");
+        this.rowsIn = this.g.rowCount();
+        float64 s = 0.0;
+        int64 i = 0;
+        while (i < this.rowsIn) {
+            s = s + this.g.v3.get(i);
+            i = i + 1;
+        }
+        this.v3Sum = s;
+    }
+
+    public void run(int32 iterations) {
+        Table<DbG> h #= this.g.lazy().sort((DbGCols c, Sorts s) -> {
+            s.add(c.id4());
+            s.add(c.v3().desc());
+        });
+        Table<DbG> r = h.collect();
+            this.lastRows = r.rowCount();
+            this.lastH #= h;
+    }
+
+    public boolean checkResult() {
+        if (this.lastH == null || this.ans == null) {
+            return false;
+        }
+        Table<DbG> r = this.lastH.collect();
+        int64 n = r.rowCount();
+        if (n != this.ans.rows || n != this.rowsIn) {
+            return false;
+        }
+        float64 s = r.v3.get((int64) 0);
+        int64 i = 1;
+        while (i < n) {
+            int64 a = r.id4.get(i - 1);
+            int64 b = r.id4.get(i);
+            if (a > b) {
+                return false;
+            }
+            if (a == b && r.v3.get(i - 1) < r.v3.get(i)) {
+                return false;
+            }
+            s = s + r.v3.get(i);
+            i = i + 1;
+        }
+        return NucleoData.relErr(s, this.v3Sum) <= 0.000000001
+            && r.v3.get((int64) 0) == this.ans.c1
+            && r.v3.get(n - 1) == this.ans.c2;
+    }
+
+    public String competitorNote() {
+        String sn #= NucleoData.smokeNote();
+        return "db-benchmark groupby table (gen_dbbench.py seed 108) sorted by id4 asc then v3 desc; lazy sort forced by collect(); check: ordered + permutation + first/last v3 equal DuckDB's"
+            + sn.replace("the 1e6 variant reads", "reads");
+    }
+}

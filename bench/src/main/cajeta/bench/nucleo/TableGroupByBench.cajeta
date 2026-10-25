@@ -1,0 +1,180 @@
+package bench.nucleo;
+
+import cajeta.collection.ArrayList;
+import cajeta.nucleo.frame.Table;
+import cajeta.nucleo.frame.Sels;
+import cajeta.nucleo.frame.Aggs;
+
+import dev.cajeta.bench.Benchmark;
+
+// nucleo/table-groupby (bench/nucleo/Table.md): the h2oai db-benchmark groupby
+// questions q1-q5 over G1_<N>_1e2_0_0 (K = 100 groups), each a lazy
+// groupBy + agg plan forced by collect() inside the trial:
+//   q1  sum v1 by id1            q2  sum v1 by id1, id2
+//   q3  sum v1, mean v3 by id3   q4  mean v1, v2, v3 by id4
+//   q5  sum v1, v2, v3 by id6
+// Variants q<k>-1e6 and q<k>-1e7. The table is read once per size (outside
+// the timed region). Check: the result's row count equals DuckDB's and the
+// sum of every aggregate column is within 1e-9 relative of DuckDB's (the
+// db-benchmark `chk`), from answers_<N>.csv.
+public class TableGroupByBench extends Benchmark {
+
+    public Table<DbG> g;
+    public String loaded;
+    public Table<?> lastH;     // the forced handle; collect() on it is the cached result
+    public int64 lastRows;
+    public CsvAnswer ans;
+    public String skipWhy;
+    public int64 rowsIn;
+
+    public String name() { return "table-groupby"; }
+    public String area() { return "nucleo"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 5; }
+    public int64 inputSize() { return this.rowsIn; }
+    public String unit() { return "rows/s"; }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("q1-1e6"); v.add("q2-1e6"); v.add("q3-1e6"); v.add("q4-1e6"); v.add("q5-1e6");
+        v.add("q1-1e7"); v.add("q2-1e7"); v.add("q3-1e7"); v.add("q4-1e7"); v.add("q5-1e7");
+        return v;
+    }
+
+    // The page size of a variant label, as a fresh literal (not a substring
+    // window of the label: a window passed down to loadG faulted in full mode).
+    public static #String sizeOf(String variant) {
+        if (variant.endsWith("1e7")) {
+            return "" + "1e7";
+        }
+        return "" + "1e6";
+    }
+
+    // dev.cajeta.bench 0.1.1 takes one skip reason per benchmark (skipReason),
+    // not per variant; the only variants that skip are a size's, and the
+    // reason names the size.
+    public static #String qOf(String variant) {
+        if (variant.startsWith("q1")) { return "" + "q1"; }
+        if (variant.startsWith("q2")) { return "" + "q2"; }
+        if (variant.startsWith("q3")) { return "" + "q3"; }
+        if (variant.startsWith("q4")) { return "" + "q4"; }
+        return "" + "q5";
+    }
+
+    public boolean supportsVariant(String variant) {
+        String sz #= TableGroupByBench.sizeOf(variant);
+        String why #= NucleoData.sizeSkip(sz);
+        if (why != null) {
+            this.ans = null;    // the skipped row's notes are the generic ones
+            this.skipWhy #= why;
+            return false;
+        }
+        return true;
+    }
+
+    public String skipReason() {
+        if (this.skipWhy == null) {
+            return "variant not supported";
+        }
+        return this.skipWhy;
+    }
+
+    public void prepare(String variant) {
+        String sz #= TableGroupByBench.sizeOf(variant);
+        if (this.loaded == null || !this.loaded.equals(sz)) {
+            this.g = null;
+            this.g #= NucleoData.loadG(sz);
+            this.loaded #= sz;
+            this.rowsIn = this.g.rowCount();
+        }
+        this.ans #= NucleoData.answer(sz, "groupby-" + TableGroupByBench.qOf(variant));
+        this.lastH = null;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        if (variant.startsWith("q1")) {
+            Table<?> h #= this.g.lazy()
+                .groupBy((DbGCols c, Sels s) -> { s.add(c.id1()); })
+                .agg((DbGCols c, Aggs ag) -> { ag.add(c.v1().sum().alias("v1")); });
+            Table<?> r = h.collect();
+            this.lastRows = r.rowCount();
+            this.lastH #= h;
+        } else if (variant.startsWith("q2")) {
+            Table<?> h #= this.g.lazy()
+                .groupBy((DbGCols c, Sels s) -> { s.add(c.id1()); s.add(c.id2()); })
+                .agg((DbGCols c, Aggs ag) -> { ag.add(c.v1().sum().alias("v1")); });
+            Table<?> r = h.collect();
+            this.lastRows = r.rowCount();
+            this.lastH #= h;
+        } else if (variant.startsWith("q3")) {
+            Table<?> h #= this.g.lazy()
+                .groupBy((DbGCols c, Sels s) -> { s.add(c.id3()); })
+                .agg((DbGCols c, Aggs ag) -> {
+                    ag.add(c.v1().sum().alias("v1"));
+                    ag.add(c.v3().mean().alias("v3"));
+                });
+            Table<?> r = h.collect();
+            this.lastRows = r.rowCount();
+            this.lastH #= h;
+        } else if (variant.startsWith("q4")) {
+            Table<?> h #= this.g.lazy()
+                .groupBy((DbGCols c, Sels s) -> { s.add(c.id4()); })
+                .agg((DbGCols c, Aggs ag) -> {
+                    ag.add(c.v1().mean().alias("v1"));
+                    ag.add(c.v2().mean().alias("v2"));
+                    ag.add(c.v3().mean().alias("v3"));
+                });
+            Table<?> r = h.collect();
+            this.lastRows = r.rowCount();
+            this.lastH #= h;
+        } else {
+            Table<?> h #= this.g.lazy()
+                .groupBy((DbGCols c, Sels s) -> { s.add(c.id6()); })
+                .agg((DbGCols c, Aggs ag) -> {
+                    ag.add(c.v1().sum().alias("v1"));
+                    ag.add(c.v2().sum().alias("v2"));
+                    ag.add(c.v3().sum().alias("v3"));
+                });
+            Table<?> r = h.collect();
+            this.lastRows = r.rowCount();
+            this.lastH #= h;
+        }
+    }
+
+    public boolean checkResult() {
+        if (this.lastH == null || this.ans == null) {
+            return false;
+        }
+        Table<?> r = this.lastH.collect();
+        if (r.rowCount() != this.ans.rows) {
+            return false;
+        }
+        // Which columns are int64 sums (q1, q2, q3's v1, q5's v1 and v2) and
+        // which float64 (means, and q3/q5's v3).
+        boolean ok = true;
+        int32 w = r.width();
+        boolean v1Int = !this.ans.question.equals("groupby-q4");
+        ok = ok && NucleoData.relErr(NucleoData.colSum(r, "v1", v1Int), this.ans.c1) <= 0.000000001;
+        if (this.ans.question.equals("groupby-q3")) {
+            ok = ok && NucleoData.relErr(NucleoData.colSum(r, "v3", false), this.ans.c2) <= 0.000000001;
+        }
+        if (this.ans.question.equals("groupby-q4")) {
+            ok = ok && NucleoData.relErr(NucleoData.colSum(r, "v2", false), this.ans.c2) <= 0.000000001;
+            ok = ok && NucleoData.relErr(NucleoData.colSum(r, "v3", false), this.ans.c3) <= 0.000000001;
+        }
+        if (this.ans.question.equals("groupby-q5")) {
+            ok = ok && NucleoData.relErr(NucleoData.colSum(r, "v2", true), this.ans.c2) <= 0.000000001;
+            ok = ok && NucleoData.relErr(NucleoData.colSum(r, "v3", false), this.ans.c3) <= 0.000000001;
+        }
+        return ok && w >= 2;
+    }
+
+    public String competitorNote() {
+        String sn #= NucleoData.smokeNote();
+        if (this.ans == null) {
+            return "db-benchmark groupby (gen_dbbench.py seed 108); lazy groupBy+agg forced by collect()" + sn;
+        }
+        return "db-benchmark groupby " + this.ans.question + " (gen_dbbench.py seed 108); lazy groupBy+agg forced by collect(); check: rows=" + this.ans.rows
+            + " and aggregate column sums within 1e-9 of DuckDB's answers" + sn;
+    }
+}

@@ -1,0 +1,329 @@
+package bench.nucleo;
+
+import cajeta.nucleo.autograd.Tape;
+import cajeta.nucleo.autograd.Var;
+
+import dev.cajeta.bench.Benchmark;
+
+// nucleo/tape-forward-backward (bench/nucleo/Tape.md): forward and backward
+// through a 3-layer MLP with plain SGD, one fresh Tape per step (one backward
+// per tape, the Tape's discipline).
+//
+// The page's shape is a 256 x 784 batch. cajeta.nucleo.autograd.Tape is a
+// SCALAR tape (a Var is one float32 node; ops add/sub/mul/div/neg/exp/log/
+// sqrt), so a 784-256-... MLP is ~10^8 nodes per step; the nearest honest
+// workload keeps the structure and shrinks the sizes so 1e3 steps fit a trial:
+//   batch 16, 16 -> 16 -> 16 -> 1, sigmoid hidden layers (1/(1+exp(-z)), built
+//   from the tape's ops: it has no relu/max), linear output, MSE loss,
+//   SGD lr 0.1, 1e3 steps (smoke 50).
+// The competitors run the same MLP, sizes and steps with their tensor
+// autograd (PyTorch, JAX).
+//   x[b][i] = u(16b + i) - 0.5         y[b] = u(1000 + b)
+//   W1[i][j] = (u(5000 + 16i + j) - 0.5) / 2, W2 likewise from 7000,
+//   W3[i] = (u(9000 + i) - 0.5) / 2, biases 0.
+// Check: the last step's loss and sum |dL/dW1| within 1e-3 relative of a
+// float64 hand-written backprop of the same SGD trajectory (setup).
+//
+// SKIPPED today: Tape.grow() stores its doubled node arrays with `=`
+// (`this.tag = t2;` ...), the owned-local-into-field shape that dangles for
+// primitive arrays, so a tape that grows twice (past 32 nodes) reads freed
+// arrays and the process faults (measured: 17 nodes run, 39 nodes SIGSEGV;
+// this workload records ~20k nodes per step). A fault would end the whole
+// run, so the row skips with that reason until tapeGrows() is true; the fix
+// is `#=` on the five stores in runtime/src/cajeta/nucleo/autograd/Tape.cajeta.
+public class TapeBench extends Benchmark {
+
+    public float32[] x;
+    public float32[] y;
+    public float32[] w1;
+    public float32[] b1;
+    public float32[] w2;
+    public float32[] b2;
+    public float32[] w3;
+    public float32[] b3;
+    public int32 steps;
+    public float64 lastLoss;
+    public float64 lastG1;
+    public float64 refLoss;
+    public float64 refG1;
+    public int64 nodes;
+
+    public String name() { return "tape-forward-backward"; }
+    public String area() { return "nucleo"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 5; }
+    public int64 inputSize() { return (int64) this.steps; }
+    public String unit() { return "steps/s"; }
+
+    public String competitorNote() {
+        String s = "scalar Tape: MLP batch 16 x 16-16-16-1 sigmoid + MSE + SGD lr 0.1 x " + this.steps
+            + " steps in place of the page's 256 x 784 batch (a scalar tape records ~1e8 nodes per step at that size); ~23.7k nodes/step; check: last loss and sum|dW1| within 1e-3 of a float64 hand backprop";
+        if (NucleoData.smoke()) {
+            return s + "; smoke 50 steps in place of 1e3";
+        }
+        return #= s;
+    }
+
+    public void init() {
+        int32 B = 16;
+        int32 IN = 16;
+        int32 H = 16;
+        this.x = heap float32[B * IN];
+        this.y = heap float32[B];
+        this.w1 = heap float32[IN * H];
+        this.b1 = heap float32[H];
+        this.w2 = heap float32[H * H];
+        this.b2 = heap float32[H];
+        this.w3 = heap float32[H];
+        this.b3 = heap float32[1];
+        int32 i = 0;
+        while (i < B * IN) {
+            this.x[i] = (float32) (NucleoData.u((int64) i) - 0.5);
+            i = i + 1;
+        }
+        i = 0;
+        while (i < B) {
+            this.y[i] = (float32) NucleoData.u((int64) (1000 + i));
+            i = i + 1;
+        }
+        i = 0;
+        while (i < IN * H) {
+            this.w1[i] = (float32) ((NucleoData.u((int64) (5000 + i)) - 0.5) * 0.5);
+            this.w2[i] = (float32) ((NucleoData.u((int64) (7000 + i)) - 0.5) * 0.5);
+            i = i + 1;
+        }
+        i = 0;
+        while (i < H) {
+            this.w3[i] = (float32) ((NucleoData.u((int64) (9000 + i)) - 0.5) * 0.5);
+            this.b1[i] = 0.0f;
+            this.b2[i] = 0.0f;
+            i = i + 1;
+        }
+        this.b3[0] = 0.0f;
+    }
+
+    // Flip when Tape.grow() keeps its arrays (see the header).
+    public static boolean tapeGrows() {
+        return false;
+    }
+
+    public boolean supportsVariant(String variant) {
+        return TapeBench.tapeGrows();
+    }
+
+    public String skipReason() {
+        return "cajeta.nucleo.autograd.Tape.grow() stores its grown node arrays with = (dangling owned locals): a tape past 32 nodes faults (measured 39 nodes SIGSEGV); this MLP records ~20k nodes per step";
+    }
+
+    public void setup() {
+        this.steps = 1000;
+        if (NucleoData.smoke()) {
+            this.steps = 50;
+        }
+        this.reference();
+    }
+
+    // The float64 hand-written backprop of the same trajectory.
+    public void reference() {
+        int32 B = 16;
+        int32 IN = 16;
+        int32 H = 16;
+        this.init();
+        float64[] w1 = heap float64[IN * H];
+        float64[] w2 = heap float64[H * H];
+        float64[] w3 = heap float64[H];
+        float64[] b1 = heap float64[H];
+        float64[] b2 = heap float64[H];
+        float64 b3 = 0.0;
+        int32 i = 0;
+        while (i < IN * H) { w1[i] = (float64) this.w1[i]; w2[i] = (float64) this.w2[i]; i = i + 1; }
+        i = 0;
+        while (i < H) { w3[i] = (float64) this.w3[i]; b1[i] = 0.0; b2[i] = 0.0; i = i + 1; }
+        float64[] h1 = heap float64[B * H];
+        float64[] h2 = heap float64[B * H];
+        float64[] out = heap float64[B];
+        float64[] g1 = heap float64[IN * H];
+        float64[] g2 = heap float64[H * H];
+        float64[] g3 = heap float64[H];
+        float64[] gb1 = heap float64[H];
+        float64[] gb2 = heap float64[H];
+        float64[] d2 = heap float64[H];
+        float64[] d1 = heap float64[H];
+        float64 loss = 0.0;
+        float64 gsum = 0.0;
+        int32 st = 0;
+        while (st < this.steps) {
+            loss = 0.0;
+            i = 0;
+            while (i < IN * H) { g1[i] = 0.0; g2[i] = 0.0; i = i + 1; }
+            i = 0;
+            while (i < H) { g3[i] = 0.0; gb1[i] = 0.0; gb2[i] = 0.0; i = i + 1; }
+            float64 gb3 = 0.0;
+            int32 b = 0;
+            while (b < B) {
+                int32 j = 0;
+                while (j < H) {
+                    float64 z = b1[j];
+                    int32 k = 0;
+                    while (k < IN) { z = z + (float64) this.x[b * IN + k] * w1[k * H + j]; k = k + 1; }
+                    h1[b * H + j] = 1.0 / (1.0 + Math.exp(0.0 - z));
+                    j = j + 1;
+                }
+                j = 0;
+                while (j < H) {
+                    float64 z = b2[j];
+                    int32 k = 0;
+                    while (k < H) { z = z + h1[b * H + k] * w2[k * H + j]; k = k + 1; }
+                    h2[b * H + j] = 1.0 / (1.0 + Math.exp(0.0 - z));
+                    j = j + 1;
+                }
+                float64 o = b3;
+                j = 0;
+                while (j < H) { o = o + h2[b * H + j] * w3[j]; j = j + 1; }
+                float64 d = o - (float64) this.y[b];
+                loss = loss + d * d / (float64) B;
+                float64 dout = 2.0 * d / (float64) B;
+                gb3 = gb3 + dout;
+                j = 0;
+                while (j < H) {
+                    g3[j] = g3[j] + dout * h2[b * H + j];
+                    float64 hv = h2[b * H + j];
+                    d2[j] = dout * w3[j] * hv * (1.0 - hv);
+                    gb2[j] = gb2[j] + d2[j];
+                    j = j + 1;
+                }
+                int32 k = 0;
+                while (k < H) {
+                    float64 acc = 0.0;
+                    j = 0;
+                    while (j < H) {
+                        g2[k * H + j] = g2[k * H + j] + h1[b * H + k] * d2[j];
+                        acc = acc + w2[k * H + j] * d2[j];
+                        j = j + 1;
+                    }
+                    float64 hv = h1[b * H + k];
+                    d1[k] = acc * hv * (1.0 - hv);
+                    gb1[k] = gb1[k] + d1[k];
+                    k = k + 1;
+                }
+                k = 0;
+                while (k < IN) {
+                    j = 0;
+                    while (j < H) {
+                        g1[k * H + j] = g1[k * H + j] + (float64) this.x[b * IN + k] * d1[j];
+                        j = j + 1;
+                    }
+                    k = k + 1;
+                }
+                b = b + 1;
+            }
+            gsum = 0.0;
+            i = 0;
+            while (i < IN * H) { gsum = gsum + NucleoData.absf(g1[i]); i = i + 1; }
+            i = 0;
+            while (i < IN * H) { w1[i] = w1[i] - 0.1 * g1[i]; w2[i] = w2[i] - 0.1 * g2[i]; i = i + 1; }
+            i = 0;
+            while (i < H) { w3[i] = w3[i] - 0.1 * g3[i]; b1[i] = b1[i] - 0.1 * gb1[i]; b2[i] = b2[i] - 0.1 * gb2[i]; i = i + 1; }
+            b3 = b3 - 0.1 * gb3;
+            st = st + 1;
+        }
+        this.refLoss = loss;
+        this.refG1 = gsum;
+    }
+
+    public static Var sigmoid(Tape t, Var z, Var one) {
+        return t.div(one, t.add(one, t.exp(t.neg(z))));
+    }
+
+    public void run(int32 iterations) {
+        int32 B = 16;
+        int32 IN = 16;
+        int32 H = 16;
+        this.init();
+        Var[] vw1 = heap Var[IN * H];
+        Var[] vw2 = heap Var[H * H];
+        Var[] vw3 = heap Var[H];
+        Var[] vb1 = heap Var[H];
+        Var[] vb2 = heap Var[H];
+        Var[] h1 = heap Var[H];
+        Var[] h2 = heap Var[H];
+        int32 st = 0;
+        while (st < this.steps) {
+            Tape t = heap Tape();
+            Var one = t.var(1.0f);
+            Var invB = t.var(1.0f / (float32) B);
+            int32 i = 0;
+            while (i < IN * H) { vw1[i] = t.var(this.w1[i]); vw2[i] = t.var(this.w2[i]); i = i + 1; }
+            i = 0;
+            while (i < H) { vw3[i] = t.var(this.w3[i]); vb1[i] = t.var(this.b1[i]); vb2[i] = t.var(this.b2[i]); i = i + 1; }
+            Var vb3 = t.var(this.b3[0]);
+            Var loss = t.var(0.0f);
+            int32 b = 0;
+            while (b < B) {
+                int32 j = 0;
+                while (j < H) {
+                    Var z = vb1[j];
+                    int32 k = 0;
+                    while (k < IN) {
+                        Var xv = t.var(this.x[b * IN + k]);
+                        z = t.add(z, t.mul(xv, vw1[k * H + j]));
+                        k = k + 1;
+                    }
+                    h1[j] = TapeBench.sigmoid(t, z, one);
+                    j = j + 1;
+                }
+                j = 0;
+                while (j < H) {
+                    Var z = vb2[j];
+                    int32 k = 0;
+                    while (k < H) {
+                        z = t.add(z, t.mul(h1[k], vw2[k * H + j]));
+                        k = k + 1;
+                    }
+                    h2[j] = TapeBench.sigmoid(t, z, one);
+                    j = j + 1;
+                }
+                Var o = vb3;
+                j = 0;
+                while (j < H) {
+                    o = t.add(o, t.mul(h2[j], vw3[j]));
+                    j = j + 1;
+                }
+                Var yv = t.var(this.y[b]);
+                Var d = t.sub(o, yv);
+                loss = t.add(loss, t.mul(t.mul(d, d), invB));
+                b = b + 1;
+            }
+            t.backward(loss);
+            float64 gs = 0.0;
+            i = 0;
+            while (i < IN * H) {
+                float32 g1 = t.grad(vw1[i]);
+                gs = gs + NucleoData.absf((float64) g1);
+                this.w1[i] = this.w1[i] - 0.1f * g1;
+                this.w2[i] = this.w2[i] - 0.1f * t.grad(vw2[i]);
+                i = i + 1;
+            }
+            i = 0;
+            while (i < H) {
+                this.w3[i] = this.w3[i] - 0.1f * t.grad(vw3[i]);
+                this.b1[i] = this.b1[i] - 0.1f * t.grad(vb1[i]);
+                this.b2[i] = this.b2[i] - 0.1f * t.grad(vb2[i]);
+                i = i + 1;
+            }
+            this.b3[0] = this.b3[0] - 0.1f * t.grad(vb3);
+            this.lastLoss = (float64) t.valueOf(loss);
+            this.lastG1 = gs;
+            this.nodes = (int64) t.count();
+            st = st + 1;
+        }
+    }
+
+    public boolean checkResult() {
+        if (this.refLoss <= 0.0 || this.refG1 <= 0.0) {
+            return false;
+        }
+        return NucleoData.absf(this.lastLoss - this.refLoss) / this.refLoss <= 0.001
+            && NucleoData.absf(this.lastG1 - this.refG1) / this.refG1 <= 0.001;
+    }
+}

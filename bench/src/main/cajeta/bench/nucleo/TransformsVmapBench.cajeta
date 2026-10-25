@@ -1,0 +1,81 @@
+package bench.nucleo;
+
+import dev.cajeta.bench.Benchmark;
+
+// nucleo/transforms-vmap (bench/nucleo/Transforms.md): vectorize a function
+// written for one example over a batch with the Vmap compiler intrinsic.
+//
+// The page's shape is a per-ROW function over a 1e4 x 1e3 batch. Vmap v1
+// batches scalar functions only: a tensor-valued body has no batching rule
+// (CAJETA_ERROR_TRANSFORM_NO_BATCH_RULE for Tensor.sum), so the nearest
+// honest workload batches a per-ELEMENT function over the same 1e4 x 1e3 =
+// 1e7 float32 values: f(x) = x * x * 0.5 + x * 0.25 - 1.0, x[i] = u(i) - 0.5.
+// The competitors vmap the same scalar function over the same 1e7 values.
+// Smoke: 1e6. Check: sum of the batch result within 1e-5 relative of the
+// float64 reference and the first and last elements within 1e-6.
+public class TransformsVmapBench extends Benchmark {
+
+    public float32[] xs;
+    public float32[] out;
+    public int64 n;
+    public float64 ref;
+
+    public String name() { return "transforms-vmap"; }
+    public String area() { return "nucleo"; }
+    public int32 warmupIters() { return 2; }
+    public int32 measuredIters() { return 10; }
+    public int64 inputSize() { return this.n; }
+    public String unit() { return "items/s"; }
+
+    public String competitorNote() {
+        String s = "Vmap((float32 x) -> x*x*0.5 + x*0.25 - 1) over 1e7 = 1e4 x 1e3 elements (Vmap v1 has no batching rule for a per-row Tensor body); check: sum within 1e-5";
+        if (NucleoData.smoke()) {
+            return s + "; smoke size n=1e6 in place of 1e7";
+        }
+        return #= s;
+    }
+
+    public static float64 f(float64 x) {
+        return x * x * 0.5 + x * 0.25 - 1.0;
+    }
+
+    public void setup() {
+        this.n = (int64) 10000000;
+        if (NucleoData.smoke()) {
+            this.n = (int64) 1000000;
+        }
+        this.xs = heap float32[this.n];
+        float64 s = 0.0;
+        int64 i = 0;
+        while (i < this.n) {
+            float32 v = (float32) (NucleoData.u(i) - 0.5);
+            this.xs[i] = v;
+            s = s + TransformsVmapBench.f((float64) v);
+            i = i + 1;
+        }
+        this.ref = s;
+    }
+
+    public void run(int32 iterations) {
+        (float32[]) -> #float32[] g = Vmap((float32 x) -> x * x * 0.5f + x * 0.25f - 1.0f);
+        float32[] o #= g(this.xs);
+        this.out #= o;
+    }
+
+    public boolean checkResult() {
+        if (this.out == null || (int64) this.out.count() != this.n) {
+            return false;
+        }
+        float64 s = 0.0;
+        int64 i = 0;
+        while (i < this.n) {
+            s = s + (float64) this.out[i];
+            i = i + 1;
+        }
+        float64 f0 = TransformsVmapBench.f((float64) this.xs[0]);
+        float64 fn = TransformsVmapBench.f((float64) this.xs[this.n - (int64) 1]);
+        return NucleoData.relErr(s, this.ref) <= 0.00001
+            && NucleoData.absf((float64) this.out[0] - f0) <= 0.000001
+            && NucleoData.absf((float64) this.out[this.n - (int64) 1] - fn) <= 0.000001;
+    }
+}

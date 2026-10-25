@@ -1,0 +1,6 @@
+package bench.nucleo;
+
+import cajeta.lang.Utf8;
+
+// The db-benchmark join left table x, J1_<N>_NA_0_0 (datasets/gen_dbbench.py).
+public record DbX { int64 id1; int64 id2; int64 id3; Utf8 id4; Utf8 id5; Utf8 id6; float64 v1; }

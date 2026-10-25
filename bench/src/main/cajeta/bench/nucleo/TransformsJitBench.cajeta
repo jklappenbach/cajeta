@@ -1,0 +1,82 @@
+package bench.nucleo;
+
+import dev.cajeta.bench.Benchmark;
+
+// nucleo/transforms-jit (bench/nucleo/Transforms.md): a 10-op expression under
+// the Jit compiler intrinsic, warm (Jit is compile-time, so every call is
+// warm):
+//   f(x) = ((x*x + x) * 0.5 - x / (x + 1)) * (x + 2) - x * 0.25     (10 ops)
+// over a 1e6 float32 batch, x[i] = u(i) (in [0, 1)). Jit over a Tensor-valued
+// lambda compiles but faults at the call (SIGSEGV, even for t*t + t), so the
+// expression is written per element and batched with Vmap: Jit(Vmap(f)), the
+// composition Transforms.md documents. The competitors jit the same
+// expression over the same 1e6 array (jax.jit, torch.compile). Smoke: 1e5.
+// Check: sum within 1e-5 relative of the float64 reference and the first and
+// last elements within 1e-5.
+public class TransformsJitBench extends Benchmark {
+
+    public float32[] xs;
+    public float32[] out;
+    public int64 n;
+    public float64 ref;
+
+    public String name() { return "transforms-jit"; }
+    public String area() { return "nucleo"; }
+    public int32 warmupIters() { return 2; }
+    public int32 measuredIters() { return 10; }
+    public int64 inputSize() { return this.n; }
+    public String unit() { return "items/s"; }
+
+    public String competitorNote() {
+        String s = "Jit(Vmap(f)) of the 10-op scalar f over n=1e6 float32 (Jit over a Tensor lambda faults at the call today); check: sum within 1e-5";
+        if (NucleoData.smoke()) {
+            return s + "; smoke size n=1e5 in place of 1e6";
+        }
+        return #= s;
+    }
+
+    public static float64 f(float64 x) {
+        return ((x * x + x) * 0.5 - x / (x + 1.0)) * (x + 2.0) - x * 0.25;
+    }
+
+    public void setup() {
+        this.n = (int64) 1000000;
+        if (NucleoData.smoke()) {
+            this.n = (int64) 100000;
+        }
+        this.xs = heap float32[this.n];
+        float64 s = 0.0;
+        int64 i = 0;
+        while (i < this.n) {
+            float32 v = (float32) NucleoData.u(i);
+            this.xs[i] = v;
+            s = s + TransformsJitBench.f((float64) v);
+            i = i + 1;
+        }
+        this.ref = s;
+    }
+
+    public void run(int32 iterations) {
+        (float32[]) -> #float32[] g =
+            Jit(Vmap((float32 x) -> ((x * x + x) * 0.5f - x / (x + 1.0f)) * (x + 2.0f) - x * 0.25f));
+        float32[] o #= g(this.xs);
+        this.out #= o;
+    }
+
+    public boolean checkResult() {
+        if (this.out == null || (int64) this.out.count() != this.n) {
+            return false;
+        }
+        float64 s = 0.0;
+        int64 i = 0;
+        while (i < this.n) {
+            s = s + (float64) this.out[i];
+            i = i + 1;
+        }
+        float64 f0 = TransformsJitBench.f((float64) this.xs[0]);
+        float64 fn = TransformsJitBench.f((float64) this.xs[this.n - (int64) 1]);
+        return NucleoData.relErr(s, this.ref) <= 0.00001
+            && NucleoData.absf((float64) this.out[0] - f0) <= 0.00001
+            && NucleoData.absf((float64) this.out[this.n - (int64) 1] - fn) <= 0.00001;
+    }
+}

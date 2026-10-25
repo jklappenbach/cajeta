@@ -1,0 +1,137 @@
+package bench.nucleo;
+
+import cajeta.math.Tensor;
+import cajeta.nucleo.column.Column;
+import cajeta.nucleo.column.NullableColumn;
+
+import dev.cajeta.bench.Benchmark;
+
+// nucleo/column-arith (bench/nucleo/Column.md): r = a + b * c over 1e8
+// float64 columns with nulls, null-propagating (Arrow compute semantics: r is
+// null where any input is). a[i] = u(i), b[i] = u(i+1), c[i] = u(i+2); a is
+// null where i % 10 == 0, b where i % 13 == 0, c where i % 17 == 0.
+// cajeta.nucleo.column has no arithmetic kernel, so the trial composes the
+// API's own pieces: the values go through the columns' zero-copy tensor views
+// (Column.asTensor, then Tensor.mul and Tensor.add, one fresh result buffer
+// per op), the validity bitmaps are ANDed byte by byte into a fresh
+// Column<uint8>, and the result is a NullableColumn over both. Smoke: 1e6
+// rows. Check: the valid count and the sum of the valid results within 1e-12
+// relative of the float64 reference computed in setup.
+public class ColumnArithBench extends Benchmark {
+
+    public Column<float64> a;
+    public Column<float64> b;
+    public Column<float64> c;
+    public Column<uint8> va;
+    public Column<uint8> vb;
+    public Column<uint8> vc;
+    public Tensor<float64> rt;
+    public NullableColumn<float64> res;
+    public int64 n;
+    public int64 refCount;
+    public float64 refSum;
+
+    public String name() { return "column-arith"; }
+    public String area() { return "nucleo"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 5; }
+    public int64 inputSize() { return this.n; }
+    public String unit() { return "items/s"; }
+
+    public String competitorNote() {
+        String s = "values through Column.asTensor (Tensor.mul then Tensor.add) and validity bitmaps ANDed bytewise into a NullableColumn (nucleo.column has no arithmetic kernel); check: valid="
+            + this.refCount + " and sum within 1e-12";
+        if (NucleoData.smoke()) {
+            return s + "; smoke size n=1e6 in place of 1e8";
+        }
+        return #= s;
+    }
+
+    public static #Column<uint8> bitmap(int64 n, int64 every) {
+        int64 nb = (n + (int64) 7) / (int64) 8;
+        Column<uint8> m #= Column.zeros<uint8>(nb);
+        int64 j = 0;
+        while (j < nb) {
+            int32 byte = 0;
+            int32 k = 0;
+            while (k < 8) {
+                int64 i = j * (int64) 8 + (int64) k;
+                if (i < n && i % every != 0) {
+                    byte = byte | (1 << k);
+                }
+                k = k + 1;
+            }
+            m.set(j, (uint8) byte);
+            j = j + 1;
+        }
+        return #m;
+    }
+
+    public void setup() {
+        this.n = (int64) 100000000;
+        if (NucleoData.smoke()) {
+            this.n = (int64) 1000000;
+        }
+        this.a #= Column.zeros<float64>(this.n);
+        this.b #= Column.zeros<float64>(this.n);
+        this.c #= Column.zeros<float64>(this.n);
+        int64 cnt = 0;
+        float64 s = 0.0;
+        int64 i = 0;
+        while (i < this.n) {
+            float64 x = NucleoData.u(i);
+            float64 y = NucleoData.u(i + (int64) 1);
+            float64 z = NucleoData.u(i + (int64) 2);
+            this.a.set(i, x);
+            this.b.set(i, y);
+            this.c.set(i, z);
+            if (i % (int64) 10 != 0 && i % (int64) 13 != 0 && i % (int64) 17 != 0) {
+                cnt = cnt + 1;
+                s = s + (x + y * z);
+            }
+            i = i + 1;
+        }
+        this.va #= ColumnArithBench.bitmap(this.n, (int64) 10);
+        this.vb #= ColumnArithBench.bitmap(this.n, (int64) 13);
+        this.vc #= ColumnArithBench.bitmap(this.n, (int64) 17);
+        this.refCount = cnt;
+        this.refSum = s;
+    }
+
+    public void run(int32 iterations) {
+        Tensor<float64> ta #= this.a.asTensor();
+        Tensor<float64> tb #= this.b.asTensor();
+        Tensor<float64> tc #= this.c.asTensor();
+        Tensor<float64> m #= Tensor.mul<float64>(tb, tc);
+        Tensor<float64> r #= Tensor.add<float64>(ta, m);
+        int64 nb = (this.n + (int64) 7) / (int64) 8;
+        Column<uint8> bits #= Column.zeros<uint8>(nb);
+        int64 j = 0;
+        while (j < nb) {
+            int32 x = (int32) this.va.get(j) & (int32) this.vb.get(j) & (int32) this.vc.get(j);
+            bits.set(j, (uint8) x);
+            j = j + 1;
+        }
+        this.res = null;
+        this.rt #= r;
+        Column<float64> rc #= Column.fromTensor<float64>(this.rt);
+        this.res #= heap NullableColumn<float64>(#rc, #bits, this.n);
+    }
+
+    public boolean checkResult() {
+        if (this.res == null || this.res.size() != this.n) {
+            return false;
+        }
+        int64 cnt = 0;
+        float64 s = 0.0;
+        int64 i = 0;
+        while (i < this.n) {
+            if (this.res.isValid(i)) {
+                cnt = cnt + 1;
+                s = s + this.res.get(i);
+            }
+            i = i + 1;
+        }
+        return cnt == this.refCount && NucleoData.relErr(s, this.refSum) <= 0.000000000001;
+    }
+}

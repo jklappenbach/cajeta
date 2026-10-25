@@ -1,0 +1,13 @@
+package bench.nucleo;
+
+// One row of answers_<N>.csv: the result rows and up to three checksums DuckDB
+// computed once over the generated files (datasets/gen_dbbench.py).
+public class CsvAnswer {
+    public String question;
+    public int64 rows;
+    public float64 c1;
+    public float64 c2;
+    public float64 c3;
+
+    public CsvAnswer() {}
+}

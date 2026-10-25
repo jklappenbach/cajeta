@@ -1,0 +1,8 @@
+package bench.nucleo;
+
+import cajeta.lang.Utf8;
+
+// The schema of the db-benchmark groupby table G1_<N>_1e2_0_0 (datasets/
+// gen_dbbench.py): the record IS the Table<DbG> schema, one typed column per
+// field in field order.
+public record DbG { Utf8 id1; Utf8 id2; Utf8 id3; int64 id4; int64 id5; int64 id6; int64 v1; int64 v2; float64 v3; }

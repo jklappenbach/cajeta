@@ -1,0 +1,91 @@
+package bench.nucleo;
+
+import cajeta.nucleo.frame.Table;
+import cajeta.nucleo.frame.Pred;
+
+import dev.cajeta.bench.Benchmark;
+
+// nucleo/table-filter (bench/nucleo/Table.md): filter the 1e7-row db-benchmark
+// groupby table on v3 < 10.0 (v3 is uniform on [0, 100), so ~10% survive), a
+// lazy filter forced by collect() inside the trial (every column of the
+// surviving rows is gathered). Smoke: the 1e5 set. Check: the row count and
+// sum(v1) of the survivors equal DuckDB's answer.
+public class TableFilterBench extends Benchmark {
+
+    public Table<DbG> g;
+    public Table<DbG> lastH;     // the forced handle; collect() on it is the cached result
+    public int64 lastRows;
+    public CsvAnswer ans;
+    public int64 rowsIn;
+
+    public String name() { return "table-filter"; }
+    public String area() { return "nucleo"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 5; }
+    public int64 inputSize() { return this.rowsIn; }
+    public String unit() { return "rows/s"; }
+
+    public String skipWhy;
+
+    // dev.cajeta.bench 0.1.1 gives available() == false a fixed reason, so the
+    // size gate is the single variant's supportsVariant, whose skipReason the
+    // harness records.
+    public boolean supportsVariant(String variant) {
+        String sz #= TableSortBench.size();
+        String why #= NucleoData.sizeSkip(sz);
+        if (why != null) {
+            this.skipWhy #= why;
+            return false;
+        }
+        return true;
+    }
+
+    public String skipReason() {
+        if (this.skipWhy == null) {
+            return "variant not supported";
+        }
+        return this.skipWhy;
+    }
+
+    public void setup() {
+        String sz #= TableSortBench.size();
+        String why #= NucleoData.sizeSkip(sz);
+        if (why != null) {
+            return;    // the variant skips with the reason
+        }
+        this.g #= NucleoData.loadG(sz);
+        this.ans #= NucleoData.answer(sz, "filter");
+        this.rowsIn = this.g.rowCount();
+    }
+
+    public void run(int32 iterations) {
+        Table<DbG> h #= this.g.lazy().filter((DbGCols c) -> { Pred p = c.v3() < 10.0; return #p; });
+        Table<DbG> r = h.collect();
+            this.lastRows = r.rowCount();
+            this.lastH #= h;
+    }
+
+    public boolean checkResult() {
+        if (this.lastH == null || this.ans == null) {
+            return false;
+        }
+        Table<DbG> r = this.lastH.collect();
+        int64 n = r.rowCount();
+        int64 s = 0;
+        int64 i = 0;
+        while (i < n) {
+            if (r.v3.get(i) >= 10.0) {
+                return false;
+            }
+            s = s + r.v1.get(i);
+            i = i + 1;
+        }
+        return n == this.ans.rows && (float64) s == this.ans.c1;
+    }
+
+    public String competitorNote() {
+        String sn #= NucleoData.smokeNote();
+        return "db-benchmark groupby table (gen_dbbench.py seed 108) filtered on v3 < 10.0 (~10%); lazy filter forced by collect(); check: rows and sum(v1) equal DuckDB's"
+            + sn.replace("the 1e6 variant reads", "reads");
+    }
+}

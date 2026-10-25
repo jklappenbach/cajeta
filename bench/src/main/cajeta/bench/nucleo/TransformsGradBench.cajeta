@@ -1,0 +1,95 @@
+package bench.nucleo;
+
+import cajeta.math.Tensor;
+import cajeta.nucleo.transform.GradResult;
+
+import dev.cajeta.bench.Benchmark;
+
+// nucleo/transforms-grad (bench/nucleo/Transforms.md): the gradient of a scalar
+// function of a 1e6 float32 vector, 1e3 times per trial, through the Grad
+// compiler intrinsic: f(t) = sum(t * exp(t)), df/dt = exp(t) * (1 + t), with
+// t[i] = u(i) - 0.5. Smoke: 1e5 elements, 20 calls. Check: the last call's
+// value within 1e-4 relative and every gradient element within 1e-5 relative
+// of the float64 reference.
+public class TransformsGradBench extends Benchmark {
+
+    public Tensor<float32> x;
+    public Tensor<float32> lastGrad;
+    public float64 lastValue;
+    public int64 n;
+    public int32 reps;
+    public float64 refValue;
+
+    public String name() { return "transforms-grad"; }
+    public String area() { return "nucleo"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 5; }
+    public int64 inputSize() { return (int64) this.reps; }
+    public String unit() { return "grads/s"; }
+
+    public String competitorNote() {
+        String s = "Grad of f(t) = sum(t * exp(t)) (Tensor.sum of Tensor.mul of t and Tensor.exp) over n=" + this.n + " x " + this.reps
+            + " calls; check: value within 1e-4 and every grad element within 1e-5 of exp(t)(1+t)";
+        if (NucleoData.smoke()) {
+            return s + "; smoke size n=1e5 x 20 in place of 1e6 x 1e3";
+        }
+        return #= s;
+    }
+
+    public void setup() {
+        this.n = (int64) 1000000;
+        this.reps = 1000;
+        if (NucleoData.smoke()) {
+            this.n = (int64) 100000;
+            this.reps = 20;
+        }
+        int64[] shp = heap int64[1];
+        shp[0] = this.n;
+        this.x #= Tensor.zeros<float32>(shp);
+        float64 s = 0.0;
+        int64 i = 0;
+        while (i < this.n) {
+            float32 v = (float32) (NucleoData.u(i) - 0.5);
+            this.x.flatSet(i, v);
+            s = s + (float64) v * Math.exp((float64) v);
+            i = i + 1;
+        }
+        this.refValue = s;
+    }
+
+    public void run(int32 iterations) {
+        (Tensor<float32>) -> GradResult<float32, Tensor<float32>> g =
+            Grad((Tensor<float32> t) -> Tensor.sum<float32,float32>(Tensor.mul<float32>(t, Tensor.exp<float32>(t))));
+        float64 acc = 0.0;
+        int32 k = 0;
+        while (k < this.reps) {
+            GradResult<float32, Tensor<float32>> r = g(this.x);
+            acc = acc + (float64) r.value;
+            if (k == this.reps - 1) {
+                this.lastGrad #= r.grads;
+            }
+            k = k + 1;
+        }
+        this.lastValue = acc / (float64) this.reps;
+    }
+
+    public boolean checkResult() {
+        if (this.lastGrad == null || this.lastGrad.size() != this.n) {
+            return false;
+        }
+        if (NucleoData.absf(this.lastValue - this.refValue) / NucleoData.absf(this.refValue) > 0.0001) {
+            return false;
+        }
+        int64 i = 0;
+        while (i < this.n) {
+            float64 v = (float64) this.x.flatGet(i);
+            float64 want = Math.exp(v) * (1.0 + v);
+            float64 got = (float64) this.lastGrad.flatGet(i);
+            if (NucleoData.absf(got - want) > 0.00001 * NucleoData.absf(want) + 0.0000001) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+}

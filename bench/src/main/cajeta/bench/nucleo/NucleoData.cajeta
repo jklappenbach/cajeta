@@ -1,0 +1,287 @@
+package bench.nucleo;
+
+import cajeta.codec.csv.Csv;
+import cajeta.io.file.File;
+import cajeta.nucleo.column.Column;
+import cajeta.nucleo.column.StringColumn;
+import cajeta.nucleo.frame.Table;
+
+import dev.cajeta.bench.report.Memory;
+
+// Shared inputs of the nucleo/ benchmarks (benchmark-reference unit 12).
+//
+// The Table rows read the db-benchmark port's CSVs under
+// $PROFILE_DATA_DIR/dbbench/ (datasets/gen_dbbench.py, seed 108) and check
+// against answers_<N>.csv, which DuckDB computed once over the same files.
+// The page sizes are 1e6 and 1e7 rows; CAJETA_BENCH_SMOKE=1 reads the 1e5
+// set for the 1e6 variants and skips the 1e7 ones. A 1e7 variant also skips
+// when MemAvailable is under 32 GB.
+//
+// The array rows (Column, Tape, Fuse, Transforms) use the math/ formula
+// u(i) = ((i * 7919) % 10007) / 10007, identical in the competitor program.
+public final class NucleoData {
+
+    public static boolean smoke() {
+        String s = System.env.get("CAJETA_BENCH_SMOKE");
+        if (s == null) {
+            return false;
+        }
+        return s.equals("1") || s.equals("true") || s.equals("yes");
+    }
+
+    public static float64 u(int64 i) {
+        return (float64) ((i * (int64) 7919) % (int64) 10007) / 10007.0;
+    }
+
+    public static float64 absf(float64 x) {
+        if (x < 0.0) {
+            return 0.0 - x;
+        }
+        return x;
+    }
+
+    // Relative error |a - b| / max(|b|, 1).
+    public static float64 relErr(float64 a, float64 b) {
+        float64 d = NucleoData.absf(b);
+        if (d < 1.0) {
+            d = 1.0;
+        }
+        return NucleoData.absf(a - b) / d;
+    }
+
+    // ---- db-benchmark data -------------------------------------------------
+
+    // The file label a page size reads: "1e6" reads 1e5 under smoke.
+    public static #String fileLabel(String pageSize) {
+        if (NucleoData.smoke() && pageSize.equals("1e6")) {
+            return "" + "1e5";
+        }
+        return "" + pageSize;
+    }
+
+    public static #String dir() {
+        String d = System.env.get("PROFILE_DATA_DIR");
+        if (d == null) {
+            return null;
+        }
+        return d + "/dbbench";
+    }
+
+    public static boolean present(String pageSize) {
+        String d #= NucleoData.dir();
+        if (d == null) {
+            return false;
+        }
+        String lab #= NucleoData.fileLabel(pageSize);
+        // readAllBytes, not openRead: openRead of a missing file did not
+        // return null here (measured: a missing 1e7 set read as present and
+        // the load then faulted on the null buffer).
+        int8[] b #= File.readAllBytes(d + "/answers_" + lab + ".csv");
+        if (b == null) {
+            return false;
+        }
+        return b.count() > 0;
+    }
+
+    public static int64 memAvailableKb() {
+        return Memory.parseIntAfterFile("/proc/meminfo", "MemAvailable:");
+    }
+
+    // Why a page size cannot run here, or null when it can.
+    public static #String sizeSkip(String pageSize) {
+        if (pageSize.equals("1e7")) {
+            if (NucleoData.smoke()) {
+                return "" + "1e7 variant not run under CAJETA_BENCH_SMOKE=1 (the smoke reads the 1e5 set for the 1e6 variants)";
+            }
+            int64 kb = NucleoData.memAvailableKb();
+            if (kb >= 0 && kb < (int64) 32 * (int64) 1024 * (int64) 1024) {
+                return "1e7 variant needs 32 GB available; MemAvailable is " + (kb / (int64) 1048576) + " GB";
+            }
+        }
+        if (!NucleoData.present(pageSize)) {
+            String lab #= NucleoData.fileLabel(pageSize);
+            return "dbbench " + lab + " set missing under $PROFILE_DATA_DIR/dbbench (run datasets/gen_dbbench.py <dir> " + lab + ")";
+        }
+        return null;
+    }
+
+    public static #String smokeNote() {
+        if (NucleoData.smoke()) {
+            return "" + "; smoke: the 1e6 variant reads the 1e5 set";
+        }
+        return "" + "";
+    }
+
+    // The answer row `question` of the page size's answers file, or null.
+    public static #CsvAnswer answer(String pageSize, String question) {
+        String d #= NucleoData.dir();
+        String lab #= NucleoData.fileLabel(pageSize);
+        int8[] b #= File.readAllBytes(d + "/answers_" + lab + ".csv");
+        CsvAnswer[] rows #= Csv.parse<CsvAnswer[]>(b, (int64) b.count());
+        int32 n = (int32) rows.count();
+        int32 i = 0;
+        while (i < n) {
+            if (rows[i].question.equals(question)) {
+                CsvAnswer a #= rows[i];
+                return #a;
+            }
+            i = i + 1;
+        }
+        return null;
+    }
+
+    public static #int8[] readCsv(String pageSize, String stem) {
+        String d #= NucleoData.dir();
+        String lab #= NucleoData.fileLabel(pageSize);
+        return File.readAllBytes(d + "/" + stem.replace("<N>", lab));
+    }
+
+    // G1_<N>_1e2_0_0.csv as a Table<DbG>.
+    public static #Table<DbG> loadG(String pageSize) {
+        int8[] b #= NucleoData.readCsv(pageSize, "G1_<N>_1e2_0_0.csv");
+        CsvG[] rows #= Csv.parse<CsvG[]>(b, (int64) b.count());
+        int64 n = (int64) rows.count();
+        String[] id1 = heap String[n];
+        String[] id2 = heap String[n];
+        String[] id3 = heap String[n];
+        int64[] id4 = heap int64[n];
+        int64[] id5 = heap int64[n];
+        int64[] id6 = heap int64[n];
+        int64[] v1 = heap int64[n];
+        int64[] v2 = heap int64[n];
+        float64[] v3 = heap float64[n];
+        int64 i = 0;
+        while (i < n) {
+            CsvG r = rows[i];
+            id1[i] = r.id1;
+            id2[i] = r.id2;
+            id3[i] = r.id3;
+            id4[i] = r.id4;
+            id5[i] = r.id5;
+            id6[i] = r.id6;
+            v1[i] = r.v1;
+            v2[i] = r.v2;
+            v3[i] = r.v3;
+            i = i + 1;
+        }
+        return heap Table<DbG>(StringColumn.of(id1), StringColumn.of(id2), StringColumn.of(id3),
+            Column.of<int64>(id4), Column.of<int64>(id5), Column.of<int64>(id6),
+            Column.of<int64>(v1), Column.of<int64>(v2), Column.of<float64>(v3));
+    }
+
+    public static #CsvJ[] loadJ(String pageSize, String which) {
+        String stem = "J1_<N>_" + which + "_0_0.csv";
+        int8[] b #= NucleoData.readCsv(pageSize, stem);
+        CsvJ[] rows #= Csv.parse<CsvJ[]>(b, (int64) b.count());
+        return #rows;
+    }
+
+    public static #Table<DbX> loadX(String pageSize) {
+        CsvJ[] rows #= NucleoData.loadJ(pageSize, "NA");
+        int64 n = (int64) rows.count();
+        int64[] id1 = heap int64[n];
+        int64[] id2 = heap int64[n];
+        int64[] id3 = heap int64[n];
+        String[] id4 = heap String[n];
+        String[] id5 = heap String[n];
+        String[] id6 = heap String[n];
+        float64[] v1 = heap float64[n];
+        int64 i = 0;
+        while (i < n) {
+            CsvJ r = rows[i];
+            id1[i] = r.id1;
+            id2[i] = r.id2;
+            id3[i] = r.id3;
+            id4[i] = r.id4;
+            id5[i] = r.id5;
+            id6[i] = r.id6;
+            v1[i] = r.v1;
+            i = i + 1;
+        }
+        return heap Table<DbX>(Column.of<int64>(id1), Column.of<int64>(id2), Column.of<int64>(id3),
+            StringColumn.of(id4), StringColumn.of(id5), StringColumn.of(id6), Column.of<float64>(v1));
+    }
+
+    public static #Table<DbS> loadS(String pageSize) {
+        CsvJ[] rows #= NucleoData.loadJ(pageSize, "small");
+        int64 n = (int64) rows.count();
+        int64[] id1 = heap int64[n];
+        String[] id4 = heap String[n];
+        float64[] v2 = heap float64[n];
+        int64 i = 0;
+        while (i < n) {
+            CsvJ r = rows[i];
+            id1[i] = r.id1;
+            id4[i] = r.id4;
+            v2[i] = r.v2;
+            i = i + 1;
+        }
+        return heap Table<DbS>(Column.of<int64>(id1), StringColumn.of(id4), Column.of<float64>(v2));
+    }
+
+    public static #Table<DbM> loadM(String pageSize) {
+        CsvJ[] rows #= NucleoData.loadJ(pageSize, "medium");
+        int64 n = (int64) rows.count();
+        int64[] id1 = heap int64[n];
+        int64[] id2 = heap int64[n];
+        String[] id4 = heap String[n];
+        String[] id5 = heap String[n];
+        float64[] v2 = heap float64[n];
+        int64 i = 0;
+        while (i < n) {
+            CsvJ r = rows[i];
+            id1[i] = r.id1;
+            id2[i] = r.id2;
+            id4[i] = r.id4;
+            id5[i] = r.id5;
+            v2[i] = r.v2;
+            i = i + 1;
+        }
+        return heap Table<DbM>(Column.of<int64>(id1), Column.of<int64>(id2), StringColumn.of(id4),
+            StringColumn.of(id5), Column.of<float64>(v2));
+    }
+
+    public static #Table<DbB> loadB(String pageSize) {
+        CsvJ[] rows #= NucleoData.loadJ(pageSize, "big");
+        int64 n = (int64) rows.count();
+        int64[] id1 = heap int64[n];
+        int64[] id2 = heap int64[n];
+        int64[] id3 = heap int64[n];
+        String[] id4 = heap String[n];
+        String[] id5 = heap String[n];
+        String[] id6 = heap String[n];
+        float64[] v2 = heap float64[n];
+        int64 i = 0;
+        while (i < n) {
+            CsvJ r = rows[i];
+            id1[i] = r.id1;
+            id2[i] = r.id2;
+            id3[i] = r.id3;
+            id4[i] = r.id4;
+            id5[i] = r.id5;
+            id6[i] = r.id6;
+            v2[i] = r.v2;
+            i = i + 1;
+        }
+        return heap Table<DbB>(Column.of<int64>(id1), Column.of<int64>(id2), Column.of<int64>(id3),
+            StringColumn.of(id4), StringColumn.of(id5), StringColumn.of(id6), Column.of<float64>(v2));
+    }
+
+    // Sum of a result column read as float64 (int64 columns through i64At).
+    public static float64 colSum(Table<?> r, String name, boolean isInt) {
+        int64 n = r.rowCount();
+        float64 s = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            if (r.validAt(name, i)) {
+                if (isInt) {
+                    s = s + (float64) r.i64At(name, i);
+                } else {
+                    s = s + r.f64At(name, i);
+                }
+            }
+            i = i + 1;
+        }
+        return s;
+    }
+}

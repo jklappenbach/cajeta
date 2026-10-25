@@ -1,0 +1,152 @@
+package bench.nucleo;
+
+import cajeta.collection.ArrayList;
+import cajeta.nucleo.frame.Table;
+import cajeta.nucleo.frame.Join;
+import cajeta.nucleo.frame.Sels;
+
+import dev.cajeta.bench.Benchmark;
+
+// nucleo/table-join (bench/nucleo/Table.md): the h2oai db-benchmark join
+// questions over J1_<N>_NA_0_0 (x) and its small, medium and big right tables,
+// each a lazy join forced by collect() inside the trial:
+//   q1  x inner small on int id1      q2  x inner medium on int id2
+//   q3  x left medium on int id2      q4  x inner medium on string id5
+//   q5  x inner big on int id3
+// Variants q<k>-1e6 and q<k>-1e7. The tables are read once per size (outside
+// the timed region). The result keeps every column of both sides (the key
+// once), as the other engines' joins do, except q3: a left join null-extends
+// the right side and nucleo has no nullable utf8 column, so q3's medium table
+// is projected to (id2, v2) inside the trial, in every engine. Check: the row count equals DuckDB's
+// and sum(v1), sum(v2) (nulls skipped) are within 1e-9 relative of DuckDB's.
+public class TableJoinBench extends Benchmark {
+
+    public Table<DbX> x;
+    public Table<DbS> s;
+    public Table<DbM> m;
+    public Table<DbB> b;
+    public String loaded;
+    public Table<?> lastH;     // the forced handle; collect() on it is the cached result
+    public int64 lastRows;
+    public CsvAnswer ans;
+    public String skipWhy;
+    public int64 rowsIn;
+
+    public String name() { return "table-join"; }
+    public String area() { return "nucleo"; }
+    public int32 warmupIters() { return 1; }
+    public int32 measuredIters() { return 5; }
+    public int64 inputSize() { return this.rowsIn; }
+    public String unit() { return "rows/s"; }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("q1-1e6"); v.add("q2-1e6"); v.add("q3-1e6"); v.add("q4-1e6"); v.add("q5-1e6");
+        v.add("q1-1e7"); v.add("q2-1e7"); v.add("q3-1e7"); v.add("q4-1e7"); v.add("q5-1e7");
+        return v;
+    }
+
+    // dev.cajeta.bench 0.1.1 takes one skip reason per benchmark (skipReason),
+    // not per variant; the only variants that skip are a size's, and the
+    // reason names the size.
+    public boolean supportsVariant(String variant) {
+        String sz #= TableGroupByBench.sizeOf(variant);
+        String why #= NucleoData.sizeSkip(sz);
+        if (why != null) {
+            this.ans = null;    // the skipped row's notes are the generic ones
+            this.skipWhy #= why;
+            return false;
+        }
+        return true;
+    }
+
+    public String skipReason() {
+        if (this.skipWhy == null) {
+            return "variant not supported";
+        }
+        return this.skipWhy;
+    }
+
+    public void prepare(String variant) {
+        String sz #= TableGroupByBench.sizeOf(variant);
+        if (this.loaded == null || !this.loaded.equals(sz)) {
+            this.x = null;
+            this.s = null;
+            this.m = null;
+            this.b = null;
+            this.x #= NucleoData.loadX(sz);
+            this.s #= NucleoData.loadS(sz);
+            this.m #= NucleoData.loadM(sz);
+            this.b #= NucleoData.loadB(sz);
+            this.loaded #= sz;
+            this.rowsIn = this.x.rowCount();
+        }
+        this.ans #= NucleoData.answer(sz, "join-" + TableGroupByBench.qOf(variant));
+        this.lastH = null;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        Table<DbX> xl #= this.x.lazy();
+        if (variant.startsWith("q1")) {
+            Table<DbS> sl #= this.s.lazy();
+            Table<?> j #= xl.join(sl, (DbXCols c, Sels k) -> { k.add(c.id1()); }, Join.INNER);
+            Table<?> r = j.collect();
+            this.lastRows = r.rowCount();
+            this.lastH #= j;
+        } else if (variant.startsWith("q2")) {
+            Table<DbM> ml #= this.m.lazy();
+            Table<?> j #= xl.join(ml, (DbXCols c, Sels k) -> { k.add(c.id2()); }, Join.INNER);
+            Table<?> r = j.collect();
+            this.lastRows = r.rowCount();
+            this.lastH #= j;
+        } else if (variant.startsWith("q3")) {
+            // A left join null-extends the right side, and nucleo has no
+            // nullable utf8 column, so the right table is projected to its
+            // key and v2 first (every engine does the same for q3).
+            Table<?> ml #= this.m.lazy().select((DbMCols c, Sels k) -> { k.add(c.id2()); k.add(c.v2()); });
+            Table<?> j #= xl.join(ml, (DbXCols c, Sels k) -> { k.add(c.id2()); }, Join.LEFT);
+            Table<?> r = j.collect();
+            this.lastRows = r.rowCount();
+            this.lastH #= j;
+        } else if (variant.startsWith("q4")) {
+            Table<DbM> ml #= this.m.lazy();
+            Table<?> j #= xl.join(ml, (DbXCols c, Sels k) -> { k.add(c.id5()); }, Join.INNER);
+            Table<?> r = j.collect();
+            this.lastRows = r.rowCount();
+            this.lastH #= j;
+        } else {
+            Table<DbB> bl #= this.b.lazy();
+            Table<?> j #= xl.join(bl, (DbXCols c, Sels k) -> { k.add(c.id3()); }, Join.INNER);
+            Table<?> r = j.collect();
+            this.lastRows = r.rowCount();
+            this.lastH #= j;
+        }
+    }
+
+    public boolean checkResult() {
+        if (this.lastH == null || this.ans == null) {
+            return false;
+        }
+        Table<?> r = this.lastH.collect();
+        if (r.rowCount() != this.ans.rows) {
+            return false;
+        }
+        float64 s1 = NucleoData.colSum(r, "v1", false);
+        float64 s2 = NucleoData.colSum(r, "v2", false);
+        return NucleoData.relErr(s1, this.ans.c1) <= 0.000000001
+            && NucleoData.relErr(s2, this.ans.c2) <= 0.000000001;
+    }
+
+    public String competitorNote() {
+        String sn #= NucleoData.smokeNote();
+        String q3 = "";
+        if (this.ans != null && this.ans.question.equals("join-q3")) {
+            q3 = "; right side projected to (id2 v2) before the left join (nucleo has no nullable utf8 column to null-extend id4/id5)";
+        }
+        if (this.ans == null) {
+            return "db-benchmark join (gen_dbbench.py seed 108; small table floored at 10 rows); lazy join forced by collect()" + sn;
+        }
+        return "db-benchmark " + this.ans.question + " (gen_dbbench.py seed 108; small table floored at 10 rows); lazy join forced by collect()" + q3 + "; check: rows="
+            + this.ans.rows + " and sum(v1) sum(v2) within 1e-9 of DuckDB's answers" + sn;
+    }
+}

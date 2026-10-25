@@ -1,0 +1,6 @@
+package bench.nucleo;
+
+import cajeta.lang.Utf8;
+
+// The db-benchmark join medium right table, J1_<N>_medium_0_0.
+public record DbM { int64 id1; int64 id2; Utf8 id4; Utf8 id5; float64 v2; }
