@@ -6,7 +6,7 @@
 #      no report site (the Astro site renders results now);
 #  (3) --bench selects a single benchmark;
 #  (4) --machine reaches env.csv as `machine,<name>`;
-#  (5) `publish` is the unit-22 stub: prints so and exits 2.
+#  (5) `publish` is wired: with no arguments it prints its usage, exit 2.
 set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
@@ -47,11 +47,12 @@ PROFILE_OUT="$OUT2" bash bench.sh --bench dot-product >/dev/null 2>&1 || fail "b
 N="$(cawk 'NR>1' "$OUT2/results.csv" | wc -l)"
 [[ "$N" == "1" ]] || fail "--bench dot-product expected 1 row, got $N"
 
-# (5) publish stub
+# (5) publish is wired (its behavior is test/publish_smoke.sh's): no arguments
+# is a usage error
 set +e
-MSG="$(bash bench.sh publish phoenix 20261101T0300Z-0.46.3 2>&1)"; RC=$?
+MSG="$(bash bench.sh publish 2>&1)"; RC=$?
 set -e
-[[ "$RC" == "2" ]] || fail "publish stub exit $RC, want 2"
-echo "$MSG" | grep -q "implemented in unit 22" || fail "publish stub message: $MSG"
+[[ "$RC" == "2" ]] || fail "publish with no arguments exit $RC, want 2"
+echo "$MSG" | grep -q "usage: bench.sh publish <machine> <run-id>" || fail "publish usage message: $MSG"
 
 echo "DRIVER OK"

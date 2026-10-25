@@ -160,12 +160,26 @@ function readCsvRecords(file, rel) {
   return rows.slice(1).map((cells) => Object.fromEntries(header.map((h, i) => [h, cells[i] ?? ''])));
 }
 
+/**
+ * env.csv -> { key: value }. A run's own env.csv is `key,value`; a published
+ * one (bench.sh publish, spec §9.4) is `key,value,source`, every repo's lines
+ * merged: the compiler repo's (source `cajeta`) read plain, another repo's as
+ * `<source>:<key>`.
+ */
 function readEnv(file) {
   if (!existsSync(file)) return {};
   const env = {};
-  for (const [k, ...v] of parseCsv(readFileSync(file, 'utf8'))) {
+  const rows = parseCsv(readFileSync(file, 'utf8'));
+  const sourced = rows.length > 0 && rows[0][0] === 'key' && rows[0][1] === 'value' && rows[0][2] === 'source';
+  for (const row of rows) {
+    const [k, ...v] = row;
     if (!k || (k === 'key' && v[0] === 'value')) continue;
-    env[k.trim()] = v.join(',').trim();
+    if (sourced) {
+      const src = String(row[2] ?? '').trim();
+      env[!src || src === 'cajeta' ? k.trim() : `${src}:${k.trim()}`] = String(row[1] ?? '').trim();
+    } else {
+      env[k.trim()] = v.join(',').trim();
+    }
   }
   return env;
 }

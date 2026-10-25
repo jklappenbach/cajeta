@@ -119,6 +119,26 @@ test('loadResults: schema 2 rows keyed machine -> id -> variant -> language', ()
   }
 });
 
+test('loadResults: a published env.csv (key,value,source) reads the compiler repo\'s keys plain and the others by source', () => {
+  // bench.sh publish merges every repo's env.csv with a source column (spec §9.4)
+  const root = tree({
+    'phoenix/LATEST': '20261101T0300Z-0.46.3\n',
+    'phoenix/20261101T0300Z-0.46.3/results.csv':
+      V2 + '\n2,r,0,hashmap-int,collection,,-1,,-1,cajeta,0.46.3,,,,20,200,1,1,1,1,,,1,-1,0,-1,0,ok,true,,,cpu,phoenix,,,,cajeta\n',
+    'phoenix/20261101T0300Z-0.46.3/env.csv':
+      'key,value,source\ncpu_model,AMD Ryzen 9 3950X,cajeta\ngpu,"RTX 4090, 24 GB",cajeta\nmodel,Llama-3.1-8B Q4_K_M,cajeta-llm\n',
+  });
+  try {
+    const env = loadResults(root).machines.find((m) => m.name === 'phoenix').env;
+    assert.equal(env.cpu_model, 'AMD Ryzen 9 3950X');
+    assert.equal(env.gpu, 'RTX 4090, 24 GB');
+    assert.equal(env['cajeta-llm:model'], 'Llama-3.1-8B Q4_K_M');
+    assert.equal(env.key, undefined);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('loadResults: schema 1 files (30, 31 and 32 columns) load, variants keyed', () => {
   const root = tree({
     // no LATEST: the newest run is the default

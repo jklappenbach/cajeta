@@ -25,7 +25,8 @@
 #   ./bench.sh --force ...             # run on a box that fails the quiet-box check (recorded)
 #   ./bench.sh --dry-run ...           # print the plan (plan: key=value) and the
 #                                      # quiet-box evidence; build and run nothing
-#   ./bench.sh publish <machine> <run-id>   # collect every repo's rows (spec §9.4)
+#   ./bench.sh publish <machine> <run-id>   # collect every repo's rows (spec §9.4;
+#                                      # scripts/publish.sh, test/publish_smoke.sh)
 #
 # Quiet box (spec §9.1). A run that is not a smoke refuses to start (exit 3)
 # unless the 1-minute load average is under 1, no CI runner job
@@ -37,7 +38,8 @@
 # quiet_* lines. --no-gpu probes no GPU (quiet_gpu_* read "not probed").
 #
 # Env: CAJETA= (compiler, default <repo>/build/src/cajeta), PROFILE_DATA_DIR=
-# (dataset cache), PROFILE_OUT= (output dir, default build/results/<ts>),
+# (dataset cache), PROFILE_OUT= (output dir, default build/results/<run-id>),
+# CAJETA_BENCH_RUN_ID= (default <ISO-8601-basic-UTC>-<cajeta-version>),
 # CAJETA_BENCH_SMOKE=1 (warmup 1, trials 3, rows tagged `smoke`, never published),
 # CAJETA_BENCH_MACHINE= (same as --machine), CAJETA_BENCH_IO_DIR= (io files,
 # default build/io-data), BENCH_LOADAVG_FILE= (default /proc/loadavg; tests).
@@ -58,7 +60,6 @@ export PATH
 
 if [[ "${1:-}" == "publish" ]]; then
     shift
-    [[ -f "$SCRIPT_DIR/scripts/publish.sh" ]] || { echo "bench.sh publish: implemented in unit 22" >&2; exit 2; }
     exec bash "$SCRIPT_DIR/scripts/publish.sh" "$@"
 fi
 
@@ -213,7 +214,10 @@ if [[ "$LIST" == "2" ]]; then
     exit 0
 fi
 
-TS="$(date +%Y%m%d-%H%M%S)"
+# The run id is spec §4.1's <ISO-8601-basic-UTC>-<cajeta-version>, so
+# `bench.sh publish <machine> <run-id>` finds the run at build/results/<run-id>.
+CAJETA_VER="$("$CAJETA" --version 2>/dev/null | head -1 || true)"
+TS="${CAJETA_BENCH_RUN_ID:-$(date -u +%Y%m%dT%H%MZ)-$(printf '%s' "$CAJETA_VER" | awk '{print $2}')}"
 OUT="${PROFILE_OUT:-build/results/$TS}"
 DATA="${PROFILE_DATA_DIR:-${SCRIPT_DIR}/datasets/cache}"
 export CAJETA_BENCH_IO_DIR="${CAJETA_BENCH_IO_DIR:-${SCRIPT_DIR}/build/io-data}"
@@ -268,8 +272,7 @@ if [[ "$SMOKE" == "0" ]]; then
     quiet_gate "measurement start (after ${waited} s settling)"
 fi
 
-echo "[bench] (3/4) run benchmarks -> $OUT/results.csv"
-CAJETA_VER="$("$CAJETA" --version 2>/dev/null | head -1 || true)"
+echo "[bench] (3/4) run benchmarks -> $OUT/results.csv (run id $TS)"
 # dev.cajeta.bench writes results.csv and env.csv; it exits 1 when a row failed
 # or was invalid (the run itself continues), so record that and carry on.
 RC=0
