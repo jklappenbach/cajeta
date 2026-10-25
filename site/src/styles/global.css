@@ -18,11 +18,12 @@
   --accent-wash: #f3e3cc;
   /* chart mark color — validated against --bg (dataviz six checks) */
   --chart-mark: #a05e1a;
-  /* the context fill beside it: every competitor bar on the Benchmarks
-     charts. A cool slate stepped off the warm ink at the validator's chroma
-     floor (OKLCH 0.54 0.102 255), validated as "#a05e1a,#4470a9" against
-     --bg #faf6ee: all six checks pass. */
-  --chart-context: #4470a9;
+  /* competitor fill: an emphasis neutral, not a categorical hue. Against
+     --chart-mark on --bg: CVD ΔE 14.1 deutan / 15.9 tritan, normal 15.4
+     (dataviz validator, 2026-10-25); contrast 2.85, relieved by the end
+     labels and the data table under every chart. The chroma floor is
+     waived on purpose: the competitors are context behind one subject. */
+  --chart-context: #9a9288;
   --card-shadow: 0 1px 2px rgb(66 45 21 / 0.06), 0 4px 16px rgb(66 45 21 / 0.07);
 
   --content-width: 46rem;
@@ -41,8 +42,8 @@
   --accent-strong: #e8b878;
   --accent-wash: #2e2318;
   --chart-mark: #c08339;
-  /* OKLCH 0.55 0.102 255; "#c08339,#4673ac" against --bg #191310: all pass */
-  --chart-context: #4673ac;
+  /* dark: CVD ΔE 14.3 protan / 17.5 tritan, normal 17.2, contrast ≥ 3:1 */
+  --chart-context: #6f675f;
   --card-shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 4px 16px rgb(0 0 0 / 0.35);
 }
 
