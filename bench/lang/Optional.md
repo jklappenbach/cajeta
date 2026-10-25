@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `lang/optional-map-unwrap` | 1e8 `Optional<int32>` constructed, mapped and unwrapped, half empty | C++ `std::optional`, Rust `Option`, Go (value, ok), Java `OptionalInt`, Python `None` | sum |
+| `lang/optional-map-unwrap` | 1e8 `Optional<int32>` constructed, tested with `isPresent`, rebuilt and unwrapped, half empty (`Optional` has no `map`) | C++ `std::optional`, Rust `Option`, Go (value, ok), Java `OptionalInt`, Python `None` | sum |
 
 ## Results
 

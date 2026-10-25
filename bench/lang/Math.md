@@ -8,7 +8,7 @@
 |---|---|---|---|
 | `lang/math-transcendental` | 1e7 `sin`, `exp` and `sqrt` over a float64 array | C++ libm, Rust, Go, Java, NumPy | sum within epsilon |
 | `lang/math-intdiv` | 1e8 int64 divisions and remainders | C++, Rust, Go, Java, Python | sum |
-| `lang/math-intrinsics` | 1e8 `abs`, `min`, `max`, `fma` | C++, Rust, Go, Java, Python | sum |
+| `lang/math-intrinsics` | 1e8 `abs`, `min`, `max` and `a*0.5+1.0` in place of `fma` (`Math.fma` is kernel-only on v0.46.3 though documented as native everywhere) | C++, Rust, Go, Java, Python | sum |
 | `lang/saxpy` | `y = a*x + y` over 1e7 float32 with `Vector<float32,8>` | C++ (auto-vectorized and Highway), Rust portable-simd, Go, Java Vector API, NumPy | checksum |
 | `lang/dot-product` | dot of two 1e7 float32 arrays with `Vector<float32,8>` | same | within epsilon |
 

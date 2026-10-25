@@ -7,7 +7,7 @@
 | id | workload | against | check |
 |---|---|---|---|
 | `lang/stringbuilder-append` | append a 16-byte piece 1e6 times, `toString` once | C++ `std::string::append`, Rust `String::push_str`, Go `strings.Builder`, Java `StringBuilder`, Python `''.join` | length |
-| `lang/stringbuilder-append-mixed` | append int32, float64 and String pieces in rotation, 1e6 times | same | length |
+| `lang/stringbuilder-append-mixed` | append int32, float64 and String pieces in rotation, 1e6 times (numbers through their `String` conversion; there is no numeric `append`) | same | length |
 | `lang/stringbuilder-tostring` | `toString` of a 16 MB builder, 1e2 times | same | length |
 
 ## Results

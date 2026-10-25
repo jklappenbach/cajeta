@@ -10,9 +10,9 @@
 | `lang/string-search` | `indexOf` of a 12-byte needle in a 1 MB haystack, 1e3 times | C++ `find`, Rust `find`, Go `strings.Index`, Java `indexOf`, Python `find` | index |
 | `lang/string-replace` | replace every occurrence of a word in 1 MB | same libraries | length |
 | `lang/string-uppercase` | `toUpperCase` of 1 MB ASCII and 1 MB mixed-script text | same libraries | checksum |
-| `lang/string-codepoint-walk` | iterate every codepoint of 1 MB mixed-script text | C++ hand-decoded, Rust `chars()`, Go `range`, Java `codePoints()`, Python `for c in s` | count |
+| `lang/string-codepoint-walk` | decode every codepoint of 1 MB mixed-script text from `byteAt` (there is no codepoint iterator; `codepointAt` is O(n)) | C++ hand-decoded, Rust `chars()`, Go `range`, Java `codePoints()`, Python `for c in s` | count |
 | `lang/string-byteat-scan` | `byteAt` over 1 MB counting newlines | C++ `operator[]`, Rust `bytes()`, Go `[]byte`, Java `getBytes` once then index, Python `bytes` | count |
-| `lang/string-split` | split 1 MB on commas, 1e2 times | same libraries | piece count |
+| `lang/string-split` | split 1 MB on commas with `indexOfFrom` and `substringView`, 1e2 times (`String` has no `split`) | same libraries | piece count |
 | `lang/string-compare` | 1e7 comparisons of 32-byte strings, half equal | same libraries | equal count |
 
 `count()` is codepoints; `indexOf`, `substring` and `byteAt` take byte offsets. The rows name which they use.

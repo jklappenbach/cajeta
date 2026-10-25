@@ -7,7 +7,7 @@
 | id | workload | against | check |
 |---|---|---|---|
 | `lang/guid-generate` | 1e6 random Guids | C++ libuuid, Rust `uuid`, Go `google/uuid`, Java `UUID.randomUUID`, Python `uuid4` | distinct count |
-| `lang/guid-parse` | parse 1e6 canonical strings | same | round-trip equality |
+| `lang/guid-parse` | parse 1e6 canonical strings (`Guid.parse` takes `#String`, so each parse includes a clone) | same | round-trip equality |
 | `lang/guid-format` | format 1e6 Guids | same | length |
 
 ## Results

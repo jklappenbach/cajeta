@@ -10,8 +10,8 @@ The language's loops, measured bare: a counted `for`, the same loop with bounds 
 | `lang/loop-counted-nobounds` | the same loop indexing an array with `--bounds=off` | C++, Rust (`get_unchecked`), Go, Java | sum |
 | `lang/loop-nested` | 1e4 × 1e4 nested counted loops | C++, Rust, Go, Java, Python | sum |
 | `lang/loop-foreach-array` | `foreach` over an `int32[]` of 1e7 | C++, Rust, Go, Java, Python | sum |
-| `lang/loop-foreach-arraylist` | `foreach` over an `ArrayList<int32>` of 1e7 | C++, Rust, Go, Java, Python | sum |
-| `lang/loop-range` | range iteration over 1e8 | C++, Rust, Go, Java, Python | sum |
+| `lang/loop-foreach-arraylist` | walk an `ArrayList<int32>` of 1e7 by index (`foreach` over an `ArrayList` runs zero iterations on v0.46.3, a filed defect; the row moves to `foreach` when fixed) | C++, Rust, Go, Java, Python | sum |
+| `lang/loop-range` | a counted `for` over [lo, hi) of 1e8 (the language has no range construct; the competitors use theirs) | C++, Rust, Go, Java, Python | sum |
 | `lang/loop-reduce` | loop-carried float64 reduction over 1e7 | C++, Rust, Go, Java, Python | sum within epsilon |
 | `lang/loop-early-exit` | scan of 1e7 for a sentinel at the midpoint, 1e3 times | C++, Rust, Go, Java, Python | index found |
 

@@ -7,7 +7,7 @@
 | id | workload | against | check |
 |---|---|---|---|
 | `lang/slice-window` | 1e7 slices of 64 elements taken from a 1e6 array | C++ `std::span`, Rust `&a[a..b]`, Go `a[a:b]`, Java `Arrays.copyOfRange` (copies; noted), Python `memoryview` | sum of first elements |
-| `lang/slice-iterate` | iterate a 1e7-element slice 10 times | same | sum |
+| `lang/slice-iterate` | walk a 1e7-element slice by index 10 times (`foreach` over a `Slice` runs zero iterations today, same defect) | same | sum |
 
 ## Results
 

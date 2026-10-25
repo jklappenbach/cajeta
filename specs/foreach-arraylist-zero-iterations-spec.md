@@ -7,7 +7,8 @@
 `for (int32 v : list)` with `list` an `ArrayList<int32>`, and
 `for (v : list.stream())`, both compile and both run zero iterations: the
 body never executes and no diagnostic is raised. The same loop over a `T[]`
-iterates. The benchmark walks by index until this is fixed and says so on
+iterates. Unit 5 measured the same zero-iteration result for `foreach` over
+a `Slice`. The benchmark walks by index until this is fixed and says so on
 its page.
 
 ## 2. Use cases
