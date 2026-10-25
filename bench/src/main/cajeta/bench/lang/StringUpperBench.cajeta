@@ -15,7 +15,7 @@ public class StringUpperBench extends Benchmark {
     }
 
     public String area() {
-        return "lang/string-uppercase";
+        return "lang";
     }
 
     public int32 warmupIters() {

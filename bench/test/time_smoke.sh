@@ -26,7 +26,7 @@ for b in time-instant-arith time-localdate-arith; do
     [[ -n "$row" ]] || fail "no row for $b"
     st="$(printf '%s' "$row" | awk -F, '{print $28}')"
     ar="$(printf '%s' "$row" | awk -F, '{print $5}')"
-    [[ "$ar" == time/* ]] || fail "$b area=$ar (want the time/ catalog path)"
+    [[ "$ar" == "time" ]] || fail "$b area=$ar (want time; the id is time/$b)"
     printf '%s' "$row" | awk -F, '{print $30}' | grep -q 'smoke' || fail "$b row not tagged smoke"
     [[ "$st" == "ok" ]] || fail "$b status=$st"
     echo "[time] $b ok  min_ns=$(printf '%s' "$row" | awk -F, '{print $17}')"

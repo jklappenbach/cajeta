@@ -18,7 +18,7 @@ public class SpectralNormBench extends Benchmark {
     }
 
     public String area() {
-        return "lang/clbg-spectral-norm";
+        return "lang";
     }
 
     public int32 warmupIters() {

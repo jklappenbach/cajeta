@@ -16,7 +16,7 @@ public class ArrayListAppendBench extends Benchmark {
     }
 
     public String area() {
-        return "collection/arraylist-append";
+        return "collection";
     }
 
     public int32 warmupIters() {

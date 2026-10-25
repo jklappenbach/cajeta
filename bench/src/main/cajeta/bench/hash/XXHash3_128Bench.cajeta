@@ -24,7 +24,7 @@ public class XXHash3_128Bench extends Benchmark {
     }
 
     public String area() {
-        return "hash/xxhash3_128";
+        return "hash";
     }
 
     public int32 warmupIters() {

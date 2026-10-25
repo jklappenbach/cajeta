@@ -23,7 +23,7 @@ public class SortStableBench extends Benchmark {
     }
 
     public String area() {
-        return "collection/sort-stable-int64";
+        return "collection";
     }
 
     public int32 warmupIters() {

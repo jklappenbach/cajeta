@@ -64,7 +64,7 @@ public class MatMulBench extends Benchmark {
     }
 
     public String area() {
-        return "math/matmul";
+        return "math";
     }
 
     public int32 warmupIters() {

@@ -17,7 +17,7 @@ public class HashMapIntBench extends Benchmark {
     }
 
     public String area() {
-        return "collection/hashmap-int";
+        return "collection";
     }
 
     public int32 warmupIters() {

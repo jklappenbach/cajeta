@@ -33,7 +33,7 @@ for p in random ascending descending dups; do
     st="$(col sort-int64 "$p" 28)"
     [[ "$st" == "ok" ]] || fail "sort-int64/$p status=$st"
     ar="$(col sort-int64 "$p" 5)"
-    [[ "$ar" == "collection/sort-int64" ]] || fail "sort-int64/$p area=$ar"
+    [[ "$ar" == "collection" ]] || fail "sort-int64/$p area=$ar"
     echo "[sort] sort-int64/$p ok  min_ns=$(col sort-int64 "$p" 17)"
 done
 

@@ -26,7 +26,7 @@ for b in atomic-fetchadd task-spawn-await; do
     [[ -n "$row" ]] || fail "no row for $b"
     st="$(printf '%s' "$row" | awk -F, '{print $28}')"
     ar="$(printf '%s' "$row" | awk -F, '{print $5}')"
-    [[ "$ar" == concurrent/* ]] || fail "$b area=$ar (want the concurrent/ catalog path)"
+    [[ "$ar" == "concurrent" ]] || fail "$b area=$ar (want concurrent; the id is concurrent/$b)"
     printf '%s' "$row" | awk -F, '{print $30}' | grep -q 'smoke' || fail "$b row not tagged smoke"
     [[ "$st" == "ok" ]] || fail "$b status=$st"
     echo "[concurrent] $b ok  min_ns=$(printf '%s' "$row" | awk -F, '{print $17}')"

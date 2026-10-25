@@ -6,7 +6,7 @@
 # (2) a measured run drives setup once first, the workload for warmup (1) +
 #     trials (3) in short mode, checkResult once, and teardown once, last —
 #     on the selftest/ scaffold, registered only under CAJETA_BENCH_SCAFFOLD=1;
-# (3) `--list` prints each benchmark as <area>/<name>, and the scaffold is
+# (3) `--list` prints each benchmark as its id <package>/<slug>, and the scaffold is
 #     absent from the catalog listing without CAJETA_BENCH_SCAFFOLD.
 #
 # Override the compiler with CAJETA=/path/to/cajeta.
@@ -49,9 +49,10 @@ echo "[smoke] lifecycle: $ORDER"
 
 # (3) --list prints <area>/<name>; scaffold only under CAJETA_BENCH_SCAFFOLD
 LIST="$(CAJETA_BENCH_SCAFFOLD=1 "$PROJ/build/bench" --list)" || fail "--list exited non-zero"
-printf '%s\n' "$LIST" | grep -q "selftest/example/example" || fail "--list missing selftest/example/example"
+printf '%s\n' "$LIST" | grep -qE "^  selftest/example  " || fail "--list missing selftest/example"
 CAT="$("$PROJ/build/bench" --list)" || fail "--list exited non-zero"
 printf '%s\n' "$CAT" | grep -q "selftest/" && fail "scaffold benchmarks listed without CAJETA_BENCH_SCAFFOLD"
-printf '%s\n' "$CAT" | grep -q "collection/hashmap-int/hashmap-int" || fail "--list missing collection/hashmap-int/hashmap-int"
+printf '%s\n' "$CAT" | grep -qE "^  collection/hashmap-int  " || fail "--list missing collection/hashmap-int"
+printf '%s\n' "$CAT" | grep -qE "^  [a-z]+/([a-z0-9_.-]+)/\1  " && fail "a --list line doubles its name (area must be the package only)"
 
 echo "SMOKE OK"

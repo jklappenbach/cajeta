@@ -169,11 +169,11 @@ public class GpuMatMulF16Bench extends Benchmark {
     }
 
     public String name() {
-        return "matmul-f16";
+        return "gemm-f16";
     }
 
     public String area() {
-        return "xpu/gemm-f16";
+        return "xpu";
     }
 
     public String backend() {

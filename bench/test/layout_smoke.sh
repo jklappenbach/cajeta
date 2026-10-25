@@ -8,10 +8,11 @@
 #      benchmarks, registered only under CAJETA_BENCH_SCAFFOLD=1). The harness
 #      is the dev.cajeta.bench library: no local copy, and cajeta.json
 #      depends on it;
-#  (3) every catalog benchmark's area() is "<package>/<slug>", <package> being
-#      the directory it lives in, and it is registered in Bench.cajeta;
+#  (3) every catalog benchmark's area() is its <package> (the directory it
+#      lives in) and name() its <slug>, so the id <area>/<name> is unique, and
+#      it is registered in Bench.cajeta;
 #  (4) every <package> has a page directory bench/<package>/ and one of its
-#      pages carries the benchmark's id (`id: <area>` or `<area>` in backticks) (skip with LAYOUT_PAGES=0 while the pages are written).
+#      pages carries the benchmark's id (`id: <area>/<name>` or it in backticks) (skip with LAYOUT_PAGES=0 while the pages are written).
 set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
@@ -42,6 +43,7 @@ grep -q 'BenchMain.run(args' "$ENTRY" 2>/dev/null || fail "Bench.cajeta does not
 
 # (2) every file inside a package directory
 NB=0
+IDS=""
 while IFS= read -r f; do
     rel="${f#$SRC/}"
     if [[ "$rel" != */* ]]; then
@@ -52,26 +54,29 @@ while IFS= read -r f; do
     if is_in "$pkg" "$NONCATALOG"; then continue; fi
     is_in "$pkg" "$PACKAGES" || { fail "$rel: '$pkg' is not a catalog package ($PACKAGES)"; continue; }
 
-    # (3) area() = "<package>/<slug>" for every Benchmark subclass
+    # (3) area() = "<package>" and name() = "<slug>": the id is <area>/<name>
     grep -q 'extends Benchmark' "$f" || continue
     grep -q '^import dev\.cajeta\.bench\.Benchmark;' "$f" || fail "$rel: Benchmark is not dev.cajeta.bench.Benchmark"
     NB=$((NB+1))
     cls="$(basename "$f" .cajeta)"
     area="$(grep -A2 'String area()' "$f" | grep -oE 'return "[^"]*"' | head -1 | sed 's/return "//; s/"$//')"
+    name="$(grep -A2 'String name()' "$f" | grep -oE 'return "[^"]*"' | head -1 | sed 's/return "//; s/"$//')"
     [[ -n "$area" ]] || { fail "$rel: no literal area()"; continue; }
-    apkg="${area%%/*}"; slug="${area#*/}"
-    [[ "$area" == */* ]] || { fail "$rel: area() '$area' is not <package>/<slug>"; continue; }
-    [[ "$apkg" == "$pkg" ]] || fail "$rel: area() package '$apkg' != directory '$pkg'"
-    [[ "$slug" =~ ^[a-z0-9][a-z0-9_.-]*$ ]] || fail "$rel: slug '$slug' is not lower-kebab"
+    [[ -n "$name" ]] || { fail "$rel: no literal name()"; continue; }
+    [[ "$area" == "$pkg" ]] || { fail "$rel: area() '$area' != its package '$pkg' (area is the package only)"; continue; }
+    [[ "$name" =~ ^[a-z0-9][a-z0-9_.-]*$ ]] || fail "$rel: name() '$name' is not a lower-kebab slug"
+    id="$area/$name"
+    if is_in "$id" "$IDS"; then fail "$rel: duplicate id $id"; fi
+    IDS="$IDS $id"
     grep -q "^import bench\.${pkg}\.${cls};" "$ENTRY" 2>/dev/null || fail "$rel: not imported in Bench.cajeta"
     grep -q "heap ${cls}()" "$ENTRY" 2>/dev/null || fail "$rel: not registered in Bench.cajeta"
 
     # (4) the page directory mentions the slug
     if [[ "${LAYOUT_PAGES:-1}" != "0" ]]; then
         if [[ ! -d "$PROJ/$pkg" ]] || ! ls "$PROJ/$pkg"/*.md >/dev/null 2>&1; then
-            fail "$area: no pages under bench/$pkg/"
-        elif ! grep -rqF --include="*.md" -e "id: $area" -e "\`$area\`" "$PROJ/$pkg"; then
-            fail "$area: no page under bench/$pkg/ carries the id '$area'"
+            fail "$id: no pages under bench/$pkg/"
+        elif ! grep -rqF --include="*.md" -e "id: $id" -e "\`$id\`" "$PROJ/$pkg"; then
+            fail "$id: no page under bench/$pkg/ carries the id '$id'"
         fi
     fi
 done < <(find "$SRC" -name '*.cajeta' | sort)
@@ -82,5 +87,5 @@ if [[ "$FAILS" -gt 0 ]]; then
     echo "LAYOUT FAILED ($FAILS problems, $NB benchmarks)"
     exit 1
 fi
-echo "[layout] $NB catalog benchmarks, every one under its <package>/ with area() = <package>/<slug>"
+echo "[layout] $NB catalog benchmarks, every one under its <package>/ with id <area>/<name> on a page"
 echo "LAYOUT OK"

@@ -17,7 +17,7 @@ public class HashSetDedupBench extends Benchmark {
     }
 
     public String area() {
-        return "collection/hashset-dedup";
+        return "collection";
     }
 
     public int32 warmupIters() {

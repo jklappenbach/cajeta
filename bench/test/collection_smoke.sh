@@ -29,7 +29,7 @@ for b in arraylist-append hashmap-int hashmap-string hashset-dedup linkedlist-in
     [[ -n "$row" ]] || fail "no row for $b"
     st="$(printf '%s' "$row" | awk -F, '{print $28}')"
     ar="$(printf '%s' "$row" | awk -F, '{print $5}')"
-    [[ "$ar" == collection/* ]] || fail "$b area=$ar (want the collection/ catalog path)"
+    [[ "$ar" == "collection" ]] || fail "$b area=$ar (want collection; the id is collection/$b)"
     printf '%s' "$row" | awk -F, '{print $30}' | grep -q 'smoke' || fail "$b row not tagged smoke"
     isz="$(printf '%s' "$row" | awk -F, '{print $9}')"
     mn="$(printf '%s' "$row" | awk -F, '{print $17}')"

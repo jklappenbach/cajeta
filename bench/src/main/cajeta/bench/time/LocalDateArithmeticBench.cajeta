@@ -25,7 +25,7 @@ public class LocalDateArithmeticBench extends Benchmark {
     }
 
     public String area() {
-        return "time/time-localdate-arith";
+        return "time";
     }
 
     public int32 warmupIters() {

@@ -16,7 +16,7 @@ public class AtomicBench extends Benchmark {
     }
 
     public String area() {
-        return "concurrent/atomic-fetchadd";
+        return "concurrent";
     }
 
     public int32 warmupIters() {

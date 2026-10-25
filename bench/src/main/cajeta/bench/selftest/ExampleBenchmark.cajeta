@@ -15,7 +15,7 @@ public class ExampleBenchmark extends Benchmark {
     }
 
     public String area() {
-        return "selftest/example";
+        return "selftest";
     }
 
     public void setup() {

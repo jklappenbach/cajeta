@@ -19,7 +19,7 @@ public class VariantBench extends Benchmark {
     }
 
     public String area() {
-        return "selftest/variant-demo";
+        return "selftest";
     }
 
     public int32 warmupIters() {

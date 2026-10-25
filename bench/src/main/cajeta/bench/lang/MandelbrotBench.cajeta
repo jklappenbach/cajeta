@@ -24,7 +24,7 @@ public class MandelbrotBench extends Benchmark {
     }
 
     public String area() {
-        return "lang/clbg-mandelbrot";
+        return "lang";
     }
 
     public int32 warmupIters() {

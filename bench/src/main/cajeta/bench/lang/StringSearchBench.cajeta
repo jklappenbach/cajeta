@@ -16,7 +16,7 @@ public class StringSearchBench extends Benchmark {
     }
 
     public String area() {
-        return "lang/string-search";
+        return "lang";
     }
 
     public int32 warmupIters() {

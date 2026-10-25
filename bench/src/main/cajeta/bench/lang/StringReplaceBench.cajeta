@@ -16,7 +16,7 @@ public class StringReplaceBench extends Benchmark {
     }
 
     public String area() {
-        return "lang/string-replace";
+        return "lang";
     }
 
     public int32 warmupIters() {

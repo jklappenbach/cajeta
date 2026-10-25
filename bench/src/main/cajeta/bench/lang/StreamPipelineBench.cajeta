@@ -18,7 +18,7 @@ public class StreamPipelineBench extends Benchmark {
     }
 
     public String area() {
-        return "lang/stream-filter-map-reduce";
+        return "lang";
     }
 
     public int32 warmupIters() {

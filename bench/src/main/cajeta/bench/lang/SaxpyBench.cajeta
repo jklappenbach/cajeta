@@ -20,7 +20,7 @@ public class SaxpyBench extends Benchmark {
     }
 
     public String area() {
-        return "lang/saxpy";
+        return "lang";
     }
 
     public int32 warmupIters() {

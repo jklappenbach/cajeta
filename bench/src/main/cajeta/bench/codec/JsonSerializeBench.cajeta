@@ -24,7 +24,7 @@ public class JsonSerializeBench extends Benchmark {
     }
 
     public String area() {
-        return "codec/json-serialize";
+        return "codec";
     }
 
     public int32 warmupIters() {

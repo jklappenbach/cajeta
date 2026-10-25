@@ -28,7 +28,7 @@ public class SortInt64Bench extends Benchmark {
     }
 
     public String area() {
-        return "collection/sort-int64";
+        return "collection";
     }
 
     public int32 warmupIters() {

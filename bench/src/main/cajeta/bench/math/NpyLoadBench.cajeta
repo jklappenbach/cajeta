@@ -22,7 +22,7 @@ public class NpyLoadBench extends Benchmark {
     }
 
     public String area() {
-        return "math/npy-load-i32";
+        return "math";
     }
 
     public int32 warmupIters() {

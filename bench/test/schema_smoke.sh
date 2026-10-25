@@ -58,7 +58,7 @@ echo "[schema] peak_rss_kb=$PEAK machine=$(get 33) os=$(get 34)"
 
 # (3) skipped row: json-tokenize without PROFILE_DATA_DIR
 OUT2="$D/skip.csv"
-env -u PROFILE_DATA_DIR "$PROJ/build/bench" --run --area codec/json-tokenize --out "$OUT2" >/dev/null || fail "skip run exited non-zero"
+env -u PROFILE_DATA_DIR "$PROJ/build/bench" --run --bench json-tokenize --out "$OUT2" >/dev/null || fail "skip run exited non-zero"
 ROW="$(awk -F, 'NR>1 && $4=="json-tokenize"{print; exit}' "$OUT2")"
 [[ "$(get 28)" == "skipped" ]] || fail "expected skipped row, got status='$(get 28)'"
 [[ -n "$(get 30)" ]]           || fail "skipped row carries no reason"

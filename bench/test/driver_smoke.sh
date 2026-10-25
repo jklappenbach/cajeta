@@ -18,8 +18,8 @@ export CAJETA_BENCH_SMOKE=1
 
 # (1) --list works (build + list, no run)
 LIST="$(bash bench.sh --list 2>/dev/null)" || fail "bench.sh --list failed"
-echo "$LIST" | grep -q "lang/saxpy/saxpy" || fail "--list missing lang/saxpy/saxpy"
-echo "$LIST" | grep -q "math/matmul/matmul" || fail "--list missing math/matmul/matmul"
+echo "$LIST" | grep -qE "^  lang/saxpy  " || fail "--list missing lang/saxpy"
+echo "$LIST" | grep -qE "^  math/matmul  " || fail "--list missing math/matmul"
 
 # (2) --area filter runs only that package, full pipeline
 OUT="/tmp/cajeta-bench-driver-test"
@@ -29,9 +29,9 @@ PROFILE_OUT="$OUT" bash bench.sh --machine smokebox --area math >/tmp/cajeta-ben
 [[ -f "$OUT/results.csv" ]] || fail "results.csv not written"
 [[ -f "$OUT/env.csv" ]]     || fail "env.csv not written"
 [[ -e "$OUT/site" || -e "$OUT/report.md" ]] && fail "a report was generated (report.py is retired)"
-NONMATH="$(awk -F, 'NR>1 && $5 !~ /^math\//' "$OUT/results.csv" | wc -l)"
+NONMATH="$(awk -F, 'NR>1 && $5 != "math"' "$OUT/results.csv" | wc -l)"
 [[ "$NONMATH" == "0" ]] || fail "expected only math/ rows, got $NONMATH others"
-awk -F, 'NR>1 && $4=="matmul" && $5=="math/matmul" && $28=="ok"' "$OUT/results.csv" | grep -q . || fail "math/matmul not ok in filtered run"
+awk -F, 'NR>1 && $4=="matmul" && $5=="math" && $28=="ok"' "$OUT/results.csv" | grep -q . || fail "math/matmul not ok in filtered run"
 
 # (4) --machine reached env.csv
 grep -qx "machine,smokebox" "$OUT/env.csv" || fail "env.csv missing machine,smokebox"

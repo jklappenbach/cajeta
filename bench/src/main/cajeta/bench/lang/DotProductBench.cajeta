@@ -19,7 +19,7 @@ public class DotProductBench extends Benchmark {
     }
 
     public String area() {
-        return "lang/dot-product";
+        return "lang";
     }
 
     public int32 warmupIters() {

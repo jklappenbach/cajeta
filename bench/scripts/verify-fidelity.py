@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Copy of cajeta-bench tools/verify-fidelity.py at cajeta-bench 56fa740 (dev.cajeta.bench 0.1.0),
 # the source of truth; refresh it when the library moves. bench.sh runs it.
+# Local change: the matmul check matches the id math/matmul, not the name (send upstream).
 # Verification gate over a benchmark results.csv, schema 1 or 2.
 #
 # Two layers:
@@ -161,13 +162,21 @@ def main(argv):
         gated(f"json: {bench} Cajeta rows ok (no float-parse skip)", [bench], json_check)
 
     # 4. matmul — Cajeta median in the kernel-pool band (~0.05–0.08 ms; allow slack).
+    #    Matched by catalog id math/matmul (area/benchmark), never by the name
+    #    `matmul` alone: the device GEMMs (xpu/gemm-f32, and v1's gpu/matmul)
+    #    are other benchmarks and must not be read against the CPU band.
+    def is_cpu_matmul(r):
+        return r["benchmark"] == "matmul" and r["area"] == "math"
     def matmul():
-        mm = [r for r in measured if r["benchmark"] == "matmul"]
+        mm = [r for r in measured if is_cpu_matmul(r)]
         mm_med = num(mm[0]["median_ns"]) if mm else None
         check("matmul: Cajeta median in kernel-pool band (40k–130k ns)",
               mm_med is not None and 40000 <= mm_med <= 130000,
               f"median_ns={mm_med}")
-    gated("matmul: Cajeta median in kernel-pool band (40k–130k ns)", ["matmul"], matmul)
+    if require_suite or any(is_cpu_matmul(r) for r in rows):
+        matmul()
+    else:
+        skip("matmul: Cajeta median in kernel-pool band (40k–130k ns)", "not in this file")
 
     # 5. SIMD compute kernels — improved vs the recorded scalar baselines.
     #    (dot ~390us, saxpy ~590us, spectral ~1632us before vectorization.)

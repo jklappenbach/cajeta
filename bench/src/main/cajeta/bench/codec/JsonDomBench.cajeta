@@ -28,7 +28,7 @@ public class JsonDomBench extends Benchmark {
     }
 
     public String area() {
-        return "codec/json-dom";
+        return "codec";
     }
 
     public int32 warmupIters() {

@@ -39,8 +39,8 @@ run_backend() {
         fail "--run crashed for backend $env_bk"
     fi
     local rows
-    rows="$(awk -F, -v b=matmul -v c="$COL_BENCH" 'NR>1 && $c==b {print}' "$out")"
-    [[ -n "$rows" ]] || fail "no matmul rows for backend $bk"
+    rows="$(awk -F, -v b=gemm-f32 -v c="$COL_BENCH" 'NR>1 && $c==b {print}' "$out")"
+    [[ -n "$rows" ]] || fail "no gemm-f32 rows for backend $bk"
     local n_ok=0
     while IFS= read -r row; do
         [[ -n "$row" ]] || continue
@@ -71,8 +71,8 @@ OUT_SKIP="/tmp/profile-gpu-skip.csv"; rm -f "$OUT_SKIP"
 CAJETA_XPU_BACKEND="nonesuch" PROFILE_RUN_ID="gpu-skip" \
     "$EXE" --run --area xpu --out "$OUT_SKIP" >/tmp/gpu-run-skip.log 2>&1 \
     || fail "suite crashed (should skip cleanly) for unavailable backend"
-skiprow="$(awk -F, -v b=matmul -v c="$COL_BENCH" 'NR>1 && $c==b {print; exit}' "$OUT_SKIP")"
-[[ -n "$skiprow" ]] || fail "no matmul row at all for unavailable backend"
+skiprow="$(awk -F, -v b=gemm-f32 -v c="$COL_BENCH" 'NR>1 && $c==b {print; exit}' "$OUT_SKIP")"
+[[ -n "$skiprow" ]] || fail "no gemm-f32 row at all for unavailable backend"
 skst="$(printf '%s' "$skiprow" | awk -F, -v c="$COL_STATUS" '{print $c}')"
 [[ "$skst" == "skipped" || "$skst" == "ok" ]] || fail "unavailable-backend status=$skst (want skipped)"
 echo "[gpu] skip-clean ok (status=$skst, exit 0)"

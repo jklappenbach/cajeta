@@ -17,7 +17,7 @@ public class RedBlackTreeBench extends Benchmark {
     }
 
     public String area() {
-        return "collection/redblacktree-insert-lookup";
+        return "collection";
     }
 
     public int32 warmupIters() {

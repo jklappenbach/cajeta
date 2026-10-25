@@ -17,7 +17,7 @@ public class HashMapStringBench extends Benchmark {
     }
 
     public String area() {
-        return "collection/hashmap-string";
+        return "collection";
     }
 
     public int32 warmupIters() {

@@ -23,7 +23,7 @@ public class TaskSpawnBench extends Benchmark {
     }
 
     public String area() {
-        return "concurrent/task-spawn-await";
+        return "concurrent";
     }
 
     public int32 warmupIters() {

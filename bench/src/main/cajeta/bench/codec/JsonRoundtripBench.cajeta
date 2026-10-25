@@ -23,7 +23,7 @@ public class JsonRoundtripBench extends Benchmark {
     }
 
     public String area() {
-        return "codec/json-roundtrip";
+        return "codec";
     }
 
     public int32 warmupIters() {

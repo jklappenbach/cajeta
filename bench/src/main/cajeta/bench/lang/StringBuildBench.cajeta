@@ -19,7 +19,7 @@ public class StringBuildBench extends Benchmark {
     }
 
     public String area() {
-        return "lang/string-build-concat";
+        return "lang";
     }
 
     public int32 warmupIters() {

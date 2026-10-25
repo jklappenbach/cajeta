@@ -27,7 +27,7 @@ for b in stream-filter-map-reduce stream-parallel-reduce; do
     [[ -n "$row" ]] || fail "no row for $b"
     st="$(printf '%s' "$row" | awk -F, '{print $28}')"
     ar="$(printf '%s' "$row" | awk -F, '{print $5}')"
-    [[ "$ar" == lang/* ]] || fail "$b area=$ar (want the lang/ catalog path)"
+    [[ "$ar" == "lang" ]] || fail "$b area=$ar (want lang; the id is lang/$b)"
     printf '%s' "$row" | awk -F, '{print $30}' | grep -q 'smoke' || fail "$b row not tagged smoke"
     [[ "$st" == "ok" ]] || fail "$b status=$st"
     echo "[stream] $b ok  min_ns=$(printf '%s' "$row" | awk -F, '{print $17}')"

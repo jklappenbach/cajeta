@@ -116,11 +116,11 @@ public class GpuMatMulBench extends Benchmark {
     }
 
     public String name() {
-        return "matmul";
+        return "gemm-f32";
     }
 
     public String area() {
-        return "xpu/gemm-f32";
+        return "xpu";
     }
 
     // The runtime-selected device backend, reported on the result row. The gpu

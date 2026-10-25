@@ -17,7 +17,7 @@ public class BinarySearchBench extends Benchmark {
     }
 
     public String area() {
-        return "collection/binary-search";
+        return "collection";
     }
 
     public int32 warmupIters() {

@@ -17,7 +17,7 @@ public class LinkedListBench extends Benchmark {
     }
 
     public String area() {
-        return "collection/linkedlist-insert-traverse";
+        return "collection";
     }
 
     public int32 warmupIters() {

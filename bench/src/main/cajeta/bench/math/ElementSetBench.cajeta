@@ -21,7 +21,7 @@ public class ElementSetBench extends Benchmark {
     }
 
     public String area() {
-        return "math/tensor-element-set";
+        return "math";
     }
 
     public int32 warmupIters() {

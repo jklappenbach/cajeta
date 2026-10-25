@@ -75,8 +75,8 @@ for bench in json-dom json-serialize json-roundtrip; do
 done
 
 # Every row carries its catalog path and the smoke tag.
-bad="$(awk -F, 'NR>1 && ($5 !~ /^codec\// || $30 !~ /smoke/)' "$OUT" | wc -l)"
-[[ "$bad" == "0" ]] || fail "$bad codec rows without a codec/ area or the smoke tag"
+bad="$(awk -F, 'NR>1 && ($5 != "codec" || $30 !~ /smoke/)' "$OUT" | wc -l)"
+[[ "$bad" == "0" ]] || fail "$bad codec rows without area codec or the smoke tag"
 
 # json-conformance: accept/reject vector all correct (self-contained)
 cst="$(awk -F, 'NR>1 && $4=="json-conformance"{print $28; exit}' "$OUT")"

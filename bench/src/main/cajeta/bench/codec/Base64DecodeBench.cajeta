@@ -18,7 +18,7 @@ public class Base64DecodeBench extends Benchmark {
     }
 
     public String area() {
-        return "codec/base64-decode";
+        return "codec";
     }
 
     public int32 warmupIters() {

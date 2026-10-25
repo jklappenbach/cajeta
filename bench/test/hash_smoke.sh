@@ -26,7 +26,7 @@ for b in xxhash3 xxhash3-256k xxhash3_128 xxhash3_128-256k siphash; do
     [[ -n "$row" ]] || fail "no row for $b"
     st="$(printf '%s' "$row" | awk -F, '{print $28}')"
     ar="$(printf '%s' "$row" | awk -F, '{print $5}')"
-    [[ "$ar" == hash/* ]] || fail "$b area=$ar (want the hash/ catalog path)"
+    [[ "$ar" == "hash" ]] || fail "$b area=$ar (want hash; the id is hash/$b)"
     printf '%s' "$row" | awk -F, '{print $30}' | grep -q 'smoke' || fail "$b row not tagged smoke"
     [[ "$st" == "ok" ]] || fail "$b status=$st"
     mb="$(printf '%s' "$row" | awk -F, '{print $9, $17}')"

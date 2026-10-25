@@ -32,7 +32,7 @@ public class JsonBindBench extends Benchmark {
     }
 
     public String area() {
-        return "codec/json-bind-skip";
+        return "codec";
     }
 
     public int32 warmupIters() {

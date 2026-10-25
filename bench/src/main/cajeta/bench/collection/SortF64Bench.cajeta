@@ -22,7 +22,7 @@ public class SortF64Bench extends Benchmark {
     }
 
     public String area() {
-        return "collection/sort-f64";
+        return "collection";
     }
 
     public int32 warmupIters() {
