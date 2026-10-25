@@ -1,12 +1,12 @@
 # Clock
 
-`cajeta.time.Clock` — the static what-time-is-it surface.
+`cajeta.time.Clock` — the static what-time-is-it surface. `Clock.now()` is wall-clock time at millisecond resolution; the competitors read monotonic nanosecond clocks, so this row compares a different call and says so.
 
 ## Benchmarks
 
 | id | workload | against | check |
 |---|---|---|---|
-| `time/clock-now` | 1e7 `Clock.now()` | C++ `steady_clock`, Rust `Instant::now`, Go `time.Now`, Java `Instant.now`, Python `time.perf_counter_ns` | monotonic |
+| `time/clock-now` | 1e7 `Clock.now()` (wall clock, milliseconds) | C++ `steady_clock`, Rust `Instant::now`, Go `time.Now`, Java `Instant.now`, Python `time.perf_counter_ns` (monotonic, nanoseconds) | monotonic |
 
 ## Results
 

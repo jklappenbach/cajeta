@@ -7,7 +7,7 @@
 | id | workload | against | check |
 |---|---|---|---|
 | `time/datetime-format-iso` | format 1e6 instants as ISO-8601 with nanoseconds | C++ chrono, Rust `jiff` and `chrono`, Go time, Java java.time, Python datetime and `whenever` | length |
-| `time/datetime-parse-iso` | parse 1e6 ISO-8601 strings | C++ chrono, Rust `jiff` and `chrono`, Go time, Java java.time, Python datetime and `whenever` | round-trip equality |
+| `time/datetime-parse-iso` | parse 1e6 ISO-8601 strings (Cajeta skips: `cajeta.time` has no parse API yet; the competitors run it) | C++ chrono, Rust `jiff` and `chrono`, Go time, Java java.time, Python datetime and `whenever` | round-trip equality |
 
 ## Results
 

@@ -1,12 +1,12 @@
 # Hash
 
-`cajeta.hash.Hash` — the hashing protocol a user type implements.
+`cajeta.hash.Hash` — the static hashing utilities. The protocol a user type implements is `Object.hash()` with `@AutoHash`, which is what this row measures.
 
 ## Benchmarks
 
 | id | workload | against | check |
 |---|---|---|---|
-| `hash/hash-struct` | hash 1e7 three-field structs through the protocol | Rust `#[derive(Hash)]`, Java `Objects.hash`, Go `maphash` over fields, C++ `boost::hash_combine` | checksum |
+| `hash/hash-struct` | hash 1e7 three-field `@AutoHash` values | Rust `#[derive(Hash)]`, Java `Objects.hash`, Go `maphash` over fields, C++ `boost::hash_combine` | checksum |
 
 ## Results
 

@@ -1,13 +1,13 @@
 # DefaultHasher
 
-`cajeta.hash.DefaultHasher` — the hasher a `HashMap` uses when none is named. These rows are the hashing share of the `collection/hashmap-*` numbers.
+`cajeta.hash.DefaultHasher` — the hasher behind `String.hash()`, which a `HashMap` with string keys calls. These rows are the hashing share of the `collection/hashmap-*` numbers. Integer keys do not go through it: the map calls the `int64` hash intrinsic, so the int row times that call.
 
 ## Benchmarks
 
 | id | workload | against | check |
 |---|---|---|---|
-| `hash/defaulthasher-string` | hash 1e7 16-byte strings | Rust `DefaultHasher`, Go `maphash`, Java `String.hashCode`, Python `hash` | checksum |
-| `hash/defaulthasher-int` | hash 1e8 int64 | same | checksum |
+| `hash/defaulthasher-string` | hash 1e7 16-byte strings from a pool of 1024 (`String.hash()` equals the `DefaultHasher` digest) | Rust `DefaultHasher`, Go `maphash`, Java `Arrays.hashCode` (uncached; `String.hashCode` caches), Python `hash` (cached; noted) | checksum |
+| `hash/defaulthasher-int` | hash 1e8 int64 through the map's int64 intrinsic | same | checksum |
 
 ## Results
 

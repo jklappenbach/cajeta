@@ -20,6 +20,7 @@ tracked below: `cajeta-text-shaping` is a **new spec not yet written**, and
 
 | Spec | Plan | Status |
 |------|------|--------|
+| [xxhash3-writebytesrange-offset](xxhash3-writebytesrange-offset-spec.md) | — (defect) | **draft**: filed 2026-10-25 by benchmark-reference unit 8. `XXHash3.writeBytesRange` ignores its offset; `hashSeeded` never takes the SIMD long path. |
 | [optimized-http-server-link-drop](optimized-http-server-link-drop-spec.md) | — (defect) | **draft**: filed 2026-10-25 by benchmark-reference unit 19. No optimized build of a cajeta-http server links on v0.46.3 (undefined `Optional<…Dispatch>__drop` and `…Connection__drop`); only O0 links, so primavera's and cajeta-http's server rows cannot be release figures until fixed. |
 | [json-parse-accepts-invalid](json-parse-accepts-invalid-spec.md) | — (defect) | **draft**: filed 2026-10-25 by benchmark-reference unit 9. `Json.parse` accepts 9 of 31 JSON_checker fail files (trailing content, leading zero, raw control characters, malformed exponents); every competitor rejects all 31. The float half (canada does not round-trip at 6 fraction digits) is `float64-tostring-roundtrip`. |
 | [inherited-constructor-heap-segv](inherited-constructor-heap-segv-spec.md) | — (defect) | **draft**: filed 2026-10-25 by benchmark-reference unit 17. A subclass with no constructor whose base declares one segfaults on the first field access after `heap`; an explicit constructor fixes it. |

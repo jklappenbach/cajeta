@@ -14,6 +14,12 @@ half fixed: `Instant` works, `LocalDate` does not. Both time benchmarks carry
 a comment naming this spec and derive a fresh date per iteration until it is
 fixed.
 
+**Broader than LocalDate** (unit 8, 2026-10-25): the same 366-step
+reassignment loop is wrong for `Duration.plus` and `LocalDateTime.plusHours`
+as well; `LocalTime.plusSeconds` and `Instant` are correct. Every new time
+and hash benchmark builds a fresh value per step and names this spec in its
+notes.
+
 ## 2. Use cases
 - **2.1** As a developer, when I reassign a stack value-type local from a
   method call on itself inside a loop, then the local holds the returned

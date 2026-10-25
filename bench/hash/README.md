@@ -6,8 +6,8 @@ Non-cryptographic hashing against the reference implementations. Cryptographic h
 |---|---|
 | [XXHash3](XXHash3.md) | The 64- and 128-bit XXH3 |
 | [SipHash](SipHash.md) | SipHash-2-4, the keyed hash a map uses when the keys are hostile |
-| [DefaultHasher](DefaultHasher.md) | The hasher a HashMap uses when none is named |
-| [Hash](Hash.md) | The hashing protocol a user type implements |
+| [DefaultHasher](DefaultHasher.md) | The hasher behind String.hash, which a HashMap with string keys calls |
+| [Hash](Hash.md) | The static hashing utilities |
 
 ## Standing
 
