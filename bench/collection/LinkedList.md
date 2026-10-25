@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `collection/linkedlist-insert-traverse` | insert 1e6 at the head, traverse twice | C++ `std::list`, Rust `LinkedList`, Go `container/list`, Java `LinkedList`, Python deque | sum |
+| `collection/linkedlist-insert-traverse` | insert 1e6 at the head, then two full walks as searches for an absent value (`LinkedList` has no iterator; every language walks the same way); the Cajeta side empties the list inside the time because dropping 1e6 nodes overflows the stack today, a filed defect | C++ `std::list`, Rust `LinkedList`, Go `container/list`, Java `LinkedList`, Python deque | count, both walks missing, head and tail values |
 
 ## Results
 
