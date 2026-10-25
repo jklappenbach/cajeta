@@ -20,6 +20,8 @@ tracked below: `cajeta-text-shaping` is a **new spec not yet written**, and
 
 | Spec | Plan | Status |
 |------|------|--------|
+| [http-connectionframer-segv-connection-burst](http-connectionframer-segv-connection-burst-spec.md) | — (defect, cajeta-http) | **draft**: filed 2026-10-25 from the primavera bench. A fresh h1 server meeting 512 connections at once SIGSEGVs in `ConnectionFramer` and hangs; unit 18 saw the same class once at 64. |
+| [virtual-override-through-archive-base](virtual-override-through-archive-base-spec.md) | — (defect, unconfirmed) | **draft**: filed 2026-10-25 from the codec bench. An intermediate class's override from a `.cja` base was not dispatched to from subclasses overriding a sibling method; a same-module repro works. |
 | [lld-lookup-path-only](lld-lookup-path-only-spec.md) | — (defect, build tool) | **draft**: filed 2026-10-25. The compiler finds `ld.lld` only on PATH and otherwise builds without LTO after a warning; the fork's lld sits beside its clang. |
 | [dap-attach-missing](dap-attach-missing-spec.md) | — (defect, tooling) | **draft**: filed 2026-10-25 by benchmark-reference unit 15. The guide lists a DAP `attach`; only `launch` exists. No command runs a `.cja` through the JIT. |
 | [mesh-simplifier-quadratic-host](mesh-simplifier-quadratic-host-spec.md) | — (defect, stdlib) | **draft**: filed 2026-10-25 by benchmark-reference unit 14. `MeshSimplifier` is host-only with an O(T²) driver; 2048 triangles take 184 ms against meshoptimizer's 0.45 ms. |
