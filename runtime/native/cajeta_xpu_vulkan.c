@@ -2987,6 +2987,8 @@ static struct caj_vk_pipe* caj_vk_pipe_get(
                 != VK_SUCCESS)
             goto fail;
     }
+    if (getenv("CAJETA_XPU_VK_SYNC_LOG"))
+        fprintf(stderr, "cajeta.xpu.vulkan: pipeline %s\n", entry ? entry : "?");
     P->live = 1;
     g_vk_pipe_count++;
     return P;
