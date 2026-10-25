@@ -17,9 +17,10 @@
 set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 OUTD="${CAJETA_BENCH_OUT:-/tmp/cajeta-bench-lang-smoke}"
-NCOLS="$(awk -F, '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
+NCOLS="$(cawk '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
 # shellcheck source=lang_lib.sh
 source "$SCRIPT_DIR/lang_lib.sh"
 fail() { echo "LANG-COMP FAIL: $1" >&2; exit 1; }
@@ -44,11 +45,11 @@ echo "[lang-comp] ran the eight programs in $((SECONDS - t0))s"
 
 while IFS= read -r row; do
     [[ -z "$row" ]] && continue
-    N="$(printf '%s' "$row" | awk -F, '{print NF}')"
+    N="$(printf '%s' "$row" | cawk '{print NF}')"
     [[ "$N" == "$NCOLS" ]] || fail "row has $N columns, want $NCOLS: $row"
-    printf '%s' "$row" | awk -F, '$1!="2" || $5!="lang" || $33=="" || $34=="" || $37!=$10 {exit 1}' \
+    printf '%s' "$row" | cawk '$1!="2" || $5!="lang" || $33=="" || $34=="" || $37!=$10 {exit 1}' \
         || fail "row is not v2 lang with machine/os/platform: $row"
-done < "$CSV"
+done < <(csv_fields "$CSV")
 
 ok=0; sk=0
 for lang in cpp rust go java python; do
@@ -59,14 +60,14 @@ for lang in cpp rust go java python; do
             [[ "$var" == "recoverable" ]] || continue
             var=""
         fi
-        rows="$(awk -F, -v l="$lang" -v b="$slug" -v v="$var" '$10==l && $4==b && $31==v' "$CSV")"
+        rows="$(cawk -v l="$lang" -v b="$slug" -v v="$var" '$10==l && $4==b && $31==v' "$CSV")"
         [[ -n "$rows" ]] || fail "no $lang row for lang/$slug${var:+ [$var]}"
         key="$lang:$slug${var:+:$var}"
         if [[ " $(echo $EXPECTED_SKIPS) " == *" $key "* ]]; then
-            echo "$rows" | awk -F, '$28!="skipped" || $30=="" {exit 1}' || fail "$key should be skipped with a reason: $rows"
+            echo "$rows" | cawk '$28!="skipped" || $30=="" {exit 1}' || fail "$key should be skipped with a reason: $rows"
             sk=$((sk + 1))
         else
-            echo "$rows" | awk -F, '$28!="ok" || $29!="true" {exit 1}' || fail "$key not ok/true: $rows"
+            echo "$rows" | cawk '$28!="ok" || $29!="true" {exit 1}' || fail "$key not ok/true: $rows"
             ok=$((ok + $(echo "$rows" | wc -l)))
         fi
     done
@@ -74,14 +75,14 @@ done
 
 # Exceptions notes and Java's two libraries.
 for b in try-no-throw throw-catch-1 throw-catch-10 throw-catch-100; do
-    awk -F, -v b="$b" '$10=="rust" && $4==b && $30 ~ /Result/' "$CSV" | grep -q . || fail "rust $b notes do not say Result"
-    awk -F, -v b="$b" '$10=="go" && $4==b && $30 ~ /error/' "$CSV" | grep -q . || fail "go $b notes do not say error"
+    cawk -v b="$b" '$10=="rust" && $4==b && $30 ~ /Result/' "$CSV" | grep -q . || fail "rust $b notes do not say Result"
+    cawk -v b="$b" '$10=="go" && $4==b && $30 ~ /error/' "$CSV" | grep -q . || fail "go $b notes do not say error"
 done
 for b in throw-catch-1 throw-catch-10 throw-catch-100 throw-in-fiber; do
-    n="$(awk -F, -v b="$b" '$10=="java" && $4==b && $28=="ok" {print $12}' "$CSV" | sort -u | wc -l)"
+    n="$(cawk -v b="$b" '$10=="java" && $4==b && $28=="ok" {print $12}' "$CSV" | sort -u | wc -l)"
     [[ "$n" -ge 2 ]] || fail "java $b lacks the with/without stack trace rows"
 done
 # Java's template row is the erased generic, boxed.
-awk -F, '$10=="java" && $4=="call-template" && $30 ~ /box/' "$CSV" | grep -q . || fail "java call-template notes do not say boxed"
+cawk '$10=="java" && $4=="call-template" && $30 ~ /box/' "$CSV" | grep -q . || fail "java call-template notes do not say boxed"
 
 echo "LANG-COMP OK ($ok ok rows, $sk skipped as the pages call for, $((SECONDS - t0))s)"

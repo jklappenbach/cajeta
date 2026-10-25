@@ -10,6 +10,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 
 fail() { echo "DRIVER FAIL: $1" >&2; exit 1; }
@@ -29,21 +30,21 @@ PROFILE_OUT="$OUT" bash bench.sh --machine smokebox --area math >/tmp/cajeta-ben
 [[ -f "$OUT/results.csv" ]] || fail "results.csv not written"
 [[ -f "$OUT/env.csv" ]]     || fail "env.csv not written"
 [[ -e "$OUT/site" || -e "$OUT/report.md" ]] && fail "a report was generated (report.py is retired)"
-NONMATH="$(awk -F, 'NR>1 && $5 != "math"' "$OUT/results.csv" | wc -l)"
+NONMATH="$(cawk 'NR>1 && $5 != "math"' "$OUT/results.csv" | wc -l)"
 [[ "$NONMATH" == "0" ]] || fail "expected only math/ rows, got $NONMATH others"
-awk -F, 'NR>1 && $4=="matmul" && $5=="math" && $28=="ok"' "$OUT/results.csv" | grep -q . || fail "math/matmul not ok in filtered run"
+cawk 'NR>1 && $4=="matmul" && $5=="math" && $28=="ok"' "$OUT/results.csv" | grep -q . || fail "math/matmul not ok in filtered run"
 
 # (4) --machine reached env.csv
 grep -qx "machine,smokebox" "$OUT/env.csv" || fail "env.csv missing machine,smokebox"
 grep -qx "smoke,true" "$OUT/env.csv" || fail "env.csv missing the smoke marker"
 grep -q "^cpu_cores," "$OUT/env.csv" || fail "env.csv missing the host block"
 [[ "$(grep -c "^os," "$OUT/env.csv")" == "1" ]] || fail "env.csv repeats the os key"
-awk -F, 'NR>1 && $33!="smokebox"' "$OUT/results.csv" | grep -q . && fail "a row's machine column is not smokebox"
+cawk 'NR>1 && $33!="smokebox"' "$OUT/results.csv" | grep -q . && fail "a row's machine column is not smokebox"
 
 # (3) --bench selects a single benchmark
 OUT2="/tmp/cajeta-bench-driver-test2"; rm -rf "$OUT2"
 PROFILE_OUT="$OUT2" bash bench.sh --bench dot-product >/dev/null 2>&1 || fail "bench.sh --bench failed"
-N="$(awk -F, 'NR>1' "$OUT2/results.csv" | wc -l)"
+N="$(cawk 'NR>1' "$OUT2/results.csv" | wc -l)"
 [[ "$N" == "1" ]] || fail "--bench dot-product expected 1 row, got $N"
 
 # (5) publish stub

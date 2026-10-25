@@ -10,6 +10,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 REPO_ROOT="$( cd -- "${PROJ}/.." &> /dev/null && pwd )"
 CAJETA="${CAJETA:-${REPO_ROOT}/build/src/cajeta}"
@@ -36,13 +37,13 @@ CAJETA_BENCH_SMOKE=1 PROFILE_RUN_ID=reflect-run "$PROJ/build/bench" --run --area
 echo "[reflect] run $((SECONDS - t0)) s"
 grep -hE "^  (ok|skipped|invalid|failed)  " "$LOG" | sed 's/^/  /' || true
 
-rows_for() { awk -F, -v b="$1" -v v="$2" 'NR>1 && $4==b && (v=="" || $31==v)' "$OUT"; }
+rows_for() { cawk -v b="$1" -v v="$2" 'NR>1 && $4==b && (v=="" || $31==v)' "$OUT"; }
 check() {   # check <slug> [variant]
     local b="$1" v="${2:-}" rows row
     rows="$(rows_for "$b" "$v")"
     [[ -n "$rows" ]] || fail "no row for reflect/$b${v:+ [$v]}"
     while IFS= read -r row; do
-        IFS=, read -r -a c <<< "$row"
+        IFS="$CSV_FS" read -r -a c <<< "$row"
         [[ "${c[4]}/${c[3]}" == "reflect/$b" ]] || fail "$b id=${c[4]}/${c[3]} (want reflect/$b)"
         [[ "${c[27]}" == "ok" ]]   || fail "reflect/$b${v:+ [$v]} status=${c[27]} notes=${c[29]}"
         [[ "${c[28]}" == "true" ]] || fail "reflect/$b${v:+ [$v]} check_ok=${c[28]} notes=${c[29]}"
@@ -55,7 +56,7 @@ check_skip() {   # check_skip <slug> <variant>: a skipped row with a reason
     local row
     row="$(rows_for "$1" "$2")"
     [[ -n "$row" ]] || fail "no row for reflect/$1 [$2]"
-    IFS=, read -r -a c <<< "$row"
+    IFS="$CSV_FS" read -r -a c <<< "$row"
     [[ "${c[27]}" == "skipped" && -n "${c[29]}" ]] || fail "reflect/$1 [$2] status=${c[27]} (want skipped with a reason)"
     echo "[reflect] reflect/$1 [$2] skipped: ${c[29]}"
 }
@@ -65,9 +66,9 @@ check class-lookup; check field-enumerate
 # Every id on the pages is covered (a page row added later without a benchmark fails here).
 ids="$(cat "$PROJ"/reflect/*.md $(ls "$PROJ"/reflect/*/*.md 2>/dev/null) | grep -o '^| `reflect/[a-z0-9-]*`' | sed 's/.*reflect\///; s/`//' | sort -u)"
 for id in $ids; do
-    awk -F, -v b="$id" 'NR>1 && $4==b' "$OUT" | grep -q . || fail "page id reflect/$id has no row"
+    cawk -v b="$id" 'NR>1 && $4==b' "$OUT" | grep -q . || fail "page id reflect/$id has no row"
 done
-others="$(awk -F, 'NR>1 && $5 != "reflect"' "$OUT" | wc -l)"
+others="$(cawk 'NR>1 && $5 != "reflect"' "$OUT" | wc -l)"
 [[ "$others" == "0" ]] || fail "--area reflect emitted $others non-reflect rows"
 
 echo "REFLECT OK ($(echo "$ids" | wc -w) page ids)"

@@ -6,6 +6,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 REPO_ROOT="$( cd -- "${PROJ}/.." &> /dev/null && pwd )"
 CAJETA="${CAJETA:-${REPO_ROOT}/build/src/cajeta}"
@@ -23,7 +24,7 @@ CAJETA_BENCH_SMOKE=1 PROFILE_RUN_ID=sort-run "$PROJ/build/bench" --run --area co
     || { grep -vE "example:" /tmp/sort-run.log | tail -15; fail "--run crashed"; }
 grep -E "^  (ok|skipped|invalid|failed)  .*/(sort|binary)" /tmp/sort-run.log | sed 's/^/  /' || true
 
-col() { awk -F, -v b="$1" -v v="$2" -v c="$3" 'NR>1 && $4==b && $31==v {print $c; exit}' "$OUT"; }
+col() { cawk -v b="$1" -v v="$2" -v c="$3" 'NR>1 && $4==b && $31==v {print $c; exit}' "$OUT"; }
 
 # sort-int64: every pattern runs ok. The 0.7.1-era skip ("quicksort overflows
 # its 128-deep range stack on adversarial patterns") is gone: Sort.sort recurses
@@ -39,7 +40,7 @@ done
 
 # the rest (single variant)
 for b in sort-f64 sort-stable-int64 binary-search; do
-    st="$(awk -F, -v b="$b" 'NR>1 && $4==b {print $28; exit}' "$OUT")"
+    st="$(cawk -v b="$b" 'NR>1 && $4==b {print $28; exit}' "$OUT")"
     [[ "$st" == "ok" ]] || fail "$b status=$st"
     echo "[sort] $b ok"
 done

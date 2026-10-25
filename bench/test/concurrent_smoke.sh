@@ -15,6 +15,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 REPO_ROOT="$( cd -- "${PROJ}/.." &> /dev/null && pwd )"
 CAJETA="${CAJETA:-${REPO_ROOT}/build/src/cajeta}"
@@ -50,10 +51,10 @@ SHRUNK="atomic-fetchadd atomic-fetchadd-32 atomic-cas atomic-contended-16
         lock-uncontended semaphore-acquire-release channel-spsc channel-mpsc
         channel-mpmc fiberlocal-get-set task-spawn-await"
 
-col() { printf '%s' "$1" | awk -F, -v c="$2" '{print $c}'; }
+col() { printf '%s' "$1" | cawk -v c="$2" '{print $c}'; }
 
 for b in $IDS; do
-    row="$(awk -F, -v b="$b" 'NR>1 && $4==b {print; exit}' "$OUT")"
+    row="$(cawk -v b="$b" 'NR>1 && $4==b {print; exit}' "$OUT")"
     [[ -n "$row" ]] || fail "no row for $b"
     st="$(col "$row" 28)"; ar="$(col "$row" 5)"; ck="$(col "$row" 29)"; notes="$(col "$row" 30)"
     mn="$(col "$row" 17)"; in="$(col "$row" 9)"

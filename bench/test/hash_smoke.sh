@@ -11,6 +11,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 REPO_ROOT="$( cd -- "${PROJ}/.." &> /dev/null && pwd )"
 CAJETA="${CAJETA:-${REPO_ROOT}/build/src/cajeta}"
@@ -37,17 +38,17 @@ echo "[hash] ran in $((SECONDS - t0))s"
 
 while read -r b ops; do
     [[ -z "$b" ]] && continue
-    row="$(awk -F, -v b="$b" 'NR>1 && $4==b {print; exit}' "$OUT")"
+    row="$(cawk -v b="$b" 'NR>1 && $4==b {print; exit}' "$OUT")"
     [[ -n "$row" ]] || fail "no row for hash/$b"
-    st="$(printf '%s' "$row" | awk -F, '{print $28}')"
-    ar="$(printf '%s' "$row" | awk -F, '{print $5}')"
+    st="$(printf '%s' "$row" | cawk '{print $28}')"
+    ar="$(printf '%s' "$row" | cawk '{print $5}')"
     [[ "$ar" == "hash" ]] || fail "$b area=$ar (want hash; the id is hash/$b)"
-    printf '%s' "$row" | awk -F, '{print $30}' | grep -q 'smoke' || fail "$b row not tagged smoke"
-    [[ "$st" == "ok" ]] || fail "$b status=$st notes=$(printf '%s' "$row" | awk -F, '{print $30}')"
-    [[ "$(printf '%s' "$row" | awk -F, '{print $29}')" == "true" ]] || fail "$b check_ok not true"
-    min="$(printf '%s' "$row" | awk -F, '{print $17}')"
+    printf '%s' "$row" | cawk '{print $30}' | grep -q 'smoke' || fail "$b row not tagged smoke"
+    [[ "$st" == "ok" ]] || fail "$b status=$st notes=$(printf '%s' "$row" | cawk '{print $30}')"
+    [[ "$(printf '%s' "$row" | cawk '{print $29}')" == "true" ]] || fail "$b check_ok not true"
+    min="$(printf '%s' "$row" | cawk '{print $17}')"
     (( min >= ops / 10 )) || fail "$b min_ns=$min for $ops hashes looks elided"
-    echo "[hash] $b ok  (input_size,min_ns)=$(printf '%s' "$row" | awk -F, '{print $9, $17}')"
+    echo "[hash] $b ok  (input_size,min_ns)=$(printf '%s' "$row" | cawk '{print $9, $17}')"
 done <<'IDS'
 xxhash3 10000000
 xxhash3-256k 163840000

@@ -8,9 +8,10 @@
 set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 RUNNER="${PROJ}/competitors/lang.sh"   # program string of package lang
-NCOLS="$(awk -F, '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
+NCOLS="$(cawk '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
 
 fail() { echo "STRING-COMP FAIL: $1" >&2; exit 1; }
 
@@ -22,41 +23,41 @@ OUT="$(PROFILE_RUN_ID=string-comp PROFILE_RUN_TS=0 PROFILE_TRIALS=3 bash "$RUNNE
 # (1) every row schema-conformant; benchmark in the expected set; area=string.
 while IFS= read -r row; do
     [[ -z "$row" ]] && continue
-    N="$(printf '%s' "$row" | awk -F, '{print NF}')"
+    N="$(printf '%s' "$row" | cawk '{print NF}')"
     [[ "$N" == "$NCOLS" ]] || fail "row has $N cols, expected $NCOLS: $row"
-    [[ "$(printf '%s' "$row" | awk -F, '{print $1}')" == "2" ]] || fail "row is not schema_version 2: $row"
-    printf '%s' "$row" | awk -F, '$33=="" || $34=="" || $37=="" || $37!=$10 {exit 1}' \
+    [[ "$(printf '%s' "$row" | cawk '{print $1}')" == "2" ]] || fail "row is not schema_version 2: $row"
+    printf '%s' "$row" | cawk '$33=="" || $34=="" || $37=="" || $37!=$10 {exit 1}' \
         || fail "row lacks machine/os/platform (platform must be the language): $row"
-    bench="$(printf '%s' "$row" | awk -F, '{print $4}')"; area="$(printf '%s' "$row" | awk -F, '{print $5}')"
+    bench="$(printf '%s' "$row" | cawk '{print $4}')"; area="$(printf '%s' "$row" | cawk '{print $5}')"
     case "$bench" in string-search|string-replace|string-uppercase|string-build-concat) ;; *) fail "unexpected benchmark: $bench" ;; esac
     [[ "$area" == "lang" ]] || fail "unexpected area: $area"
-    status="$(printf '%s' "$row" | awk -F, '{print $28}')"
+    status="$(printf '%s' "$row" | cawk '{print $28}')"
     if [[ "$status" == "ok" ]]; then
-        min="$(printf '%s' "$row" | awk -F, '{print $17}')"
-        chk="$(printf '%s' "$row" | awk -F, '{print $29}')"
+        min="$(printf '%s' "$row" | cawk '{print $17}')"
+        chk="$(printf '%s' "$row" | cawk '{print $29}')"
         [[ "$min" =~ ^[0-9]+$ && "$min" -gt 0 ]] || fail "ok row min_ns not positive: $row"
         [[ "$chk" == "true" ]]                   || fail "ok row failed cross-check: $row"
     elif [[ "$status" == "skipped" ]]; then
-        note="$(printf '%s' "$row" | awk -F, '{print $30}')"
+        note="$(printf '%s' "$row" | cawk '{print $30}')"
         [[ -n "$note" ]] || fail "skip row missing reason: $row"
     else
         fail "unexpected status '$status': $row"
     fi
-done <<< "$OUT"
+done < <(csv_fields <<<"$OUT")
 
 # (2) the always-present languages produced ok rows for all four benchmarks.
 for lang in rust python; do
     for b in string-search string-replace string-uppercase string-build-concat; do
-        echo "$OUT" | awk -F, -v l="$lang" -v b="$b" '$10==l && $4==b && $28=="ok" && $29=="true"' | grep -q . \
+        echo "$OUT" | cawk -v l="$lang" -v b="$b" '$10==l && $4==b && $28=="ok" && $29=="true"' | grep -q . \
             || fail "no ok $lang $b row"
     done
 done
 
 # (3) the SIMD search competitor (memchr) is present and ok.
-echo "$OUT" | awk -F, '$4=="string-search" && $12=="memchr" && $28=="ok"' | grep -q . \
+echo "$OUT" | cawk '$4=="string-search" && $12=="memchr" && $28=="ok"' | grep -q . \
     || fail "memchr search competitor missing"
 
 
-NLANGS="$(echo "$OUT" | awk -F, '$28=="ok"{print $10}' | sort -u | tr '\n' ' ')"
+NLANGS="$(echo "$OUT" | cawk '$28=="ok"{print $10}' | sort -u | tr '\n' ' ')"
 echo "[string-comp] measured langs: [$NLANGS]; memchr SIMD search included"
 echo "STRING-COMP OK"

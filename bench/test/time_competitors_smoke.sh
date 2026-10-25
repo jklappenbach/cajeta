@@ -13,9 +13,10 @@
 set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 RUNNER="${PROJ}/competitors/time.sh"
-NCOLS="$(awk -F, '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
+NCOLS="$(cawk '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
 OUTDIR="${CAJETA_BENCH_OUT:-/tmp}"; mkdir -p "$OUTDIR"
 
 fail() { echo "TIME-COMP FAIL: $1" >&2; exit 1; }
@@ -44,32 +45,32 @@ IDS="$(awk 'NF{print $1}' <<<"$REQUIRED" | tr '\n' ' ')"
 
 while IFS= read -r row; do
     [[ -z "$row" ]] && continue
-    N="$(awk -F, '{print NF}' <<<"$row")"
+    N="$(cawk '{print NF}' <<<"$row")"
     [[ "$N" == "$NCOLS" ]] || fail "row has $N cols, expected $NCOLS: $row"
-    awk -F, '$1!="2" || $5!="time" || $33=="" || $34=="" || $37=="" || $37!=$10 {exit 1}' <<<"$row" \
+    cawk '$1!="2" || $5!="time" || $33=="" || $34=="" || $37=="" || $37!=$10 {exit 1}' <<<"$row" \
         || fail "row is not v2 time/ with machine/os/platform: $row"
-    b="$(awk -F, '{print $4}' <<<"$row")"
+    b="$(cawk '{print $4}' <<<"$row")"
     case " $IDS " in *" $b "*) ;; *) fail "unexpected benchmark: $b" ;; esac
-    st="$(awk -F, '{print $28}' <<<"$row")"
+    st="$(cawk '{print $28}' <<<"$row")"
     if [[ "$st" == "skipped" ]]; then
-        [[ -n "$(awk -F, '{print $30}' <<<"$row")" ]] || fail "skip row missing reason: $row"
+        [[ -n "$(cawk '{print $30}' <<<"$row")" ]] || fail "skip row missing reason: $row"
     elif [[ "$st" != "ok" ]]; then
         fail "status '$st': $row"
     fi
-done <<< "$OUT"
+done < <(csv_fields <<<"$OUT")
 
 while read -r b ops libs; do
     [[ -z "$b" ]] && continue
     for want in $libs; do
         lang="${want%%/*}"; lib="${want#*/}"
-        r="$(awk -F, -v b="$b" -v l="$lang" -v lib="$lib" '$4==b && $10==l && $12==lib' <<<"$OUT" | head -1)"
+        r="$(cawk -v b="$b" -v l="$lang" -v lib="$lib" '$4==b && $10==l && $12==lib' <<<"$OUT" | head -1)"
         [[ -n "$r" ]] || fail "no $lang $lib row for time/$b"
-        [[ "$(awk -F, '{print $28 "/" $29}' <<<"$r")" == "ok/true" ]] \
-            || fail "$lang $lib time/$b not ok/check_ok: $(awk -F, '{print $28, $29, $30}' <<<"$r")"
-        min="$(awk -F, '{print $17}' <<<"$r")"
+        [[ "$(cawk '{print $28 "/" $29}' <<<"$r")" == "ok/true" ]] \
+            || fail "$lang $lib time/$b not ok/check_ok: $(cawk '{print $28, $29, $30}' <<<"$r")"
+        min="$(cawk '{print $17}' <<<"$r")"
         (( min >= ops / 10 )) || fail "$lang $lib time/$b min_ns=$min for $ops operations looks elided"
     done
-    echo "[time-comp] $b: $(awk -F, -v b="$b" '$4==b && $28=="ok" {printf "%s/%s ", $10, $12}' <<<"$OUT")"
+    echo "[time-comp] $b: $(cawk -v b="$b" '$4==b && $28=="ok" {printf "%s/%s ", $10, $12}' <<<"$OUT")"
 done <<< "$REQUIRED"
 
 echo "TIME-COMP OK"

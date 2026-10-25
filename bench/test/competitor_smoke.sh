@@ -8,10 +8,11 @@
 set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 HELLO="${PROJ}/competitors/hello.sh"
 PROBE="${PROJ}/scripts/probe-toolchains.sh"
-NCOLS="$(awk -F, '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
+NCOLS="$(cawk '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
 
 fail() { echo "COMPETITOR FAIL: $1" >&2; exit 1; }
 
@@ -33,12 +34,12 @@ for lang in rust cpp java python go; do
     esac
     ROW="$(PROFILE_RUN_ID=comp-run bash "$HELLO" "$lang")" || fail "$lang hello runner failed"
     echo "[$lang] $ROW"
-    N="$(printf '%s' "$ROW" | awk -F, '{print NF}')"
+    N="$(printf '%s' "$ROW" | cawk '{print NF}')"
     [[ "$N" == "$NCOLS" ]] || fail "$lang row has $N cols, expected $NCOLS"
-    [[ "$(printf '%s' "$ROW" | awk -F, '{print $10}')" == "$lang" ]] || fail "$lang language col wrong"
-    MIN="$(printf '%s' "$ROW" | awk -F, '{print $17}')"
+    [[ "$(printf '%s' "$ROW" | cawk '{print $10}')" == "$lang" ]] || fail "$lang language col wrong"
+    MIN="$(printf '%s' "$ROW" | cawk '{print $17}')"
     [[ "$MIN" =~ ^[0-9]+$ && "$MIN" -gt 0 ]] || fail "$lang min_ns not positive: $MIN"
-    [[ "$(printf '%s' "$ROW" | awk -F, '{print $28}')" == "ok" ]] || fail "$lang status not ok"
+    [[ "$(printf '%s' "$ROW" | cawk '{print $28}')" == "ok" ]] || fail "$lang status not ok"
     RAN=$((RAN + 1))
 done
 

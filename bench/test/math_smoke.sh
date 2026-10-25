@@ -11,6 +11,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 REPO_ROOT="$( cd -- "${PROJ}/.." &> /dev/null && pwd )"
 CAJETA="${CAJETA:-${REPO_ROOT}/build/src/cajeta}"
@@ -38,10 +39,10 @@ grep -hE "^  (ok|skipped|invalid|failed)  " "$LOG" | sed 's/^/  /' || true
 
 check() {   # check <slug> [variant]
     local b="$1" v="${2:-}" rows row
-    rows="$(awk -F, -v b="$b" -v v="$v" 'NR>1 && $4==b && (v=="" || $31==v)' "$OUT")"
+    rows="$(cawk -v b="$b" -v v="$v" 'NR>1 && $4==b && (v=="" || $31==v)' "$OUT")"
     [[ -n "$rows" ]] || fail "no row for math/$b${v:+ [$v]}"
     while IFS= read -r row; do
-        IFS=, read -r -a c <<< "$row"
+        IFS="$CSV_FS" read -r -a c <<< "$row"
         [[ "${c[4]}/${c[3]}" == "math/$b" ]] || fail "$b id=${c[4]}/${c[3]} (want math/$b)"
         [[ "${c[27]}" == "ok" ]]   || fail "math/$b${v:+ [$v]} status=${c[27]} notes=${c[29]}"
         [[ "${c[28]}" == "true" ]] || fail "math/$b${v:+ [$v]} check_ok=${c[28]}"
@@ -66,7 +67,7 @@ for b in saxpy dot-product; do
     o="$OUTD/cajeta-bench-math-$b.csv"
     CAJETA_BENCH_SMOKE=1 PROFILE_RUN_ID=math-run "$PROJ/build/bench" --run --bench "$b" --out "$o" >>"$LOG" 2>&1 \
         || { tail -15 "$LOG"; fail "--run --bench $b exited non-zero"; }
-    awk -F, -v b="$b" 'NR>1 && $4==b && $5=="lang" && $28=="ok" && $29=="true"' "$o" | grep -q . || fail "lang/$b not ok"
+    cawk -v b="$b" 'NR>1 && $4==b && $5=="lang" && $28=="ok" && $29=="true"' "$o" | grep -q . || fail "lang/$b not ok"
     echo "[math] lang/$b ok"
 done
 
@@ -74,10 +75,10 @@ done
 # without a benchmark fails here).
 ids="$(grep -ho '^| `math/[a-z0-9-]*`' "$PROJ"/math/*.md "$PROJ"/math/*/*.md | sed 's/.*math\///; s/`//' | sort -u)"
 for id in $ids; do
-    awk -F, -v b="$id" 'NR>1 && $4==b' "$OUT" | grep -q . || fail "page id math/$id has no row"
+    cawk -v b="$id" 'NR>1 && $4==b' "$OUT" | grep -q . || fail "page id math/$id has no row"
 done
 # --area math selects the math package only
-others="$(awk -F, 'NR>1 && $5 != "math"' "$OUT" | wc -l)"
+others="$(cawk 'NR>1 && $5 != "math"' "$OUT" | wc -l)"
 [[ "$others" == "0" ]] || fail "--area math emitted $others non-math rows"
 
 echo "MATH OK ($(echo "$ids" | wc -w) page ids)"

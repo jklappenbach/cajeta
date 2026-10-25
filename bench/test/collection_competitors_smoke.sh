@@ -19,9 +19,10 @@
 set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 COMP="$PROJ/competitors"
-NCOLS="$(awk -F, '{print NF; exit}' "$COMP/columns.txt")"
+NCOLS="$(cawk '{print NF; exit}' "$COMP/columns.txt")"
 OUTDIR="${CAJETA_BENCH_OUT:-$(mktemp -d)}/collection-competitors-smoke"
 mkdir -p "$OUTDIR"
 # CAJETA_BENCH_SMOKE=1: the first-suite rows run at n/100, as on the Cajeta side.
@@ -59,10 +60,10 @@ allowed_skip() {  # id lang lib
 
 # (1) Every row: schema v2, 37 columns, area collection, machine/os/platform set.
 while IFS= read -r row; do
-    [[ "$(awk -F, '{print NF}' <<<"$row")" == "$NCOLS" ]] || fail "row has the wrong column count: $row"
-    awk -F, '$1!="2" || $5!="collection" || $33=="" || $34=="" || $37!=$10 {exit 1}' <<<"$row" \
+    [[ "$(cawk '{print NF}' <<<"$row")" == "$NCOLS" ]] || fail "row has the wrong column count: $row"
+    cawk '$1!="2" || $5!="collection" || $33=="" || $34=="" || $37!=$10 {exit 1}' <<<"$row" \
         || fail "row is not v2/collection with machine, os and platform=language: $row"
-    IFS=, read -r -a f <<<"$row"
+    IFS="$CSV_FS" read -r -a f <<<"$row"
     id="${f[3]}"; lang="${f[9]}"; lib="${f[11]}"; st="${f[27]}"; ck="${f[28]}"; note="${f[29]}"
     case "$st" in
         ok) [[ "$ck" == true && "${f[16]}" =~ ^[0-9]+$ && "${f[16]}" -gt 0 ]] || fail "ok row without a passing check or a time: $row" ;;
@@ -70,16 +71,16 @@ while IFS= read -r row; do
                  allowed_skip "$id" "$lang" "$lib" || fail "skip not allowed on this machine ($id $lang $lib): $note" ;;
         *) fail "status $st: $row" ;;
     esac
-done <"$ALL"
+done < <(csv_fields "$ALL")
 
 # (2) Every page id has a row in each of the five languages.
 PAGE_IDS="$(grep -ho '`collection/[a-z0-9-]*`' "$PROJ"/collection/*.md "$PROJ"/collection/ltm/*.md | tr -d '`' | sed 's#collection/##' | sort -u)"
 for id in $PAGE_IDS; do
     for lang in cpp rust go java python; do
-        awk -F, -v b="$id" -v l="$lang" '$4==b && $10==l' "$ALL" | grep -q . || fail "no $lang row for collection/$id"
+        cawk -v b="$id" -v l="$lang" '$4==b && $10==l' "$ALL" | grep -q . || fail "no $lang row for collection/$id"
     done
-    n_ok="$(awk -F, -v b="$id" '$4==b && $28=="ok"' "$ALL" | wc -l)"
-    printf '[coll-comp] %-28s %2s ok rows (%s)\n' "$id" "$n_ok" "$(awk -F, -v b="$id" '$4==b && $28=="ok" {print $10}' "$ALL" | sort -u | tr '\n' ' ')"
+    n_ok="$(cawk -v b="$id" '$4==b && $28=="ok"' "$ALL" | wc -l)"
+    printf '[coll-comp] %-28s %2s ok rows (%s)\n' "$id" "$n_ok" "$(cawk -v b="$id" '$4==b && $28=="ok" {print $10}' "$ALL" | sort -u | tr '\n' ' ')"
     [[ "$n_ok" -gt 0 ]] || fail "collection/$id has no ok competitor row"
 done
 
@@ -87,19 +88,19 @@ done
 # names them; the first-suite rows carry the smoke-size note.
 for id in hashmap-int hashmap-string hashmap-lookup-hit; do
     for lib in ankerl::unordered_dense::map hashbrown::HashMap; do
-        awk -F, -v b="$id" -v l="$lib" '$4==b && $12==l && $28=="ok"' "$ALL" | grep -q . || fail "$lib $id row missing"
+        cawk -v b="$id" -v l="$lib" '$4==b && $12==l && $28=="ok"' "$ALL" | grep -q . || fail "$lib $id row missing"
     done
 done
 FIRST="arraylist-append linkedlist-insert-traverse hashmap-int hashmap-string hashset-dedup heap-sort redblacktree-insert-lookup sort-int64 sort-f64 sort-stable-int64 binary-search"
 for id in $FIRST; do
-    awk -F, -v b="$id" '$4==b && $28=="ok" && $30 !~ /smoke size n\/100/' "$ALL" | grep -q . && fail "$id has an ok row without the smoke-size note"
+    cawk -v b="$id" '$4==b && $28=="ok" && $30 !~ /smoke size n\/100/' "$ALL" | grep -q . && fail "$id has an ok row without the smoke-size note"
 done
 
 # (4) ltm rows record the storage device; without a disk budget they skip, saying so.
-awk -F, '($4=="ltm-insert" || $4=="ltm-lookup") && $28=="ok" && $30 !~ /storage=/' "$ALL" | grep -q . && fail "an ltm row lacks storage="
+cawk '($4=="ltm-insert" || $4=="ltm-lookup") && $28=="ok" && $30 !~ /storage=/' "$ALL" | grep -q . && fail "an ltm row lacks storage="
 NB="$(CAJETA_BENCH_LTM_MIN_FREE_MB=999999999 bash "$COMP/run.sh" collection ltm 2>"$OUTDIR/ltm-nobudget.err")"
 for lang in rust java; do
-    awk -F, -v l="$lang" '$10==l && $28=="skipped" && $30 ~ /disk budget unavailable/' <<<"$NB" | grep -q . \
+    cawk -v l="$lang" '$10==l && $28=="skipped" && $30 ~ /disk budget unavailable/' <<<"$NB" | grep -q . \
         || fail "$lang ltm rows without a disk budget are not skips that say so: $NB"
 done
 echo "[coll-comp] ltm without a disk budget: rust and java rows skipped (disk budget unavailable)"

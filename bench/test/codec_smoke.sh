@@ -22,6 +22,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 REPO_ROOT="$( cd -- "${PROJ}/.." &> /dev/null && pwd )"
 CAJETA="${CAJETA:-${REPO_ROOT}/build/src/cajeta}"
@@ -67,8 +68,8 @@ echo "[codec] run $((SECONDS - t0)) s"
 
 # columns: 4 benchmark, 9 input_size, 17 min_ns, 18 median_ns, 28 status,
 # 29 check_ok, 30 notes, 31 variant
-row() { awk -F, -v b="$1" -v v="$2" 'NR>1 && $4==b && $31==v {print; exit}' "$OUT"; }
-col() { row "$1" "$2" | awk -F, -v c="$3" '{print $c}'; }
+row() { cawk -v b="$1" -v v="$2" 'NR>1 && $4==b && $31==v {print; exit}' "$OUT"; }
+col() { row "$1" "$2" | cawk -v c="$3" '{print $c}'; }
 
 # The known gaps: id|variant -> a substring the notes must carry.
 declare -A GAP=(
@@ -111,9 +112,9 @@ for b in csv-parse csv-write; do
 done
 
 # Every row carries its package and the smoke tag.
-bad="$(awk -F, 'NR>1 && ($5 != "codec" || $30 !~ /smoke/)' "$OUT" | wc -l)"
+bad="$(cawk 'NR>1 && ($5 != "codec" || $30 !~ /smoke/)' "$OUT" | wc -l)"
 [[ "$bad" == "0" ]] || fail "$bad codec rows without area codec or the smoke tag"
-n="$(awk -F, 'NR>1' "$OUT" | wc -l)"
+n="$(cawk 'NR>1' "$OUT" | wc -l)"
 [[ "$n" == "22" ]] || fail "expected 22 codec rows (15 json-per-file + conformance + 2 csv + 4 base-n), got $n"
 
 # Without PROFILE_DATA_DIR the dataset benchmarks record skips (no crash).
@@ -122,7 +123,7 @@ OUT2="$OUTDIR/profile-codec-nodata.csv"; rm -f "$OUT2"
 CAJETA_BENCH_SMOKE=1 PROFILE_RUN_ID=nd env -u PROFILE_DATA_DIR "$PROJ/build/bench" --run --area codec --out "$OUT2" >/dev/null 2>&1 \
     || fail "--run without a data dir exited non-zero"
 for b in json-tokenize json-conformance csv-parse csv-write; do
-    st="$(awk -F, -v b="$b" 'NR>1 && $4==b {print $28; exit}' "$OUT2")"
+    st="$(cawk -v b="$b" 'NR>1 && $4==b {print $28; exit}' "$OUT2")"
     [[ "$st" == "skipped" ]] || fail "$b should skip without a dataset, got status=$st"
 done
 

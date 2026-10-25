@@ -19,6 +19,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 REPO_ROOT="$( cd -- "${PROJ}/.." &> /dev/null && pwd )"
 CAJETA="${CAJETA:-${REPO_ROOT}/build/src/cajeta}"
@@ -61,8 +62,8 @@ echo "[io] run $((SECONDS - t0)) s"
 
 # columns: 4 benchmark, 9 input_size, 17 min_ns, 18 median_ns, 23 peak_rss_kb,
 # 28 status, 29 check_ok, 30 notes, 31 variant
-row() { awk -F, -v b="$1" 'NR>1 && $4==b {print; exit}' "$OUT"; }
-col() { row "$1" | awk -F, -v c="$2" '{print $c}'; }
+row() { cawk -v b="$1" 'NR>1 && $4==b {print; exit}' "$OUT"; }
+col() { row "$1" | cawk -v c="$2" '{print $c}'; }
 
 declare -A GAP=( ["watcher-event-latency"]="Watcher is a placeholder" )
 FILE_IDS="file-read-sequential file-write-sequential file-random-read file-stat filereader-lines filewriter-lines directory-walk"
@@ -108,9 +109,9 @@ nt="$(col server-1k-idle 30)"
 [[ "$(col tcp-echo-latency 30)" == *"rtt_median_ns="* ]] || fail "tcp-echo-latency has no per-round-trip median"
 
 # Every row carries its package and the smoke tag.
-bad="$(awk -F, 'NR>1 && ($5 != "io" || $30 !~ /smoke/)' "$OUT" | wc -l)"
+bad="$(cawk 'NR>1 && ($5 != "io" || $30 !~ /smoke/)' "$OUT" | wc -l)"
 [[ "$bad" == "0" ]] || fail "$bad io rows without area io or the smoke tag"
-n="$(awk -F, 'NR>1' "$OUT" | wc -l)"
+n="$(cawk 'NR>1' "$OUT" | wc -l)"
 [[ "$n" == "22" ]] || fail "expected 22 io rows, got $n"
 
 # Nothing is left listening on the io ports.
@@ -123,8 +124,8 @@ if [[ -d /dev/shm && "$(findmnt -n -o FSTYPE -T /dev/shm 2>/dev/null)" == "tmpfs
     CAJETA_BENCH_SMOKE=1 PROFILE_RUN_ID=io-tmpfs CAJETA_BENCH_IO_DIR="$SHM" \
         "$PROJ/build/bench" --run --area io --bench file-stat --out "$OUT2" >/dev/null 2>&1 || true
     rm -rf "$SHM"
-    st="$(awk -F, 'NR>1 && $4=="file-stat" {print $28; exit}' "$OUT2")"
-    nt="$(awk -F, 'NR>1 && $4=="file-stat" {print $30; exit}' "$OUT2")"
+    st="$(cawk 'NR>1 && $4=="file-stat" {print $28; exit}' "$OUT2")"
+    nt="$(cawk 'NR>1 && $4=="file-stat" {print $30; exit}' "$OUT2")"
     [[ "$st" == "skipped" && "$nt" == *"tmpfs"* ]] || fail "file-stat on tmpfs should skip naming tmpfs, got status=$st notes=$nt"
     echo "[io] tmpfs data directory: file rows skip ($nt)"
 fi

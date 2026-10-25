@@ -5,6 +5,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 REPO_ROOT="$( cd -- "${PROJ}/.." &> /dev/null && pwd )"
 CAJETA="${CAJETA:-${REPO_ROOT}/build/src/cajeta}"
@@ -23,14 +24,14 @@ CAJETA_BENCH_SMOKE=1 PROFILE_RUN_ID=clbg-run "$PROJ/build/bench" --run --area la
 grep -E "^  (ok|skipped|invalid|failed)  .*/clbg-" /tmp/clbg-run.log | sed 's/^/  /' || true
 
 for b in clbg-mandelbrot clbg-fannkuch-redux clbg-spectral-norm; do
-    row="$(awk -F, -v b="$b" 'NR>1 && $4==b {print; exit}' "$OUT")"
+    row="$(cawk -v b="$b" 'NR>1 && $4==b {print; exit}' "$OUT")"
     [[ -n "$row" ]] || fail "no row for $b"
-    st="$(printf '%s' "$row" | awk -F, '{print $28}')"
-    ar="$(printf '%s' "$row" | awk -F, '{print $5}')"
+    st="$(printf '%s' "$row" | cawk '{print $28}')"
+    ar="$(printf '%s' "$row" | cawk '{print $5}')"
     [[ "$ar" == "lang" ]] || fail "$b area=$ar (want lang; the id is lang/$b)"
-    printf '%s' "$row" | awk -F, '{print $30}' | grep -q 'smoke' || fail "$b row not tagged smoke"
+    printf '%s' "$row" | cawk '{print $30}' | grep -q 'smoke' || fail "$b row not tagged smoke"
     [[ "$st" == "ok" ]] || fail "$b status=$st (canonical checksum mismatch)"
-    echo "[clbg] $b ok  min_ns=$(printf '%s' "$row" | awk -F, '{print $17}')"
+    echo "[clbg] $b ok  min_ns=$(printf '%s' "$row" | cawk '{print $17}')"
 done
 
 echo "CLBG OK"

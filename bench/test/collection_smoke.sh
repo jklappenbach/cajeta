@@ -14,6 +14,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 REPO_ROOT="$( cd -- "${PROJ}/.." &> /dev/null && pwd )"
 CAJETA="${CAJETA:-${REPO_ROOT}/build/src/cajeta}"
@@ -58,8 +59,8 @@ CAJETA_BENCH_SMOKE=1 CAJETA_BENCH_RUN_ID=coll-smoke "$PROJ/build/bench" --run --
     || { tail -25 "$OUTDIR/run.log"; fail "--run exited non-zero"; }
 echo "[collection] run took $((SECONDS - t0))s"
 
-col() { awk -F, -v c="$1" '{print $c}'; }
-row_of() { awk -F, -v b="$1" 'NR>1 && $4==b {print; exit}' "$OUT"; }
+col() { cawk -v c="$1" '{print $c}'; }
+row_of() { cawk -v b="$1" 'NR>1 && $4==b {print; exit}' "$OUT"; }
 
 for b in $IDS_OK; do
     row="$(row_of "$b")"
@@ -93,7 +94,7 @@ OUT2="$OUTDIR/ltm-nobudget.csv"
 rm -f "$OUT2"
 CAJETA_BENCH_SMOKE=1 CAJETA_BENCH_LTM_MIN_FREE_MB=999999999 "$PROJ/build/bench" --run --area collection --bench ltm-insert --out "$OUT2" >"$OUTDIR/run2.log" 2>&1 \
     || { tail -10 "$OUTDIR/run2.log"; fail "no-budget run exited non-zero"; }
-row="$(awk -F, 'NR>1 && $4=="ltm-insert" {print; exit}' "$OUT2")"
+row="$(cawk 'NR>1 && $4=="ltm-insert" {print; exit}' "$OUT2")"
 [[ "$(col 28 <<<"$row")" == skipped ]] || fail "ltm-insert without disk budget: status=$(col 28 <<<"$row")"
 col 30 <<<"$row" | grep -q 'disk budget unavailable' || fail "ltm-insert skip reason: $(col 30 <<<"$row")"
 echo "[collection] ltm-insert without a disk budget: skipped ($(col 30 <<<"$row" | cut -c1-80))"

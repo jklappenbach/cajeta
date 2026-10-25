@@ -35,7 +35,7 @@ printf '%s\n' "$USAGE" | grep -q "^usage:" || fail "no-argument run printed no u
 
 # (2) lifecycle order in a measured short-mode run
 echo "[smoke] running..."
-D="/tmp/cajeta-bench-smoke"; mkdir -p "$D"
+D="${CAJETA_BENCH_OUT:-/tmp}/cajeta-bench-smoke"; mkdir -p "$D"
 OUT="$(CAJETA_BENCH_SCAFFOLD=1 CAJETA_BENCH_SMOKE=1 "$PROJ/build/bench" --run --bench example --out "$D/results.csv")" \
     || fail "build/bench --run --bench example exited non-zero"
 ORDER="$(printf '%s\n' "$OUT" | grep -oE 'example: (setup|run|teardown|checkResult)' | sed 's/example: //' | tr '\n' ',')"

@@ -25,10 +25,11 @@
 set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 OUTDIR="${CAJETA_BENCH_OUT:-/tmp}"
 IODIR="${CAJETA_BENCH_IO_DIR:-${OUTDIR}/io-data}"
-NCOLS="$(awk -F, '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
+NCOLS="$(cawk '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
 mkdir -p "$OUTDIR" "$IODIR"
 
 fail() { echo "IO-COMP FAIL: $1" >&2; exit 1; }
@@ -46,7 +47,7 @@ grep 'pid [0-9]*:' "$ERR" | sed 's/^/[io-comp]   /'
 grep -q 'rows_v2: dropped' "$ERR" && fail "rows_v2 dropped a malformed line (see $ERR)"
 
 # (1) shape, status, reasons, no elision.
-awk -F, -v n="$NCOLS" '
+cawk -v n="$NCOLS" '
     NF != n                         { print "cols " NF ": " $0; bad = 1; next }
     $1 != "2" || $5 != "io"         { print "schema/area: " $0; bad = 1 }
     $33 == "" || $34 == "" || $37 != $10 { print "machine/os/platform: " $0; bad = 1 }
@@ -64,7 +65,7 @@ URI="uri-parse uri-build"
 has_ok() {   # lang lib-test(eq|ne) lib ids...
     local lang="$1" op="$2" lib="$3" b; shift 3
     for b in "$@"; do
-        awk -F, -v l="$lang" -v op="$op" -v lib="$lib" -v b="$b" \
+        cawk -v l="$lang" -v op="$op" -v lib="$lib" -v b="$b" \
             '$10==l && ((op=="eq" && $12==lib) || (op=="ne" && $12!=lib)) && $4==b && $28=="ok" && $29=="true" {f=1} END {exit !f}' "$OUT" \
             || fail "$lang${lib:+ ($op $lib)}: no ok row for io/$b"
     done
@@ -78,11 +79,11 @@ has_ok java ne "" $BUF $FILE watcher-event-latency bytebuffer-put-get bufferpool
 has_ok python ne "" $BUF $FILE watcher-event-latency $NET $SRV $URI
 
 # (3) one check value per id, across every language (and the Cajeta row).
-checks() { awk -F, '$28=="ok" { if (match($30, /check=[^;]*/)) print $4 "\t" $10 "/" $12 "\t" substr($30, RSTART + 6, RLENGTH - 6) }' "$1"; }
+checks() { cawk '$28=="ok" { if (match($30, /check=[^;]*/)) print $4 "\t" $10 "/" $12 "\t" substr($30, RSTART + 6, RLENGTH - 6) }' "$1"; }
 checks "$OUT" > "$OUTDIR/io-comp.checks"
 CAJ="$OUTDIR/profile-io.csv"
 if [[ -s "$CAJ" ]]; then
-    awk -F, 'NR>1 && $28=="ok" { if (match($30, /check=[^;"]*/)) print $4 "\tcajeta\t" substr($30, RSTART + 6, RLENGTH - 6) }' "$CAJ" >> "$OUTDIR/io-comp.checks"
+    cawk 'NR>1 && $28=="ok" { if (match($30, /check=[^;"]*/)) print $4 "\tcajeta\t" substr($30, RSTART + 6, RLENGTH - 6) }' "$CAJ" >> "$OUTDIR/io-comp.checks"
     echo "[io-comp] comparing against the Cajeta rows in $CAJ"
 fi
 awk -F'\t' '{ if (!($1 in v)) { v[$1] = $3; who[$1] = $2 } else if (v[$1] != $3) { print "io/" $1 ": " who[$1] " check=" v[$1] " but " $2 " check=" $3; bad = 1 } }
@@ -90,7 +91,7 @@ awk -F'\t' '{ if (!($1 in v)) { v[$1] = $3; who[$1] = $2 } else if (v[$1] != $3)
 echo "[io-comp] $(cut -f1 "$OUTDIR/io-comp.checks" | sort -u | wc -l) ids, one check value each across $(cut -f2 "$OUTDIR/io-comp.checks" | sort -u | wc -l) language/library rows"
 
 # (4) the 1k-idle rows carry memory and CPU.
-awk -F, '$4=="server-1k-idle" && $28=="ok" && ($30 !~ /rss_hold_kb=[0-9]+/ || $30 !~ /cpu_ms=[0-9]+/ || $23 !~ /^[0-9]+$/) {print; bad=1} END {exit bad}' "$OUT" \
+cawk '$4=="server-1k-idle" && $28=="ok" && ($30 !~ /rss_hold_kb=[0-9]+/ || $30 !~ /cpu_ms=[0-9]+/ || $23 !~ /^[0-9]+$/) {print; bad=1} END {exit bad}' "$OUT" \
     || fail "a server-1k-idle row lacks rss_hold_kb / cpu_ms / peak_rss_kb"
 
 # (5) nothing left bound.
@@ -104,11 +105,11 @@ if [[ "$(findmnt -n -o FSTYPE -T /dev/shm 2>/dev/null)" == "tmpfs" ]]; then
         bash "$PROJ/competitors/io.sh" >"$OUT2" 2>/dev/null
     rm -rf "$SHM"
     for b in file-stat directory-walk; do
-        awk -F, -v b="$b" '$4==b && $28=="skipped" && $30 ~ /tmpfs/ {f=1} END {exit !f}' "$OUT2" \
+        cawk -v b="$b" '$4==b && $28=="skipped" && $30 ~ /tmpfs/ {f=1} END {exit !f}' "$OUT2" \
             || fail "cpp $b on tmpfs should be a skip naming tmpfs: $(grep ",$b," "$OUT2")"
     done
     echo "[io-comp] tmpfs data directory: file rows skip"
 fi
 
-echo "[io-comp] $(awk -F, '$28=="ok"' "$OUT" | wc -l) ok rows, $(awk -F, '$28=="skipped"' "$OUT" | wc -l) skips with reasons"
+echo "[io-comp] $(cawk '$28=="ok"' "$OUT" | wc -l) ok rows, $(cawk '$28=="skipped"' "$OUT" | wc -l) skips with reasons"
 echo "IO-COMP OK"

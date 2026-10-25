@@ -11,6 +11,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 REPO_ROOT="$( cd -- "${PROJ}/.." &> /dev/null && pwd )"
 CAJETA="${CAJETA:-${REPO_ROOT}/build/src/cajeta}"
@@ -22,7 +23,7 @@ cd "$PROJ"
 echo "[schema] building..."
 "$CAJETA" release >/dev/null || fail "release build failed"
 
-D="/tmp/cajeta-bench-schema"; rm -rf "$D"; mkdir -p "$D"
+D="${CAJETA_BENCH_OUT:-/tmp}/cajeta-bench-schema"; rm -rf "$D"; mkdir -p "$D"
 OUT="$D/results.csv"; ENV="$D/env.csv"
 CAJETA_BENCH_SCAFFOLD=1 CAJETA_BENCH_MACHINE=schemabox CAJETA_BENCH_RUN_ID=smoke-run CAJETA_BENCH_RUN_TS=1750000000 \
     "$PROJ/build/bench" --run --bench sum --out "$OUT" >/dev/null || fail "--run exited non-zero"
@@ -37,16 +38,16 @@ for col in schema_version run_id timestamp_unix benchmark area language library 
            machine os driver model platform; do
     echo "$HEADER" | tr ',' '\n' | grep -qx "$col" || fail "header missing column: $col"
 done
-NCOLS="$(echo "$HEADER" | awk -F, '{print NF}')"
+NCOLS="$(echo "$HEADER" | cawk '{print NF}')"
 [[ "$NCOLS" == "37" ]] || fail "expected 37 columns, got $NCOLS"
-[[ "$(echo "$HEADER" | awk -F, '{print $32}')" == "backend" ]]  || fail "column 32 is not backend"
-[[ "$(echo "$HEADER" | awk -F, '{print $33}')" == "machine" ]]  || fail "column 33 is not machine"
-[[ "$(echo "$HEADER" | awk -F, '{print $37}')" == "platform" ]] || fail "column 37 is not platform"
+[[ "$(echo "$HEADER" | cawk '{print $32}')" == "backend" ]]  || fail "column 32 is not backend"
+[[ "$(echo "$HEADER" | cawk '{print $33}')" == "machine" ]]  || fail "column 33 is not machine"
+[[ "$(echo "$HEADER" | cawk '{print $37}')" == "platform" ]] || fail "column 37 is not platform"
 
 # (2) the ok row
-ROW="$(awk -F, 'NR>1 && $4=="sum"{print; exit}' "$OUT")"
+ROW="$(cawk 'NR>1 && $4=="sum"{print; exit}' "$OUT")"
 [[ -n "$ROW" ]] || fail "no sum row"
-get() { echo "$ROW" | awk -F, -v c="$1" '{print $c}'; }
+get() { echo "$ROW" | cawk -v c="$1" '{print $c}'; }
 [[ "$(get 1)" == "2" ]]           || fail "schema_version $(get 1), want 2"
 [[ "$(get 28)" == "ok" ]]         || fail "sum status $(get 28)"
 PEAK="$(get 23)"
@@ -59,7 +60,7 @@ echo "[schema] peak_rss_kb=$PEAK machine=$(get 33) os=$(get 34)"
 # (3) skipped row: json-tokenize without PROFILE_DATA_DIR
 OUT2="$D/skip.csv"
 env -u PROFILE_DATA_DIR "$PROJ/build/bench" --run --bench json-tokenize --out "$OUT2" >/dev/null || fail "skip run exited non-zero"
-ROW="$(awk -F, 'NR>1 && $4=="json-tokenize"{print; exit}' "$OUT2")"
+ROW="$(cawk 'NR>1 && $4=="json-tokenize"{print; exit}' "$OUT2")"
 [[ "$(get 28)" == "skipped" ]] || fail "expected skipped row, got status='$(get 28)'"
 [[ -n "$(get 30)" ]]           || fail "skipped row carries no reason"
 

@@ -16,9 +16,10 @@
 set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 RUNNER="${PROJ}/competitors/toolchain.sh"
-NCOLS="$(awk -F, '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
+NCOLS="$(cawk '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
 OUTDIR="${CAJETA_BENCH_OUT:-/tmp}"; mkdir -p "$OUTDIR"
 
 fail() { echo "TOOLCHAIN-COMP FAIL: $1" >&2; exit 1; }
@@ -52,38 +53,38 @@ IDS="$(awk 'NF{print $1}' <<<"$REQUIRED" | sort -u | tr '\n' ' ')"
 
 while IFS= read -r row; do
     [[ -z "$row" ]] && continue
-    N="$(awk -F, '{print NF}' <<<"$row")"
+    N="$(cawk '{print NF}' <<<"$row")"
     [[ "$N" == "$NCOLS" ]] || fail "row has $N cols, expected $NCOLS: $row"
-    awk -F, '$1!="2" || $5!="toolchain" || $33=="" || $34=="" || $37=="" || $37!=$10 {exit 1}' <<<"$row" \
+    cawk '$1!="2" || $5!="toolchain" || $33=="" || $34=="" || $37=="" || $37!=$10 {exit 1}' <<<"$row" \
         || fail "row is not v2 toolchain/ with machine/os/platform: $row"
-    b="$(awk -F, '{print $4}' <<<"$row")"
+    b="$(cawk '{print $4}' <<<"$row")"
     case " $IDS " in *" $b "*) ;; *) fail "unexpected benchmark: $b" ;; esac
-    st="$(awk -F, '{print $28}' <<<"$row")"
+    st="$(cawk '{print $28}' <<<"$row")"
     if [[ "$st" == "skipped" ]]; then
-        [[ -n "$(awk -F, '{print $30}' <<<"$row")" ]] || fail "skip row missing reason: $row"
+        [[ -n "$(cawk '{print $30}' <<<"$row")" ]] || fail "skip row missing reason: $row"
     elif [[ "$st" != "ok" ]]; then
         fail "status '$st': $row"
     fi
-done <<< "$OUT"
+done < <(csv_fields <<<"$OUT")
 
 while read -r b v floor libs; do
     [[ -z "$b" ]] && continue
     [[ "$v" == "-" ]] && v=""
     for want in $libs; do
         lang="${want%%/*}"; lib="${want#*/}"
-        r="$(awk -F, -v b="$b" -v v="$v" -v l="$lang" -v lib="$lib" '$4==b && $31==v && $10==l && $12==lib' <<<"$OUT" | head -1)"
+        r="$(cawk -v b="$b" -v v="$v" -v l="$lang" -v lib="$lib" '$4==b && $31==v && $10==l && $12==lib' <<<"$OUT" | head -1)"
         [[ -n "$r" ]] || fail "no $lang $lib row for toolchain/$b${v:+/$v}"
-        [[ "$(awk -F, '{print $28 "/" $29}' <<<"$r")" == "ok/true" ]] \
-            || fail "$lang $lib toolchain/$b${v:+/$v} not ok/check_ok: $(awk -F, '{print $28, $29, $30}' <<<"$r")"
-        min="$(awk -F, '{print $17}' <<<"$r")"
+        [[ "$(cawk '{print $28 "/" $29}' <<<"$r")" == "ok/true" ]] \
+            || fail "$lang $lib toolchain/$b${v:+/$v} not ok/check_ok: $(cawk '{print $28, $29, $30}' <<<"$r")"
+        min="$(cawk '{print $17}' <<<"$r")"
         (( min >= floor )) || fail "$lang $lib toolchain/$b${v:+/$v} min_ns=$min under the $floor floor"
         if [[ "$b" == binary-size-* ]]; then
-            kb="$(awk -F, '{print $23}' <<<"$r")"
+            kb="$(cawk '{print $23}' <<<"$r")"
             (( kb > 0 )) || fail "$lang $lib toolchain/$b size column is $kb"
-            [[ "$(awk -F, '{print $30}' <<<"$r")" == *"size on disk"* ]] || fail "$lang $lib toolchain/$b does not say its memory column is the size on disk"
+            [[ "$(cawk '{print $30}' <<<"$r")" == *"size on disk"* ]] || fail "$lang $lib toolchain/$b does not say its memory column is the size on disk"
         fi
     done
-    echo "[toolchain-comp] $b${v:+/$v}: $(awk -F, -v b="$b" -v v="$v" '$4==b && $31==v && $28=="ok" {printf "%s/%s ", $10, $12}' <<<"$OUT")"
+    echo "[toolchain-comp] $b${v:+/$v}: $(cawk -v b="$b" -v v="$v" '$4==b && $31==v && $28=="ok" {printf "%s/%s ", $10, $12}' <<<"$OUT")"
 done <<< "$REQUIRED"
 
 echo "TOOLCHAIN-COMP OK"

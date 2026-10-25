@@ -17,6 +17,7 @@
 # Env: CAJETA_BENCH_OUT (default /tmp).
 set -euo pipefail
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 OUTD="${CAJETA_BENCH_OUT:-/tmp}"; mkdir -p "$OUTD"
 CHECK="python3 $SCRIPT_DIR/xpu_check.py"
@@ -49,7 +50,7 @@ PY
 done
 echo "[xpu-comp] every page id has a competitor row (the showcase's are Cajeta's own backends)"
 for lib in BabelStream mixbench torch meshoptimizer; do
-    awk -F, -v l="$lib" 'NR>1 && $12==l' "$LEG" | grep -q . || fail "no $lib rows"
+    cawk -v l="$lib" 'NR>1 && $12==l' "$LEG" | grep -q . || fail "no $lib rows"
 done
 
 # (3)

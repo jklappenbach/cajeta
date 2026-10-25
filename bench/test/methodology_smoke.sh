@@ -7,6 +7,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 REPO_ROOT="$( cd -- "${PROJ}/.." &> /dev/null && pwd )"
 CAJETA="${CAJETA:-${REPO_ROOT}/build/src/cajeta}"
@@ -18,18 +19,18 @@ cd "$PROJ"
 echo "[method] building..."
 "$CAJETA" release >/dev/null || fail "release build failed"  # benchmarks measured as --release (§1.4)
 
-OUT="/tmp/cajeta-bench-method/results.csv"; mkdir -p /tmp/cajeta-bench-method
+MD="${CAJETA_BENCH_OUT:-/tmp}/cajeta-bench-method"; OUT="$MD/results.csv"; mkdir -p "$MD"
 rm -f "$OUT"
 echo "[method] running --run..."
 CAJETA_BENCH_SCAFFOLD=1 PROFILE_RUN_ID=method-run "$PROJ/build/bench" --run --bench sum --out "$OUT" >/dev/null || fail "--run exited non-zero"
 [[ -f "$OUT" ]] || fail "results CSV not written"
 
 # Pull the SumBench row (benchmark col 4 == "sum").
-ROW="$(awk -F, 'NR>1 && $4=="sum"{print; exit}' "$OUT")"
+ROW="$(cawk 'NR>1 && $4=="sum"{print; exit}' "$OUT")"
 [[ -n "$ROW" ]] || fail "no sum row in CSV"
 echo "[method] sum row: $ROW"
 
-get() { echo "$ROW" | awk -F, -v c="$1" '{print $c}'; }
+get() { echo "$ROW" | cawk -v c="$1" '{print $c}'; }
 TRIALS="$(get 16)"; MIN="$(get 17)"; MED="$(get 18)"; MEAN="$(get 19)"; P95="$(get 20)"
 WS="$(get 27)"; STATUS="$(get 28)"; CHECK="$(get 29)"
 
@@ -48,10 +49,10 @@ echo "[method] trials=$TRIALS min=$MIN median=$MED mean=$MEAN p95=$P95 ws_kb=$WS
 
 # Short mode (spec §3.3.3): CAJETA_BENCH_SMOKE=1 collapses warmup to 1 and
 # trials to 3, and tags the row `smoke` so the publish step can never ship it.
-OUTS="/tmp/cajeta-bench-method/smoke.csv"; rm -f "$OUTS"
+OUTS="$MD/smoke.csv"; rm -f "$OUTS"
 CAJETA_BENCH_SMOKE=1 CAJETA_BENCH_SCAFFOLD=1 PROFILE_RUN_ID=method-smoke "$PROJ/build/bench" --run --bench sum --out "$OUTS" >/dev/null \
     || fail "--run (smoke) exited non-zero"
-ROW="$(awk -F, 'NR>1 && $4=="sum"{print; exit}' "$OUTS")"
+ROW="$(cawk 'NR>1 && $4=="sum"{print; exit}' "$OUTS")"
 [[ -n "$ROW" ]] || fail "no sum row in smoke CSV"
 [[ "$(get 15)" == "1" ]]     || fail "smoke warmup expected 1, got $(get 15)"
 [[ "$(get 16)" == "3" ]]     || fail "smoke trials expected 3, got $(get 16)"

@@ -17,10 +17,11 @@
 set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 OUTD="${CAJETA_BENCH_OUT:-/tmp}"; mkdir -p "$OUTD"
 export PROFILE_DATA_DIR="${PROFILE_DATA_DIR:-${PROJ}/datasets/cache}"
-NCOLS="$(awk -F, '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
+NCOLS="$(cawk '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
 
 fail() { echo "NUCLEO-COMP FAIL: $1" >&2; exit 1; }
 
@@ -34,7 +35,7 @@ printf '%s\n' "$OUT" > "$OUTD/nucleo-comp.csv"
 
 while IFS= read -r row; do
     [[ -z "$row" ]] && continue
-    IFS=, read -r -a c <<< "$row"
+    IFS="$CSV_FS" read -r -a c <<< "$row"
     [[ "${#c[@]}" -ge $((NCOLS - 1)) && "${c[0]}" == "2" && "${c[4]}" == "nucleo" ]] || fail "row not v2 nucleo: $row"
     [[ "${c[9]}" == "python" && "${c[36]:-}" == "python" ]] || fail "row language/platform not python: $row"
     if [[ "${c[27]}" == "skipped" ]]; then
@@ -44,10 +45,10 @@ while IFS= read -r row; do
     fi
     [[ "${c[27]}" == "ok" && "${c[28]}" == "true" ]] || fail "${c[11]} ${c[3]} [${c[30]}] status=${c[27]} check=${c[28]} notes=${c[29]}"
     [[ "${c[16]}" =~ ^[0-9]+$ && "${c[16]}" -gt 0 ]] || fail "${c[11]} ${c[3]} [${c[30]}] min_ns=${c[16]}"
-done <<< "$OUT"
+done < <(csv_fields <<<"$OUT")
 
 has() {   # has <lib> <slug> [variant]
-    printf '%s\n' "$OUT" | awk -F, -v l="$1" -v b="$2" -v v="${3:-}" '$12==l && $4==b && (v=="" || $31==v) && $28=="ok" && $29=="true"' | grep -q . \
+    printf '%s\n' "$OUT" | cawk -v l="$1" -v b="$2" -v v="${3:-}" '$12==l && $4==b && (v=="" || $31==v) && $28=="ok" && $29=="true"' | grep -q . \
         || fail "no ok $1 nucleo/$2${3:+ [$3]} row"
 }
 for lib in pandas polars duckdb; do
@@ -68,7 +69,7 @@ has numexpr fuse-elementwise-chain fused
 # Every page id has competitor rows.
 ids="$(grep -ho '^| `nucleo/[a-z0-9-]*`' "$PROJ"/nucleo/*.md | sed 's/.*nucleo\///; s/`//' | sort -u)"
 for id in $ids; do
-    printf '%s\n' "$OUT" | awk -F, -v b="$id" '$4==b && $28=="ok"' | grep -q . || fail "page id nucleo/$id has no ok competitor row"
+    printf '%s\n' "$OUT" | cawk -v b="$id" '$4==b && $28=="ok"' | grep -q . || fail "page id nucleo/$id has no ok competitor row"
 done
-echo "[nucleo-comp] $(printf '%s\n' "$OUT" | awk -F, '$28=="ok"' | wc -l) ok rows across $(printf '%s\n' "$OUT" | awk -F, '$28=="ok"{print $12}' | sort -u | tr '\n' ' ')"
+echo "[nucleo-comp] $(printf '%s\n' "$OUT" | cawk '$28=="ok"' | wc -l) ok rows across $(printf '%s\n' "$OUT" | cawk '$28=="ok"{print $12}' | sort -u | tr '\n' ' ')"
 echo "NUCLEO-COMP OK"

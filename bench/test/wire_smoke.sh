@@ -11,6 +11,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 REPO_ROOT="$( cd -- "${PROJ}/.." &> /dev/null && pwd )"
 CAJETA="${CAJETA:-${REPO_ROOT}/build/src/cajeta}"
@@ -37,13 +38,13 @@ CAJETA_BENCH_SMOKE=1 PROFILE_RUN_ID=wire-run "$PROJ/build/bench" --run --area wi
 echo "[wire] run $((SECONDS - t0)) s"
 grep -hE "^  (ok|skipped|invalid|failed)  " "$LOG" | sed 's/^/  /' || true
 
-rows_for() { awk -F, -v b="$1" -v v="$2" 'NR>1 && $4==b && (v=="" || $31==v)' "$OUT"; }
+rows_for() { cawk -v b="$1" -v v="$2" 'NR>1 && $4==b && (v=="" || $31==v)' "$OUT"; }
 check() {   # check <slug> [variant]
     local b="$1" v="${2:-}" rows row
     rows="$(rows_for "$b" "$v")"
     [[ -n "$rows" ]] || fail "no row for wire/$b${v:+ [$v]}"
     while IFS= read -r row; do
-        IFS=, read -r -a c <<< "$row"
+        IFS="$CSV_FS" read -r -a c <<< "$row"
         [[ "${c[4]}/${c[3]}" == "wire/$b" ]] || fail "$b id=${c[4]}/${c[3]} (want wire/$b)"
         [[ "${c[27]}" == "ok" ]]   || fail "wire/$b${v:+ [$v]} status=${c[27]} notes=${c[29]}"
         [[ "${c[28]}" == "true" ]] || fail "wire/$b${v:+ [$v]} check_ok=${c[28]} notes=${c[29]}"
@@ -56,7 +57,7 @@ check_skip() {   # check_skip <slug> <variant>: a skipped row with a reason
     local row
     row="$(rows_for "$1" "$2")"
     [[ -n "$row" ]] || fail "no row for wire/$1 [$2]"
-    IFS=, read -r -a c <<< "$row"
+    IFS="$CSV_FS" read -r -a c <<< "$row"
     [[ "${c[27]}" == "skipped" && -n "${c[29]}" ]] || fail "wire/$1 [$2] status=${c[27]} (want skipped with a reason)"
     echo "[wire] wire/$1 [$2] skipped: ${c[29]}"
 }
@@ -69,9 +70,9 @@ check_skip compressstream-roundtrip zstd   # no zstd in the stdlib or dev.cajeta
 # Every id on the pages is covered (a page row added later without a benchmark fails here).
 ids="$(cat "$PROJ"/wire/*.md $(ls "$PROJ"/wire/*/*.md 2>/dev/null) | grep -o '^| `wire/[a-z0-9-]*`' | sed 's/.*wire\///; s/`//' | sort -u)"
 for id in $ids; do
-    awk -F, -v b="$id" 'NR>1 && $4==b' "$OUT" | grep -q . || fail "page id wire/$id has no row"
+    cawk -v b="$id" 'NR>1 && $4==b' "$OUT" | grep -q . || fail "page id wire/$id has no row"
 done
-others="$(awk -F, 'NR>1 && $5 != "wire"' "$OUT" | wc -l)"
+others="$(cawk 'NR>1 && $5 != "wire"' "$OUT" | wc -l)"
 [[ "$others" == "0" ]] || fail "--area wire emitted $others non-wire rows"
 
 echo "WIRE OK ($(echo "$ids" | wc -w) page ids)"

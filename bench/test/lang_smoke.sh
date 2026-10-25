@@ -23,6 +23,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 REPO_ROOT="$( cd -- "${PROJ}/.." &> /dev/null && pwd )"
 CAJETA="${CAJETA:-${REPO_ROOT}/build/src/cajeta}"
@@ -99,17 +100,17 @@ CAJETA_BENCH_SMOKE=1 PROFILE_RUN_ID=lang-smoke "$PROJ/build/bench-live-set-off" 
     --out "$OUTD/cajeta-lang-live-set-off.csv" >"$OUTD/run-live-set-off.log" 2>&1 || fail "bench-live-set-off run failed"
 
 # The live-set-off build must not name its row -on (nor the reverse).
-awk -F, 'NR>1 && $4=="alloc-live-set-on"' "$OUTD/cajeta-lang-live-set-off.csv" | grep -q . && fail "bench-live-set-off reported alloc-live-set-on"
-awk -F, 'NR>1 && $4=="alloc-live-set-off"' "$CSV" | grep -q . && fail "build/bench (live set bounded) reported alloc-live-set-off"
+cawk 'NR>1 && $4=="alloc-live-set-on"' "$OUTD/cajeta-lang-live-set-off.csv" | grep -q . && fail "bench-live-set-off reported alloc-live-set-on"
+cawk 'NR>1 && $4=="alloc-live-set-off"' "$CSV" | grep -q . && fail "build/bench (live set bounded) reported alloc-live-set-off"
 
 ALL="$OUTD/cajeta-lang-all.csv"
 { cat "$CSV"; for f in cajeta-lang-bounds-on cajeta-lang-live-set-on cajeta-lang-live-set-off; do tail -n +2 "$OUTD/$f.csv"; done; } > "$ALL"
 n=0
 for e in $LANG_IDS_ALL; do
     slug="${e%%:*}"; var=""; [[ "$e" == *:* ]] && var="${e#*:}"
-    row="$(awk -F, -v b="$slug" -v v="$var" 'NR>1 && $4==b && $31==v {print; exit}' "$ALL")"
+    row="$(cawk -v b="$slug" -v v="$var" 'NR>1 && $4==b && $31==v {print; exit}' "$ALL")"
     [[ -n "$row" ]] || fail "no row for lang/$slug${var:+ [$var]}"
-    IFS=, read -r -a c <<< "$row"
+    IFS="$CSV_FS" read -r -a c <<< "$row"
     [[ "${c[4]}" == "lang" ]] || fail "lang/$slug area=${c[4]}"
     [[ "${c[29]}" == *smoke* ]] || fail "lang/$slug row not tagged smoke"
     [[ "${c[27]}" == "ok" && "${c[28]}" == "true" ]] || fail "lang/$slug${var:+ [$var]} status=${c[27]} check_ok=${c[28]} notes=${c[29]}"
@@ -122,7 +123,7 @@ FID="$(lang_fidelity_tool "$REPO_ROOT" "$CAJETA")" || fail "verify-fidelity.py n
 # dot-product rows (measured 2026-10-25 above their ceilings on Phoenix, so
 # not a unit-5 regression), and a failure there is printed, not fatal.
 U5="$OUTD/cajeta-lang-unit5.csv"
-{ head -1 "$ALL"; awk -F, -v ids=" $LANG_IDS_UNIT5 " 'NR>1 { if (index(ids, " " $4 " ") || index(ids, " " $4 ":")) print }' "$ALL"; } > "$U5"
+{ head -1 "$ALL"; cawk -v ids=" $LANG_IDS_UNIT5 " 'NR>1 { if (index(ids, " " $4 " ") || index(ids, " " $4 ":")) print }' "$ALL"; } > "$U5"
 python3 "$FID" "$U5" >"$OUTD/fidelity.log" 2>&1 \
     || { tail -5 "$OUTD/fidelity.log"; fail "verify-fidelity.py rejected the unit-5 lang rows"; }
 echo "[lang] verify-fidelity.py (unit-5 rows): ok"

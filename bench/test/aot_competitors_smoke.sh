@@ -10,6 +10,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 [[ -d "$HOME/.cargo/bin" ]] && export PATH="$HOME/.cargo/bin:$PATH"
 OUTD="${CAJETA_BENCH_OUT:-/tmp}"; mkdir -p "$OUTD"
@@ -31,7 +32,7 @@ echo "[aot-comp] run $((SECONDS - t0)) s"
 [[ -n "$OUT" ]] || fail "run.sh aot produced no rows"
 while IFS= read -r row; do
     [[ -z "$row" ]] && continue
-    IFS=, read -r -a c <<< "$row"
+    IFS="$CSV_FS" read -r -a c <<< "$row"
     [[ "${#c[@]}" -ge 36 && "${c[0]}" == "2" && "${c[4]}" == "aot" ]] || fail "row not v2 aot: $row"
     [[ "${c[3]}" == "di-graph-100-startup" ]] || fail "unexpected id aot/${c[3]}"
     if [[ "${c[9]} ${c[11]} ${c[27]}" == "rust shaku skipped" && "${c[29]}" == *"does not compile"* ]]; then
@@ -40,13 +41,13 @@ while IFS= read -r row; do
     [[ "${c[27]}" == "ok" && "${c[28]}" == "true" ]] || fail "${c[9]} ${c[11]} status=${c[27]} check=${c[28]} notes=${c[29]}"
     [[ "${c[16]}" =~ ^[0-9]+$ && "${c[16]}" -gt 0 ]] || fail "${c[9]} ${c[11]} min_ns=${c[16]}"
     echo "[aot-comp] ${c[9]} ${c[11]} ${c[12]} ok  min_ns=${c[16]}"
-done <<< "$OUT"
+done < <(csv_fields <<<"$OUT")
 for want in "java spring" "java dagger" "java guice" "go wire" "rust shaku"; do
     set -- $want
-    echo "$OUT" | awk -F, -v l="$1" -v b="$2" '$10==l && $12==b && $4=="di-graph-100-startup"' | grep -q . || fail "no $1 $2 row"
+    echo "$OUT" | cawk -v l="$1" -v b="$2" '$10==l && $12==b && $4=="di-graph-100-startup"' | grep -q . || fail "no $1 $2 row"
 done
 ids="$(grep -ho '^| `aot/[a-z0-9-]*`' "$PROJ"/aot/*.md | sed 's/.*aot\///; s/`//' | sort -u)"
 for id in $ids; do
-    echo "$OUT" | awk -F, -v b="$id" '$4==b' | grep -q . || fail "page id aot/$id has no competitor row"
+    echo "$OUT" | cawk -v b="$id" '$4==b' | grep -q . || fail "page id aot/$id has no competitor row"
 done
 echo "AOT-COMP OK ($(echo "$OUT" | grep -c .) rows)"

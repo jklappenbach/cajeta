@@ -21,10 +21,11 @@
 set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 DATA="${PROFILE_DATA_DIR:-/tmp/profile-codec-data}"
 OUTDIR="${CAJETA_BENCH_OUT:-/tmp}"
-NCOLS="$(awk -F, '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
+NCOLS="$(cawk '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
 mkdir -p "$OUTDIR"
 
 fail() { echo "CODEC-COMP FAIL: $1" >&2; exit 1; }
@@ -45,7 +46,7 @@ echo "[codec-comp] ran in $((SECONDS - t0)) s, $(wc -l < "$OUT") rows"
 grep -q 'rows_v2: dropped' "$ERR" && fail "rows_v2 dropped a malformed line (see $ERR)"
 
 # (1) shape, status, reasons, no elision.
-awk -F, -v n="$NCOLS" '
+cawk -v n="$NCOLS" '
     NF != n                         { print "cols " NF ": " $0; bad = 1; next }
     $1 != "2" || $5 != "codec"      { print "schema/area: " $0; bad = 1 }
     $33 == "" || $34 == "" || $37 != $10 { print "machine/os/platform: " $0; bad = 1 }
@@ -70,7 +71,7 @@ has_ok() {   # lang library-regex id:variant...
     local lang="$1" lib="$2" e b v; shift 2
     for e in "$@"; do
         b="${e%%:*}"; v="${e#*:}"
-        awk -F, -v l="$lang" -v lib="$lib" -v b="$b" -v v="$v" \
+        cawk -v l="$lang" -v lib="$lib" -v b="$b" -v v="$v" \
             '$10==l && $12 ~ ("^(" lib ")$") && $4==b && $31==v && $28=="ok" && $29=="true" {f=1} END {exit !f}' "$OUT" \
             || fail "$lang $lib: no ok row for $b/${v:-.}"
     done
@@ -79,7 +80,7 @@ has_ok() {   # lang library-regex id:variant...
 has_skip() {   # lang library id...
     local lang="$1" lib="$2" b; shift 2
     for b in "$@"; do
-        awk -F, -v l="$lang" -v lib="$lib" -v b="$b" '$10==l && $12==lib && $4==b && $28=="skipped" {f=1} END {exit !f}' "$OUT" \
+        cawk -v l="$lang" -v lib="$lib" -v b="$b" '$10==l && $12==lib && $4==b && $28=="skipped" {f=1} END {exit !f}' "$OUT" \
             || fail "$lang $lib: $b should be a recorded skip"
     done
 }
@@ -109,8 +110,8 @@ has_ok python csv csv-parse: csv-write:
 has_ok cpp fast-cpp-csv-parser csv-parse:; has_skip cpp fast-cpp-csv-parser csv-write
 
 # (3) csv rows ran on the smoke file and say so.
-awk -F, '$4 ~ /^csv-/ && $28 == "ok" && ($6 != "codec-csv-smoke" || $30 !~ /smoke input 4 MB/) {exit 1}' "$OUT" \
+cawk '$4 ~ /^csv-/ && $28 == "ok" && ($6 != "codec-csv-smoke" || $30 !~ /smoke input 4 MB/) {exit 1}' "$OUT" \
     || fail "a csv row did not record the smoke input"
 
-echo "[codec-comp] $(awk -F, '$28=="ok"' "$OUT" | wc -l) ok rows, $(awk -F, '$28=="skipped"' "$OUT" | wc -l) skips with reasons"
+echo "[codec-comp] $(cawk '$28=="ok"' "$OUT" | wc -l) ok rows, $(cawk '$28=="skipped"' "$OUT" | wc -l) skips with reasons"
 echo "CODEC-COMP OK"

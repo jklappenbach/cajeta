@@ -7,6 +7,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 REPO_ROOT="$( cd -- "${PROJ}/.." &> /dev/null && pwd )"
 CAJETA="${CAJETA:-${REPO_ROOT}/build/src/cajeta}"
@@ -18,13 +19,13 @@ cd "$PROJ"
 echo "[variant] building..."
 "$CAJETA" release >/dev/null || fail "release build failed"  # benchmarks measured as --release (§1.4)
 
-OUT="/tmp/cajeta-bench-variant/results.csv"; mkdir -p /tmp/cajeta-bench-variant
+VD="${CAJETA_BENCH_OUT:-/tmp}/cajeta-bench-variant"; OUT="$VD/results.csv"; mkdir -p "$VD"
 rm -f "$OUT"
 CAJETA_BENCH_SMOKE=1 CAJETA_BENCH_SCAFFOLD=1 PROFILE_RUN_ID=variant-run "$PROJ/build/bench" --run --bench variant-demo --out "$OUT" >/dev/null || fail "--run exited non-zero"
 [[ -f "$OUT" ]] || fail "results CSV not written"
 
 # variant-demo rows: benchmark col 4, status col 28, variant col 31.
-ROWS="$(awk -F, 'NR>1 && $4=="variant-demo"{print $31"|"$28}' "$OUT")"
+ROWS="$(cawk 'NR>1 && $4=="variant-demo"{print $31"|"$28}' "$OUT")"
 echo "[variant] variant-demo rows (variant|status):"
 printf '%s\n' "$ROWS"
 

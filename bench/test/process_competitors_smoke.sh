@@ -11,6 +11,7 @@ set -uo pipefail
 PKG=process
 LANGS="cpp rust go java python"
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 OUTD="${CAJETA_BENCH_OUT:-/tmp}"; mkdir -p "$OUTD"
 TAG="$(printf '%s' "$PKG" | tr a-z A-Z)"
@@ -25,18 +26,18 @@ printf '%s\n' "$OUT" > "$OUTD/$PKG-comp.csv"
 
 while IFS= read -r row; do
     [[ -z "$row" ]] && continue
-    IFS=, read -r -a c <<< "$row"
+    IFS="$CSV_FS" read -r -a c <<< "$row"
     [[ "${#c[@]}" -ge 36 && "${c[0]}" == "2" && "${c[4]}" == "$PKG" ]] || fail "row not v2 $PKG: $row"
     [[ "${c[27]}" == "ok" && "${c[28]}" == "true" ]] || fail "${c[9]} $PKG/${c[3]} status=${c[27]} check=${c[28]} notes=${c[29]}"
     [[ "${c[16]}" =~ ^[0-9]+$ && "${c[16]}" -gt 0 ]] || fail "${c[9]} $PKG/${c[3]} min_ns=${c[16]} (elided?)"
     [[ "${c[29]}" == *smoke* ]] || fail "${c[9]} $PKG/${c[3]} notes do not name the smoke size"
-done <<< "$OUT"
+done < <(csv_fields <<<"$OUT")
 
 ids="$(grep -ho "^| \`$PKG/[a-z0-9-]*\`" "$PROJ"/$PKG/*.md | sed "s/.*$PKG\///; s/\`//" | sort -u)"
 [[ -n "$ids" ]] || fail "no ids found on the $PKG pages"
 for lang in $LANGS; do
     for id in $ids; do
-        echo "$OUT" | awk -F, -v l="$lang" -v b="$id" '$10==l && $4==b' | grep -q . || fail "no $lang $PKG/$id row"
+        echo "$OUT" | cawk -v l="$lang" -v b="$id" '$10==l && $4==b' | grep -q . || fail "no $lang $PKG/$id row"
         echo "[$PKG-comp] $lang $PKG/$id ok"
     done
 done

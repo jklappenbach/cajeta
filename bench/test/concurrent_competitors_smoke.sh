@@ -17,9 +17,10 @@
 set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 RUNNER="${PROJ}/competitors/concurrent.sh"
-NCOLS="$(awk -F, '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
+NCOLS="$(cawk '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
 OUTDIR="${CAJETA_BENCH_OUT:-/tmp}"; mkdir -p "$OUTDIR"
 
 fail() { echo "CONC-COMP FAIL: $1" >&2; exit 1; }
@@ -39,12 +40,12 @@ printf '%s\n' "$OUT" > "$OUTDIR/conc-comp.csv"
 # (1) + per-row checks
 while IFS= read -r row; do
     [[ -z "$row" ]] && continue
-    N="$(printf '%s' "$row" | awk -F, '{print NF}')"
+    N="$(printf '%s' "$row" | cawk '{print NF}')"
     [[ "$N" == "$NCOLS" ]] || fail "row has $N cols, expected $NCOLS: $row"
-    [[ "$(printf '%s' "$row" | cut -d, -f1)" == "2" ]] || fail "row is not schema_version 2: $row"
-    printf '%s' "$row" | awk -F, '$33=="" || $34=="" || $37=="" || $37!=$10 {exit 1}' \
+    [[ "$(printf '%s' "$row" | cut -d"$CSV_FS" -f1)" == "2" ]] || fail "row is not schema_version 2: $row"
+    printf '%s' "$row" | cawk '$33=="" || $34=="" || $37=="" || $37!=$10 {exit 1}' \
         || fail "row lacks machine/os/platform (platform must be the language): $row"
-    IFS=, read -r -a c <<< "$row"
+    IFS="$CSV_FS" read -r -a c <<< "$row"
     bench="${c[3]}"; area="${c[4]}"; input="${c[8]}"; lang="${c[9]}"; mn="${c[16]}"
     rss="${c[22]}"; status="${c[27]}"; chk="${c[28]}"; notes="${c[29]}"
     [[ "$area" == concurrent ]] || fail "unexpected area: $area"
@@ -65,24 +66,24 @@ while IFS= read -r row; do
     else
         fail "unexpected status '$status': $row"
     fi
-done <<< "$OUT"
+done < <(csv_fields <<<"$OUT")
 
 has() {  # lang bench status [library]
-    echo "$OUT" | awk -F, -v l="$1" -v b="$2" -v s="$3" -v lib="${4:-}" \
+    echo "$OUT" | cawk -v l="$1" -v b="$2" -v s="$3" -v lib="${4:-}" \
         '$10==l && $4==b && $28==s && (lib=="" || $12==lib) {f=1} END {exit !f}'
 }
 
 # (2) every language emits every id
 for lang in cpp rust go java python; do
     for b in $IDS; do
-        echo "$OUT" | awk -F, -v l="$lang" -v b="$b" '$10==l && $4==b {f=1} END {exit !f}' || fail "$lang emitted no $b row"
+        echo "$OUT" | cawk -v l="$lang" -v b="$b" '$10==l && $4==b {f=1} END {exit !f}' || fail "$lang emitted no $b row"
     done
 done
 
 # (3) the page-named competitors are measured
 ok_or_mem_skip() {  # lang
     has "$1" tasks-1m-footprint ok && return 0
-    echo "$OUT" | awk -F, -v l="$1" '$10==l && $4=="tasks-1m-footprint" && $28=="skipped" && $30 ~ /MemAvailable/ {f=1} END {exit !f}'
+    echo "$OUT" | cawk -v l="$1" '$10==l && $4=="tasks-1m-footprint" && $28=="skipped" && $30 ~ /MemAvailable/ {f=1} END {exit !f}'
 }
 for b in $IDS; do
     case "$b" in fiber-sleep-wake|tasks-1m-footprint) ;; *) has cpp "$b" ok || fail "no ok cpp $b row" ;; esac
@@ -109,6 +110,6 @@ has java fiberlocal-get-set ok ThreadLocal || fail "no Java ThreadLocal row"
 has go task-spawn-await ok goroutine || fail "no goroutine spawn row"
 has python task-spawn-await ok asyncio || fail "no asyncio spawn row"
 
-NOK="$(echo "$OUT" | awk -F, '$28=="ok"' | wc -l)"; NSK="$(echo "$OUT" | awk -F, '$28=="skipped"' | wc -l)"
+NOK="$(echo "$OUT" | cawk '$28=="ok"' | wc -l)"; NSK="$(echo "$OUT" | cawk '$28=="skipped"' | wc -l)"
 echo "[conc-comp] $NOK ok rows, $NSK skipped rows across cpp rust go java python"
 echo "CONC-COMP OK"

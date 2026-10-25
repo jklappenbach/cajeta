@@ -12,6 +12,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 REPO_ROOT="$( cd -- "${PROJ}/.." &> /dev/null && pwd )"
 CAJETA="${CAJETA:-${REPO_ROOT}/build/src/cajeta}"
@@ -39,21 +40,21 @@ echo "[time] ran in $((SECONDS - t0))s"
 # id  operations-per-trial (for the anti-elision floor)
 while read -r b ops; do
     [[ -z "$b" ]] && continue
-    row="$(awk -F, -v b="$b" 'NR>1 && $4==b {print; exit}' "$OUT")"
+    row="$(cawk -v b="$b" 'NR>1 && $4==b {print; exit}' "$OUT")"
     [[ -n "$row" ]] || fail "no row for time/$b"
-    st="$(printf '%s' "$row" | awk -F, '{print $28}')"
-    ar="$(printf '%s' "$row" | awk -F, '{print $5}')"
+    st="$(printf '%s' "$row" | cawk '{print $28}')"
+    ar="$(printf '%s' "$row" | cawk '{print $5}')"
     [[ "$ar" == "time" ]] || fail "$b area=$ar (want time; the id is time/$b)"
-    printf '%s' "$row" | awk -F, '{print $30}' | grep -q 'smoke' || fail "$b row not tagged smoke"
+    printf '%s' "$row" | cawk '{print $30}' | grep -q 'smoke' || fail "$b row not tagged smoke"
     if [[ "$b" == "datetime-parse-iso" ]]; then
         [[ "$st" == "skipped" ]] || fail "$b status=$st (cajeta.time has no parse API: expected a skip; if it now parses, make this an ok row)"
-        printf '%s' "$row" | awk -F, '{print $30}' | grep -q 'parse' || fail "$b skip row lacks its reason"
+        printf '%s' "$row" | cawk '{print $30}' | grep -q 'parse' || fail "$b skip row lacks its reason"
         echo "[time] $b skipped (no parse API in cajeta.time)"
         continue
     fi
-    [[ "$st" == "ok" ]] || fail "$b status=$st notes=$(printf '%s' "$row" | awk -F, '{print $30}')"
-    [[ "$(printf '%s' "$row" | awk -F, '{print $29}')" == "true" ]] || fail "$b check_ok not true"
-    min="$(printf '%s' "$row" | awk -F, '{print $17}')"
+    [[ "$st" == "ok" ]] || fail "$b status=$st notes=$(printf '%s' "$row" | cawk '{print $30}')"
+    [[ "$(printf '%s' "$row" | cawk '{print $29}')" == "true" ]] || fail "$b check_ok not true"
+    min="$(printf '%s' "$row" | cawk '{print $17}')"
     (( min >= ops / 10 )) || fail "$b min_ns=$min for $ops operations looks elided"
     echo "[time] $b ok  min_ns=$min"
 done <<'IDS'

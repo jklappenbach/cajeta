@@ -15,9 +15,10 @@
 set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 OUTD="${CAJETA_BENCH_OUT:-/tmp}"; mkdir -p "$OUTD"
-NCOLS="$(awk -F, '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
+NCOLS="$(cawk '{print NF; exit}' "${PROJ}/competitors/columns.txt")"
 fail() { echo "WIRE-COMP FAIL: $1" >&2; exit 1; }
 
 echo "[wire-comp] building + running cpp java rust go (smoke sizes)..."
@@ -29,17 +30,17 @@ echo "[wire-comp] run $((SECONDS - t0)) s"
 
 while IFS= read -r row; do
     [[ -z "$row" ]] && continue
-    IFS=, read -r -a c <<< "$row"
+    IFS="$CSV_FS" read -r -a c <<< "$row"
     [[ "${#c[@]}" -ge 36 && "${c[0]}" == "2" && "${c[4]}" == "wire" ]] || fail "row not v2 wire: $row"
-    n="$(awk -F, '{print NF}' <<< "$row")"
+    n="$(cawk '{print NF}' <<< "$row")"
     [[ "$n" == "$NCOLS" ]] || fail "row has $n columns, want $NCOLS: $row"
     [[ "${c[27]}" == "ok" && "${c[28]}" == "true" ]] || fail "${c[9]} ${c[11]} ${c[3]} [${c[30]}] status=${c[27]} check=${c[28]} notes=${c[29]}"
     [[ "${c[16]}" =~ ^[0-9]+$ && "${c[16]}" -gt 0 ]] || fail "${c[9]} ${c[11]} ${c[3]} min_ns=${c[16]} (elided?)"
     [[ "${c[29]}" == *smoke* ]] || fail "${c[9]} ${c[11]} ${c[3]} notes do not name the smoke size"
-done <<< "$OUT"
+done < <(csv_fields <<<"$OUT")
 
 has() {   # has <lang> <lib> <slug> [variant]
-    echo "$OUT" | awk -F, -v l="$1" -v lib="$2" -v b="$3" -v v="${4:-}" '$10==l && $12==lib && $4==b && (v=="" || $31==v)' \
+    echo "$OUT" | cawk -v l="$1" -v lib="$2" -v b="$3" -v v="${4:-}" '$10==l && $12==lib && $4==b && (v=="" || $31==v)' \
         | grep -q . || fail "no $1 $2 wire/$3${4:+ [$4]} row"
 }
 for lib in protobuf flatbuffers capnproto; do has cpp "$lib" encoder-encode; has cpp "$lib" encoder-decode; done
@@ -55,7 +56,7 @@ has go compress/flate compressstream-roundtrip zlib; has go klauspost/compress/z
 
 ids="$(grep -ho '^| `wire/[a-z0-9-]*`' "$PROJ"/wire/*.md | sed 's/.*wire\///; s/`//' | sort -u)"
 for id in $ids; do
-    echo "$OUT" | awk -F, -v b="$id" '$4==b' | grep -q . || fail "page id wire/$id has no competitor row"
+    echo "$OUT" | cawk -v b="$id" '$4==b' | grep -q . || fail "page id wire/$id has no competitor row"
 done
-echo "[wire-comp] $(echo "$OUT" | grep -c .) rows ok across $(echo "$OUT" | awk -F, '{print $10}' | sort -u | tr '\n' ' ')"
+echo "[wire-comp] $(echo "$OUT" | grep -c .) rows ok across $(echo "$OUT" | cawk '{print $10}' | sort -u | tr '\n' ' ')"
 echo "WIRE-COMP OK ($(echo "$ids" | wc -w) page ids)"

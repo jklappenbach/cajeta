@@ -19,6 +19,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+source "$SCRIPT_DIR/csv_lib.sh"   # cawk / csv_fields: CSV-aware column checks
 PROJ="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 REPO_ROOT="$( cd -- "${PROJ}/.." &> /dev/null && pwd )"
 CAJETA="${CAJETA:-${REPO_ROOT}/build/src/cajeta}"
@@ -52,10 +53,10 @@ echo "[nucleo] run $((SECONDS - t0)) s"
 
 check() {   # check <slug> [variant]
     local b="$1" v="${2:-}" rows row
-    rows="$(awk -F, -v b="$b" -v v="$v" 'NR>1 && $4==b && (v=="" || $31==v)' "$OUT")"
+    rows="$(cawk -v b="$b" -v v="$v" 'NR>1 && $4==b && (v=="" || $31==v)' "$OUT")"
     [[ -n "$rows" ]] || fail "no row for nucleo/$b${v:+ [$v]}"
     while IFS= read -r row; do
-        IFS=, read -r -a c <<< "$row"
+        IFS="$CSV_FS" read -r -a c <<< "$row"
         [[ "${c[4]}/${c[3]}" == "nucleo/$b" ]] || fail "$b id=${c[4]}/${c[3]} (want nucleo/$b)"
         [[ "${c[27]}" == "ok" ]]   || fail "nucleo/$b${v:+ [$v]} status=${c[27]} notes=${c[29]}"
         [[ "${c[28]}" == "true" ]] || fail "nucleo/$b${v:+ [$v]} check_ok=${c[28]} notes=${c[29]}"
@@ -66,9 +67,9 @@ check() {   # check <slug> [variant]
 }
 check_skip() {   # check_skip <slug> <variant>: skipped with the smoke reason
     local b="$1" v="$2" row
-    row="$(awk -F, -v b="$b" -v v="$v" 'NR>1 && $4==b && $31==v' "$OUT")"
+    row="$(cawk -v b="$b" -v v="$v" 'NR>1 && $4==b && $31==v' "$OUT")"
     [[ -n "$row" ]] || fail "no row for nucleo/$b [$v]"
-    IFS=, read -r -a c <<< "$row"
+    IFS="$CSV_FS" read -r -a c <<< "$row"
     [[ "${c[27]}" == "skipped" && "${c[29]}" == *"1e7 variant not run under CAJETA_BENCH_SMOKE=1"* ]] \
         || fail "nucleo/$b [$v] status=${c[27]} notes=${c[29]} (want the smoke skip)"
 }
@@ -79,8 +80,8 @@ done
 for b in table-sort table-filter column-filter column-arith transforms-grad transforms-vmap transforms-jit; do
     check "$b"
 done
-trow="$(awk -F, 'NR>1 && $4=="tape-forward-backward"' "$OUT")"
-if [[ "$(printf '%s' "$trow" | awk -F, '{print $28}')" == "skipped" ]]; then
+trow="$(cawk 'NR>1 && $4=="tape-forward-backward"' "$OUT")"
+if [[ "$(printf '%s' "$trow" | cawk '{print $28}')" == "skipped" ]]; then
     [[ "$trow" == *"Tape.grow()"* ]] || fail "tape-forward-backward skipped without the Tape.grow() reason: $trow"
     echo "[nucleo] nucleo/tape-forward-backward skipped (Tape.grow() defect, reason recorded)"
 else
@@ -90,21 +91,21 @@ check fuse-elementwise-chain fused
 check fuse-elementwise-chain unfused
 
 # Only the 1e7 variants skip.
-others="$(awk -F, 'NR>1 && $28=="skipped" && $31 !~ /-1e7$/ && $4 != "tape-forward-backward"' "$OUT" | wc -l)"
+others="$(cawk 'NR>1 && $28=="skipped" && $31 !~ /-1e7$/ && $4 != "tape-forward-backward"' "$OUT" | wc -l)"
 [[ "$others" == "0" ]] || fail "$others skipped rows besides the 1e7 variants and the tape defect"
 # Every id on the pages has a row (a page row added later without a benchmark fails here).
 ids="$(grep -ho '^| `nucleo/[a-z0-9-]*`' "$PROJ"/nucleo/*.md | sed 's/.*nucleo\///; s/`//' | sort -u)"
 for id in $ids; do
-    awk -F, -v b="$id" 'NR>1 && $4==b' "$OUT" | grep -q . || fail "page id nucleo/$id has no row"
+    cawk -v b="$id" 'NR>1 && $4==b' "$OUT" | grep -q . || fail "page id nucleo/$id has no row"
 done
-others="$(awk -F, 'NR>1 && $5 != "nucleo"' "$OUT" | wc -l)"
+others="$(cawk 'NR>1 && $5 != "nucleo"' "$OUT" | wc -l)"
 [[ "$others" == "0" ]] || fail "--area nucleo emitted $others non-nucleo rows"
 
 # No dataset: the Table rows skip with a reason, never fail.
 OUT2="$OUTD/cajeta-bench-nucleo-nodata.csv"
 CAJETA_BENCH_SMOKE=1 PROFILE_RUN_ID=nucleo-nd env -u PROFILE_DATA_DIR "$PROJ/build/bench" --run --bench table-filter --out "$OUT2" >>"$LOG" 2>&1 \
     || fail "table-filter without PROFILE_DATA_DIR exited non-zero"
-awk -F, 'NR>1 && $4=="table-filter" && $28=="skipped" && $30 ~ /dbbench/' "$OUT2" | grep -q . \
+cawk 'NR>1 && $4=="table-filter" && $28=="skipped" && $30 ~ /dbbench/' "$OUT2" | grep -q . \
     || fail "table-filter without PROFILE_DATA_DIR did not skip with the dataset reason"
 
 echo "NUCLEO OK ($(echo "$ids" | wc -w) page ids)"
