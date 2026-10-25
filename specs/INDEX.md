@@ -20,6 +20,8 @@ tracked below: `cajeta-text-shaping` is a **new spec not yet written**, and
 
 | Spec | Plan | Status |
 |------|------|--------|
+| [jit-tensor-lambda-crash](jit-tensor-lambda-crash-spec.md) | — (defect) | **draft**: filed 2026-10-25 by benchmark-reference unit 12. `Jit` over a Tensor lambda SIGSEGVs at the call; Fuse takes one tensor parameter; Vmap has no batch rule for `Tensor.sum`. |
+| [file-openread-missing-returns-reader](file-openread-missing-returns-reader-spec.md) | — (defect, stdlib) | **draft**: filed 2026-10-25. `File.openRead` on a missing path returns a reader with fd -1, not null; no `File.exists`. |
 | [linkedlist-drop-recursion-overflow](linkedlist-drop-recursion-overflow-spec.md) | — (defect, stdlib/runtime) | **draft**: filed 2026-10-25 by benchmark-reference unit 6. Dropping a 1e6-node `LinkedList` recurses once per node and overflows the stack. |
 | [command-run-stdin-pipe-deadlock](command-run-stdin-pipe-deadlock-spec.md) | — (defect, stdlib) | **draft**: filed 2026-10-25 by benchmark-reference unit 13. `Command.run()` with `stdinBytes` writes all input before draining stdout and deadlocks past one pipe buffer; its timeout cannot fire. |
 | [udp-recvfromasync-parks-every-receive](udp-recvfromasync-parks-every-receive-spec.md) | — (defect, stdlib) | **draft**: filed 2026-10-25 by benchmark-reference unit 10. `recvFromAsync` parks before every receive (141 µs a datagram against 9 µs reading first); the reactor echo round trip is 474 µs against Go's 17 µs on Phoenix. |

@@ -7,8 +7,8 @@
 | id | workload | against | check |
 |---|---|---|---|
 | `nucleo/transforms-grad` | gradient of a scalar function of a 1e6 vector, 1e3 times | JAX `grad`, PyTorch `func.grad` | within epsilon |
-| `nucleo/transforms-vmap` | vectorize a per-row function over 1e4 × 1e3 | JAX `vmap`, PyTorch `vmap` | within epsilon |
-| `nucleo/transforms-jit` | a 10-op expression under `Jit`, warm | JAX `jit`, `torch.compile` | within epsilon |
+| `nucleo/transforms-vmap` | vectorize a per-element scalar function over 1e4 × 1e3 values (Vmap has no batching rule for `Tensor.sum`, so a per-row body cannot be batched yet) | JAX `vmap`, PyTorch `vmap` | within epsilon |
+| `nucleo/transforms-jit` | a 10-op scalar expression under `Jit(Vmap(f))` over 1e6 float32, warm (`Jit` over a tensor lambda crashes at the call on v0.46.3, filed) | JAX `jit`, `torch.compile` | within epsilon |
 
 ## Results
 

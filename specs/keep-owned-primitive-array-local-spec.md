@@ -14,6 +14,13 @@ result `invalid` until the three stores were spelled `#=`, after which every
 variant is `ok`. The same shape with a class-typed local is rejected by name.
 The rule does not fire for primitive-array locals.
 
+**A stdlib victim** (unit 12, 2026-10-25): `runtime/src/cajeta/nucleo/autograd/Tape.cajeta`
+stores its doubled arrays in `grow()` with `this.tag = t2;` and four sibling
+stores, so any tape past 32 nodes crashes (17 nodes run, 39 SIGSEGV). With
+the five stores spelled `#=` the autograd benchmark passes its check. Fixing
+those stores is independent of the compiler check and should happen first;
+`nucleo/tape-forward-backward` skips until it does.
+
 ## 2. Use cases
 - **2.1** As a developer, when I write `this.out = w;` with `w` an owned
   local primitive array that the field outlives, then the compiler reports

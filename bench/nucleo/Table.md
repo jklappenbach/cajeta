@@ -7,7 +7,7 @@
 | id | workload | against | check |
 |---|---|---|---|
 | `nucleo/table-groupby` | db-benchmark groupby q1 to q5; variants q1..q5 × {1e6, 1e7} | pandas, polars, DuckDB | aggregate checksums against DuckDB |
-| `nucleo/table-join` | db-benchmark join: small, medium and big right tables; variants × {1e6, 1e7} | pandas, polars, DuckDB | row count and checksum |
+| `nucleo/table-join` | db-benchmark join q1–q5: small (floored at 10 rows), medium and big right tables; variants × {1e6, 1e7}; the left join projects the medium table to (id2, v2) in every engine because nucleo has no nullable utf8 column yet | pandas, polars, DuckDB | row count and sums against DuckDB |
 | `nucleo/table-sort` | sort 1e7 rows by two keys | pandas, polars, DuckDB | ordered |
 | `nucleo/table-filter` | filter 1e7 rows on a predicate selecting 10% | pandas, polars, DuckDB | row count |
 

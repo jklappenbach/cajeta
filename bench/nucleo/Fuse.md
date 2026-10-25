@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `nucleo/fuse-elementwise-chain` | `(a * b + c) / d - e` over 1e7 float32, fused and unfused | NumPy (unfused), numexpr, PyTorch compiled, JAX jit | within epsilon |
+| `nucleo/fuse-elementwise-chain` | `(a * b + c) / d - e` over 1e7 float32 with b, c, d, e scalars (Fuse v1 takes one tensor parameter), fused and unfused; the competitors run the same expression | NumPy (unfused), numexpr, `torch.compile`, JAX jit | within epsilon |
 
 ## Results
 

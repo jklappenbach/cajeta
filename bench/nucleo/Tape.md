@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `nucleo/tape-forward-backward` | forward and backward through a 3-layer MLP on a 256 × 784 batch, 1e3 steps | PyTorch autograd (CPU), JAX grad | gradient within epsilon of torch |
+| `nucleo/tape-forward-backward` | forward and backward through a 16-16-16-1 sigmoid MLP on a batch of 16, MSE, SGD, 1e3 steps (the Tape is scalar-only, one float32 per node, so the 256 × 784 shape would be 1e8 nodes a step); skips on v0.46.3 because `Tape.grow()` dangles its grown arrays past 32 nodes, the filed primitive-array store defect | PyTorch autograd (CPU), JAX grad | last loss and sum|dW1| against a float64 hand-written backprop |
 
 ## Results
 

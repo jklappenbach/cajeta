@@ -6,8 +6,8 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `nucleo/column-filter` | filter a 1e8 int64 column by a mask | Apache Arrow compute (pyarrow), polars Series, NumPy | count |
-| `nucleo/column-arith` | `a + b * c` over 1e8 float64 columns with nulls | same | checksum |
+| `nucleo/column-filter` | filter a 1e8 int64 column by a mask (the mask as the validity bitmap of a zero-copy `NullableColumn`, then `dropNulls()`; there is no filter kernel yet) | Apache Arrow compute (pyarrow), polars Series, NumPy | count |
+| `nucleo/column-arith` | `a + b * c` over 1e8 float64 columns with nulls (through `asTensor`, `Tensor.mul` and `add`, validity ANDed; `Column` has no arithmetic yet) | same | checksum |
 
 ## Results
 
