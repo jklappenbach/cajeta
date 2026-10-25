@@ -1,0 +1,55 @@
+package bench.codec;
+
+import cajeta.codec.Base32;
+
+import dev.cajeta.bench.Benchmark;
+
+// Base32 (RFC 4648, padded) encode throughput over 1 MiB, 1e3 trials. The
+// page's check is the output length: 8 * ceil(N/5) = 1677728. Same input as
+// the Base64 rows (BaseNData).
+public class Base32EncodeBench extends Benchmark {
+
+    public int8[] data;
+    public int64 len;
+    public int64 outLen;
+
+    public String name() {
+        return "base32-encode";
+    }
+
+    public String area() {
+        return "codec";
+    }
+
+    public int32 warmupIters() {
+        return 20;
+    }
+
+    public int32 measuredIters() {
+        return 1000;
+    }
+
+    public void setup() {
+        this.len = 1048576;
+        int8[] d #= BaseNData.make((int32) this.len);
+        this.data #= d;
+    }
+
+    public int64 inputSize() {
+        return this.len;
+    }
+
+    public String unit() {
+        return "MB/s";
+    }
+
+    public void run(int32 iterations) {
+        String enc #= Base32.encode(this.data, this.len);
+        this.outLen = (int64) enc.byteLength();
+    }
+
+    public boolean checkResult() {
+        int64 expected = ((this.len + 4) / 5) * 8;
+        return this.outLen == expected;
+    }
+}

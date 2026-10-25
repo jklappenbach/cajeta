@@ -1,0 +1,13 @@
+package bench.codec;
+
+// One record of the CSV page's generated file (datasets/gen_csv.py): header
+// `id,name,qty,price,note`, bound by Csv.parse<CsvRow[]> by field name.
+public class CsvRow {
+    public int64 id;
+    public String name;
+    public int32 qty;
+    public float64 price;
+    public String note;
+
+    public CsvRow() {}
+}

@@ -4,21 +4,26 @@ import cajeta.collection.ArrayList;
 import cajeta.codec.json.Json;
 import cajeta.codec.json.JsonValue;
 import cajeta.error.Exception;
+import cajeta.io.file.File;
+import cajeta.io.file.FileReader;
 
 import dev.cajeta.bench.Benchmark;
 
-// JSON conformance (the JSON_checker accept/reject idea): feed a vector of
-// clearly-valid and clearly-malformed documents and assert the parser's verdict
-// (accept = parses, reject = throws) matches the expected classification for
-// every case. A correctness benchmark — the value is the pass/fail vector, not
-// the time. Cases are object/array-rooted + integer-only to keep the verdict
-// unambiguous (top-level scalars and floats are separate concerns).
+// JSON conformance on the JSON_checker set as nativejson-benchmark ships it
+// (datasets/manifest.tsv, jsonchecker_*): pass01-03 must parse, fail02-33 must
+// be rejected (fail01 and fail18 are not in the set: RFC 8259 accepts them).
+// The 34 documents are read once in setup(); one trial classifies all of them
+// (accept = Json.parse returns, reject = it throws). The page's check is the
+// accept and reject counts, 3 and 31; the notes carry the counts and name any
+// misclassified file.
 public class JsonConformanceBench extends Benchmark {
 
-    public ArrayList<String> validCases;
-    public ArrayList<String> invalidCases;
-    public int32 correct;
-    public int32 total;
+    public ArrayList<String> passDocs;
+    public ArrayList<String> failDocs;
+    public ArrayList<String> failNames;
+    public int32 accepted;
+    public int32 rejected;
+    public String missed;
 
     public String name() {
         return "json-conformance";
@@ -36,28 +41,64 @@ public class JsonConformanceBench extends Benchmark {
         return 20;
     }
 
-    public void setup() {
-        this.validCases = heap ArrayList<String>();
-        this.validCases.add("{}");
-        this.validCases.add("[]");
-        this.validCases.add("{\"a\":1}");
-        this.validCases.add("[1,2,3]");
-        this.validCases.add("{\"a\":{\"b\":2}}");
-        this.validCases.add("{\"a\":1,\"b\":2}");
-        this.validCases.add("[[1],[2]]");
+    public static String dataDir() {
+        return System.env.get("PROFILE_DATA_DIR");
+    }
 
-        this.invalidCases = heap ArrayList<String>();
-        this.invalidCases.add("{");
-        this.invalidCases.add("[1,2");
-        this.invalidCases.add("{\"a\"}");
-        this.invalidCases.add("{\"a\":}");
-        this.invalidCases.add("]");
-        this.invalidCases.add("{\"x\":1");
-        this.invalidCases.add("}");
+    public static #String fileName(String kind, int32 i) {
+        if (i < 10) {
+            return "jsonchecker_" + kind + "0" + i;
+        }
+        return "jsonchecker_" + kind + i;
+    }
+
+    public boolean available() {
+        String dir = JsonConformanceBench.dataDir();
+        if (dir == null) {
+            return false;
+        }
+        String p = dir + "/jsonchecker_fail33.json";
+        FileReader r #= File.openRead(p);
+        if (r == null) {
+            return false;
+        }
+        r.close();
+        return true;
+    }
+
+    public static #String load(String dir, String name) {
+        int8[] b #= File.readAllBytes(dir + "/" + name + ".json");
+        int32 n = (int32) b.count();
+        return heap String(#b, n);
+    }
+
+    public void setup() {
+        String dir = JsonConformanceBench.dataDir();
+        this.passDocs = heap ArrayList<String>();
+        this.failDocs = heap ArrayList<String>();
+        this.failNames = heap ArrayList<String>();
+        int32 i = 1;
+        while (i <= 3) {
+            String nm #= JsonConformanceBench.fileName("pass", i);
+            String doc #= JsonConformanceBench.load(dir, nm);
+            this.passDocs.add(#doc);
+            i = i + 1;
+        }
+        i = 2;
+        while (i <= 33) {
+            if (i != 18) {
+                String nm #= JsonConformanceBench.fileName("fail", i);
+                String doc #= JsonConformanceBench.load(dir, nm);
+                this.failDocs.add(#doc);
+                this.failNames.add(#nm);
+            }
+            i = i + 1;
+        }
+        this.missed = "";
     }
 
     public int64 inputSize() {
-        return (int64) (this.validCases.count() + this.invalidCases.count());
+        return (int64) 34;
     }
 
     // True if `s` parses (accepted); false if it throws (rejected).
@@ -71,29 +112,41 @@ public class JsonConformanceBench extends Benchmark {
     }
 
     public void run(int32 iterations) {
-        int32 c = 0;
-        int32 t = 0;
+        int32 acc = 0;
+        int32 rej = 0;
+        String missed = "";
         int32 i = 0;
-        while (i < this.validCases.count()) {
-            if (this.accepts(this.validCases.get(i))) {
-                c = c + 1;
+        while (i < this.passDocs.count()) {
+            if (this.accepts(this.passDocs.get(i))) {
+                acc = acc + 1;
+            } else {
+                missed = missed + " " + JsonConformanceBench.fileName("pass", i + 1);
             }
-            t = t + 1;
             i = i + 1;
         }
         int32 j = 0;
-        while (j < this.invalidCases.count()) {
-            if (!this.accepts(this.invalidCases.get(j))) {
-                c = c + 1;
+        while (j < this.failDocs.count()) {
+            if (!this.accepts(this.failDocs.get(j))) {
+                rej = rej + 1;
+            } else {
+                missed = missed + " " + this.failNames.get(j);
             }
-            t = t + 1;
             j = j + 1;
         }
-        this.correct = c;
-        this.total = t;
+        this.accepted = acc;
+        this.rejected = rej;
+        this.missed #= missed;
     }
 
     public boolean checkResult() {
-        return this.total > 0 && this.correct == this.total;
+        return this.accepted == 3 && this.rejected == 31;
+    }
+
+    public String competitorNote() {
+        String s = "pass " + this.accepted + "/3 fail " + this.rejected + "/31";
+        if (this.missed.isEmpty()) {
+            return #= s;
+        }
+        return s + "; misclassified" + this.missed;
     }
 }

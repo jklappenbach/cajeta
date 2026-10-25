@@ -103,7 +103,15 @@ public class JsonTokenizeBench extends Benchmark {
         this.lastTokens = n;
     }
 
+    public String unit() {
+        return "MB/s";
+    }
+
     public boolean checkResult() {
         return this.lastTokens == this.expectedTokens;
+    }
+
+    public String competitorNote() {
+        return "tokens=" + this.lastTokens;
     }
 }

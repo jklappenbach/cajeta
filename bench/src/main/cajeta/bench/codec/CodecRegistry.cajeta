@@ -16,7 +16,11 @@ public final class CodecRegistry {
         b.add(heap JsonSerializeBench());
         b.add(heap JsonRoundtripBench());
         b.add(heap JsonConformanceBench());
+        b.add(heap CsvParseBench());
+        b.add(heap CsvWriteBench());
         b.add(heap Base64EncodeBench());
         b.add(heap Base64DecodeBench());
+        b.add(heap Base32EncodeBench());
+        b.add(heap Base32DecodeBench());
     }
 }

@@ -23,6 +23,8 @@ capnproto	library	git	https://github.com/capnproto/capnproto	v1.5.0	373e61ec89e2
 eigen	library	git	https://gitlab.com/libeigen/eigen.git	5.0.1	bc3b39870ecb690a623a3f49149a358b95c5781d
 pocketfft	library	git	https://github.com/mreineck/pocketfft	cpp	4d865cba24359b05b37da4e75aee24498c3b78e7
 fftw	library	tarball	https://www.fftw.org/fftw-3.3.11.tar.gz	3.3.11	5630c24cdeb33b131612f7eb4b1a9934234754f9f388ff8617458d0be6f239a1
+simdutf	library	git	https://github.com/simdutf/simdutf	v9.3.2	8d82299606e675b50de8dc16fd118aae4b65bfde
+fast-cpp-csv-parser	library	git	https://github.com/ben-strasser/fast-cpp-csv-parser	master	574a9fe4d323ba63416877a4a5fe59088d37aa34
 # --- device reference suites (§6.13, §8.3): fetched only, never built here ---
 babelstream	checkout	git	https://github.com/UoB-HPC/BabelStream	v5.0	f6ae48de899408cf50c24079417dc71a03dbb5a8
 mixbench	checkout	git	https://github.com/ekondis/mixbench	master	06297d6b4882729079fef586407e3ff7ecba437b
@@ -56,3 +58,5 @@ ejml-fdense	library	jar	org/ejml/ejml-fdense/0.46.1/ejml-fdense-0.46.1.jar	0.46.
 ejml-fsparse	library	jar	org/ejml/ejml-fsparse/0.46.1/ejml-fsparse-0.46.1.jar	0.46.1	b834c5851ecdf65390af5cc487ef3167baf8ed4bd84463d42cc21591369b49aa
 ejml-simple	library	jar	org/ejml/ejml-simple/0.46.1/ejml-simple-0.46.1.jar	0.46.1	9f5dc17cde87c00570278aae3d9b2efcdd5b5e058728d6929ae892816c419f25
 ejml-zdense	library	jar	org/ejml/ejml-zdense/0.46.1/ejml-zdense-0.46.1.jar	0.46.1	6c0b124b7cdcec8387aa608f5e46304385ad0536dc7b790f5b0eab988c2e5dbc
+commons-codec	library	jar	commons-codec/commons-codec/1.23.0/commons-codec-1.23.0.jar	1.23.0	47504a3ce71d73a1b0af07675546b8d8c5af87f82ef12b6381f9eb3c17dd5a5b
+univocity-parsers	library	jar	com/univocity/univocity-parsers/2.9.1/univocity-parsers-2.9.1.jar	2.9.1	31685122d5e392e98672ed6009a95a4c1623ca1185567bd44ee94527d454e5c3

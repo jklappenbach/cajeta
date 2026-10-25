@@ -4,20 +4,22 @@ import cajeta.collection.ArrayList;
 import cajeta.codec.json.Json;
 import cajeta.codec.json.JsonValue;
 import cajeta.io.file.File;
-import cajeta.time.Clock;
 
 import dev.cajeta.bench.Benchmark;
 
-// JSON serialize throughput: parse the corpus to a DOM, then Json.toBytes back
-// to a byte buffer. Each trial reads + parses + serializes; the read+parse
-// baseline (measured in prepare) is subtracted to isolate serialization.
-// Cross-check: the serialized output is non-empty.
+// JSON serialize throughput: the corpus file is parsed to a DOM once, untimed,
+// in prepare(); each trial writes that tree back out with Json.toBytes. The
+// page's check: after the trials one untimed serialization is re-parsed and
+// must carry the corpus's node count (JsonCheck), and the notes record the
+// output byte count.
 public class JsonSerializeBench extends Benchmark {
 
     public String path;
+    public String variantName;
     public int64 fileBytes;
-    public int64 baseNs;
+    public JsonValue tree;
     public int64 outLen;
+    public int64 nodes;
 
     public String name() {
         return "json-serialize";
@@ -39,8 +41,6 @@ public class JsonSerializeBench extends Benchmark {
         return System.env.get("PROFILE_DATA_DIR") != null;
     }
 
-    // Floats now DOM-parse (Unit 2): all three corpus files serialize.
-
     public #ArrayList<String> variants() {
         ArrayList<String> v = heap ArrayList<String>();
         v.add("twitter");
@@ -55,38 +55,35 @@ public class JsonSerializeBench extends Benchmark {
             dir = "datasets/cache";
         }
         this.path = dir + "/" + variant + ".json";
-
-        int8[] probe #= File.readAllBytes(this.path);
-        this.fileBytes = (int64) probe.count();
-
-        // Baseline = read + parse (subtracted to isolate serialize).
-        int64 r0 = Clock.nanoTime();
-        int32 k = 0;
-        while (k < 3) {
-            int8[] b2 #= File.readAllBytes(this.path);
-            JsonValue v2 #= Json.parse(b2, (int64) b2.count());
-            k = k + 1;
-        }
-        this.baseNs = (Clock.nanoTime() - r0) / 3;
-    }
-
-    public int64 baselineNanos() {
-        return this.baseNs;
+        this.variantName = "" + variant;
+        int8[] bytes #= File.readAllBytes(this.path);
+        this.fileBytes = (int64) bytes.count();
+        JsonValue v #= Json.parse(#bytes, this.fileBytes);
+        this.tree #= v;
     }
 
     public int64 inputSize() {
         return this.fileBytes;
     }
 
+    public String unit() {
+        return "MB/s";
+    }
+
     public void runVariant(String variant, int32 iterations) {
-        int8[] bytes #= File.readAllBytes(this.path);
-        int64 len = (int64) bytes.count();
-        JsonValue v #= Json.parse(bytes, len);
-        int8[] out #= Json.toBytes(v);
+        int8[] out #= Json.toBytes(this.tree);
         this.outLen = (int64) out.count();
     }
 
     public boolean checkResult() {
-        return this.outLen > 0;
+        int8[] out #= Json.toBytes(this.tree);
+        int64 n = (int64) out.count();
+        JsonValue back #= Json.parse(#out, n);
+        this.nodes = JsonCheck.countNodes(back);
+        return this.outLen == n && this.nodes == JsonCheck.expectedNodes(this.variantName);
+    }
+
+    public String competitorNote() {
+        return "out=" + this.outLen + " bytes; reparsed nodes=" + this.nodes;
     }
 }

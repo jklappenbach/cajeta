@@ -1,0 +1,63 @@
+package bench.codec;
+
+import cajeta.codec.Base32;
+
+import dev.cajeta.bench.Benchmark;
+
+// Base32 decode throughput, 1e3 trials. setup() encodes the 1 MiB input once
+// and keeps the encoding as bytes; each trial decodes it with
+// Base32.decodeBytes (decode(String) would add a copy of the text first). The
+// page's check is equality: one untimed decode after the trials is compared
+// byte for byte with the original.
+public class Base32DecodeBench extends Benchmark {
+
+    public int8[] orig;
+    public int8[] encoded;
+    public int64 encLen;
+    public int64 origLen;
+    public int64 decLen;
+
+    public String name() {
+        return "base32-decode";
+    }
+
+    public String area() {
+        return "codec";
+    }
+
+    public int32 warmupIters() {
+        return 20;
+    }
+
+    public int32 measuredIters() {
+        return 1000;
+    }
+
+    public void setup() {
+        this.origLen = 1048576;
+        int8[] d #= BaseNData.make((int32) this.origLen);
+        String enc #= Base32.encode(d, this.origLen);
+        int8[] eb #= enc.toBytes();
+        this.encLen = (int64) enc.byteLength();
+        this.encoded #= eb;
+        this.orig #= d;
+    }
+
+    public int64 inputSize() {
+        return this.origLen;
+    }
+
+    public String unit() {
+        return "MB/s";
+    }
+
+    public void run(int32 iterations) {
+        int8[] dec #= Base32.decodeBytes(this.encoded, this.encLen);
+        this.decLen = (int64) dec.count();
+    }
+
+    public boolean checkResult() {
+        int8[] dec #= Base32.decodeBytes(this.encoded, this.encLen);
+        return this.decLen == this.origLen && BaseNData.sameBytes(dec, this.orig, this.origLen);
+    }
+}

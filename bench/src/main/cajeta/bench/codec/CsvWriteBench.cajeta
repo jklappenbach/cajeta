@@ -1,0 +1,152 @@
+package bench.codec;
+
+import cajeta.codec.csv.Csv;
+import cajeta.codec.csv.CsvWriter;
+import cajeta.io.file.File;
+
+import dev.cajeta.bench.Benchmark;
+
+// CSV write throughput: the rows Csv.parse<CsvRow[]> bound in prepare()
+// (untimed) are written back out through CsvWriter, header first, with
+// minimal quoting and "\n" records, into memory (toBytes). The page's check
+// is the byte count: the output must be exactly as long as the generated
+// file. The stdlib has no shortest float formatter (`"" + f` is %g with six
+// digits), so the benchmark formats price itself at the generator's two
+// decimals; ids and qty are formatted by the same digit loop.
+public class CsvWriteBench extends Benchmark {
+
+    public CsvRow[] rows;
+    public int64 fileBytes;
+    public int64 expBytes;
+    public int64 outLen;
+
+    public String name() {
+        return "csv-write";
+    }
+
+    public String area() {
+        return "codec";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public boolean available() {
+        return CsvData.present();
+    }
+
+    public String datasetInfo() {
+        String sc #= CsvData.scale();
+        return "codec-csv-" + sc;
+    }
+
+    public void prepare(String variant) {
+        String b #= CsvData.base();
+        int8[] d #= File.readAllBytes(b + ".csv");
+        this.fileBytes = (int64) d.count();
+        CsvRow[] parsed #= Csv.parse<CsvRow[]>(d, this.fileBytes);
+        this.rows #= parsed;
+        this.expBytes = CsvData.meta(2);
+    }
+
+    public int64 inputSize() {
+        return this.fileBytes;
+    }
+
+    public String unit() {
+        return "MB/s";
+    }
+
+    // Decimal digits of v >= 0 into a fresh, exactly sized buffer.
+    public static #int8[] digits(int64 v) {
+        int8[] tmp = heap int8[20];
+        int32 nd = 0;
+        if (v == (int64) 0) {
+            tmp[0] = (int8) 48;
+            nd = 1;
+        }
+        while (v > (int64) 0) {
+            tmp[nd] = (int8) ((v % (int64) 10) + (int64) 48);
+            v = v / (int64) 10;
+            nd = nd + 1;
+        }
+        int8[] out = heap int8[nd];
+        int32 i = 0;
+        while (i < nd) {
+            out[i] = tmp[nd - 1 - i];
+            i = i + 1;
+        }
+        return out;
+    }
+
+    // price at two decimals ("622.67"), as the generator wrote it.
+    public static #int8[] price(float64 p) {
+        int64 cents = (int64) (p * 100.0 + 0.5);
+        int8[] ip #= CsvWriteBench.digits(cents / (int64) 100);
+        int64 c = cents % (int64) 100;
+        int32 n = (int32) ip.count();
+        int8[] out = heap int8[n + 3];
+        int32 i = 0;
+        while (i < n) {
+            out[i] = ip[i];
+            i = i + 1;
+        }
+        out[n] = (int8) 46;
+        out[n + 1] = (int8) ((c / (int64) 10) + (int64) 48);
+        out[n + 2] = (int8) ((c % (int64) 10) + (int64) 48);
+        return out;
+    }
+
+    public static void header(CsvWriter w) {
+        String[] names = ["id", "name", "qty", "price", "note"];
+        int32 i = 0;
+        while (i < 5) {
+            int8[] b #= names[i].toBytes();
+            w.writeField(b);
+            i = i + 1;
+        }
+        w.endRow();
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        CsvWriter w = heap CsvWriter();
+        CsvWriteBench.header(w);
+        int64 n = (int64) this.rows.count();
+        int64 i = 0;
+        while (i < n) {
+            CsvRow r = this.rows[i];
+            int8[] f0 #= CsvWriteBench.digits(r.id);
+            w.writeField(f0);
+            int8[] f1 #= r.name.toBytes();
+            w.writeField(f1);
+            int8[] f2 #= CsvWriteBench.digits((int64) r.qty);
+            w.writeField(f2);
+            int8[] f3 #= CsvWriteBench.price(r.price);
+            w.writeField(f3);
+            int8[] f4 #= r.note.toBytes();
+            w.writeField(f4);
+            w.endRow();
+            i = i + 1;
+        }
+        int8[] out #= w.toBytes();
+        this.outLen = (int64) out.count();
+    }
+
+    public boolean checkResult() {
+        return this.outLen == this.expBytes && this.outLen == this.fileBytes;
+    }
+
+    public String competitorNote() {
+        String sn #= CsvData.note();
+        String s = "out=" + this.outLen + " bytes; price formatted at 2 decimals by the benchmark (no shortest float formatter in the stdlib)";
+        if (sn.isEmpty()) {
+            return #= s;
+        }
+        return s + "; " + sn;
+    }
+}

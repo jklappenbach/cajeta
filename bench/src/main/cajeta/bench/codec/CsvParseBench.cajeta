@@ -1,0 +1,91 @@
+package bench.codec;
+
+import cajeta.codec.csv.Csv;
+import cajeta.io.file.File;
+
+import dev.cajeta.bench.Benchmark;
+
+// CSV parse throughput: Csv.parse<CsvRow[]> binds the whole generated file
+// (100 MB; 4 MB under CAJETA_BENCH_SMOKE=1) into typed rows. The file is read
+// once in prepare(); Csv.parse borrows the buffer, so every trial parses the
+// same bytes. The page's check is the row and field counts: the row count
+// must equal the generator's, and the qty column's sum (a typed-field
+// checksum, summed inside the trial: one add per row, under 1% of it) must
+// equal the generator's too.
+public class CsvParseBench extends Benchmark {
+
+    public int8[] data;
+    public int64 fileBytes;
+    public int64 expRows;
+    public int64 expQty;
+    public int64 lastRows;
+    public int64 lastQty;
+
+    public String name() {
+        return "csv-parse";
+    }
+
+    public String area() {
+        return "codec";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public boolean available() {
+        return CsvData.present();
+    }
+
+    public String datasetInfo() {
+        String sc #= CsvData.scale();
+        return "codec-csv-" + sc;
+    }
+
+    public void prepare(String variant) {
+        String b #= CsvData.base();
+        int8[] d #= File.readAllBytes(b + ".csv");
+        this.fileBytes = (int64) d.count();
+        this.data #= d;
+        this.expRows = CsvData.meta(0);
+        this.expQty = CsvData.meta(1);
+    }
+
+    public int64 inputSize() {
+        return this.fileBytes;
+    }
+
+    public String unit() {
+        return "MB/s";
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        CsvRow[] rows #= Csv.parse<CsvRow[]>(this.data, this.fileBytes);
+        int64 n = (int64) rows.count();
+        int64 q = 0;
+        int64 i = 0;
+        while (i < n) {
+            q = q + (int64) rows[i].qty;
+            i = i + 1;
+        }
+        this.lastRows = n;
+        this.lastQty = q;
+    }
+
+    public boolean checkResult() {
+        return this.lastRows == this.expRows && this.lastQty == this.expQty;
+    }
+
+    public String competitorNote() {
+        String sn #= CsvData.note();
+        String s = "rows=" + this.lastRows + " fields=" + (this.lastRows * (int64) 5) + " qty_sum=" + this.lastQty;
+        if (sn.isEmpty()) {
+            return #= s;
+        }
+        return s + "; " + sn;
+    }
+}

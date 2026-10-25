@@ -1,0 +1,19 @@
+[package]
+name = "codec-csv"
+version = "0.1.0"
+edition = "2021"
+
+# codec/csv-parse and codec/csv-write competitor (bench/codec/csv/Csv.md):
+# the `csv` crate with serde-typed records.
+[dependencies]
+csv = "1"
+serde = { version = "1", features = ["derive"] }
+
+[[bin]]
+name = "codec-csv"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

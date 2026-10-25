@@ -4,14 +4,16 @@ import cajeta.codec.Base64;
 
 import dev.cajeta.bench.Benchmark;
 
-// Base64 decode throughput. setup() encodes a 1 MiB buffer once; each trial
-// decodes that string. The decoded length round-trips to the original size
-// (the cross-check). Self-generating, so it needs no dataset.
+// Base64 decode throughput, 1e3 trials. setup() encodes a 1 MiB buffer once;
+// each trial decodes that string. The page's check is equality: after the
+// trials one untimed decode is compared byte for byte with the original.
+// Self-generating, so it needs no dataset.
 public class Base64DecodeBench extends Benchmark {
 
     public String encoded;
     public int64 origLen;
     public int64 decLen;
+    public int8[] orig;
 
     public String name() {
         return "base64-decode";
@@ -26,7 +28,7 @@ public class Base64DecodeBench extends Benchmark {
     }
 
     public int32 measuredIters() {
-        return 100;
+        return 1000;
     }
 
     public void setup() {
@@ -39,6 +41,7 @@ public class Base64DecodeBench extends Benchmark {
             i = i + 1;
         }
         this.encoded #= Base64.encode(d, this.origLen);
+        this.orig #= d;
     }
 
     public int64 inputSize() {
@@ -50,7 +53,12 @@ public class Base64DecodeBench extends Benchmark {
         this.decLen = (int64) dec.count();
     }
 
+    public String unit() {
+        return "MB/s";
+    }
+
     public boolean checkResult() {
-        return this.decLen == this.origLen;
+        int8[] dec #= Base64.decode(this.encoded);
+        return this.decLen == this.origLen && BaseNData.sameBytes(dec, this.orig, this.origLen);
     }
 }

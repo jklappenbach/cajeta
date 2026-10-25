@@ -89,7 +89,18 @@ public class JsonBindBench extends Benchmark {
         this.lastOk = (e != null);
     }
 
+    public String unit() {
+        return "MB/s";
+    }
+
     public boolean checkResult() {
         return this.lastOk;
+    }
+
+    // The bound record declares no fields, so the page's "field checksum" is
+    // the whole document walked and bound without error (as every
+    // competitor's skip-all binder does).
+    public String competitorNote() {
+        return "record with no fields: every field skipped; check = document bound without error";
     }
 }

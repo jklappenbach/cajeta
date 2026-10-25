@@ -11,7 +11,10 @@ import dev.cajeta.bench.Benchmark;
 // JSON DOM-build throughput: Json.parse(bytes,len) materializes the full
 // JsonValue tree (Tier-3). Each trial reads a fresh buffer and parses; the
 // read-only baseline (measured in prepare) is subtracted to isolate parsing.
-// Cross-check: the corpus roots are all JSON objects, so kind() == OBJECT.
+// Cross-check (the page's "node count"): after the trials, one untimed parse of
+// the same file is walked and its node count must equal the corpus's
+// (JsonCheck.expectedNodes). The timed result itself is consumed through its
+// root kind, which must be OBJECT.
 //
 // Builds the whole tree, so it stresses allocation — measured --release
 // (--live-set=bounded) which degrades gracefully past the tracking cap; the
@@ -22,6 +25,8 @@ public class JsonDomBench extends Benchmark {
     public int64 fileBytes;
     public int64 baseNs;
     public int32 lastKind;
+    public String variantName;
+    public int64 nodes;
 
     public String name() {
         return "json-dom";
@@ -61,6 +66,7 @@ public class JsonDomBench extends Benchmark {
             dir = "datasets/cache";
         }
         this.path = dir + "/" + variant + ".json";
+        this.variantName = "" + variant;
 
         int8[] probe #= File.readAllBytes(this.path);
         this.fileBytes = (int64) probe.count();
@@ -90,6 +96,17 @@ public class JsonDomBench extends Benchmark {
     }
 
     public boolean checkResult() {
-        return this.lastKind == JsonValue.OBJECT;
+        int8[] bytes #= File.readAllBytes(this.path);
+        JsonValue v #= Json.parse(bytes, (int64) bytes.count());
+        this.nodes = JsonCheck.countNodes(v);
+        return this.lastKind == JsonValue.OBJECT && this.nodes == JsonCheck.expectedNodes(this.variantName);
+    }
+
+    public String unit() {
+        return "MB/s";
+    }
+
+    public String competitorNote() {
+        return "nodes=" + this.nodes;
     }
 }

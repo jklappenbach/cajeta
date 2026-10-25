@@ -4,19 +4,25 @@ import cajeta.collection.ArrayList;
 import cajeta.codec.json.Json;
 import cajeta.codec.json.JsonValue;
 import cajeta.io.file.File;
+import cajeta.time.Clock;
 
 import dev.cajeta.bench.Benchmark;
 
-// JSON roundtrip integrity (the nativejson roundtrip test): parse → serialize →
-// re-parse, and assert the re-parsed root has the same kind as the original
-// (OBJECT). Measures the full read+parse+serialize+reparse cost (no baseline
-// subtraction — it's an integrity-oriented benchmark).
+// JSON round trip (the nativejson roundtrip test): parse, serialize, re-parse.
+// Each trial reads a fresh buffer (Json.parse takes it on the one-shot
+// contract) and the read-only baseline measured in prepare() is subtracted,
+// so the time is parse + serialize + parse. The page's check is equality:
+// after the trials one untimed round trip is compared to the first parse with
+// JsonCheck.deepEquals (kinds, numbers, string bytes, keys in order).
 public class JsonRoundtripBench extends Benchmark {
 
     public String path;
+    public String variantName;
     public int64 fileBytes;
-    public int32 k1;
+    public int64 baseNs;
     public int32 k2;
+    public boolean equal;
+    public int64 floatDiffs;
 
     public String name() {
         return "json-roundtrip";
@@ -38,8 +44,6 @@ public class JsonRoundtripBench extends Benchmark {
         return System.env.get("PROFILE_DATA_DIR") != null;
     }
 
-    // Floats now DOM-parse (Unit 2): all three corpus files round-trip.
-
     public #ArrayList<String> variants() {
         ArrayList<String> v = heap ArrayList<String>();
         v.add("twitter");
@@ -54,24 +58,57 @@ public class JsonRoundtripBench extends Benchmark {
             dir = "datasets/cache";
         }
         this.path = dir + "/" + variant + ".json";
+        this.variantName = "" + variant;
         int8[] probe #= File.readAllBytes(this.path);
         this.fileBytes = (int64) probe.count();
+
+        int64 r0 = Clock.nanoTime();
+        int32 k = 0;
+        while (k < 5) {
+            int8[] b2 #= File.readAllBytes(this.path);
+            k = k + 1;
+        }
+        this.baseNs = (Clock.nanoTime() - r0) / 5;
+    }
+
+    public int64 baselineNanos() {
+        return this.baseNs;
     }
 
     public int64 inputSize() {
         return this.fileBytes;
     }
 
+    public String unit() {
+        return "MB/s";
+    }
+
     public void runVariant(String variant, int32 iterations) {
         int8[] bytes #= File.readAllBytes(this.path);
         JsonValue v1 #= Json.parse(bytes, (int64) bytes.count());
-        this.k1 = v1.kind();
         int8[] out #= Json.toBytes(v1);
         JsonValue v2 #= Json.parse(out, (int64) out.count());
         this.k2 = v2.kind();
     }
 
     public boolean checkResult() {
-        return this.k1 == this.k2 && this.k1 == JsonValue.OBJECT;
+        int8[] bytes #= File.readAllBytes(this.path);
+        JsonValue v1 #= Json.parse(bytes, (int64) bytes.count());
+        int8[] out #= Json.toBytes(v1);
+        JsonValue v2 #= Json.parse(out, (int64) out.count());
+        this.equal = JsonCheck.deepEquals(v1, v2);
+        this.floatDiffs = 0;
+        if (!this.equal) {
+            this.floatDiffs = JsonCheck.countFloatMismatches(v1, v2);
+        }
+        return this.k2 == JsonValue.OBJECT && this.equal;
+    }
+
+    public String competitorNote() {
+        if (this.equal) {
+            return "equal after round trip";
+        }
+        return "NOT equal after round trip: " + this.floatDiffs
+            + " float leaves differ (Json.toBytes writes floats with at most 6 fraction digits)";
     }
 }

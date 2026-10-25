@@ -1,0 +1,84 @@
+package bench.codec;
+
+import cajeta.io.file.File;
+import cajeta.io.file.FileReader;
+
+// The CSV page's input: $PROFILE_DATA_DIR/codec-csv-<scale>.csv written by
+// datasets/gen_csv.py, with the expected "rows qty_sum bytes" in the .meta
+// beside it. The scale is full (the page's 100 MB) unless
+// CAJETA_BENCH_SMOKE=1, which reads the 4 MB smoke file (noted on the row).
+public final class CsvData {
+
+    public static boolean smoke() {
+        String s = System.env.get("CAJETA_BENCH_SMOKE");
+        if (s == null) {
+            return false;
+        }
+        return s.equals("1") || s.equals("true") || s.equals("yes");
+    }
+
+    public static #String scale() {
+        if (CsvData.smoke()) {
+            return "" + "smoke";
+        }
+        return "" + "full";
+    }
+
+    // The data path without extension, or null when PROFILE_DATA_DIR is unset.
+    public static #String base() {
+        String dir = System.env.get("PROFILE_DATA_DIR");
+        if (dir == null) {
+            return null;
+        }
+        String sc #= CsvData.scale();
+        return dir + "/codec-csv-" + sc;
+    }
+
+    public static boolean present() {
+        String b #= CsvData.base();
+        if (b == null) {
+            return false;
+        }
+        FileReader r #= File.openRead(b + ".meta");
+        if (r == null) {
+            return false;
+        }
+        r.close();
+        return true;
+    }
+
+    // The i-th whitespace-separated decimal in the .meta file.
+    public static int64 meta(int32 which) {
+        String b #= CsvData.base();
+        int8[] m #= File.readAllBytes(b + ".meta");
+        int32 n = (int32) m.count();
+        int32 i = 0;
+        int32 field = 0;
+        while (i < n) {
+            while (i < n && (m[i] < (int8) 48 || m[i] > (int8) 57)) {
+                i = i + 1;
+            }
+            int64 v = 0;
+            boolean any = false;
+            while (i < n && m[i] >= (int8) 48 && m[i] <= (int8) 57) {
+                v = v * (int64) 10 + (int64) (m[i] - (int8) 48);
+                any = true;
+                i = i + 1;
+            }
+            if (any) {
+                if (field == which) {
+                    return v;
+                }
+                field = field + 1;
+            }
+        }
+        return (int64) -1;
+    }
+
+    public static #String note() {
+        if (CsvData.smoke()) {
+            return "" + "smoke input 4 MB (the page's 100 MB is the full run)";
+        }
+        return "" + "";
+    }
+}

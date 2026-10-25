@@ -1,0 +1,159 @@
+package bench.codec;
+
+import cajeta.codec.json.JsonArray;
+import cajeta.codec.json.JsonObject;
+import cajeta.codec.json.JsonValue;
+
+// The JSON page's correctness checks, shared by the json-* benchmarks and
+// computed outside the timed trials: the node count (every value, containers
+// included, keys not counted; the corpus has 13914 / 37778 / 167179) and deep
+// equality of two trees (kinds, numbers, string bytes, keys in order).
+public final class JsonCheck {
+
+    public static int64 expectedNodes(String variant) {
+        if (variant.equals("twitter")) {
+            return (int64) 13914;
+        }
+        if (variant.equals("citm_catalog")) {
+            return (int64) 37778;
+        }
+        return (int64) 167179;
+    }
+
+    public static int64 countNodes(JsonValue v) {
+        int64 n = 1;
+        int32 k = v.kind();
+        if (k == JsonValue.ARRAY) {
+            JsonArray a = v.array();
+            int32 c = a.count();
+            int32 i = 0;
+            while (i < c) {
+                n = n + JsonCheck.countNodes(a.get(i));
+                i = i + 1;
+            }
+        } else if (k == JsonValue.OBJECT) {
+            JsonObject o = v.object();
+            int32 c = o.count();
+            int32 i = 0;
+            while (i < c) {
+                n = n + JsonCheck.countNodes(o.valueAt(i));
+                i = i + 1;
+            }
+        }
+        return n;
+    }
+
+    public static boolean sameBytes(int8[] a, int32 an, int8[] b, int32 bn) {
+        if (an != bn) {
+            return false;
+        }
+        int32 i = 0;
+        while (i < an) {
+            if (a[i] != b[i]) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    public static boolean deepEquals(JsonValue a, JsonValue b) {
+        int32 k = a.kind();
+        if (k != b.kind()) {
+            return false;
+        }
+        if (k == JsonValue.BOOLEAN) {
+            return a.asBoolean() == b.asBoolean();
+        }
+        if (k == JsonValue.NUMBER) {
+            if (a.isFloat() != b.isFloat()) {
+                return false;
+            }
+            if (a.isFloat()) {
+                return a.asFloat64() == b.asFloat64();
+            }
+            return a.asInt64() == b.asInt64();
+        }
+        if (k == JsonValue.STRING) {
+            return JsonCheck.sameBytes(a.asBytes(), a.asBytesLength(), b.asBytes(), b.asBytesLength());
+        }
+        if (k == JsonValue.ARRAY) {
+            JsonArray x = a.array();
+            JsonArray y = b.array();
+            int32 c = x.count();
+            if (c != y.count()) {
+                return false;
+            }
+            int32 i = 0;
+            while (i < c) {
+                if (!JsonCheck.deepEquals(x.get(i), y.get(i))) {
+                    return false;
+                }
+                i = i + 1;
+            }
+            return true;
+        }
+        if (k == JsonValue.OBJECT) {
+            JsonObject x = a.object();
+            JsonObject y = b.object();
+            int32 c = x.count();
+            if (c != y.count()) {
+                return false;
+            }
+            int32 i = 0;
+            while (i < c) {
+                if (!JsonCheck.sameBytes(x.keyAt(i), x.keyLenAt(i), y.keyAt(i), y.keyLenAt(i))) {
+                    return false;
+                }
+                if (!JsonCheck.deepEquals(x.valueAt(i), y.valueAt(i))) {
+                    return false;
+                }
+                i = i + 1;
+            }
+            return true;
+        }
+        return true;
+    }
+
+    // How many float leaves differ between two trees of the same shape: the
+    // notes of a failed round-trip say whether floats are what broke.
+    public static int64 countFloatMismatches(JsonValue a, JsonValue b) {
+        int32 k = a.kind();
+        if (k != b.kind()) {
+            return (int64) 0;
+        }
+        if (k == JsonValue.NUMBER) {
+            if (a.isFloat() && b.isFloat() && a.asFloat64() != b.asFloat64()) {
+                return (int64) 1;
+            }
+            return (int64) 0;
+        }
+        int64 n = 0;
+        if (k == JsonValue.ARRAY) {
+            JsonArray x = a.array();
+            JsonArray y = b.array();
+            int32 c = x.count();
+            if (c != y.count()) {
+                return n;
+            }
+            int32 i = 0;
+            while (i < c) {
+                n = n + JsonCheck.countFloatMismatches(x.get(i), y.get(i));
+                i = i + 1;
+            }
+        } else if (k == JsonValue.OBJECT) {
+            JsonObject x = a.object();
+            JsonObject y = b.object();
+            int32 c = x.count();
+            if (c != y.count()) {
+                return n;
+            }
+            int32 i = 0;
+            while (i < c) {
+                n = n + JsonCheck.countFloatMismatches(x.valueAt(i), y.valueAt(i));
+                i = i + 1;
+            }
+        }
+        return n;
+    }
+}

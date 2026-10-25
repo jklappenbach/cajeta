@@ -1,0 +1,19 @@
+[package]
+name = "codec-basen"
+version = "0.1.0"
+edition = "2021"
+
+# codec/base64-* and codec/base32-* competitors (bench/codec/Base64.md,
+# Base32.md): the `base64` crate (STANDARD engine) and `data-encoding` (BASE32).
+[dependencies]
+base64 = "0.22"
+data-encoding = "2"
+
+[[bin]]
+name = "codec-basen"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

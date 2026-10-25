@@ -1,0 +1,30 @@
+package bench.codec;
+
+// The Base64 and Base32 pages' input: 1 MiB with data[i] = (i*31+7) & 0xFF,
+// the bytes every competitor builds the same way.
+public final class BaseNData {
+
+    public static #int8[] make(int32 n) {
+        int8[] d = heap int8[n];
+        int32 i = 0;
+        while (i < n) {
+            d[i] = (int8) ((i * 31 + 7) & 0xFF);
+            i = i + 1;
+        }
+        return d;
+    }
+
+    public static boolean sameBytes(int8[] a, int8[] b, int64 n) {
+        if ((int64) a.count() != n || (int64) b.count() < n) {
+            return false;
+        }
+        int64 i = 0;
+        while (i < n) {
+            if (a[i] != b[i]) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+}

@@ -4,8 +4,10 @@ import cajeta.codec.Base64;
 
 import dev.cajeta.bench.Benchmark;
 
-// Base64 encode throughput over a 1 MiB buffer. The output length is a structural
-// cross-check (4*ceil(N/3)). Self-generating, so it needs no dataset.
+// Base64 encode throughput over a 1 MiB buffer, 1e3 trials (the page's
+// "1e3 times"). The output length is the page's check (4*ceil(N/3) =
+// 1398104). Self-generating (data[i] = (i*31+7) & 0xFF, the same bytes every
+// competitor builds), so it needs no dataset.
 public class Base64EncodeBench extends Benchmark {
 
     public int8[] data;
@@ -25,7 +27,7 @@ public class Base64EncodeBench extends Benchmark {
     }
 
     public int32 measuredIters() {
-        return 100;
+        return 1000;
     }
 
     public void setup() {
@@ -48,6 +50,10 @@ public class Base64EncodeBench extends Benchmark {
     public void run(int32 iterations) {
         String enc #= Base64.encode(this.data, this.len);
         this.outLen = (int64) enc.count();
+    }
+
+    public String unit() {
+        return "MB/s";
     }
 
     public boolean checkResult() {
