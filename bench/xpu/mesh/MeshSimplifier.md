@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `xpu/mesh-simplify` | simplify a 1e6-triangle mesh to 1e5 | meshoptimizer (CPU reference) | triangle count and Hausdorff bound |
+| `xpu/mesh-simplify` | simplify 19,800 triangles to 1,980 on the host (`MeshSimplifier` is host code with a quadratic driver; the page's 1e6 → 1e5 shape is a skip row with that reason, and meshoptimizer runs both) | meshoptimizer (CPU reference) | triangle count and a one-sided vertex-to-surface Hausdorff bound |
 
 ## Results
 

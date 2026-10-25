@@ -20,6 +20,7 @@ tracked below: `cajeta-text-shaping` is a **new spec not yet written**, and
 
 | Spec | Plan | Status |
 |------|------|--------|
+| [mesh-simplifier-quadratic-host](mesh-simplifier-quadratic-host-spec.md) | — (defect, stdlib) | **draft**: filed 2026-10-25 by benchmark-reference unit 14. `MeshSimplifier` is host-only with an O(T²) driver; 2048 triangles take 184 ms against meshoptimizer's 0.45 ms. |
 | [jit-tensor-lambda-crash](jit-tensor-lambda-crash-spec.md) | — (defect) | **draft**: filed 2026-10-25 by benchmark-reference unit 12. `Jit` over a Tensor lambda SIGSEGVs at the call; Fuse takes one tensor parameter; Vmap has no batch rule for `Tensor.sum`. |
 | [file-openread-missing-returns-reader](file-openread-missing-returns-reader-spec.md) | — (defect, stdlib) | **draft**: filed 2026-10-25. `File.openRead` on a missing path returns a reader with fd -1, not null; no `File.exists`. |
 | [linkedlist-drop-recursion-overflow](linkedlist-drop-recursion-overflow-spec.md) | — (defect, stdlib/runtime) | **draft**: filed 2026-10-25 by benchmark-reference unit 6. Dropping a 1e6-node `LinkedList` recurses once per node and overflows the stack. |

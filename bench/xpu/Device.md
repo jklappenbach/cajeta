@@ -18,12 +18,12 @@
 | `xpu/gemm-f32` | 4096 × 4096 GEMM through `CooperativeMatrix` at float32 | cuBLAS and rocBLAS, PyTorch `matmul` | against host within epsilon |
 | `xpu/gemm-f16` | the same at float16 with float32 accumulate | same | within epsilon |
 | `xpu/gemm-bf16` | the same at bfloat16 | same | within epsilon |
-| `xpu/mandelbrot-device` | mandelbrot at 16000 × 16000 on device | CUDA and HIP C++ | checksum |
-| `xpu/mixbench-sweep` | the mixbench operational-intensity sweep; variants per intensity | mixbench CUDA and HIP reference builds | checksum |
-| `xpu/launch-overhead` | 1e4 trivial dispatches; the row is time per launch | CUDA and HIP empty kernels, Vulkan compute | count |
+| `xpu/mandelbrot-device` | mandelbrot at 16000 × 16000 on device | CUDA and HIP C++ | within 1e-5 relative of the host (FMA contraction moves a handful of pixels) |
+| `xpu/mixbench-sweep` | the mixbench operational-intensity sweep, points 0 to 256 as variants, on a fixed-point input so the check is exact | mixbench CUDA and HIP reference builds | exact |
+| `xpu/launch-overhead` | 1e4 trivial dispatches; the row is the time for all 1e4 (divide by 1e4 for a launch) | CUDA and HIP empty kernels, Vulkan compute | count |
 | `xpu/cross-backend-showcase` | the saxpy, reduce and GEMM kernels from one source on every backend present; variants cuda, hip, vulkan, cpu | Cajeta's own backends | bit-exact where exact, epsilon where not |
 
-Rows record the backend and driver; CUDA and Vulkan rows come from Phoenix, HIP and Vulkan rows from Proton.
+Rows record the backend and driver; CUDA and Vulkan rows come from Phoenix, HIP and Vulkan rows from Proton. Compiler manifests on v0.46.3: bf16 is native matrix-core on NVPTX and the software tier on Vulkan, f32 the software tier on NVPTX and native on Vulkan, f16 native on both; no kernel spills. The CUDA competitor is one `devserver` program (cuBLAS, CUB, texture objects), which also builds with hipcc on a ROCm machine.
 
 ## Results
 

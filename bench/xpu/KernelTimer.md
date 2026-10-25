@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `xpu/kerneltimer-resolution` | 1e3 brackets of an empty kernel; the row is the minimum readable interval and the calibrated scale against the host clock | CUDA events, HIP events, Vulkan timestamp queries | scale within 1% |
+| `xpu/kerneltimer-resolution` | 1e3 brackets of an empty kernel; the row is the minimum readable interval and the calibrated scale against the host clock on a busy bracket (Vulkan skips: no event clock) | CUDA events, HIP events | scale within 1% |
 
 On Phoenix under WSL2 the CUDA event clock runs 4.56% fast; the timer calibrates once and the row shows the scale.
 

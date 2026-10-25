@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `xpu/two-stream-overlap` | two 2^24 saxpy chains on two streams against one | CUDA and HIP streams | results equal, speed-up reported |
+| `xpu/two-stream-overlap` | two 2^24 saxpy chains on two streams against one; the speed-up is in the row's notes (about 0.95 on the cpu backend, where `create()` returns the default stream) | CUDA and HIP streams | results equal, speed-up reported |
 
 ## Results
 
