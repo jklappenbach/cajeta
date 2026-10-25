@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `io/filewriter-lines` | write 1e7 50-byte lines | C++ `ofstream`, Rust `BufWriter`, Go `bufio.Writer`, Java `BufferedWriter`, Python `write` | size |
+| `io/filewriter-lines` | write 1e7 50-byte lines (`FileWriter` is unbuffered: one write per line) | C++ `ofstream`, Rust `BufWriter`, Go `bufio.Writer`, Java `BufferedWriter`, Python `write` | size |
 
 ## Results
 

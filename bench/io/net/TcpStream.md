@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `io/tcp-echo-latency` | 1e5 64-byte echo round trips over loopback; the row is the median | C++ POSIX sockets, Rust std and tokio, Go net, Java NIO, Python asyncio | byte equality |
+| `io/tcp-echo-latency` | 1e5 64-byte echo round trips over loopback; the row times the batch and the per-round-trip median is in the notes | C++ POSIX sockets, Rust std and tokio, Go net, Java NIO, Python asyncio | byte equality |
 | `io/tcp-bulk-throughput` | stream 4 GB over loopback in 64 KB writes | same | byte count |
 
 The peer runs in-process on another fiber; the competitor programs do the same on a thread.

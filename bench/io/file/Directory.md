@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `io/directory-walk` | enumerate every entry of the generated tree, 10 times | C++ `recursive_directory_iterator`, Rust `walkdir`, Go `filepath.WalkDir`, Java `Files.walk`, Python `os.scandir` | entry count |
+| `io/directory-walk` | enumerate every entry of the generated tree, 10 times (a recursive `Path.list` plus `isDir`, one stat per entry; there is no walk) | C++ `recursive_directory_iterator`, Rust `walkdir`, Go `filepath.WalkDir`, Java `Files.walk`, Python `os.scandir` | entry count |
 
 ## Results
 

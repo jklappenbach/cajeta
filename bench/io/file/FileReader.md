@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `io/filereader-lines` | read 1e7 lines of a 500 MB file | C++ `getline`, Rust `BufRead::lines`, Go `bufio.Scanner`, Java `BufferedReader`, Python iteration | line count |
+| `io/filereader-lines` | read 1e7 lines of a 500 MB file (1 MiB chunks and a newline count; `FileReader` has no line API) | C++ `getline`, Rust `BufRead::lines`, Go `bufio.Scanner`, Java `BufferedReader`, Python iteration | line count |
 
 ## Results
 

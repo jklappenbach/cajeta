@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `io/path-join-normalize` | 1e7 joins of three components with `..` segments | C++ `std::filesystem::path`, Rust `PathBuf`, Go `filepath.Join`, Java `Path.resolve().normalize()`, Python `pathlib` | length sum |
+| `io/path-join-normalize` | 1e7 joins of three components with `..` segments (`resolve()` then a normalization the benchmark does itself; `Path` has no `normalize`) | C++ `std::filesystem::path`, Rust `PathBuf`, Go `filepath.Join`, Java `Path.resolve().normalize()`, Python `pathlib` | length sum |
 
 ## Results
 

@@ -6,9 +6,9 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `io/buffer-fill` | fill 16 MB byte by byte, 1e2 times | C++ `std::vector<uint8_t>`, Rust `Vec<u8>`, Go `[]byte`, Java `ByteBuffer`, Python `bytearray` | checksum |
-| `io/buffer-read-primitives` | read 1e8 little-endian int32 and float64 values | same | checksum |
-| `io/buffer-slice` | 1e7 sub-buffer views | same | sum of first bytes |
+| `io/buffer-fill` | fill 16 MB byte by byte, 1e2 times (through the array the `Buffer` wraps; it has no store methods) | C++ `std::vector<uint8_t>`, Rust `Vec<u8>`, Go `[]byte`, Java `ByteBuffer`, Python `bytearray` | checksum |
+| `io/buffer-read-primitives` | read 1e8 little-endian int32 and float64 values (through `loadU64`; there are no typed loads) | same | checksum |
+| `io/buffer-slice` | 1e7 sub-buffer views (array slices; `Buffer` has no slice) | same | sum of first bytes |
 
 ## Results
 

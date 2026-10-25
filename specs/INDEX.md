@@ -20,6 +20,8 @@ tracked below: `cajeta-text-shaping` is a **new spec not yet written**, and
 
 | Spec | Plan | Status |
 |------|------|--------|
+| [udp-recvfromasync-parks-every-receive](udp-recvfromasync-parks-every-receive-spec.md) | — (defect, stdlib) | **draft**: filed 2026-10-25 by benchmark-reference unit 10. `recvFromAsync` parks before every receive (141 µs a datagram against 9 µs reading first); the reactor echo round trip is 474 µs against Go's 17 µs on Phoenix. |
+| [file-watcher-unimplemented](file-watcher-unimplemented-spec.md) | — (defect, stdlib) | **draft**: filed 2026-10-25 by benchmark-reference unit 10. `Watcher` is a documented placeholder with no watch call; the io README claims typed `ByteBuffer` accessors that do not exist. |
 | [math-fma-host](math-fma-host-spec.md) | — (defect) | **draft**: filed 2026-10-25 by benchmark-reference unit 5. `Math.fma` is kernel-only though documented as native everywhere; two guide errors noted (`instanceof` semantics, untyped lambda syntax). |
 | [foreach-arraylist-zero-iterations](foreach-arraylist-zero-iterations-spec.md) | — (defect) | **draft**: filed 2026-10-25 by benchmark-reference unit 6. `for (v : list)` over an `ArrayList` and `for (v : list.stream())` compile and run zero iterations on v0.46.3; arrays iterate. |
 | [ltm-pager-frame-lookup-linear](ltm-pager-frame-lookup-linear-spec.md) | — (defect, stdlib) | **draft**: filed 2026-10-25 by benchmark-reference unit 6. `LtmPager` scans the frame table on every page touch (44 µs an insert at 4096 frames); the 256 MB page shape is hours per trial. |

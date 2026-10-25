@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `io/file-stat` | 1e6 `stat` of an existing file | C++ `stat`, Rust `metadata`, Go `os.Stat`, Java `Files.readAttributes`, Python `os.stat` | size sum |
+| `io/file-stat` | 1e6 stats of an existing file (open, fstat, close: `FileInfo` has no stat accessor, so three syscalls against the competitors' one) | C++ `stat`, Rust `metadata`, Go `os.Stat`, Java `Files.readAttributes`, Python `os.stat` | size sum |
 
 ## Results
 

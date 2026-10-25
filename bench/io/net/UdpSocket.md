@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `io/udp-send-rate` | send 1e6 512-byte datagrams over loopback and count receipts | C++, Rust, Go, Java, Python | received count |
+| `io/udp-send-rate` | send 1e6 512-byte datagrams over loopback, the receiver acknowledging every 64 so the count is exact | C++, Rust, Go, Java, Python | received count |
 
 ## Results
 

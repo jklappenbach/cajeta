@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `io/bytebuffer-put-get` | 1e8 put and get of int32 and int64 with byte order | Java `ByteBuffer`, Rust `bytes`, Go `encoding/binary`, C++ | checksum |
+| `io/bytebuffer-put-get` | 1e8 put and get of int32 and int64 built from `put(int8)` and `at()` (there are no typed big-endian accessors yet) | Java `ByteBuffer`, Rust `bytes`, Go `encoding/binary`, C++ | checksum |
 
 ## Results
 

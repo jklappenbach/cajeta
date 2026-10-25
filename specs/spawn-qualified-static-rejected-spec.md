@@ -6,7 +6,10 @@
 `spawn Class.method(args)` on a static method fails with
 `CAJETA_ERROR_ASYNC_R3A` ("doesn't support instance-method calls"); the bare
 `spawn method(args)` inside the same class works. The qualified form is the
-only way to spawn a static method of another class.
+only way to spawn a static method of another class. Unit 10 adds that the
+instance form `spawn server.runAsync()` is also rejected (R3A, with no line
+number), which contradicts the `Server` docs and the tour; the workaround is
+a static async method in the same class.
 
 ## 2. Use cases
 - **2.1** As a developer, when I spawn a qualified static method, then it

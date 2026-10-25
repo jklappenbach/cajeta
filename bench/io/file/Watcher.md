@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `io/watcher-event-latency` | 1e3 file touches; the row is the median latency to the event | Rust `notify`, Go `fsnotify`, Java `WatchService`, Python `watchdog` | event count |
+| `io/watcher-event-latency` | 1e3 file touches; the row is the median latency to the event (Cajeta skips: `Watcher` is a placeholder with no watch call or event stream yet; the competitors run) | Rust `notify`, Go `fsnotify`, Java `WatchService`, Python `watchdog` | event count |
 
 ## Results
 

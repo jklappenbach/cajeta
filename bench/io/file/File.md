@@ -8,7 +8,7 @@
 |---|---|---|---|
 | `io/file-read-sequential` | read a 1 GB file in 1 MB chunks | C++ `read`, Rust `std::fs`, Go `os.File`, Java `FileChannel`, Python `open` | checksum |
 | `io/file-write-sequential` | write 1 GB in 1 MB chunks with `fsync` at the end | same | size |
-| `io/file-random-read` | 1e5 random 4 KB reads from the 1 GB file | same | checksum |
+| `io/file-random-read` | 1e5 random 4 KB reads from the 1 GB file (seek then read; there is no positional read) | same | checksum |
 
 ## Results
 
