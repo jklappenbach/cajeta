@@ -1,21 +1,17 @@
 package bench.time;
 
+import cajeta.time.Duration;
 import cajeta.time.Instant;
 
 import dev.cajeta.bench.Benchmark;
 
-// Instant arithmetic throughput: N iterations of plusSeconds + getEpochSecond
-// (value-type time math). Cross-check: the accumulated epoch sum is the closed
-// form 7*(1+2+...+N) == 7*N*(N+1)/2.
-//
-// FAIRNESS / DEFERRED (benchmark-fidelity Unit 9, spec §1.3): the large gap to
-// the C++ std::chrono competitor is a VERIFIED-FAIR comparison — the competitor
-// does the full per-iteration work (runtime epoch base from the environment so
-// the loop can't be constant-folded, do_not_optimize() each iteration to defeat
-// the Gauss closed-form elision, result sunk + checked). Confirmed empirically:
-// its time scales ~linearly with N. The gap is Cajeta's own scalar time-arith
-// codegen (no vectorization), an explicitly DEFERRED optimization — not a
-// measurement artifact and not competitor cheating.
+// time/time-instant-arith (bench/time/Instant.md): 1e7 plusNanos, minus and
+// comparisons per trial. Per i: t0 = ofEpochSecond(1704067200 + i);
+// t1 = t0.plusNanos(((i*7919) % 1000000) * 1000) (0 .. 999999000 ns, a
+// multiple of 1000 so a microsecond library can run the same integers);
+// t2 = t1.minus(500 ms); acc += t2.epochSecond + t2.nano; count t2 < t0
+// (exactly half the steps). Check: the constant computed with plain integer
+// arithmetic and checked by every competitor, 22090666990000000 + 5000000.
 public class InstantArithmeticBench extends Benchmark {
 
     public int32 n;
@@ -30,41 +26,45 @@ public class InstantArithmeticBench extends Benchmark {
     }
 
     public int32 warmupIters() {
-        return 10;
+        return 5;
     }
 
     public int32 measuredIters() {
-        return 50;
+        return 30;
     }
 
     public void setup() {
-        this.n = 1000000;
+        this.n = 10000000;
     }
 
     public int64 inputSize() {
         return (int64) this.n;
     }
 
+    public String competitorNote() {
+        return "a fresh value per step like the other time rows (a loop-carried t = t.plusSeconds(7) is correct for Instant on v0.46.3; LocalDate Duration and LocalDateTime are not: specs/localdate-loop-reassign-spec.md)";
+    }
+
     public void run(int32 iterations) {
-        // Create a fresh Instant each iteration. This shape was forced at 0.7.1
-        // (in-place reassignment of a value-type local in a loop did not
-        // persist); at 0.46.3 `t = t.plusSeconds(7)` in a loop is correct for
-        // Instant (re-tested, benchmark-reference 2.2.4). The shape is kept so
-        // the row stays the same work as the competitors' runners.
+        Duration half = Duration.ofMillis(500);
         int64 acc = 0;
+        int64 cnt = 0;
         int32 i = 0;
         while (i < this.n) {
-            Instant t = Instant.ofEpochSecond((int64) i);
-            Instant t2 = t.plusSeconds(7);
-            acc = acc + t2.getEpochSecond();
+            int64 ii = (int64) i;
+            Instant t0 = Instant.ofEpochSecond(1704067200 + ii);
+            Instant t1 = t0.plusNanos(((ii * 7919) % 1000000) * 1000);
+            Instant t2 = t1.minus(half);
+            acc = acc + t2.getEpochSecond() + (int64) t2.getNano();
+            if (t2.isBefore(t0)) {
+                cnt = cnt + 1;
+            }
             i = i + 1;
         }
-        this.result = acc;
+        this.result = acc + cnt;
     }
 
     public boolean checkResult() {
-        // sum_{i=0}^{n-1} (i + 7) = (n-1)*n/2 + 7*n
-        int64 nn = (int64) this.n;
-        return this.result == (nn - 1) * nn / 2 + 7 * nn;
+        return this.result == 22090666995000000;
     }
 }

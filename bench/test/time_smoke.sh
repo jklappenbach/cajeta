@@ -57,8 +57,8 @@ while read -r b ops; do
     (( min >= ops / 10 )) || fail "$b min_ns=$min for $ops operations looks elided"
     echo "[time] $b ok  min_ns=$min"
 done <<'IDS'
-time-instant-arith 1000000
-time-localdate-arith 100000
+time-instant-arith 10000000
+time-localdate-arith 10000000
 clock-now 10000000
 duration-arith 10000000
 localtime-arith 10000000

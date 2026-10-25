@@ -1,4 +1,4 @@
-// Go time competitors (benchmark-reference unit 8): the time/ ids the Cajeta
+// Go time competitors (benchmark-reference unit 8): every time/ id the Cajeta
 // side runs in bench/src/main/cajeta/bench/time/, same sizes, inputs and check
 // constants, with the standard library's time package. Go has no
 // time-of-day or civil date-time type: localtime-arith and
@@ -20,6 +20,8 @@ const (
 	n               = 10000000
 	nZone           = 1000000
 	nFmt            = 1000000
+	instantRef      = int64(22090666995000000)
+	localdateRef    = int64(504057395700)
 	durationRef     = int64(159999997999999)
 	localtimeRef    = int64(432435641193)
 	localdatetimeRf = int64(20264337423627200)
@@ -142,6 +144,38 @@ func clockNow() (int64, error) {
 	return 0, nil
 }
 
+func instantArith() (int64, error) {
+	half := 500 * time.Millisecond
+	var acc, cnt int64
+	for i := int64(0); i < n; i++ {
+		t0 := time.Unix(1704067200+i, 0)
+		t2 := t0.Add(time.Duration(((i*7919)%1000000)*1000)).Add(-half)
+		acc += t2.Unix() + int64(t2.Nanosecond())
+		if t2.Before(t0) {
+			cnt++
+		}
+	}
+	return acc + cnt, nil
+}
+
+// AddDate normalizes (Jan 31 + 1 month = Mar 2 or 3); the row clamps to the
+// month's last day, as every other library on the page does.
+func localdateArith() (int64, error) {
+	var acc int64
+	for i := int64(0); i < n; i++ {
+		a := time.Unix((i%100000)*86400, 0).UTC().AddDate(0, 0, 37)
+		y, m, d := a.Date()
+		mi := int(m) - 1 + int(i%25)
+		ny, nm := y+mi/12, time.Month(mi%12+1)
+		if last := time.Date(ny, nm+1, 0, 0, 0, 0, 0, time.UTC).Day(); d > last {
+			d = last
+		}
+		e := time.Date(ny, nm, d, 0, 0, 0, 0, time.UTC)
+		acc += e.Unix()/86400 + int64((int(e.Weekday())+6)%7+1)
+	}
+	return acc, nil
+}
+
 func durationArith() (int64, error) {
 	three, limit := 3*time.Millisecond, 10*time.Millisecond
 	var acc, cnt int64
@@ -228,6 +262,8 @@ func main() {
 	fmt.Sscanf(env("PROFILE_TRIALS", "10"), "%d", &c.trials)
 	eq := func(want int64) func(int64) bool { return func(r int64) bool { return r == want } }
 	measure(c, "clock-now", n, "time", "time.Now (monotonic reading)", clockNow, eq(1))
+	measure(c, "time-instant-arith", n, "time", "time.Time Add", instantArith, eq(instantRef))
+	measure(c, "time-localdate-arith", n, "time", "no civil date type: UTC time.Time AddDate with an explicit month clamp", localdateArith, eq(localdateRef))
 	measure(c, "duration-arith", n, "time", "time.Duration", durationArith, eq(durationRef))
 	measure(c, "localtime-arith", n, "time", "no time-of-day type: time.Time in UTC and Clock()", localtimeArith, eq(localtimeRef))
 	measure(c, "localdatetime-arith", n, "time", "no civil date-time type: time.Time in UTC", localdatetimeArith, eq(localdatetimeRf))

@@ -1,4 +1,4 @@
-// C++ time competitors (benchmark-reference unit 8): the time/ ids the Cajeta
+// C++ time competitors (benchmark-reference unit 8): every time/ id the Cajeta
 // side runs in bench/src/main/cajeta/bench/time/, same sizes, same inputs and
 // the same check constants. Library: C++20 std::chrono from libstdc++ 13
 // (durations, calendar, zoned_time against the system tz database, and
@@ -29,6 +29,8 @@ namespace cr = std::chrono;
 using clk = cr::steady_clock;
 
 static const long long N = 10000000, N_ZONE = 1000000, N_FMT = 1000000;
+static const long long INSTANT_REF = 22090666995000000LL;
+static const long long LOCALDATE_REF = 504057395700LL;
 static const long long DURATION_REF = 159999997999999LL;
 static const long long LOCALTIME_REF = 432435641193LL;
 static const long long LOCALDATETIME_REF = 20264337423627200LL;
@@ -96,6 +98,34 @@ static long long clock_now() {
     auto first = clk::now(), prev = first; long long back = 0;
     for (long long i = 1; i < N; i++) { auto t = clk::now(); if (t < prev) back++; prev = t; sink(t); }
     return back == 0 && prev > first ? 1 : 0;
+}
+
+static long long instant_arith() {
+    using namespace std::chrono_literals;
+    const cr::nanoseconds half = 500ms;
+    long long acc = 0, cnt = 0;
+    for (long long i = 0; i < N; i++) {
+        long long ii = opaque(i);
+        cr::sys_time<cr::nanoseconds> t0{cr::seconds{1704067200LL + ii}};
+        cr::sys_time<cr::nanoseconds> t2 = t0 + cr::nanoseconds{((ii * 7919) % 1000000) * 1000} - half;
+        auto s2 = cr::floor<cr::seconds>(t2);
+        acc += s2.time_since_epoch().count() + (t2 - s2).count();
+        if (t2 < t0) cnt++;
+    }
+    return acc + cnt;
+}
+
+static long long localdate_arith() {
+    long long acc = 0;
+    for (long long i = 0; i < N; i++) {
+        long long ii = opaque(i);
+        cr::sys_days a = cr::sys_days{cr::days{ii % 100000}} + cr::days{37};
+        cr::year_month_day ymd = cr::year_month_day{a} + cr::months{ii % 25};
+        if (!ymd.ok()) ymd = ymd.year() / ymd.month() / cr::last;   // clamp, as java.time does
+        cr::sys_days e{ymd};
+        acc += e.time_since_epoch().count() + (long long)cr::weekday{e}.iso_encoding();
+    }
+    return acc;
 }
 
 static long long duration_arith() {
@@ -182,6 +212,8 @@ int main() {
           std::atoi(env("PROFILE_WARMUP", "3").c_str()), std::atoi(env("PROFILE_TRIALS", "10").c_str())};
     const std::string svs = "libstdc++-" + std::to_string(_GLIBCXX_RELEASE); const char* sv = svs.c_str();
     measure(c, "clock-now", N, "std::chrono", sv, "steady_clock::now", clock_now, [](long long r) { return r == 1; });
+    measure(c, "time-instant-arith", N, "std::chrono", sv, "sys_time<nanoseconds> + nanoseconds - 500ms", instant_arith, [](long long r) { return r == INSTANT_REF; });
+    measure(c, "time-localdate-arith", N, "std::chrono", sv, "sys_days + days; year_month_day + months clamped to last", localdate_arith, [](long long r) { return r == LOCALDATE_REF; });
     measure(c, "duration-arith", N, "std::chrono", sv, "chrono::nanoseconds", duration_arith, [](long long r) { return r == DURATION_REF; });
     measure(c, "localtime-arith", N, "std::chrono", sv, "no time-of-day type: chrono::seconds modulo days{1}", localtime_arith, [](long long r) { return r == LOCALTIME_REF; });
     measure(c, "localdatetime-arith", N, "std::chrono", sv, "local_seconds + hours; year_month_day", localdatetime_arith, [](long long r) { return r == LOCALDATETIME_REF; });

@@ -30,8 +30,8 @@ echo "[time-comp] ran in $((SECONDS - t0))s"
 
 # id ops lang/library ... (the page's competitors; `|` separates alternatives)
 REQUIRED='
-time-instant-arith 1000000 cpp/std::chrono rust/chrono go/time java/java.time python/datetime
-time-localdate-arith 100000 cpp/std::chrono rust/chrono go/time java/java.time python/datetime
+time-instant-arith 10000000 cpp/std::chrono rust/jiff rust/chrono go/time java/java.time python/datetime python/whenever
+time-localdate-arith 10000000 cpp/std::chrono rust/jiff rust/chrono go/time java/java.time python/datetime python/whenever
 clock-now 10000000 cpp/std::chrono rust/std go/time java/java.time python/time
 duration-arith 10000000 cpp/std::chrono rust/jiff rust/chrono go/time java/java.time python/datetime python/whenever
 localtime-arith 10000000 cpp/std::chrono rust/jiff rust/chrono go/time java/java.time python/datetime python/whenever

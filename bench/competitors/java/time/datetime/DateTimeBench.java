@@ -1,10 +1,11 @@
-// Java time competitors (benchmark-reference unit 8): the time/ ids the Cajeta
+// Java time competitors (benchmark-reference unit 8): every time/ id the Cajeta
 // side runs in bench/src/main/cajeta/bench/time/, same sizes, inputs and check
 // constants, with java.time from the JDK. JIT-warmed by the warmup calls; a
 // thrown DateTimeException becomes a `failed` row.
 import java.lang.management.ManagementFactory;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneId;
@@ -17,6 +18,8 @@ import java.util.function.LongSupplier;
 
 public class DateTimeBench {
     static final long N = 10_000_000L, N_ZONE = 1_000_000L, N_FMT = 1_000_000L;
+    static final long INSTANT_REF = 22_090_666_995_000_000L;
+    static final long LOCALDATE_REF = 504_057_395_700L;
     static final long DURATION_REF = 159_999_997_999_999L;
     static final long LOCALTIME_REF = 432_435_641_193L;
     static final long LOCALDATETIME_REF = 20_264_337_423_627_200L;
@@ -77,6 +80,27 @@ public class DateTimeBench {
         for (long i = 1; i < N; i++) { Instant t = Instant.now(); if (t.isBefore(prev)) back++; prev = t; }
         sinkO = prev;
         return back == 0 && prev.isAfter(first) ? 1 : 0;
+    }
+
+    static long instantArith() {
+        Duration half = Duration.ofMillis(500);
+        long acc = 0, cnt = 0;
+        for (long i = 0; i < N; i++) {
+            Instant t0 = Instant.ofEpochSecond(1704067200L + i);
+            Instant t2 = t0.plusNanos(((i * 7919) % 1000000) * 1000).minus(half);
+            acc += t2.getEpochSecond() + t2.getNano();
+            if (t2.isBefore(t0)) cnt++;
+        }
+        return acc + cnt;
+    }
+
+    static long localdateArith() {
+        long acc = 0;
+        for (long i = 0; i < N; i++) {
+            LocalDate e = LocalDate.ofEpochDay(i % 100000).plusDays(37).plusMonths(i % 25);
+            acc += e.toEpochDay() + e.getDayOfWeek().getValue();
+        }
+        return acc;
     }
 
     static long durationArith() {
@@ -143,6 +167,8 @@ public class DateTimeBench {
         runId = env("PROFILE_RUN_ID", "local"); ts = env("PROFILE_RUN_TS", ""); ver = env("PROFILE_LANG_VERSION", "");
         warmup = Integer.parseInt(env("PROFILE_WARMUP", "3")); trials = Integer.parseInt(env("PROFILE_TRIALS", "10"));
         measure("clock-now", N, "Instant.now (wall clock)", DateTimeBench::clockNow, r -> r == 1);
+        measure("time-instant-arith", N, "Instant.plusNanos/minus/isBefore", DateTimeBench::instantArith, r -> r == INSTANT_REF);
+        measure("time-localdate-arith", N, "LocalDate.plusDays/plusMonths/getDayOfWeek", DateTimeBench::localdateArith, r -> r == LOCALDATE_REF);
         measure("duration-arith", N, "Duration", DateTimeBench::durationArith, r -> r == DURATION_REF);
         measure("localtime-arith", N, "LocalTime", DateTimeBench::localtimeArith, r -> r == LOCALTIME_REF);
         measure("localdatetime-arith", N, "LocalDateTime.plusHours", DateTimeBench::localdatetimeArith, r -> r == LOCALDATETIME_REF);

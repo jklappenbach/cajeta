@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Python time competitors (benchmark-reference unit 8): the time/ ids the Cajeta
+# Python time competitors (benchmark-reference unit 8): every time/ id the Cajeta
 # side runs in bench/src/main/cajeta/bench/time/, same sizes, inputs and check
 # constants. Libraries: the stdlib (datetime; zoneinfo for the region zone;
 # time.perf_counter_ns for clock-now) and `whenever` (pinned in
@@ -21,6 +21,7 @@ import sys
 import time
 import tracemalloc
 import warnings
+import calendar
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -29,6 +30,8 @@ import whenever as W
 N = 10_000_000
 N_ZONE = 1_000_000
 N_FMT = 1_000_000
+INSTANT_REF = 22_090_666_995_000_000
+LOCALDATE_REF = 504_057_395_700
 DURATION_REF = 159_999_997_999_999
 LOCALTIME_REF = 432_435_641_193
 LOCALDATETIME_REF = 20_264_337_423_627_200
@@ -111,6 +114,35 @@ def clock_now(n):
 
 
 # ---- datetime (stdlib) ----
+def dt_instant(n):
+    utc = timezone.utc
+    epoch = datetime(1970, 1, 1, tzinfo=utc)
+    half = timedelta(milliseconds=500)
+    acc = cnt = 0
+    for i in range(n):
+        t0 = datetime.fromtimestamp(1_704_067_200 + i, utc)
+        t2 = t0 + timedelta(microseconds=(i * 7919) % 1_000_000) - half
+        d = t2 - epoch
+        acc += d.days * 86400 + d.seconds + d.microseconds * 1000
+        if t2 < t0:
+            cnt += 1
+    return acc + cnt
+
+
+def dt_localdate(n):
+    eo = date(1970, 1, 1).toordinal()
+    plus37 = timedelta(days=37)
+    mr = calendar.monthrange
+    acc = 0
+    for i in range(n):
+        a = date.fromordinal(eo + i % 100_000) + plus37
+        mi = a.month - 1 + i % 25
+        y, m = a.year + mi // 12, mi % 12 + 1
+        e = date(y, m, min(a.day, mr(y, m)[1]))
+        acc += e.toordinal() - eo + e.isoweekday()
+    return acc
+
+
 def dt_duration(n):
     # the ns workload's integers as microseconds: 3 ms -> 3e6 us, 10 ms -> 1e7 us
     three, limit = timedelta(microseconds=3_000_000), timedelta(microseconds=10_000_000)
@@ -178,6 +210,28 @@ def dt_parse(inputs):
 
 
 # ---- whenever ----
+def w_instant(n):
+    I = W.Instant.from_timestamp
+    acc = cnt = 0
+    for i in range(n):
+        t0 = I(1_704_067_200 + i)
+        t2 = t0.add(nanoseconds=((i * 7919) % 1_000_000) * 1000).subtract(milliseconds=500)
+        s, ns = divmod(t2.timestamp(unit="nanosecond"), 1_000_000_000)
+        acc += s + ns
+        if t2 < t0:
+            cnt += 1
+    return acc + cnt
+
+
+def w_localdate(n):
+    epoch = W.Date(1970, 1, 1)
+    acc = 0
+    for i in range(n):
+        e = epoch.add(days=i % 100_000).add(days=37).add(months=i % 25)
+        acc += int(e.since(epoch, total="days")) + e.day_of_week().value
+    return acc
+
+
 def w_duration(n):
     TD = W.TimeDelta
     three, limit = TD(milliseconds=3), TD(milliseconds=10)
@@ -237,6 +291,12 @@ def main():
     warnings.simplefilter("ignore", W.WheneverDeprecationWarning)
     eq = lambda want: (lambda r: r == want)
     measure("clock-now", N, "time", PY_VER, "time.perf_counter_ns", clock_now, eq(1))
+    measure("time-instant-arith", N, "datetime", PY_VER, "aware datetime + timedelta (microsecond resolution; the nanosecond offsets are multiples of 1000)",
+            dt_instant, eq(INSTANT_REF))
+    measure("time-instant-arith", N, "whenever", WHENEVER_VER, "Instant.add/subtract", w_instant, eq(INSTANT_REF))
+    measure("time-localdate-arith", N, "datetime", PY_VER, "date + timedelta; date has no month arithmetic: explicit clamp",
+            dt_localdate, eq(LOCALDATE_REF))
+    measure("time-localdate-arith", N, "whenever", WHENEVER_VER, "Date.add(days/months) and day_of_week", w_localdate, eq(LOCALDATE_REF))
     measure("duration-arith", N, "datetime", PY_VER, "timedelta has microsecond resolution: same integers as microseconds",
             dt_duration, eq(DURATION_REF))
     measure("duration-arith", N, "whenever", WHENEVER_VER, "TimeDelta", w_duration, eq(DURATION_REF))

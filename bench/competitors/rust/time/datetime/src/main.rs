@@ -1,4 +1,4 @@
-// Rust time competitors (benchmark-reference unit 8): the time/ ids the Cajeta
+// Rust time competitors (benchmark-reference unit 8): every time/ id the Cajeta
 // side runs in bench/src/main/cajeta/bench/time/, same sizes, same inputs, same
 // checks (the constants are the ones the Cajeta benchmarks and every other
 // language check). Libraries: jiff and chrono; std::time::Instant for
@@ -25,6 +25,8 @@ type R<T> = Result<T, Box<dyn Error>>;
 const N: i64 = 10_000_000;
 const N_ZONE: i64 = 1_000_000;
 const N_FMT: i64 = 1_000_000;
+const INSTANT_REF: i64 = 22_090_666_995_000_000;
+const LOCALDATE_REF: i64 = 504_057_395_700;
 const DURATION_REF: i64 = 159_999_997_999_999;
 const LOCALTIME_REF: i64 = 432_435_641_193;
 const LOCALDATETIME_REF: i64 = 20_264_337_423_627_200;
@@ -100,6 +102,33 @@ fn clock_now() -> R<i64> {
 }
 
 // ---- jiff ----
+fn jiff_instant() -> R<i64> {
+    use jiff::{SignedDuration, Timestamp};
+    let half = SignedDuration::from_millis(500);
+    let (mut acc, mut cnt) = (0i64, 0i64);
+    for i in 0..N {
+        let i = black_box(i);
+        let t0 = Timestamp::from_second(1_704_067_200 + i)?;
+        let t2 = t0.checked_add(SignedDuration::from_nanos(((i * 7919) % 1_000_000) * 1000))?.checked_sub(half)?;
+        acc += t2.as_second() + t2.subsec_nanosecond() as i64;
+        if t2 < t0 { cnt += 1; }
+    }
+    Ok(acc + cnt)
+}
+
+fn jiff_localdate() -> R<i64> {
+    use jiff::{civil::date, Span};
+    let epoch = date(1970, 1, 1);
+    let mut acc = 0i64;
+    for i in 0..N {
+        let i = black_box(i);
+        let d = epoch.checked_add(Span::new().days(i % 100_000))?;
+        let e = d.checked_add(Span::new().days(37))?.checked_add(Span::new().months(i % 25))?;
+        acc += e.duration_since(epoch).as_hours() / 24 + e.weekday().to_monday_one_offset() as i64;
+    }
+    Ok(acc)
+}
+
 fn jiff_duration() -> R<i64> {
     use jiff::SignedDuration;
     let three = SignedDuration::from_millis(3);
@@ -181,6 +210,34 @@ fn jiff_parse(inp: &[String]) -> R<i64> {
 }
 
 // ---- chrono ----
+fn chrono_instant() -> R<i64> {
+    use chrono::{DateTime, TimeDelta};
+    let half = TimeDelta::milliseconds(500);
+    let (mut acc, mut cnt) = (0i64, 0i64);
+    for i in 0..N {
+        let i = black_box(i);
+        let t0 = DateTime::from_timestamp(1_704_067_200 + i, 0).ok_or("range")?;
+        let t2 = t0.checked_add_signed(TimeDelta::nanoseconds(((i * 7919) % 1_000_000) * 1000)).ok_or("overflow")?
+            .checked_sub_signed(half).ok_or("overflow")?;
+        acc += t2.timestamp() + t2.timestamp_subsec_nanos() as i64;
+        if t2 < t0 { cnt += 1; }
+    }
+    Ok(acc + cnt)
+}
+
+fn chrono_localdate() -> R<i64> {
+    use chrono::{Datelike, Days, Months, NaiveDate};
+    let mut acc = 0i64;
+    for i in 0..N {
+        let i = black_box(i);
+        let d = NaiveDate::from_epoch_days((i % 100_000) as i32).ok_or("range")?;
+        let e = d.checked_add_days(Days::new(37)).ok_or("range")?
+            .checked_add_months(Months::new((i % 25) as u32)).ok_or("range")?;
+        acc += (e.num_days_from_ce() - 719_163) as i64 + e.weekday().number_from_monday() as i64;
+    }
+    Ok(acc)
+}
+
 fn chrono_duration() -> R<i64> {
     use chrono::TimeDelta;
     let three = TimeDelta::milliseconds(3);
@@ -256,6 +313,10 @@ fn main() {
 
     measure(&c, "clock-now", N, "std", "", "std::time::Instant::now (CLOCK_MONOTONIC)", clock_now, |r| r == 1);
 
+    measure(&c, "time-instant-arith", N, "jiff", jv, "Timestamp checked_add/checked_sub", jiff_instant, |r| r == INSTANT_REF);
+    measure(&c, "time-instant-arith", N, "chrono", cv, "DateTime<Utc> checked_add_signed", chrono_instant, |r| r == INSTANT_REF);
+    measure(&c, "time-localdate-arith", N, "jiff", jv, "civil::Date + Span days/months", jiff_localdate, |r| r == LOCALDATE_REF);
+    measure(&c, "time-localdate-arith", N, "chrono", cv, "NaiveDate checked_add_days/months", chrono_localdate, |r| r == LOCALDATE_REF);
     measure(&c, "duration-arith", N, "jiff", jv, "SignedDuration", jiff_duration, |r| r == DURATION_REF);
     measure(&c, "duration-arith", N, "chrono", cv, "TimeDelta", chrono_duration, |r| r == DURATION_REF);
     measure(&c, "localtime-arith", N, "jiff", jv, "civil::Time wrapping_add", jiff_localtime, |r| r == LOCALTIME_REF);
