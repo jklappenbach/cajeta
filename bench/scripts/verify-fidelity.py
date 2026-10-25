@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-# Copy of cajeta-bench tools/verify-fidelity.py as of dev.cajeta.bench 0.1.3,
+# Copy of cajeta-bench tools/verify-fidelity.py as of dev.cajeta.bench 0.1.5,
 # the source of truth; refresh it when the library moves. bench.sh runs it.
-# Matches 0.1.3 exactly (0.1.1 took this copy's math/matmul-by-id change and
-# added the `external`-row exemption; 0.1.3 reads the CSV as UTF-8).
+# Matches 0.1.5 exactly (0.1.1: math/matmul by id and the `external`-row
+# exemption; 0.1.3: UTF-8; 0.1.5: absolute ceilings keyed by machine).
 # Verification gate over a benchmark results.csv, schema 1 or 2.
 #
 # Two layers:
@@ -23,6 +23,8 @@
 #       * JSON float parsing     — Cajeta json-dom/serialize/roundtrip rows are ok
 #       * matmul kernel-pool     — Cajeta math/matmul median in the kernel-pool band
 #       * SIMD compute kernels    — dot/saxpy/spectral improved vs the scalar baselines
+#     The last two are ABSOLUTE and read the row's machine's table (CEILINGS);
+#     a machine without one is skipped. The first three are machine-independent.
 #     A benchmark absent from the file is reported SKIP, so a consumer repo's
 #     one-benchmark CSV passes. `--require-suite` restores the profile gate's
 #     behavior, where an absent benchmark is a FAIL; the compiler repo's
@@ -35,6 +37,31 @@
 import csv
 import os
 import sys
+
+# Absolute ceilings, per machine. Everything else in this gate is relative or
+# structural and machine-independent.
+#
+#   proton   the ceilings the fidelity plan set (Ryzen AI MAX+ 395): the
+#            kernel-pool matmul band and the scalar baselines the SIMD kernels
+#            must beat (dot ~390 us, saxpy ~590 us, spectral ~1632 us scalar).
+#   phoenix  PROVISIONAL (Ryzen 9 3950X, WSL2). Nothing is measured for
+#            publication yet, so these are 2x the smoke medians the compiler
+#            repo's bench/build/bench reported on 2026-10-25 18:07 (cajeta
+#            0.46.3, CAJETA_BENCH_SMOKE=1, warmup 1, trials 3, load average
+#            1.1): saxpy 1,404,384; dot-product 692,591; clbg-spectral-norm
+#            164,395; math/matmul 176,335 ns (band 0.25x to 2x). Replace them
+#            from the first quiet-box run.
+LEGACY_MACHINE = "proton"   # the machine a v1 row (no machine column) is judged on
+CEILINGS = {
+    "proton": {
+        "matmul_band": (40000, 130000),
+        "simd": {"dot-product": 250000, "saxpy": 420000, "clbg-spectral-norm": 700000},
+    },
+    "phoenix": {
+        "matmul_band": (44000, 353000),
+        "simd": {"dot-product": 1390000, "saxpy": 2810000, "clbg-spectral-norm": 330000},
+    },
+}
 
 V1_COLUMNS = (
     "schema_version,run_id,timestamp_unix,benchmark,area,dataset_name,dataset_bytes,"
@@ -50,6 +77,13 @@ KNOWN_HEADERS = {
     2: [V2_COLUMNS],
 }
 STATUSES = {1: {"ok", "skipped", "invalid"}, 2: {"ok", "skipped", "invalid", "failed"}}
+
+
+def is_cpu_matmul(r):
+    """The CPU kernel-pool matmul is the catalog id math/matmul, never the bare
+    name `matmul`: the device GEMMs (xpu/gemm-f32, and v1's gpu/matmul) are other
+    benchmarks and must not be read against the CPU band."""
+    return r["benchmark"] == "matmul" and r["area"] == "math"
 
 
 def load(path):
@@ -169,34 +203,42 @@ def main(argv):
                   f"{len(oks)} ok, {len(skips_float)} float-skips")
         gated(f"json: {bench} Cajeta rows ok (no float-parse skip)", [bench], json_check)
 
-    # 4. matmul — Cajeta median in the kernel-pool band (~0.05–0.08 ms; allow slack).
-    #    Matched by catalog id math/matmul (area/benchmark), never by the name
-    #    `matmul` alone: the device GEMMs (xpu/gemm-f32, and v1's gpu/matmul)
-    #    are other benchmarks and must not be read against the CPU band.
-    def is_cpu_matmul(r):
-        return r["benchmark"] == "matmul" and r["area"] == "math"
-    def matmul():
-        mm = [r for r in measured if is_cpu_matmul(r)]
-        mm_med = num(mm[0]["median_ns"]) if mm else None
-        check("matmul: Cajeta median in kernel-pool band (40k–130k ns)",
-              mm_med is not None and 40000 <= mm_med <= 130000,
-              f"median_ns={mm_med}")
-    if require_suite or any(is_cpu_matmul(r) for r in rows):
-        matmul()
-    else:
-        skip("matmul: Cajeta median in kernel-pool band (40k–130k ns)", "not in this file")
+    # 4-5. ABSOLUTE checks, keyed by the row's machine (CEILINGS above). A
+    #      machine with no table is skipped, never judged by another's; a v1
+    #      row (no machine column) reads LEGACY_MACHINE's.
+    machines = sorted({(r.get("machine") or LEGACY_MACHINE) for r in measured})
+    for m in machines:
+        table = CEILINGS.get(m)
+        on_m = [r for r in measured if (r.get("machine") or LEGACY_MACHINE) == m]
+        if table is None:
+            skip(f"absolute ceilings on {m}", "no ceiling table for this machine")
+            continue
 
-    # 5. SIMD compute kernels — improved vs the recorded scalar baselines.
-    #    (dot ~390us, saxpy ~590us, spectral ~1632us before vectorization.)
-    targets = {"dot-product": 250000, "saxpy": 420000, "clbg-spectral-norm": 700000}
-    for bench, ceiling in targets.items():
-        def simd(bench=bench, ceiling=ceiling):
-            b = [r for r in measured if r["benchmark"] == bench]
-            med = num(b[0]["median_ns"]) if b else None
-            check(f"simd: {bench} median < {ceiling} ns (beats scalar baseline)",
-                  med is not None and med < ceiling,
-                  f"median_ns={med}")
-        gated(f"simd: {bench} median < {ceiling} ns (beats scalar baseline)", [bench], simd)
+        lo, hi = table["matmul_band"]
+
+        def matmul(on_m=on_m, m=m, lo=lo, hi=hi):
+            mm = [r for r in on_m if is_cpu_matmul(r)]
+            mm_med = num(mm[0]["median_ns"]) if mm else None
+            check(f"matmul@{m}: Cajeta median in kernel-pool band ({lo}–{hi} ns)",
+                  mm_med is not None and lo <= mm_med <= hi,
+                  f"median_ns={mm_med}")
+        if require_suite or any(is_cpu_matmul(r) for r in on_m):
+            matmul()
+        else:
+            skip(f"matmul@{m}: Cajeta median in kernel-pool band ({lo}–{hi} ns)", "not in this file")
+
+        # SIMD compute kernels — improved vs the recorded scalar baselines.
+        for bench, ceiling in table["simd"].items():
+            def simd(bench=bench, ceiling=ceiling, on_m=on_m, m=m):
+                b = [r for r in on_m if r["benchmark"] == bench]
+                med = num(b[0]["median_ns"]) if b else None
+                check(f"simd@{m}: {bench} median < {ceiling} ns (beats scalar baseline)",
+                      med is not None and med < ceiling,
+                      f"median_ns={med}")
+            if require_suite or any(r["benchmark"] == bench for r in on_m):
+                simd()
+            else:
+                skip(f"simd@{m}: {bench} median < {ceiling} ns (beats scalar baseline)", "not in this file")
 
     print(f"\n{'OK' if not failures else 'FAILED'}: "
           f"{len(failures)} failing check(s)" + (": " + ", ".join(failures) if failures else ""))
