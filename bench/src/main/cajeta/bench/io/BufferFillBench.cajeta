@@ -1,0 +1,94 @@
+package bench.io;
+
+import cajeta.io.Buffer;
+
+import dev.cajeta.bench.Benchmark;
+
+// io/buffer-fill (bench/io/Buffer.md): fill 16 MiB byte by byte, 100 times
+// per trial (4 under CAJETA_BENCH_SMOKE=1); pass p writes byte i as
+// (i + p) & 0xFF. Buffer<T> has no store/put API today (v1 ships byteAt and
+// loadU64 only), so the fill writes the int8[] a Buffer is backed by, which is
+// then wrapped in a Buffer and read back through byteAt for the checksum:
+// sum over passes of the byte at (p * 7919) % N after pass p, plus the sum of
+// every byte of the last pass (all unsigned).
+public class BufferFillBench extends Benchmark {
+
+    public int64 passes;
+    public int64 last;
+    public int64 expect;
+
+    public String name() {
+        return "buffer-fill";
+    }
+
+    public String area() {
+        return "io";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public static int64 n() {
+        return (int64) 16777216;
+    }
+
+    public void prepare(String variant) {
+        this.passes = IoEnv.pick((int64) 100, (int64) 4);
+        int64 nn = BufferFillBench.n();
+        int64 e = 0;
+        int64 p = 0;
+        while (p < this.passes) {
+            e = e + (((p * (int64) 7919) % nn + p) & (int64) 255);
+            p = p + 1;
+        }
+        // every residue class appears N / 256 times in the last pass
+        e = e + (nn / (int64) 256) * (int64) 32640;
+        this.expect = e;
+    }
+
+    public int64 inputSize() {
+        return BufferFillBench.n() * this.passes / (int64) 1048576;
+    }
+
+    public String unit() {
+        return "MB/s";
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        int64 nn = BufferFillBench.n();
+        int8[] d = heap int8[nn];
+        int64 acc = 0;
+        int64 p = 0;
+        while (p < this.passes) {
+            int64 i = 0;
+            while (i < nn) {
+                d[i] = (int8) ((i + p) & (int64) 255);
+                i = i + 1;
+            }
+            acc = acc + ((int64) d[(p * (int64) 7919) % nn] & (int64) 255);
+            p = p + 1;
+        }
+        Buffer<int8> b = heap Buffer<int8>(#d, nn);
+        int64 i = 0;
+        while (i < nn) {
+            acc = acc + ((int64) b.byteAt(i) & (int64) 255);
+            i = i + 1;
+        }
+        this.last = acc;
+    }
+
+    public boolean checkResult() {
+        return this.last == this.expect;
+    }
+
+    public String competitorNote() {
+        return "check=" + this.last + "; 16 MiB x " + this.passes + " passes"
+            + (IoEnv.smoke() ? " (smoke; the page's 100 passes is the full run)" : "")
+            + "; Buffer has no store API: the fill writes the int8[] the Buffer wraps";
+    }
+}

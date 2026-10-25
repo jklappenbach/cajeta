@@ -1,0 +1,369 @@
+package bench.io;
+
+import cajeta.collection.ArrayList;
+import cajeta.concurrent.AtomicInt64;
+import cajeta.concurrent.Fiber;
+import cajeta.io.net.IpAddress;
+import cajeta.io.net.RecvResult;
+import cajeta.io.net.Server;
+import cajeta.io.net.SocketAddress;
+import cajeta.io.net.TcpListener;
+import cajeta.io.net.TcpStream;
+import cajeta.io.net.UdpSocket;
+import cajeta.io.net.WouldBlockException;
+import cajeta.time.Clock;
+import cajeta.time.Duration;
+
+// The bodies of the io/ net benchmarks. Each benchmark's trial is one
+// `await spawn` of its own static async trial(), which calls a body here on
+// that fiber: the body binds 127.0.0.1:<port> (IoEnv.port),
+// spawns its peer on another fiber, drives the workload, closes every socket
+// and joins the peer before it returns, so nothing outlives the trial.
+public final class IoNet {
+
+    public static #SocketAddress loopback(int32 port) {
+        IpAddress a #= IpAddress.loopbackV4();
+        return SocketAddress.of(#a, port);
+    }
+
+    // ---- tcp-echo-latency ----------------------------------------------
+
+    public static async int64 echoPeer(#TcpStream conn) {
+        conn.setNoDelay(true);
+        int8[] buf = heap int8[65536];
+        int64 total = 0;
+        int64 n = conn.readAsync(buf, (int64) 0, (int64) 65536);
+        while (n > 0) {
+            conn.writeAllAsync(buf, (int64) 0, n);
+            total = total + n;
+            n = conn.readAsync(buf, (int64) 0, (int64) 65536);
+        }
+        conn.close();
+        return total;
+    }
+
+    // `rounds` 64-byte round trips; rtt[r] gets each one's nanoseconds.
+    // Returns the count whose echo was byte-equal.
+    public static int64 echoRounds(int32 port, int32 rounds, int64[] rtt) {
+        SocketAddress ba #= IoNet.loopback(port);
+        TcpListener listener #= TcpListener.bind(ba);
+        SocketAddress ca #= IoNet.loopback(port);
+        TcpStream c #= TcpStream.connectAsync(#ca);
+        c.setNoDelay(true);
+        TcpStream s #= listener.acceptAsync();
+        Task<int64> peer = spawn echoPeer(#s);
+        int8[] msg = heap int8[64];
+        int8[] back = heap int8[64];
+        int64 ok = 0;
+        int32 r = 0;
+        while (r < rounds) {
+            int32 i = 0;
+            while (i < 64) {
+                msg[i] = (int8) ((r + i) & 255);
+                i = i + 1;
+            }
+            int64 t0 = Clock.nanoTime();
+            c.writeAllAsync(msg, (int64) 0, (int64) 64);
+            int64 got = 0;
+            while (got < (int64) 64) {
+                int64 k = c.readAsync(back, got, (int64) 64 - got);
+                if (k <= 0) {
+                    break;
+                }
+                got = got + k;
+            }
+            rtt[r] = Clock.nanoTime() - t0;
+            boolean same = got == (int64) 64;
+            i = 0;
+            while (same && i < 64) {
+                same = back[i] == msg[i];
+                i = i + 1;
+            }
+            if (same) {
+                ok = ok + 1;
+            }
+            r = r + 1;
+        }
+        c.close();
+        int64 echoed = await peer;
+        listener.close();
+        if (echoed != (int64) rounds * (int64) 64) {
+            return (int64) -1;
+        }
+        return ok;
+    }
+
+    // ---- tcp-bulk-throughput -------------------------------------------
+
+    public static async int64 sinkPeer(#TcpStream conn) {
+        int8[] buf = heap int8[65536];
+        int64 total = 0;
+        int64 n = conn.readAsync(buf, (int64) 0, (int64) 65536);
+        while (n > 0) {
+            total = total + n;
+            n = conn.readAsync(buf, (int64) 0, (int64) 65536);
+        }
+        conn.close();
+        return total;
+    }
+
+    // Stream `bytes` in 64 KiB writes; returns the count the peer received.
+    public static int64 bulk(int32 port, int64 bytes, int8[] chunk) {
+        SocketAddress ba #= IoNet.loopback(port);
+        TcpListener listener #= TcpListener.bind(ba);
+        SocketAddress ca #= IoNet.loopback(port);
+        TcpStream c #= TcpStream.connectAsync(#ca);
+        TcpStream s #= listener.acceptAsync();
+        Task<int64> peer = spawn sinkPeer(#s);
+        int64 sent = 0;
+        while (sent < bytes) {
+            c.writeAllAsync(chunk, (int64) 0, (int64) 65536);
+            sent = sent + (int64) 65536;
+        }
+        c.close();
+        int64 got = await peer;
+        listener.close();
+        return got;
+    }
+
+    // ---- tcp-accept-rate -----------------------------------------------
+
+    public static async int64 connector(int32 port, int32 n) {
+        int64 made = 0;
+        int32 i = 0;
+        while (i < n) {
+            SocketAddress ca #= IoNet.loopback(port);
+            TcpStream c #= TcpStream.connectAsync(#ca);
+            c.setLinger(true, 0);
+            c.close();
+            made = made + 1;
+            i = i + 1;
+        }
+        return made;
+    }
+
+    // Accept `n` connections from a connector fiber; returns the count.
+    public static int64 acceptMany(int32 port, int32 n) {
+        SocketAddress ba #= IoNet.loopback(port);
+        TcpListener listener #= TcpListener.bindWithBacklog(ba, 4096);
+        Task<int64> peer = spawn connector(port, n);
+        int64 accepted = 0;
+        int32 i = 0;
+        while (i < n) {
+            TcpStream s #= listener.acceptAsync();
+            s.close();
+            accepted = accepted + 1;
+            i = i + 1;
+        }
+        int64 made = await peer;
+        listener.close();
+        if (made != accepted) {
+            return (int64) -1;
+        }
+        return accepted;
+    }
+
+    // ---- udp-send-rate -------------------------------------------------
+
+    // Non-blocking drain first, park only when the socket would block.
+    // (recvFromAsync parks on the reactor before every receive: measured at
+    // 141 us per datagram, against 9 us for this drain-then-park loop.)
+    public static #RecvResult recvDrain(UdpSocket rx, int8[] b) {
+        try {
+            return rx.recvFrom(b, 0, 2048);
+        } catch (WouldBlockException e) {
+            return rx.recvFromAsync(b, 0, 2048);
+        }
+    }
+
+    // The receiver: count 512-byte datagrams, ack every 64th (and the last)
+    // to the sender's port so the sender never overruns the receive buffer.
+    public static async int64 udpReceiver(#UdpSocket rx, int32 n, int32 ackPort) {
+        int8[] b = heap int8[2048];
+        int8[] ack = heap int8[1];
+        SocketAddress dest #= IoNet.loopback(ackPort);
+        int64 got = 0;
+        RecvResult first #= rx.recvFromAsync(b, 0, 2048);
+        if (first.count == 512) {
+            got = got + 1;
+        }
+        if (got == (int64) n) {
+            rx.sendTo(ack, 0, 1, dest);
+        }
+        while (got < (int64) n) {
+            RecvResult r #= IoNet.recvDrain(rx, b);
+            if (r.count == 512) {
+                got = got + 1;
+                if (got % (int64) 64 == (int64) 0 || got == (int64) n) {
+                    rx.sendTo(ack, 0, 1, dest);
+                }
+            }
+        }
+        rx.close();
+        return got;
+    }
+
+    // Send `n` 512-byte datagrams in windows of 64; returns the receipts.
+    public static int64 udpSend(int32 port, int32 n) {
+        SocketAddress ra #= IoNet.loopback(port);
+        UdpSocket rx #= UdpSocket.bind(ra);
+        SocketAddress sa #= IoNet.loopback(port + 1);
+        UdpSocket tx #= UdpSocket.bind(sa);
+        Task<int64> peer = spawn udpReceiver(#rx, n, port + 1);
+        int8[] d = heap int8[512];
+        int8[] ack = heap int8[8];
+        SocketAddress dest #= IoNet.loopback(port);
+        int32 i = 0;
+        while (i < n) {
+            d[0] = (int8) (i & 255);
+            tx.sendTo(d, 0, 512, dest);
+            i = i + 1;
+            if (i % 64 == 0 || i == n) {
+                RecvResult r #= tx.recvFromAsync(ack, 0, 8);
+            }
+        }
+        int64 got = await peer;
+        tx.close();
+        return got;
+    }
+
+    // ---- Server rows ---------------------------------------------------
+
+    public static async int32 runServer(Server s) {
+        s.serve();
+        return 0;
+    }
+
+    // An idle connection: count it, then park on read until the client closes.
+    public static void idleHandler(TcpStream conn, AtomicInt64 conns) {
+        conns.fetchAdd((int64) 1);
+        int8[] buf = heap int8[64];
+        int64 n = conn.readAsync(buf, (int64) 0, (int64) 64);
+        while (n > 0) {
+            n = conn.readAsync(buf, (int64) 0, (int64) 64);
+        }
+        conn.close();
+    }
+
+    // Hold `n` idle connections for `holdNanos`; out[0] = connections the
+    // server counted while held, out[1] = the process's VmRSS (KiB) in the
+    // middle of the hold, out[2] = CPU ms over the hold.
+    public static int64 holdIdle(int32 port, int32 n, int64 holdNanos, int64[] out) {
+        AtomicInt64 conns = heap AtomicInt64((int64) 0);
+        SocketAddress ba #= IoNet.loopback(port);
+        Server s #= Server.bindWithBacklog(ba, 4096, (TcpStream conn) -> { IoNet.idleHandler(conn, conns); });
+        Task<int32> st = spawn runServer(s);
+        ArrayList<TcpStream> cs = heap ArrayList<TcpStream>();
+        int32 i = 0;
+        while (i < n) {
+            SocketAddress ca #= IoNet.loopback(port);
+            TcpStream c #= TcpStream.connectAsync(#ca);
+            cs.add(#c);
+            i = i + 1;
+        }
+        int64 waitUntil = Clock.nanoTime() + (int64) 10000000000;
+        while (conns.load() < (int64) n && Clock.nanoTime() < waitUntil) {
+            Fiber.sleep(Duration.ofMillis((int64) 1));
+        }
+        int64 cpu0 = IoEnv.cpuMillis();
+        Fiber.sleep(Duration.ofNanos(holdNanos / (int64) 2));
+        int64 rss1 = IoEnv.rssKb();
+        Fiber.sleep(Duration.ofNanos(holdNanos - holdNanos / (int64) 2));
+        int64 cpu1 = IoEnv.cpuMillis();
+        out[0] = conns.load();
+        out[1] = rss1;
+        out[2] = cpu1 - cpu0;
+        i = 0;
+        while (i < n) {
+            cs.get(i).close();
+            i = i + 1;
+        }
+        s.shutdown(Duration.ofSeconds((int64) 10));
+        int32 x = await st;
+        return out[0];
+    }
+
+    public static void echoHandler(TcpStream conn) {
+        conn.setNoDelay(true);
+        int8[] buf = heap int8[16384];
+        int64 n = conn.readAsync(buf, (int64) 0, (int64) 16384);
+        while (n > 0) {
+            conn.writeAllAsync(buf, (int64) 0, n);
+            n = conn.readAsync(buf, (int64) 0, (int64) 16384);
+        }
+        conn.close();
+    }
+
+    // One echo client until `deadline`: 1 KiB messages, each echo compared
+    // byte for byte. Adds its message count to msgs and mismatches to bad.
+    public static async int64 echoClient(int32 port, int32 id, int64 deadline, AtomicInt64 msgs, AtomicInt64 bad) {
+        SocketAddress ca #= IoNet.loopback(port);
+        TcpStream c #= TcpStream.connectAsync(#ca);
+        c.setNoDelay(true);
+        int8[] msg = heap int8[1024];
+        int8[] back = heap int8[1024];
+        int64 count = 0;
+        int64 wrong = 0;
+        int32 m = 0;
+        while (Clock.nanoTime() < deadline) {
+            int32 i = 0;
+            while (i < 1024) {
+                msg[i] = (int8) ((i + id + m) & 255);
+                i = i + 1;
+            }
+            c.writeAllAsync(msg, (int64) 0, (int64) 1024);
+            int64 got = 0;
+            while (got < (int64) 1024) {
+                int64 k = c.readAsync(back, got, (int64) 1024 - got);
+                if (k <= 0) {
+                    break;
+                }
+                got = got + k;
+            }
+            boolean same = got == (int64) 1024;
+            i = 0;
+            while (same && i < 1024) {
+                same = back[i] == msg[i];
+                i = i + 1;
+            }
+            if (same) {
+                count = count + 1;
+            } else {
+                wrong = wrong + 1;
+            }
+            m = m + 1;
+        }
+        c.close();
+        msgs.fetchAdd(count);
+        bad.fetchAdd(wrong);
+        return count;
+    }
+
+    // `clients` echo clients against a Server for `nanos`; out[0] = messages
+    // echoed intact, out[1] = mismatches, out[2] = connections served.
+    public static int64 echoServer(int32 port, int32 clients, int64 nanos, int64[] out) {
+        AtomicInt64 conns = heap AtomicInt64((int64) 0);
+        SocketAddress ba #= IoNet.loopback(port);
+        Server s #= Server.bindWithBacklog(ba, 4096, (TcpStream conn) -> {
+            conns.fetchAdd((int64) 1);
+            IoNet.echoHandler(conn);
+        });
+        Task<int32> st = spawn runServer(s);
+        AtomicInt64 msgs = heap AtomicInt64((int64) 0);
+        AtomicInt64 bad = heap AtomicInt64((int64) 0);
+        int64 deadline = Clock.nanoTime() + nanos;
+        scope {
+            int32 i = 0;
+            while (i < clients) {
+                spawn echoClient(port, i, deadline, msgs, bad);
+                i = i + 1;
+            }
+        }
+        s.shutdown(Duration.ofSeconds((int64) 10));
+        int32 x = await st;
+        out[0] = msgs.load();
+        out[1] = bad.load();
+        out[2] = conns.load();
+        return out[0];
+    }
+}

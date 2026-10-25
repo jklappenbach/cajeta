@@ -1,0 +1,199 @@
+package bench.io;
+
+import cajeta.io.file.File;
+import cajeta.io.file.FileWriter;
+import cajeta.io.file.OpenMode;
+import cajeta.io.file.Path;
+
+// The io/ benchmarks' generated inputs, byte-identical to what
+// competitors/drivers/io/gen_io.py writes (whichever runs first creates
+// them; a `<name>.done` marker beside each says it is complete):
+//   io-seq-<scale>.bin   1 GiB (64 MiB smoke) of one repeated 1 MiB chunk,
+//                        chunk[j] = ((j >> 12) * 31 + j) & 0xFF
+//   io-lines-<scale>.txt 1e7 (1e6 smoke) lines of 50 bytes: the line number
+//                        as 10 zero-padded digits, 39 x ('a' + k % 26), '\n'
+//   io-stat.bin          4096 bytes
+//   tree-<scale>/        depth 3 (2 smoke), 10 subdirectories per directory
+//                        (d0..d9) and 5 empty files (f0..f4) in every one
+public final class IoData {
+
+    public static #String scale() {
+        if (IoEnv.smoke()) {
+            return "" + "smoke";
+        }
+        return "" + "full";
+    }
+
+    public static int64 MiB() {
+        return (int64) 1048576;
+    }
+
+    // Size of the sequential file: 1 GiB, 64 MiB under smoke.
+    public static int64 seqBytes() {
+        return IoEnv.pick((int64) 1073741824, (int64) 67108864);
+    }
+
+    public static #int8[] chunk() {
+        int32 n = 1048576;
+        int8[] c = heap int8[n];
+        int32 j = 0;
+        while (j < n) {
+            c[j] = (int8) (((j >> 12) * 31 + j) & 255);
+            j = j + 1;
+        }
+        return #c;
+    }
+
+    public static boolean done(String path) {
+        Path p #= Path.of(path + ".done");
+        return p.exists();
+    }
+
+    public static void markDone(String path) {
+        int8[] z = heap int8[1];
+        z[0] = (int8) 10;
+        File.writeAllBytes(path + ".done", z, 1);
+    }
+
+    // The sequential file, written in 1 MiB chunks when missing.
+    public static #String seqFile() {
+        String sc #= IoData.scale();
+        String p #= IoEnv.path("io-seq-" + sc + ".bin");
+        if (!IoData.done(p)) {
+            int8[] c #= IoData.chunk();
+            File f #= File.open(p, OpenMode.WRITE);
+            int64 chunks = IoData.seqBytes() / IoData.MiB();
+            int64 k = 0;
+            while (k < chunks) {
+                f.write(c, (int64) 0, IoData.MiB());
+                k = k + 1;
+            }
+            f.sync();
+            f.close();
+            IoData.markDone(p);
+        }
+        return #p;
+    }
+
+    public static int64 lineCount() {
+        return IoEnv.pick((int64) 10000000, (int64) 1000000);
+    }
+
+    // Line k into dst[0..50).
+    public static void line(int8[] dst, int64 k) {
+        int64 v = k;
+        int32 d = 9;
+        while (d >= 0) {
+            dst[d] = (int8) ((int64) 48 + v % (int64) 10);
+            v = v / (int64) 10;
+            d = d - 1;
+        }
+        int8 letter = (int8) ((int64) 97 + k % (int64) 26);
+        int32 i = 10;
+        while (i < 49) {
+            dst[i] = letter;
+            i = i + 1;
+        }
+        dst[49] = (int8) 10;
+    }
+
+    public static #String linesFile() {
+        String sc #= IoData.scale();
+        String p #= IoEnv.path("io-lines-" + sc + ".txt");
+        if (!IoData.done(p)) {
+            // 20000 lines (1 MB) per write.
+            int32 per = 20000;
+            int32 cap = per * 50;
+            int8[] buf = heap int8[cap];
+            int8[] ln = heap int8[50];
+            FileWriter w #= File.openWrite(p, OpenMode.WRITE);
+            int64 n = IoData.lineCount();
+            int64 k = 0;
+            int32 at = 0;
+            while (k < n) {
+                IoData.line(ln, k);
+                int32 i = 0;
+                while (i < 50) {
+                    buf[at + i] = ln[i];
+                    i = i + 1;
+                }
+                at = at + 50;
+                if (at == cap) {
+                    w.write(buf, at);
+                    at = 0;
+                }
+                k = k + 1;
+            }
+            if (at > 0) {
+                w.write(buf, at);
+            }
+            w.close();
+            IoData.markDone(p);
+        }
+        return #p;
+    }
+
+    public static #String statFile() {
+        String p #= IoEnv.path("io-stat.bin");
+        if (!IoData.done(p)) {
+            int8[] b = heap int8[4096];
+            File.writeAllBytes(p, b, 4096);
+            IoData.markDone(p);
+        }
+        return #p;
+    }
+
+    public static int32 treeDepth() {
+        if (IoEnv.smoke()) {
+            return 2;
+        }
+        return 3;
+    }
+
+    // Entries below the root: sum over levels 1..D of 10^l directories, plus
+    // 5 files in each of the 1 + sum directories.
+    public static int64 treeEntries() {
+        int32 dpt = IoData.treeDepth();
+        int64 dirs = 0;
+        int64 lvl = 1;
+        int32 l = 0;
+        while (l < dpt) {
+            lvl = lvl * (int64) 10;
+            dirs = dirs + lvl;
+            l = l + 1;
+        }
+        return dirs + (dirs + (int64) 1) * (int64) 5;
+    }
+
+    public static #String tree() {
+        String sc #= IoData.scale();
+        String root #= IoEnv.path("tree-" + sc);
+        if (!IoData.done(root)) {
+            Path rp #= Path.of(root);
+            rp.mkdirs();
+            IoData.fill(root, IoData.treeDepth());
+            IoData.markDone(root);
+        }
+        return #root;
+    }
+
+    public static void fill(String dir, int32 depth) {
+        int8[] z = heap int8[1];
+        int32 f = 0;
+        while (f < 5) {
+            File.writeAllBytes(dir + "/f" + f, z, 0);
+            f = f + 1;
+        }
+        if (depth == 0) {
+            return;
+        }
+        int32 d = 0;
+        while (d < 10) {
+            String sub #= dir + "/d" + d;
+            Path sp #= Path.of(sub);
+            sp.mkdirs();
+            IoData.fill(sub, depth - 1);
+            d = d + 1;
+        }
+    }
+}

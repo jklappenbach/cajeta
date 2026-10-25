@@ -1,0 +1,65 @@
+package bench.io;
+
+import dev.cajeta.bench.Benchmark;
+
+// io/udp-send-rate (bench/io/net/UdpSocket.md): send 1e6 512-byte datagrams
+// (1e5 under CAJETA_BENCH_SMOKE=1) over loopback with sendTo and count the
+// receipts on a receiver fiber. So that the count is exact (loopback drops a
+// datagram when the receive buffer is full), the receiver acks every 64th
+// datagram and the sender waits for that ack before the next window: the
+// same protocol in every competitor. The receiver drains with non-blocking
+// recvFrom and parks (recvFromAsync) only on would-block; recvFromAsync
+// alone parks before every datagram. The check is receipts == sent.
+public class UdpSendRateBench extends Benchmark {
+
+    public int32 count;
+    public int64 got;
+
+    public String name() {
+        return "udp-send-rate";
+    }
+
+    public String area() {
+        return "io";
+    }
+
+    public int32 warmupIters() {
+        return 1;
+    }
+
+    public int32 measuredIters() {
+        return 5;
+    }
+
+    public void prepare(String variant) {
+        this.count = (int32) IoEnv.pick((int64) 1000000, (int64) 100000);
+    }
+
+    public int64 inputSize() {
+        return (int64) this.count;
+    }
+
+    public String unit() {
+        return "datagrams/s";
+    }
+
+    // The trial body on its own fiber (spawn takes a bare class-method call).
+    public static async int64 trial(int32 port, int32 n) {
+        return IoNet.udpSend(port, n);
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        this.got = await spawn trial(IoEnv.port(3), this.count);
+    }
+
+    public boolean checkResult() {
+        return this.got == (int64) this.count;
+    }
+
+    public String competitorNote() {
+        return "check=" + this.got + "; " + this.count + " datagrams of 512 bytes acked every 64"
+            + (IoEnv.smoke() ? " (smoke; the page's 1e6 is the full run)" : "")
+            + "; ports " + IoEnv.port(3) + "-" + IoEnv.port(4) + "; pid " + IoEnv.pid()
+            + "; receiver on another fiber";
+    }
+}

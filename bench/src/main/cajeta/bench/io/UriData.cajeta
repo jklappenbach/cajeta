@@ -1,0 +1,59 @@
+package bench.io;
+
+// The uri/ inputs, the same list in every competitor program
+// (competitors/drivers/io/io.sh): 16 URIs with explicit ports, lowercase
+// hosts, no dot segments and valid percent-escapes, so every library agrees
+// on the raw components; and the builder's part tables.
+public final class UriData {
+
+    public static #String[] uris() {
+        String[] u = heap String[16];
+        u[0] = "https://example.com:443/a/b/c?x=1&y=two#frag";
+        u[1] = "http://api.example.org:8080/v1/users/42?fields=name%2Cemail&limit=10";
+        u[2] = "https://cdn.example.net:443/assets/img%20one.png?w=640&h=480";
+        u[3] = "http://localhost:3000/search?q=caf%C3%A9&page=2#results";
+        u[4] = "https://user@host.example.com:8443/path/to/resource?a=%2F%3F&b=c%26d";
+        u[5] = "ftp://files.example.com:21/pub/file.tar.gz";
+        u[6] = "https://www.example.com:443/?utm_source=news&utm_medium=email&utm_campaign=fall%202026";
+        u[7] = "http://10.0.0.1:8000/metrics?name=cpu%5Ftotal&le=0.5";
+        u[8] = "https://shop.example.com:443/cart/items/9?coupon=SAVE%2010&ref=home#top";
+        u[9] = "http://example.com:80/a%2Fb/c%3Bd?k=v";
+        u[10] = "https://docs.example.com:443/guide/intro.html#section-2";
+        u[11] = "http://svc.internal:9090/rpc?method=get&id=%7B1%7D";
+        u[12] = "https://maps.example.com:443/place?ll=37.77%2C-122.41&z=12";
+        u[13] = "http://example.com:8081/~user/index.html?lang=en-US";
+        u[14] = "https://auth.example.com:443/oauth/authorize?client_id=abc&redirect_uri=https%3A%2F%2Fapp.example.com%2Fcb&scope=read%20write";
+        u[15] = "http://example.com:8082/path;params?x=%41%42%43#f%20g";
+        return #u;
+    }
+
+    // Raw path segments for the builder: spaces, quotes, angle brackets and
+    // a two-byte UTF-8 letter, which every encoder escapes in a path.
+    public static #String[] segments() {
+        String[] s = heap String[8];
+        s[0] = "report 2026";
+        s[1] = "café menu";
+        s[2] = "a<b>c";
+        s[3] = "plain";
+        s[4] = "say \"hi\"";
+        s[5] = "x{y}z";
+        s[6] = "100% done";
+        s[7] = "über";
+        return #s;
+    }
+
+    // Raw query values: no space (form encoders write '+', RFC encoders
+    // %20) and only characters every encoder escapes or keeps.
+    public static #String[] values() {
+        String[] v = heap String[8];
+        v[0] = "alpha";
+        v[1] = "a<b";
+        v[2] = "50%";
+        v[3] = "café";
+        v[4] = "x\"y";
+        v[5] = "{id}";
+        v[6] = "beta-2";
+        v[7] = "naïve";
+        return #v;
+    }
+}

@@ -1,0 +1,68 @@
+package bench.io;
+
+import dev.cajeta.bench.Benchmark;
+
+// io/tcp-bulk-throughput (bench/io/net/TcpStream.md): stream 4 GiB (256 MiB
+// under CAJETA_BENCH_SMOKE=1) over loopback in 64 KiB writeAllAsync calls to
+// a peer fiber that reads 64 KiB at a time until EOF. The check is the byte
+// count the peer received.
+public class TcpBulkThroughputBench extends Benchmark {
+
+    public int64 bytes;
+    public int8[] chunk;
+    public int64 got;
+
+    public String name() {
+        return "tcp-bulk-throughput";
+    }
+
+    public String area() {
+        return "io";
+    }
+
+    public int32 warmupIters() {
+        return 1;
+    }
+
+    public int32 measuredIters() {
+        return 5;
+    }
+
+    public void prepare(String variant) {
+        this.bytes = IoEnv.pick((int64) 4294967296, (int64) 268435456);
+        int8[] c = heap int8[65536];
+        int32 i = 0;
+        while (i < 65536) {
+            c[i] = (int8) (i & 255);
+            i = i + 1;
+        }
+        this.chunk #= c;
+    }
+
+    public int64 inputSize() {
+        return this.bytes / (int64) 1048576;
+    }
+
+    public String unit() {
+        return "MB/s";
+    }
+
+    // The trial body on its own fiber (spawn takes a bare class-method call).
+    public static async int64 trial(int32 port, int64 bytes, int8[] chunk) {
+        return IoNet.bulk(port, bytes, chunk);
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        this.got = await spawn trial(IoEnv.port(1), this.bytes, this.chunk);
+    }
+
+    public boolean checkResult() {
+        return this.got == this.bytes;
+    }
+
+    public String competitorNote() {
+        return "check=" + this.got + "; " + (this.bytes / (int64) 1048576) + " MiB in 64 KiB writes"
+            + (IoEnv.smoke() ? " (smoke; the page's 4 GiB is the full run)" : "")
+            + "; port " + IoEnv.port(1) + "; pid " + IoEnv.pid() + "; peer on another fiber";
+    }
+}

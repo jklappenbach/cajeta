@@ -1,0 +1,106 @@
+package bench.io;
+
+import cajeta.io.file.File;
+import cajeta.io.file.OpenMode;
+
+import dev.cajeta.bench.Benchmark;
+
+// io/file-random-read (bench/io/file/File.md): 1e5 random 4 KiB reads (1e4
+// under CAJETA_BENCH_SMOKE=1) from the sequential file (1 GiB; 64 MiB smoke)
+// through File.seek + read. Block b of read r comes from the 64-bit LCG
+// x = x * 6364136223846793005 + 1442695040888963407 (x0 = 42), b = (x >>> 33)
+// % blocks. The check is the sum of the first and last byte of every block
+// read (block m starts with (31 m) & 0xFF and ends with (31 m + 4095) & 0xFF).
+public class FileRandomReadBench extends Benchmark {
+
+    public String path;
+    public int8[] buf;
+    public int64 reads;
+    public int64 sum;
+    public int64 expect;
+
+    public String name() {
+        return "file-random-read";
+    }
+
+    public String area() {
+        return "io";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public boolean supportsVariant(String variant) {
+        return IoEnv.fileRowsAvailable();
+    }
+
+    public String skipReason() {
+        return IoEnv.fileSkipReason();
+    }
+
+    public void prepare(String variant) {
+        this.path #= IoData.seqFile();
+        this.buf #= heap int8[4096];
+        this.reads = IoEnv.pick((int64) 100000, (int64) 10000);
+        int64 blocks = IoData.seqBytes() / (int64) 4096;
+        int64 x = 42;
+        int64 e = 0;
+        int64 r = 0;
+        while (r < this.reads) {
+            x = x * 6364136223846793005 + 1442695040888963407;
+            int64 m = (x >>> 33) % blocks;
+            e = e + ((m * (int64) 31) & (int64) 255) + ((m * (int64) 31 + (int64) 4095) & (int64) 255);
+            r = r + 1;
+        }
+        this.expect = e;
+    }
+
+    public int64 inputSize() {
+        return this.reads;
+    }
+
+    public String unit() {
+        return "reads/s";
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        File f #= File.open(this.path, OpenMode.READ);
+        int8[] b = this.buf;
+        int64 blocks = IoData.seqBytes() / (int64) 4096;
+        int64 x = 42;
+        int64 s = 0;
+        int64 r = 0;
+        while (r < this.reads) {
+            x = x * 6364136223846793005 + 1442695040888963407;
+            int64 m = (x >>> 33) % blocks;
+            f.seek(m * (int64) 4096);
+            int64 n = f.read(b, (int64) 0, (int64) 4096);
+            if (n == (int64) 4096) {
+                s = s + ((int64) b[0] & (int64) 255) + ((int64) b[4095] & (int64) 255);
+            }
+            r = r + 1;
+        }
+        f.close();
+        this.sum = s;
+    }
+
+    public boolean checkResult() {
+        return this.sum == this.expect;
+    }
+
+    public String competitorNote() {
+        if (!IoEnv.fileRowsAvailable()) {
+            return "";   // a skipped row: the reason says it all
+        }
+        String dv #= IoEnv.device();
+        return "check=" + this.sum + "; device " + dv + "; " + this.reads + " reads of 4 KiB over "
+            + (IoData.seqBytes() / IoData.MiB()) + " MiB"
+            + (IoEnv.smoke() ? " (smoke; the page's 1e5 over 1 GiB is the full run)" : "")
+            + "; seek + read (File has no positional pread)";
+    }
+}

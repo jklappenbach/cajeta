@@ -1,0 +1,28 @@
+[package]
+name = "io-bench"
+version = "0.1.0"
+edition = "2021"
+
+# io/ competitors (bench/io/*.md): std (Vec, fs, PathBuf, net), walkdir,
+# notify, bytes, url (+ its percent-encoding) in io-std; tokio in io-tokio.
+# Cargo.lock pins every version.
+[dependencies]
+walkdir = "2"
+notify = "8"
+bytes = "1"
+url = "2"
+percent-encoding = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "sync"] }
+
+[[bin]]
+name = "io-std"
+path = "src/main.rs"
+
+[[bin]]
+name = "io-tokio"
+path = "src/tokio_main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

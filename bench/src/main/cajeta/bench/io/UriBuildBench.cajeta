@@ -1,0 +1,107 @@
+package bench.io;
+
+import cajeta.io.net.uri.Uri;
+import cajeta.io.net.uri.UriBuilder;
+import cajeta.io.net.uri.UriComponent;
+
+import dev.cajeta.bench.Benchmark;
+
+// io/uri-build (bench/io/net/uri/UriBuilder.md): build 1e6 URIs (1e5 under
+// CAJETA_BENCH_SMOKE=1) from parts with encoding and serialize each: URI i is
+//   https://api<i%8>.example.com:<8000 + i%16>/v1/<enc(seg[i%8])>?q=<enc(val[(i/8)%8])>
+// with the path segment percent-encoded (UriComponent.SEGMENT) and the query
+// value encoded (QUERY_PARAM) by Uri.percentEncode, then UriBuilder.build()
+// and toString(). The check is the sum of the serialized lengths.
+public class UriBuildBench extends Benchmark {
+
+    public String[] hosts;
+    public String[] segs;
+    public String[] vals;
+    public int64 count;
+    public int64 sum;
+    public int64 expect;
+
+    public String name() {
+        return "uri-build";
+    }
+
+    public String area() {
+        return "io";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public void prepare(String variant) {
+        this.count = IoEnv.pick((int64) 1000000, (int64) 100000);
+        String[] h = heap String[8];
+        int32 k = 0;
+        while (k < 8) {
+            h[k] = "api" + k + ".example.com";
+            k = k + 1;
+        }
+        this.hosts #= h;
+        this.segs #= UriData.segments();
+        this.vals #= UriData.values();
+        int64[] per = heap int64[64];
+        k = 0;
+        while (k < 64) {
+            per[k] = UriBuildBench.one(this, (int64) k);
+            k = k + 1;
+        }
+        // the length depends on i % 64 only, except the port's digit count (4 always)
+        int64 e = 0;
+        int64 i = 0;
+        while (i < this.count) {
+            e = e + per[(int32) (i & (int64) 63)];
+            i = i + 1;
+        }
+        this.expect = e;
+    }
+
+    public static int64 one(UriBuildBench b, int64 i) {
+        String seg #= Uri.percentEncode(b.segs[(int32) (i & (int64) 7)], UriComponent.SEGMENT);
+        String val #= Uri.percentEncode(b.vals[(int32) ((i >> 3) & (int64) 7)], UriComponent.QUERY_PARAM);
+        UriBuilder ub #= Uri.builder();
+        ub.scheme("https");
+        ub.host(b.hosts[(int32) (i & (int64) 7)]);
+        ub.port(8000 + (int32) (i & (int64) 15));
+        ub.path("/v1/" + seg);
+        ub.query("q=" + val);
+        Uri u #= ub.build();
+        String s #= u.toString();
+        return (int64) s.size();
+    }
+
+    public int64 inputSize() {
+        return this.count;
+    }
+
+    public String unit() {
+        return "URIs/s";
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        int64 acc = 0;
+        int64 i = 0;
+        while (i < this.count) {
+            acc = acc + UriBuildBench.one(this, i);
+            i = i + 1;
+        }
+        this.sum = acc;
+    }
+
+    public boolean checkResult() {
+        return this.sum == this.expect && this.sum > (int64) 0;
+    }
+
+    public String competitorNote() {
+        return "check=" + this.sum + "; " + this.count + " URIs"
+            + (IoEnv.smoke() ? " (smoke; the page's 1e6 is the full run)" : "");
+    }
+}

@@ -1,0 +1,73 @@
+package bench.io;
+
+import cajeta.io.net.BufferPool;
+import cajeta.io.net.ByteBuffer;
+
+import dev.cajeta.bench.Benchmark;
+
+// io/bufferpool-acquire-release (bench/io/net/BufferPool.md): 1e7 acquire and
+// release pairs of 64 KiB buffers (1e6 under CAJETA_BENCH_SMOKE=1) from a
+// BufferPool(65536, 64). Each acquired buffer gets one byte put and read
+// back, so the buffer is used, not just counted. The check is the count of
+// acquires that returned a 64 KiB buffer holding that byte; allocations()
+// (fresh buffers ever made) is in the notes and must stay at 1.
+public class BufferPoolAcquireReleaseBench extends Benchmark {
+
+    public BufferPool pool;
+    public int64 count;
+    public int64 good;
+
+    public String name() {
+        return "bufferpool-acquire-release";
+    }
+
+    public String area() {
+        return "io";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public void prepare(String variant) {
+        this.count = IoEnv.pick((int64) 10000000, (int64) 1000000);
+        this.pool #= heap BufferPool(65536, 64);
+    }
+
+    public int64 inputSize() {
+        return this.count;
+    }
+
+    public String unit() {
+        return "acquires/s";
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        BufferPool p = this.pool;
+        int64 g = 0;
+        int64 i = 0;
+        while (i < this.count) {
+            ByteBuffer b #= p.acquire();
+            b.put((int8) (i & (int64) 127));
+            if (b.capacity() == 65536 && b.at(0) == (int8) (i & (int64) 127)) {
+                g = g + 1;
+            }
+            p.release(#b);
+            i = i + 1;
+        }
+        this.good = g;
+    }
+
+    public boolean checkResult() {
+        return this.good == this.count && this.pool.allocations() == 1;
+    }
+
+    public String competitorNote() {
+        return "check=" + this.good + "; allocations=" + this.pool.allocations() + "; " + this.count
+            + " acquire/release pairs" + (IoEnv.smoke() ? " (smoke; the page's 1e7 is the full run)" : "");
+    }
+}

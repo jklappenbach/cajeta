@@ -1,0 +1,115 @@
+package bench.io;
+
+import cajeta.io.net.ByteBuffer;
+
+import dev.cajeta.bench.Benchmark;
+
+// io/bytebuffer-put-get (bench/io/net/ByteBuffer.md): 1e8 big-endian puts and
+// gets (2.5e7 int32 + int64 pairs, each put then read back; 2.5e6 pairs
+// under CAJETA_BENCH_SMOKE=1) through a 64 KiB ByteBuffer, in rounds of 5000
+// pairs (60000 bytes) then clear(). Pair j is v = (int32)(j * 2654435761),
+// w = j * 0x9E3779B97F4A7C15. The check is the wrapping sum of every v and w
+// read back. ByteBuffer has no typed accessors today (put(int8), at(i),
+// advanceRead: the page's "big-endian accessors" are not in the class), so
+// the bench composes each int32 and int64 from byte puts and reassembles it
+// from at() reads, big-endian, the byte order the competitors set.
+public class ByteBufferPutGetBench extends Benchmark {
+
+    public ByteBuffer buf;
+    public int64 pairs;
+    public int64 sum;
+    public int64 expect;
+
+    public String name() {
+        return "bytebuffer-put-get";
+    }
+
+    public String area() {
+        return "io";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public void prepare(String variant) {
+        this.pairs = IoEnv.pick((int64) 25000000, (int64) 2500000);
+        this.buf #= heap ByteBuffer(65536);
+        int64 e = 0;
+        int64 j = 0;
+        while (j < this.pairs) {
+            int64 v = (int64) ((int32) (j * (int64) 2654435761));
+            int64 w = j * -7046029254386353131;
+            e = e + v + w;
+            j = j + 1;
+        }
+        this.expect = e;
+    }
+
+    public int64 inputSize() {
+        return this.pairs * (int64) 4;
+    }
+
+    public String unit() {
+        return "ops/s";
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        ByteBuffer b = this.buf;
+        int64 acc = 0;
+        int64 j = 0;
+        while (j < this.pairs) {
+            b.clear();
+            int64 end = j + (int64) 5000;
+            if (end > this.pairs) {
+                end = this.pairs;
+            }
+            int64 k = j;
+            while (k < end) {
+                int32 v = (int32) (k * (int64) 2654435761);
+                int64 w = k * -7046029254386353131;
+                b.put((int8) (v >> 24));
+                b.put((int8) (v >> 16));
+                b.put((int8) (v >> 8));
+                b.put((int8) v);
+                int32 s = 56;
+                while (s >= 0) {
+                    b.put((int8) (w >> s));
+                    s = s - 8;
+                }
+                k = k + 1;
+            }
+            k = j;
+            while (k < end) {
+                int32 p = b.readPosition();
+                int32 v = ((int32) b.at(p) << 24) | (((int32) b.at(p + 1) & 255) << 16)
+                    | (((int32) b.at(p + 2) & 255) << 8) | ((int32) b.at(p + 3) & 255);
+                int64 w = 0;
+                int32 q = p + 4;
+                while (q < p + 12) {
+                    w = (w << 8) | ((int64) b.at(q) & (int64) 255);
+                    q = q + 1;
+                }
+                b.advanceRead(12);
+                acc = acc + (int64) v + w;
+                k = k + 1;
+            }
+            j = end;
+        }
+        this.sum = acc;
+    }
+
+    public boolean checkResult() {
+        return this.sum == this.expect;
+    }
+
+    public String competitorNote() {
+        return "check=" + this.sum + "; " + this.pairs + " int32+int64 pairs put and got (big-endian)"
+            + (IoEnv.smoke() ? " (smoke; the page's 1e8 ops is the full run)" : "")
+            + "; ByteBuffer has no typed accessors: composed from put(int8) / at(i)";
+    }
+}

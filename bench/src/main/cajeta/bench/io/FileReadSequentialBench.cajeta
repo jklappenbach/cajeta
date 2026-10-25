@@ -1,0 +1,93 @@
+package bench.io;
+
+import cajeta.io.file.File;
+import cajeta.io.file.OpenMode;
+
+import dev.cajeta.bench.Benchmark;
+
+// io/file-read-sequential (bench/io/file/File.md): read the 1 GiB generated
+// file (64 MiB under CAJETA_BENCH_SMOKE=1, IoData.seqFile) through
+// File.open(READ) + read in 1 MiB chunks. The check is the byte count and
+// the sum of every byte at a 4 KiB-aligned file offset (32640 per MiB). The
+// file was written before the trials and nothing drops the page cache (that
+// needs root), so the row is the warm-cache read path on the named device.
+public class FileReadSequentialBench extends Benchmark {
+
+    public String path;
+    public int8[] buf;
+    public int64 bytes;
+    public int64 sum;
+
+    public String name() {
+        return "file-read-sequential";
+    }
+
+    public String area() {
+        return "io";
+    }
+
+    public int32 warmupIters() {
+        return 1;
+    }
+
+    public int32 measuredIters() {
+        return 5;
+    }
+
+    public boolean supportsVariant(String variant) {
+        return IoEnv.fileRowsAvailable();
+    }
+
+    public String skipReason() {
+        return IoEnv.fileSkipReason();
+    }
+
+    public void prepare(String variant) {
+        this.path #= IoData.seqFile();
+        this.buf #= heap int8[1048576];
+    }
+
+    public int64 inputSize() {
+        return IoData.seqBytes() / IoData.MiB();
+    }
+
+    public String unit() {
+        return "MB/s";
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        File f #= File.open(this.path, OpenMode.READ);
+        int8[] b = this.buf;
+        int64 pos = 0;
+        int64 s = 0;
+        int64 n = f.read(b, (int64) 0, (int64) 1048576);
+        while (n > 0) {
+            int64 i = ((int64) 4096 - (pos & (int64) 4095)) & (int64) 4095;
+            while (i < n) {
+                s = s + ((int64) b[i] & (int64) 255);
+                i = i + (int64) 4096;
+            }
+            pos = pos + n;
+            n = f.read(b, (int64) 0, (int64) 1048576);
+        }
+        f.close();
+        this.bytes = pos;
+        this.sum = s;
+    }
+
+    public boolean checkResult() {
+        int64 mib = IoData.seqBytes() / IoData.MiB();
+        return this.bytes == IoData.seqBytes() && this.sum == mib * (int64) 32640;
+    }
+
+    public String competitorNote() {
+        if (!IoEnv.fileRowsAvailable()) {
+            return "";   // a skipped row: the reason says it all
+        }
+        String dv #= IoEnv.device();
+        return "check=" + this.bytes + "/" + this.sum + "; device " + dv + "; "
+            + (IoData.seqBytes() / IoData.MiB()) + " MiB in 1 MiB reads"
+            + (IoEnv.smoke() ? " (smoke; the page's 1 GiB is the full run)" : "")
+            + "; page cache warm (no drop without root)";
+    }
+}

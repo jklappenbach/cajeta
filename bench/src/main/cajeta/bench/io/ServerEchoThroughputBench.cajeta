@@ -1,0 +1,66 @@
+package bench.io;
+
+import dev.cajeta.bench.Benchmark;
+
+// io/server-echo-throughput (bench/io/net/Server.md): 64 clients, each on its
+// own fiber in the same process, echo 1 KiB messages through a Server (fiber
+// per connection) for 10 s (2 s under CAJETA_BENCH_SMOKE=1). Every echo is
+// compared byte for byte. inputSize is the message count of the last trial,
+// so throughput is messages per second of the median trial; the check is
+// that messages flowed, none mismatched and all 64 connections were served.
+public class ServerEchoThroughputBench extends Benchmark {
+
+    public int32 clients;
+    public int64 nanos;
+    public int64[] out;
+
+    public String name() {
+        return "server-echo-throughput";
+    }
+
+    public String area() {
+        return "io";
+    }
+
+    public int32 warmupIters() {
+        return 1;
+    }
+
+    public int32 measuredIters() {
+        return 3;
+    }
+
+    public void prepare(String variant) {
+        this.clients = 64;
+        this.nanos = IoEnv.pick((int64) 10000000000, (int64) 2000000000);
+        this.out #= heap int64[3];
+    }
+
+    public int64 inputSize() {
+        return this.out[0];
+    }
+
+    public String unit() {
+        return "messages/s";
+    }
+
+    // The trial body on its own fiber (spawn takes a bare class-method call).
+    public static async int64 trial(int32 port, int32 clients, int64 nanos, int64[] out) {
+        return IoNet.echoServer(port, clients, nanos, out);
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        int64 m = await spawn trial(IoEnv.port(6), this.clients, this.nanos, this.out);
+    }
+
+    public boolean checkResult() {
+        return this.out[0] > (int64) 0 && this.out[1] == (int64) 0 && this.out[2] == (int64) this.clients;
+    }
+
+    public String competitorNote() {
+        return "messages=" + this.out[0] + "; mismatches=" + this.out[1] + "; connections=" + this.out[2]
+            + "; " + this.clients + " clients x " + (this.nanos / (int64) 1000000) + " ms"
+            + (IoEnv.smoke() ? " (smoke; the page's 10 s is the full run)" : "")
+            + "; port " + IoEnv.port(6) + "; pid " + IoEnv.pid() + "; clients on fibers in-process";
+    }
+}

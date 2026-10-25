@@ -1,0 +1,97 @@
+package bench.io;
+
+import cajeta.io.net.uri.QueryParams;
+import cajeta.io.net.uri.Uri;
+
+import dev.cajeta.bench.Benchmark;
+
+// io/uri-parse (bench/io/net/uri/Uri.md): parse 1e6 URIs (1e5 under
+// CAJETA_BENCH_SMOKE=1), cycling UriData.uris(), and decode each query into
+// its parameters. The component checksum per URI is
+//   len(scheme) + len(host) + port + len(raw path) + len(raw query)
+//   + len(fragment) + sum of the decoded query values' byte lengths,
+// the same sum every competitor computes from its library's components.
+public class UriParseBench extends Benchmark {
+
+    public String[] uris;
+    public int64 count;
+    public int64 sum;
+    public int64 expect;
+
+    public String name() {
+        return "uri-parse";
+    }
+
+    public String area() {
+        return "io";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public static int64 checksum(Uri u) {
+        int64 c = (int64) u.getScheme().size() + (int64) u.getHost().size() + (int64) u.getPort()
+            + (int64) u.getPath().size() + (int64) u.getQuery().size() + (int64) u.getFragment().size();
+        QueryParams q #= u.queryParams();
+        int32 n = q.size();
+        int32 i = 0;
+        while (i < n) {
+            String v #= q.valueAt(i);
+            c = c + (int64) v.size();
+            i = i + 1;
+        }
+        return c;
+    }
+
+    public void prepare(String variant) {
+        this.count = IoEnv.pick((int64) 1000000, (int64) 100000);
+        this.uris #= UriData.uris();
+        int64[] per = heap int64[16];
+        int32 k = 0;
+        while (k < 16) {
+            Uri u #= Uri.parse(this.uris[k]);
+            per[k] = UriParseBench.checksum(u);
+            k = k + 1;
+        }
+        int64 e = 0;
+        int64 i = 0;
+        while (i < this.count) {
+            e = e + per[(int32) (i & (int64) 15)];
+            i = i + 1;
+        }
+        this.expect = e;
+    }
+
+    public int64 inputSize() {
+        return this.count;
+    }
+
+    public String unit() {
+        return "URIs/s";
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        int64 acc = 0;
+        int64 i = 0;
+        while (i < this.count) {
+            Uri u #= Uri.parse(this.uris[(int32) (i & (int64) 15)]);
+            acc = acc + UriParseBench.checksum(u);
+            i = i + 1;
+        }
+        this.sum = acc;
+    }
+
+    public boolean checkResult() {
+        return this.sum == this.expect && this.sum > (int64) 0;
+    }
+
+    public String competitorNote() {
+        return "check=" + this.sum + "; " + this.count + " URIs"
+            + (IoEnv.smoke() ? " (smoke; the page's 1e6 is the full run)" : "");
+    }
+}

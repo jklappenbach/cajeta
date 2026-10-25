@@ -1,0 +1,290 @@
+package bench.io;
+
+import cajeta.io.file.File;
+import cajeta.io.file.FileReader;
+import cajeta.io.file.Path;
+
+// Shared plumbing for the io/ benchmarks (benchmark-reference unit 10). Every
+// competitor program under bench/competitors/<lang>/io/ uses the same sizes,
+// inputs, ports and checks, so the rows line up (bench/competitors/drivers/io/
+// io.sh states them in one table):
+//   - CAJETA_BENCH_SMOKE=1 selects the reduced size each benchmark names in
+//     its notes (the 1 GiB files shrink to 64 MiB, the 10 s holds to 2 s);
+//   - the file rows work in CAJETA_BENCH_IO_DIR (default build/io-data under
+//     the bench project), which must be on a storage device: a tmpfs or ramfs
+//     directory makes them skip, and every file row records the device;
+//   - the net rows run over loopback with the peer in-process on another
+//     fiber, on fixed ports in 61100..61109 (above the kernel's ephemeral
+//     range, 32768..60999), closed before the row is written; the row records
+//     the process id.
+public final class IoEnv {
+
+    public static boolean smoke() {
+        String s = System.env.get("CAJETA_BENCH_SMOKE");
+        if (s == null) {
+            return false;
+        }
+        return s.equals("1") || s.equals("true") || s.equals("yes");
+    }
+
+    // full when not smoke, else the smoke size.
+    public static int64 pick(int64 full, int64 smokeSize) {
+        if (IoEnv.smoke()) {
+            return smokeSize;
+        }
+        return full;
+    }
+
+    public static #String dir() {
+        String d = System.env.get("CAJETA_BENCH_IO_DIR");
+        if (d == null || d.isEmpty()) {
+            return "" + "build/io-data";
+        }
+        return "" + d;
+    }
+
+    // The data directory, created when missing; "" when it cannot be.
+    public static #String ensureDir() {
+        String d #= IoEnv.dir();
+        Path p #= Path.of(d);
+        if (!p.isDir()) {
+            p.mkdirs();
+        }
+        if (!p.isDir()) {
+            return "" + "";
+        }
+        return #d;
+    }
+
+    public static #String path(String name) {
+        String d #= IoEnv.ensureDir();
+        return d + "/" + name;
+    }
+
+    // "<source> <fstype> at <mountpoint>" for the mount holding the data
+    // directory, from /proc/self/mounts (longest mount-point prefix of the
+    // canonical path). "" when it cannot be read.
+    public static #String device() {
+        String d #= IoEnv.ensureDir();
+        if (d.isEmpty()) {
+            return "" + "";
+        }
+        Path p #= Path.of(d);
+        Path c #= p.canonical();
+        String abs #= c.toString();
+        String text #= IoEnv.readText("/proc/self/mounts");
+        int32 n = (int32) text.size();
+        int32 i = 0;
+        int32 bestLen = -1;
+        String best = "";
+        while (i < n) {
+            int32 e = i;
+            while (e < n && text.byteAt(e) != (int8) 10) {
+                e = e + 1;
+            }
+            // fields: source mountpoint fstype ...
+            int32 a = i;
+            while (a < e && text.byteAt(a) != (int8) 32) {
+                a = a + 1;
+            }
+            int32 b = a + 1;
+            while (b < e && text.byteAt(b) != (int8) 32) {
+                b = b + 1;
+            }
+            int32 f = b + 1;
+            while (f < e && text.byteAt(f) != (int8) 32) {
+                f = f + 1;
+            }
+            if (f <= e && b > a + 1) {
+                String mp #= text.substring(a + 1, b);
+                int32 ml = (int32) mp.size();
+                boolean under = abs.startsWith(mp)
+                    && (ml == 1 || (int32) abs.size() == ml || abs.byteAt(ml) == (int8) 47);
+                if (under && ml > bestLen) {
+                    bestLen = ml;
+                    String src #= text.substring(i, a);
+                    String fs #= text.substring(b + 1, f);
+                    best #= src + " " + fs + " at " + mp;
+                }
+            }
+            i = e + 1;
+        }
+        return "" + best;
+    }
+
+    // True when the data directory sits on tmpfs or ramfs (the file rows skip).
+    public static boolean onRamDisk() {
+        String dv #= IoEnv.device();
+        return dv.contains(" tmpfs at ") || dv.contains(" ramfs at ");
+    }
+
+    public static #String fileSkipReason() {
+        String d #= IoEnv.ensureDir();
+        if (d.isEmpty()) {
+            return "" + "CAJETA_BENCH_IO_DIR cannot be created";
+        }
+        String dv #= IoEnv.device();
+        return "the io data directory " + d + " is on " + dv + " (tmpfs/ramfs excluded: the row measures a storage device)";
+    }
+
+    public static boolean fileRowsAvailable() {
+        String d #= IoEnv.ensureDir();
+        if (d.isEmpty()) {
+            return false;
+        }
+        return !IoEnv.onRamDisk();
+    }
+
+    // Whole text of a /proc-style file (size 0 on stat, so read by stream).
+    public static #String readText(String path) {
+        FileReader r #= File.openRead(path);
+        if (r == null) {
+            return "" + "";
+        }
+        String t #= r.readString(1048576);
+        r.close();
+        if (t == null) {
+            return "" + "";
+        }
+        return #t;
+    }
+
+    // Field `k` (1-based, after the parenthesised comm) of /proc/self/stat.
+    public static int64 statField(int32 k) {
+        String t #= IoEnv.readText("/proc/self/stat");
+        int32 n = (int32) t.size();
+        int32 i = n - 1;
+        while (i > 0 && t.byteAt(i) != (int8) 41) {
+            i = i - 1;
+        }
+        // after ") " the next field is field 3
+        int32 field = 2;
+        i = i + 1;
+        while (i < n) {
+            while (i < n && t.byteAt(i) == (int8) 32) {
+                i = i + 1;
+            }
+            field = field + 1;
+            int64 v = 0;
+            boolean neg = false;
+            int32 s = i;
+            while (i < n && t.byteAt(i) != (int8) 32) {
+                int8 c = t.byteAt(i);
+                if (c == (int8) 45) {
+                    neg = true;
+                } else if (c >= (int8) 48 && c <= (int8) 57) {
+                    v = v * (int64) 10 + (int64) (c - (int8) 48);
+                }
+                i = i + 1;
+            }
+            if (field == k) {
+                if (neg) {
+                    return (int64) 0 - v;
+                }
+                return v;
+            }
+        }
+        return (int64) -1;
+    }
+
+    // utime + stime of this process in milliseconds (USER_HZ = 100 on Linux).
+    public static int64 cpuMillis() {
+        int64 u = IoEnv.statField(14);
+        int64 s = IoEnv.statField(15);
+        return (u + s) * (int64) 10;
+    }
+
+    public static int64 pid() {
+        String t #= IoEnv.readText("/proc/self/stat");
+        int32 n = (int32) t.size();
+        int32 i = 0;
+        int64 v = 0;
+        while (i < n && t.byteAt(i) >= (int8) 48 && t.byteAt(i) <= (int8) 57) {
+            v = v * (int64) 10 + (int64) (t.byteAt(i) - (int8) 48);
+            i = i + 1;
+        }
+        return v;
+    }
+
+    // VmRSS in KiB.
+    public static int64 rssKb() {
+        String t #= IoEnv.readText("/proc/self/status");
+        int64 at = t.indexOf("VmRSS:");
+        if (at < 0) {
+            return (int64) -1;
+        }
+        int32 n = (int32) t.size();
+        int32 i = (int32) at + 6;
+        while (i < n && (t.byteAt(i) < (int8) 48 || t.byteAt(i) > (int8) 57)) {
+            i = i + 1;
+        }
+        int64 v = 0;
+        while (i < n && t.byteAt(i) >= (int8) 48 && t.byteAt(i) <= (int8) 57) {
+            v = v * (int64) 10 + (int64) (t.byteAt(i) - (int8) 48);
+            i = i + 1;
+        }
+        return v;
+    }
+
+    // The fixed port of net benchmark `slot` (0..9) for the cajeta rows.
+    public static int32 port(int32 slot) {
+        return 61100 + slot;
+    }
+
+    // Median of the first n entries of v (sorts v in place; insertion sort is
+    // too slow at 1e5, so a simple heap sort).
+    public static int64 median(int64[] v, int32 n) {
+        if (n <= 0) {
+            return (int64) -1;
+        }
+        IoEnv.heapSort(v, n);
+        return v[n / 2];
+    }
+
+    public static int64 p95(int64[] v, int32 n) {
+        if (n <= 0) {
+            return (int64) -1;
+        }
+        int32 k = n * 95 / 100;
+        if (k > n - 1) {
+            k = n - 1;
+        }
+        return v[k];
+    }
+
+    public static void heapSort(int64[] a, int32 n) {
+        int32 start = n / 2 - 1;
+        while (start >= 0) {
+            IoEnv.sift(a, start, n);
+            start = start - 1;
+        }
+        int32 end = n - 1;
+        while (end > 0) {
+            int64 t = a[0];
+            a[0] = a[end];
+            a[end] = t;
+            IoEnv.sift(a, 0, end);
+            end = end - 1;
+        }
+    }
+
+    public static void sift(int64[] a, int32 root, int32 n) {
+        int32 r = root;
+        while (true) {
+            int32 child = 2 * r + 1;
+            if (child >= n) {
+                return;
+            }
+            if (child + 1 < n && a[child + 1] > a[child]) {
+                child = child + 1;
+            }
+            if (a[r] >= a[child]) {
+                return;
+            }
+            int64 t = a[r];
+            a[r] = a[child];
+            a[child] = t;
+            r = child;
+        }
+    }
+}

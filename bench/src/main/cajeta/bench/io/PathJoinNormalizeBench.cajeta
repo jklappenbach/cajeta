@@ -1,0 +1,165 @@
+package bench.io;
+
+import cajeta.io.file.Path;
+
+import dev.cajeta.bench.Benchmark;
+
+// io/path-join-normalize (bench/io/file/Path.md): 1e7 joins (1e6 under
+// CAJETA_BENCH_SMOKE=1) of three components onto "/srv/app" with `..`
+// segments, each normalized lexically: join i is
+//   /srv/app / d<i%16> / B[i%8] / file<i%32>.txt
+// with B[k] = "../e<k>" for even k and "f<k>/.." for odd k, so the normal
+// form drops one segment. The check is the sum of the normalized lengths.
+// Path has resolve (the join) but no normalize today, so the bench
+// normalizes the joined bytes itself (split on '/', drop "." and pop on
+// "..", rejoin), the lexical step std::filesystem's lexically_normal, Java's
+// normalize and Go's Clean do.
+public class PathJoinNormalizeBench extends Benchmark {
+
+    public String[] as;
+    public String[] bs;
+    public String[] cs;
+    public int64 count;
+    public int64 sum;
+
+    public String name() {
+        return "path-join-normalize";
+    }
+
+    public String area() {
+        return "io";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public void prepare(String variant) {
+        this.count = IoEnv.pick((int64) 10000000, (int64) 1000000);
+        String[] a = heap String[16];
+        int32 k = 0;
+        while (k < 16) {
+            a[k] = "d" + k;
+            k = k + 1;
+        }
+        String[] b = heap String[8];
+        k = 0;
+        while (k < 8) {
+            if (k % 2 == 0) {
+                b[k] = "../e" + k;
+            } else {
+                b[k] = "f" + k + "/..";
+            }
+            k = k + 1;
+        }
+        String[] c = heap String[32];
+        k = 0;
+        while (k < 32) {
+            c[k] = "file" + k + ".txt";
+            k = k + 1;
+        }
+        this.as #= a;
+        this.bs #= b;
+        this.cs #= c;
+    }
+
+    public int64 inputSize() {
+        return this.count;
+    }
+
+    public String unit() {
+        return "joins/s";
+    }
+
+    // Lexical normal form length of an absolute path's bytes.
+    public static int64 normalLength(int8[] p, int8[] out, int32[] starts) {
+        int32 n = (int32) p.count();
+        int32 depth = 0;
+        int32 o = 0;
+        int32 i = 0;
+        while (i < n) {
+            while (i < n && p[i] == (int8) 47) {
+                i = i + 1;
+            }
+            int32 s = i;
+            while (i < n && p[i] != (int8) 47) {
+                i = i + 1;
+            }
+            int32 len = i - s;
+            if (len == 0) {
+                continue;
+            }
+            if (len == 1 && p[s] == (int8) 46) {
+                continue;
+            }
+            if (len == 2 && p[s] == (int8) 46 && p[s + 1] == (int8) 46) {
+                if (depth > 0) {
+                    depth = depth - 1;
+                    o = starts[depth];
+                }
+                continue;
+            }
+            starts[depth] = o;
+            depth = depth + 1;
+            out[o] = (int8) 47;
+            o = o + 1;
+            int32 j = s;
+            while (j < i) {
+                out[o] = p[j];
+                o = o + 1;
+                j = j + 1;
+            }
+        }
+        if (o == 0) {
+            return (int64) 1;
+        }
+        return (int64) o;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        Path base #= Path.of("/srv/app");
+        int8[] out = heap int8[256];
+        int32[] starts = heap int32[64];
+        int64 acc = 0;
+        int64 i = 0;
+        while (i < this.count) {
+            Path p1 #= base.resolve(this.as[(int32) (i & (int64) 15)]);
+            Path p2 #= p1.resolve(this.bs[(int32) (i & (int64) 7)]);
+            Path p3 #= p2.resolve(this.cs[(int32) (i & (int64) 31)]);
+            acc = acc + PathJoinNormalizeBench.normalLength(p3.bytes, out, starts);
+            i = i + 1;
+        }
+        this.sum = acc;
+    }
+
+    public boolean checkResult() {
+        // closed form: per i, 9 ("/srv/app/") + segment + 1 + len(file<c>.txt)
+        int64 e = 0;
+        int64 i = 0;
+        while (i < this.count) {
+            int64 bk = i & (int64) 7;
+            int64 ak = i & (int64) 15;
+            int64 ck = i & (int64) 31;
+            int64 seg = 0;
+            if (bk % (int64) 2 == (int64) 0) {
+                seg = (int64) 2;                       // e<k>, k < 10
+            } else {
+                seg = ak < (int64) 10 ? (int64) 2 : (int64) 3;   // d<a>
+            }
+            int64 file = ck < (int64) 10 ? (int64) 9 : (int64) 10;   // file<c>.txt
+            e = e + (int64) 9 + seg + (int64) 1 + file;
+            i = i + 1;
+        }
+        return this.sum == e;
+    }
+
+    public String competitorNote() {
+        return "check=" + this.sum + "; " + this.count + " joins"
+            + (IoEnv.smoke() ? " (smoke; the page's 1e7 is the full run)" : "")
+            + "; Path has no normalize(): the bench normalizes the resolve()d bytes lexically";
+    }
+}

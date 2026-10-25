@@ -1,0 +1,83 @@
+package bench.io;
+
+import cajeta.io.file.File;
+import cajeta.io.file.OpenMode;
+
+import dev.cajeta.bench.Benchmark;
+
+// io/file-write-sequential (bench/io/file/File.md): write 1 GiB (64 MiB under
+// CAJETA_BENCH_SMOKE=1) in 1 MiB chunks through File.open(WRITE) + write, then
+// File.sync (fsync) before close. The chunk is IoData's 1 MiB pattern. The
+// check is the size the file reports after the close.
+public class FileWriteSequentialBench extends Benchmark {
+
+    public String path;
+    public int8[] chunk;
+    public int64 size;
+
+    public String name() {
+        return "file-write-sequential";
+    }
+
+    public String area() {
+        return "io";
+    }
+
+    public int32 warmupIters() {
+        return 1;
+    }
+
+    public int32 measuredIters() {
+        return 5;
+    }
+
+    public boolean supportsVariant(String variant) {
+        return IoEnv.fileRowsAvailable();
+    }
+
+    public String skipReason() {
+        return IoEnv.fileSkipReason();
+    }
+
+    public void prepare(String variant) {
+        this.path #= IoEnv.path("io-write.bin");
+        this.chunk #= IoData.chunk();
+    }
+
+    public int64 inputSize() {
+        return IoData.seqBytes() / IoData.MiB();
+    }
+
+    public String unit() {
+        return "MB/s";
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        File f #= File.open(this.path, OpenMode.WRITE);
+        int64 chunks = IoData.seqBytes() / IoData.MiB();
+        int64 k = 0;
+        while (k < chunks) {
+            f.write(this.chunk, (int64) 0, IoData.MiB());
+            k = k + 1;
+        }
+        f.sync();
+        f.close();
+        File g #= File.open(this.path, OpenMode.READ);
+        this.size = g.size();
+        g.close();
+    }
+
+    public boolean checkResult() {
+        return this.size == IoData.seqBytes();
+    }
+
+    public String competitorNote() {
+        if (!IoEnv.fileRowsAvailable()) {
+            return "";   // a skipped row: the reason says it all
+        }
+        String dv #= IoEnv.device();
+        return "check=" + this.size + "; device " + dv + "; "
+            + (IoData.seqBytes() / IoData.MiB()) + " MiB in 1 MiB writes + fsync"
+            + (IoEnv.smoke() ? " (smoke; the page's 1 GiB is the full run)" : "");
+    }
+}

@@ -1,0 +1,72 @@
+package bench.io;
+
+import dev.cajeta.bench.Benchmark;
+
+// io/tcp-echo-latency (bench/io/net/TcpStream.md): 1e5 64-byte echo round
+// trips over loopback (1e3 under CAJETA_BENCH_SMOKE=1) on one connection,
+// TCP_NODELAY both ends. The client is the trial's fiber (writeAllAsync,
+// readAsync), the echo peer the accepted TcpStream on another fiber. The
+// page's row is the median round trip: every round trip is timed and the
+// median and p95 go in the notes (rtt_median_ns, rtt_p95_ns); the trial time
+// (median_ns) is the whole batch, setup included, the same in every
+// competitor. The check is byte equality of every echo.
+public class TcpEchoLatencyBench extends Benchmark {
+
+    public int32 rounds;
+    public int64[] rtt;
+    public int64 ok;
+    public int64 rttMedian;
+    public int64 rttP95;
+
+    public String name() {
+        return "tcp-echo-latency";
+    }
+
+    public String area() {
+        return "io";
+    }
+
+    public int32 warmupIters() {
+        return 1;
+    }
+
+    public int32 measuredIters() {
+        return 3;
+    }
+
+    public void prepare(String variant) {
+        this.rounds = (int32) IoEnv.pick((int64) 100000, (int64) 1000);
+        int32 n = this.rounds;
+        this.rtt #= heap int64[n];
+    }
+
+    public int64 inputSize() {
+        return (int64) this.rounds;
+    }
+
+    public String unit() {
+        return "round trips/s";
+    }
+
+    // The trial body on its own fiber (spawn takes a bare class-method call).
+    public static async int64 trial(int32 port, int32 rounds, int64[] rtt) {
+        return IoNet.echoRounds(port, rounds, rtt);
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        this.ok = await spawn trial(IoEnv.port(0), this.rounds, this.rtt);
+        this.rttMedian = IoEnv.median(this.rtt, this.rounds);
+        this.rttP95 = IoEnv.p95(this.rtt, this.rounds);
+    }
+
+    public boolean checkResult() {
+        return this.ok == (int64) this.rounds;
+    }
+
+    public String competitorNote() {
+        return "check=" + this.ok + "; rtt_median_ns=" + this.rttMedian + "; rtt_p95_ns=" + this.rttP95
+            + "; " + this.rounds + " round trips" + (IoEnv.smoke() ? " (smoke; the page's 1e5 is the full run)" : "")
+            + "; port " + IoEnv.port(0) + "; pid " + IoEnv.pid()
+            + "; peer on another fiber (readAsync/writeAllAsync)";
+    }
+}

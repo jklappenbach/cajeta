@@ -1,0 +1,64 @@
+package bench.io;
+
+import dev.cajeta.bench.Benchmark;
+
+// io/server-1k-idle (bench/io/net/Server.md): a Server (fiber per
+// connection) holds 1e3 idle loopback connections for 10 s (2 s under
+// CAJETA_BENCH_SMOKE=1); the clients are opened by the trial's fiber in the
+// same process. The page's row is resident memory and CPU time: peak_rss_kb
+// is the process peak (run it alone with --bench server-1k-idle for a clean
+// figure, as the competitor drivers do), and the notes carry rss_hold_kb
+// (the process's VmRSS in the middle of the hold) and cpu_ms (process
+// user+system CPU over the hold). The check is the connection count the server saw.
+public class Server1kIdleBench extends Benchmark {
+
+    public int32 conns;
+    public int64 holdNanos;
+    public int64[] out;
+
+    public String name() {
+        return "server-1k-idle";
+    }
+
+    public String area() {
+        return "io";
+    }
+
+    public int32 warmupIters() {
+        return 1;
+    }
+
+    public int32 measuredIters() {
+        return 3;
+    }
+
+    public void prepare(String variant) {
+        this.conns = 1000;
+        this.holdNanos = IoEnv.pick((int64) 10000000000, (int64) 2000000000);
+        this.out #= heap int64[3];
+    }
+
+    public int64 inputSize() {
+        return (int64) this.conns;
+    }
+
+    // The trial body on its own fiber (spawn takes a bare class-method call).
+    public static async int64 trial(int32 port, int32 n, int64 holdNanos, int64[] out) {
+        return IoNet.holdIdle(port, n, holdNanos, out);
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        int64 held = await spawn trial(IoEnv.port(5), this.conns, this.holdNanos, this.out);
+    }
+
+    public boolean checkResult() {
+        return this.out[0] == (int64) this.conns;
+    }
+
+    public String competitorNote() {
+        return "check=" + this.out[0] + "; rss_hold_kb=" + this.out[1] + "; cpu_ms=" + this.out[2]
+            + "; " + this.conns + " connections held " + (this.holdNanos / (int64) 1000000) + " ms"
+            + (IoEnv.smoke() ? " (smoke; the page's 10 s is the full run)" : "")
+            + "; port " + IoEnv.port(5) + "; pid " + IoEnv.pid() + "; clients in-process";
+    }
+}

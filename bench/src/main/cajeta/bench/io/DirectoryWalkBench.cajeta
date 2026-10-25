@@ -1,0 +1,96 @@
+package bench.io;
+
+import cajeta.collection.ArrayList;
+import cajeta.io.file.Path;
+
+import dev.cajeta.bench.Benchmark;
+
+// io/directory-walk (bench/io/file/Directory.md): enumerate every entry of
+// the generated tree (IoData.tree: depth 3, 10 subdirectories and 5 files per
+// directory, 6665 entries; depth 2 and 665 entries under
+// CAJETA_BENCH_SMOKE=1) 10 times per trial. The check is the entry count.
+// The stdlib has no walk primitive (Path.list is one directory, sorted, and
+// the recursion is the caller's loop over isDir(), as its doc says), so each
+// entry costs a list() share plus one stat for isDir(), where the
+// competitors' walkers read the type from the directory entry.
+public class DirectoryWalkBench extends Benchmark {
+
+    public String root;
+    public int64 entries;
+
+    public String name() {
+        return "directory-walk";
+    }
+
+    public String area() {
+        return "io";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public boolean supportsVariant(String variant) {
+        return IoEnv.fileRowsAvailable();
+    }
+
+    public String skipReason() {
+        return IoEnv.fileSkipReason();
+    }
+
+    public void prepare(String variant) {
+        this.root #= IoData.tree();
+    }
+
+    public int64 inputSize() {
+        return IoData.treeEntries() * (int64) 10;
+    }
+
+    public String unit() {
+        return "entries/s";
+    }
+
+    public static int64 walk(Path dir) {
+        ArrayList<Path> kids #= dir.list();
+        int64 n = (int64) kids.count();
+        int32 i = 0;
+        int32 m = (int32) kids.count();
+        while (i < m) {
+            Path k = kids.get(i);
+            if (k.isDir()) {
+                n = n + DirectoryWalkBench.walk(k);
+            }
+            i = i + 1;
+        }
+        return n;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        Path r #= Path.of(this.root);
+        int64 total = 0;
+        int32 rep = 0;
+        while (rep < 10) {
+            total = total + DirectoryWalkBench.walk(r);
+            rep = rep + 1;
+        }
+        this.entries = total;
+    }
+
+    public boolean checkResult() {
+        return this.entries == IoData.treeEntries() * (int64) 10;
+    }
+
+    public String competitorNote() {
+        if (!IoEnv.fileRowsAvailable()) {
+            return "";   // a skipped row: the reason says it all
+        }
+        String dv #= IoEnv.device();
+        return "check=" + this.entries + "; device " + dv + "; " + IoData.treeEntries() + " entries x 10"
+            + (IoEnv.smoke() ? " (smoke tree: depth 2; the page's depth-3 tree is the full run)" : "")
+            + "; no walk primitive: recursive Path.list + isDir (one stat per entry)";
+    }
+}

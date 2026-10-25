@@ -1,0 +1,36 @@
+package bench.io;
+
+import cajeta.io.file.Watcher;
+
+import dev.cajeta.bench.Benchmark;
+
+// io/watcher-event-latency (bench/io/file/Watcher.md): 1e3 file creations,
+// the row the median latency from the create to its event. cajeta.io.file.
+// Watcher is a placeholder today (it opens, holds a zero handle and closes;
+// there is no watch call, no inotify backing and no event stream: its doc
+// says the full watcher is a deferred phase), so this row is a recorded skip
+// and the page's competitors (notify, fsnotify, WatchService, watchdog) run
+// alone. The skip turns into a measurement when Watcher can deliver events.
+public class WatcherEventLatencyBench extends Benchmark {
+
+    public String name() {
+        return "watcher-event-latency";
+    }
+
+    public String area() {
+        return "io";
+    }
+
+    public boolean supportsVariant(String variant) {
+        return false;
+    }
+
+    public String skipReason() {
+        return "cajeta.io.file.Watcher is a placeholder (no watch call; no inotify backing; no event stream)";
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        Watcher w = heap Watcher();
+        w.close();
+    }
+}

@@ -1,0 +1,116 @@
+package bench.io;
+
+import cajeta.io.Buffer;
+
+import dev.cajeta.bench.Benchmark;
+
+// io/buffer-read-primitives (bench/io/Buffer.md): read 1e8 little-endian
+// values, 5e7 int32 and 5e7 float64 (1e7 under CAJETA_BENCH_SMOKE=1), from a
+// 16 MiB buffer: int32 k (k < 2^21) at byte 4k holds (int32)(k * 2654435761),
+// float64 k at byte 8 MiB + 8k holds (k & 1023) * 0.5. Read j takes
+// k = j & (2^21 - 1) for the int32 and k = j & (2^20 - 1) for the float64.
+// Buffer v1 has no loadI32/loadF64: the int32 is the low half of loadU64 and
+// the float64 is Cajeta.bitsToF64(loadU64), both unaligned single loads. The
+// check is the int32 sum and the float64 sum (exact: multiples of 0.5).
+public class BufferReadPrimitivesBench extends Benchmark {
+
+    public Buffer<int8> buf;
+    public int64 reads;
+    public int64 sumI;
+    public float64 sumF;
+    public int64 expI;
+    public float64 expF;
+
+    public String name() {
+        return "buffer-read-primitives";
+    }
+
+    public String area() {
+        return "io";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public void prepare(String variant) {
+        this.reads = IoEnv.pick((int64) 50000000, (int64) 5000000);
+        int64 half = (int64) 8388608;
+        int64 total = half * (int64) 2 + (int64) 8;
+        int8[] d = heap int8[total];
+        int64 k = 0;
+        while (k < (int64) 2097152) {
+            int64 v = (k * (int64) 2654435761) & (int64) 4294967295;
+            int64 o = k * (int64) 4;
+            d[o] = (int8) (v & (int64) 255);
+            d[o + (int64) 1] = (int8) ((v >> 8) & (int64) 255);
+            d[o + (int64) 2] = (int8) ((v >> 16) & (int64) 255);
+            d[o + (int64) 3] = (int8) ((v >> 24) & (int64) 255);
+            k = k + 1;
+        }
+        k = 0;
+        while (k < (int64) 1048576) {
+            float64 f = (float64) (k & (int64) 1023) * 0.5;
+            int64 bits = Cajeta.f64ToBits(f);
+            int64 o = half + k * (int64) 8;
+            int32 b = 0;
+            while (b < 8) {
+                d[o + (int64) b] = (int8) ((bits >> (b * 8)) & (int64) 255);
+                b = b + 1;
+            }
+            k = k + 1;
+        }
+        this.buf #= heap Buffer<int8>(#d, total);
+        int64 ei = 0;
+        float64 ef = 0.0;
+        int64 j = 0;
+        while (j < this.reads) {
+            int64 ki = j & (int64) 2097151;
+            int64 vi = (ki * (int64) 2654435761) & (int64) 4294967295;
+            ei = ei + (int64) ((int32) vi);
+            ef = ef + (float64) ((j & (int64) 1048575) & (int64) 1023) * 0.5;
+            j = j + 1;
+        }
+        this.expI = ei;
+        this.expF = ef;
+    }
+
+    public int64 inputSize() {
+        return this.reads * (int64) 2;
+    }
+
+    public String unit() {
+        return "values/s";
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        Buffer<int8> b = this.buf;
+        int64 half = (int64) 8388608;
+        int64 si = 0;
+        float64 sf = 0.0;
+        int64 j = 0;
+        while (j < this.reads) {
+            int64 oi = (j & (int64) 2097151) * (int64) 4;
+            int64 of = half + (j & (int64) 1048575) * (int64) 8;
+            si = si + (int64) ((int32) b.loadU64(oi));
+            sf = sf + Cajeta.bitsToF64(b.loadU64(of));
+            j = j + 1;
+        }
+        this.sumI = si;
+        this.sumF = sf;
+    }
+
+    public boolean checkResult() {
+        return this.sumI == this.expI && this.sumF == this.expF;
+    }
+
+    public String competitorNote() {
+        return "check=" + this.sumI + "/" + (int64) (this.sumF * 2.0) + "; " + (this.reads * (int64) 2) + " values"
+            + (IoEnv.smoke() ? " (smoke; the page's 1e8 is the full run)" : "")
+            + "; Buffer v1 has no loadI32/loadF64: int32 = low half of loadU64; float64 = bitsToF64(loadU64)";
+    }
+}

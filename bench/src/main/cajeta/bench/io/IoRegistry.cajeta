@@ -4,12 +4,34 @@ import cajeta.collection.ArrayList;
 
 import dev.cajeta.bench.Benchmark;
 
-// Registers every io/ benchmark, in catalog order. A unit adds a io/
-// benchmark by writing the class in this directory and one `b.add(heap X());`
-// line here; Bench.cajeta calls this and is never edited for it.
+// Registers every io/ benchmark, in catalog order (bench/io/README.md). A
+// unit adds a io/ benchmark by writing the class in this directory and one
+// `b.add(heap X());` line here; Bench.cajeta calls this and is never edited
+// for it.
 public final class IoRegistry {
 
     public static void register(ArrayList<Benchmark> b) {
-        // No io/ benchmarks yet.
+        b.add(heap BufferFillBench());
+        b.add(heap BufferReadPrimitivesBench());
+        b.add(heap BufferSliceBench());
+        b.add(heap FileReadSequentialBench());
+        b.add(heap FileWriteSequentialBench());
+        b.add(heap FileRandomReadBench());
+        b.add(heap FileStatBench());
+        b.add(heap FileReaderLinesBench());
+        b.add(heap FileWriterLinesBench());
+        b.add(heap PathJoinNormalizeBench());
+        b.add(heap WatcherEventLatencyBench());
+        b.add(heap DirectoryWalkBench());
+        b.add(heap TcpEchoLatencyBench());
+        b.add(heap TcpBulkThroughputBench());
+        b.add(heap TcpAcceptRateBench());
+        b.add(heap UdpSendRateBench());
+        b.add(heap Server1kIdleBench());
+        b.add(heap ServerEchoThroughputBench());
+        b.add(heap ByteBufferPutGetBench());
+        b.add(heap BufferPoolAcquireReleaseBench());
+        b.add(heap UriParseBench());
+        b.add(heap UriBuildBench());
     }
 }

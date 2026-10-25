@@ -1,0 +1,89 @@
+package bench.io;
+
+import cajeta.io.file.File;
+import cajeta.io.file.FileWriter;
+import cajeta.io.file.OpenMode;
+import cajeta.io.file.Path;
+
+import dev.cajeta.bench.Benchmark;
+
+// io/filewriter-lines (bench/io/file/FileWriter.md): write 1e7 50-byte lines
+// (1e6 under CAJETA_BENCH_SMOKE=1), each composed into a reused 50-byte
+// buffer by digit arithmetic (IoData.line, the same in every language), one
+// FileWriter.write per line. FileWriter is unbuffered today (each write is a
+// syscall; its flush is a no-op), so the row is 1e7 write(2) calls against
+// the competitors' buffered writers. The check is the file size.
+public class FileWriterLinesBench extends Benchmark {
+
+    public String path;
+    public int8[] line;
+    public int64 size;
+
+    public String name() {
+        return "filewriter-lines";
+    }
+
+    public String area() {
+        return "io";
+    }
+
+    public int32 warmupIters() {
+        return 1;
+    }
+
+    public int32 measuredIters() {
+        return 5;
+    }
+
+    public boolean supportsVariant(String variant) {
+        return IoEnv.fileRowsAvailable();
+    }
+
+    public String skipReason() {
+        return IoEnv.fileSkipReason();
+    }
+
+    public void prepare(String variant) {
+        this.path #= IoEnv.path("io-lines-out.txt");
+        this.line #= heap int8[50];
+    }
+
+    public int64 inputSize() {
+        return IoData.lineCount();
+    }
+
+    public String unit() {
+        return "lines/s";
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        FileWriter w #= File.openWrite(this.path, OpenMode.WRITE);
+        int8[] ln = this.line;
+        int64 n = IoData.lineCount();
+        int64 k = 0;
+        while (k < n) {
+            IoData.line(ln, k);
+            w.write(ln, 50);
+            k = k + 1;
+        }
+        w.flush();
+        w.close();
+        File g #= File.open(this.path, OpenMode.READ);
+        this.size = g.size();
+        g.close();
+    }
+
+    public boolean checkResult() {
+        return this.size == IoData.lineCount() * (int64) 50;
+    }
+
+    public String competitorNote() {
+        if (!IoEnv.fileRowsAvailable()) {
+            return "";   // a skipped row: the reason says it all
+        }
+        String dv #= IoEnv.device();
+        return "check=" + this.size + "; device " + dv + "; " + IoData.lineCount() + " lines"
+            + (IoEnv.smoke() ? " (smoke; the page's 1e7 is the full run)" : "")
+            + "; FileWriter is unbuffered: one write(2) per line";
+    }
+}

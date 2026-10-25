@@ -1,0 +1,83 @@
+package bench.io;
+
+import cajeta.io.file.File;
+import cajeta.io.file.OpenMode;
+
+import dev.cajeta.bench.Benchmark;
+
+// io/file-stat (bench/io/file/FileInfo.md): 1e6 size queries (1e5 under
+// CAJETA_BENCH_SMOKE=1) of the 4096-byte io-stat.bin; the check is the size
+// sum. FileInfo is a blank record today (no stat accessor fills it: the page
+// assumes one), and Path's stat probes return booleans, not a size. The
+// nearest honest size query is File.open(READ) + size() (fstat) + close, so
+// the row is three syscalls (open, fstat, close) against the competitors'
+// one stat.
+public class FileStatBench extends Benchmark {
+
+    public String path;
+    public int64 count;
+    public int64 sum;
+
+    public String name() {
+        return "file-stat";
+    }
+
+    public String area() {
+        return "io";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public boolean supportsVariant(String variant) {
+        return IoEnv.fileRowsAvailable();
+    }
+
+    public String skipReason() {
+        return IoEnv.fileSkipReason();
+    }
+
+    public void prepare(String variant) {
+        this.path #= IoData.statFile();
+        this.count = IoEnv.pick((int64) 1000000, (int64) 100000);
+    }
+
+    public int64 inputSize() {
+        return this.count;
+    }
+
+    public String unit() {
+        return "stats/s";
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        int64 s = 0;
+        int64 i = 0;
+        while (i < this.count) {
+            File f #= File.open(this.path, OpenMode.READ);
+            s = s + f.size();
+            f.close();
+            i = i + 1;
+        }
+        this.sum = s;
+    }
+
+    public boolean checkResult() {
+        return this.sum == this.count * (int64) 4096;
+    }
+
+    public String competitorNote() {
+        if (!IoEnv.fileRowsAvailable()) {
+            return "";   // a skipped row: the reason says it all
+        }
+        String dv #= IoEnv.device();
+        return "check=" + this.sum + "; device " + dv + "; " + this.count + " size queries"
+            + (IoEnv.smoke() ? " (smoke; the page's 1e6 is the full run)" : "")
+            + "; FileInfo has no stat accessor: open + fstat + close per query";
+    }
+}

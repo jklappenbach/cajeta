@@ -1,0 +1,87 @@
+package bench.io;
+
+import cajeta.io.Buffer;
+
+import dev.cajeta.bench.Benchmark;
+
+// io/buffer-slice (bench/io/Buffer.md): 1e7 sub-buffer views (1e6 under
+// CAJETA_BENCH_SMOKE=1) of 64 bytes over a 16 MiB buffer whose byte i is
+// (i * 31 + 7) & 0xFF; view j starts at (j * 4099) % (16 MiB - 64). The
+// check is the sum of every view's first byte (unsigned). Buffer has no
+// slice() today, so the view is the language's zero-copy array window
+// `bytes[s:s+64]` (cajeta.lang.Slice) over the int8[] a Buffer wraps.
+public class BufferSliceBench extends Benchmark {
+
+    public int8[] data;
+    public int64 views;
+    public int64 sum;
+    public int64 expect;
+
+    public String name() {
+        return "buffer-slice";
+    }
+
+    public String area() {
+        return "io";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public void prepare(String variant) {
+        this.views = IoEnv.pick((int64) 10000000, (int64) 1000000);
+        int64 n = (int64) 16777216;
+        int8[] d = heap int8[n];
+        int64 i = 0;
+        while (i < n) {
+            d[i] = (int8) ((i * (int64) 31 + (int64) 7) & (int64) 255);
+            i = i + 1;
+        }
+        this.data #= d;
+        int64 e = 0;
+        int64 j = 0;
+        int64 span = n - (int64) 64;
+        while (j < this.views) {
+            int64 s = (j * (int64) 4099) % span;
+            e = e + ((s * (int64) 31 + (int64) 7) & (int64) 255);
+            j = j + 1;
+        }
+        this.expect = e;
+    }
+
+    public int64 inputSize() {
+        return this.views;
+    }
+
+    public String unit() {
+        return "views/s";
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        int64 span = (int64) 16777216 - (int64) 64;
+        int64 acc = 0;
+        int64 j = 0;
+        while (j < this.views) {
+            int64 s = (j * (int64) 4099) % span;
+            Slice<int8> v = this.data[s:s + (int64) 64];
+            acc = acc + ((int64) v[(int64) 0] & (int64) 255);
+            j = j + 1;
+        }
+        this.sum = acc;
+    }
+
+    public boolean checkResult() {
+        return this.sum == this.expect;
+    }
+
+    public String competitorNote() {
+        return "check=" + this.sum + "; " + this.views + " views of 64 bytes"
+            + (IoEnv.smoke() ? " (smoke; the page's 1e7 is the full run)" : "")
+            + "; Buffer has no slice(): the view is the zero-copy array window bytes[s:s+64]";
+    }
+}
