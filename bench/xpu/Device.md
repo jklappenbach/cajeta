@@ -14,6 +14,7 @@
 | `xpu/device-saxpy` | `y = a*x + y` on device at 2^26 float32 | CUDA and HIP C++, PyTorch | against host |
 | `xpu/wave-reduce` | sum of 2^26 float32 with wave reductions | CUB and rocPRIM `DeviceReduce`, PyTorch `sum` | within epsilon |
 | `xpu/scan` | inclusive scan of 2^26 int32 | CUB and rocPRIM `DeviceScan`, PyTorch `cumsum` | last element and spot checks |
+| `xpu/gemm-f64` | 4096 × 4096 GEMM at float64 (the first suite's device matmul, kept under its true type) | cuBLAS and rocBLAS, PyTorch `matmul` | against host within epsilon |
 | `xpu/gemm-f32` | 4096 × 4096 GEMM through `CooperativeMatrix` at float32 | cuBLAS and rocBLAS, PyTorch `matmul` | against host within epsilon |
 | `xpu/gemm-f16` | the same at float16 with float32 accumulate | same | within epsilon |
 | `xpu/gemm-bf16` | the same at bfloat16 | same | within epsilon |
@@ -65,6 +66,11 @@ metric: throughput
 
 ```bench
 id: xpu/scan
+metric: throughput
+```
+
+```bench
+id: xpu/gemm-f64
 metric: throughput
 ```
 
