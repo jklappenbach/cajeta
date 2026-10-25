@@ -1208,6 +1208,154 @@ static struct {
     int npendingSampler;
 } g_vk_batch;
 
+// In-stream profiler brackets (vulkan-batch-pipelining Unit 2): one timestamp query pool
+// per ring slot, two queries a dispatch, read by availability after the fence that
+// covers the slot's chunk; the launch ids wait here until then.
+#define CAJ_VK_PROF_CHUNK_MAX 256
+struct caj_vk_prof_slot {
+    VkQueryPool pool;
+    int64_t ids[CAJ_VK_PROF_CHUNK_MAX];
+    unsigned n;
+};
+static struct {
+    struct caj_vk_prof_slot slot[CAJ_VK_BATCH_CMDS];
+    int ready;   // 0 untried, 1 pools exist, -1 refused
+} g_vk_bprof;
+
+int64_t __cajeta_prof_gpu_pending_host_launch(int64_t launchId);
+int64_t __cajeta_prof_clock_dispersion_cap(void);
+
+// The pools, made once; 0 when the device cannot time or a pool was refused.
+static int caj_vk_bprof_ready(void) {
+    if (g_vk_bprof.ready != 0) return g_vk_bprof.ready > 0;
+    if (!__cajeta_prof_vk_timing_ok() || !g_xpu_vk.vkCreateQueryPool
+            || !g_xpu_vk.vkCmdWriteTimestamp || !g_xpu_vk.vkGetQueryPoolResults) {
+        g_vk_bprof.ready = -1;
+        return 0;
+    }
+    for (int i = 0; i < CAJ_VK_BATCH_CMDS; ++i) {
+        VkQueryPoolCreateInfo qpci;
+        memset(&qpci, 0, sizeof(qpci));
+        qpci.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+        qpci.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        qpci.queryCount = 2 * CAJ_VK_PROF_CHUNK_MAX;
+        if (g_xpu_vk.vkCreateQueryPool(g_xpu_vk.device, &qpci, NULL,
+                                       &g_vk_bprof.slot[i].pool) != VK_SUCCESS) {
+            g_vk_bprof.ready = -1;
+            return 0;
+        }
+        g_vk_bprof.slot[i].n = 0;
+#if defined(VK_VERSION_1_2)
+        if (g_xpu_vk.hasHostQueryReset)
+            g_xpu_vk.vkResetQueryPool(g_xpu_vk.device, g_vk_bprof.slot[i].pool, 0,
+                                      2 * CAJ_VK_PROF_CHUNK_MAX);
+#endif
+    }
+    g_vk_bprof.ready = 1;
+    return 1;
+}
+
+// After a fence wait: read every pending slot's brackets and resolve the launches at
+// EVENT tier; an unavailable pair leaves its launch parked (host tier at collect). One
+// fence covers every pending chunk, so the chunks are placed together: without a clock
+// mapping the durations chain back from the fence (flagged UNCORRELATED); with one, the
+// whole set is translated into [first launch, fence] within the dispersion cap, as the
+// eager bracket does for a single dispatch.
+static void caj_vk_bprof_resolve(int64_t fenceNs) {
+    if (g_vk_bprof.ready <= 0) return;
+    const char* faultEnv = getenv("CAJETA_XPU_FAULT");   // per resolve: a test flips it
+    const int fault = (faultEnv && strstr(faultEnv, "vk-query-unavailable")) ? 1 : 0;
+    const uint32_t bits = __cajeta_prof_vk_valid_bits();
+    const int mapped = bits >= 64 && __cajeta_prof_clock_valid(CAJ_GPU_BACKEND_VULKAN);
+    const double perTick = __cajeta_prof_clock_valid(CAJ_GPU_BACKEND_VULKAN)
+        ? (__cajeta_prof_clock_period(CAJ_GPU_BACKEND_VULKAN)
+           * (1.0 + __cajeta_prof_clock_drift_ppm(CAJ_GPU_BACKEND_VULKAN) * 1e-6))
+        : (double) g_xpu_vk.tsPeriod;
+    enum { MAXN = CAJ_VK_BATCH_CMDS * CAJ_VK_PROF_CHUNK_MAX };
+    static int64_t ids[MAXN], startNs[MAXN], endNs[MAXN];
+    static int32_t flags[MAXN];   // -1 = unavailable
+    static uint64_t rr[4 * CAJ_VK_PROF_CHUNK_MAX];
+    int total = 0;
+    for (int i = 0; i < CAJ_VK_BATCH_CMDS; ++i) {
+        struct caj_vk_prof_slot* ps = &g_vk_bprof.slot[i];
+        if (ps->n == 0) continue;
+        const VkResult qr = g_xpu_vk.vkGetQueryPoolResults(
+            g_xpu_vk.device, ps->pool, 0, 2 * ps->n, sizeof(uint64_t) * 4 * ps->n, rr,
+            /*stride=*/2 * sizeof(uint64_t),
+            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+        for (unsigned k = 0; k < ps->n; ++k) {
+            const uint64_t s0 = rr[4 * k], a0 = rr[4 * k + 1], e0 = rr[4 * k + 2], a1 = rr[4 * k + 3];
+            ids[total] = ps->ids[k];
+            flags[total] = -1;
+            if (qr == VK_SUCCESS && !fault && a0 != 0 && a1 != 0) {
+                flags[total] = __cajeta_prof_vk_note_span_ticks(s0, e0) | CAJETA_SPAN_INSTREAM;
+                if (mapped) {
+                    startNs[total] = __cajeta_prof_clock_to_host(CAJ_GPU_BACKEND_VULKAN, (int64_t) s0);
+                    endNs[total] = __cajeta_prof_clock_to_host(CAJ_GPU_BACKEND_VULKAN, (int64_t) e0);
+                } else {
+                    endNs[total] = (int64_t) ((double) __cajeta_prof_vk_delta_ticks(s0, e0, bits) * perTick);
+                    startNs[total] = 0;   // placed below
+                    flags[total] |= CAJETA_SPAN_UNCORRELATED;
+                }
+            }
+            total++;
+        }
+#if defined(VK_VERSION_1_2)
+        if (g_xpu_vk.hasHostQueryReset)
+            g_xpu_vk.vkResetQueryPool(g_xpu_vk.device, ps->pool, 0, 2 * ps->n);
+#endif
+        ps->n = 0;
+    }
+    if (total == 0) return;
+    if (!mapped) {
+        int64_t anchor = fenceNs;
+        for (int k = total - 1; k >= 0; --k) {
+            if (flags[k] < 0) continue;
+            const int64_t dur = endNs[k];
+            endNs[k] = anchor;
+            startNs[k] = anchor - dur;
+            anchor = startNs[k];
+        }
+    } else {
+        int first = -1, last = -1;
+        for (int k = 0; k < total; ++k) {
+            if (flags[k] < 0) continue;
+            if (first < 0) first = k;
+            last = k;
+        }
+        if (first >= 0) {
+            const int64_t lo = __cajeta_prof_gpu_pending_host_launch(ids[first]);
+            const int64_t slack = __cajeta_prof_clock_dispersion_cap();
+            int64_t shift = 0;
+            if (lo > 0 && startNs[first] < lo) shift = lo - startNs[first];
+            else if (endNs[last] > fenceNs) shift = fenceNs - endNs[last];
+            // Moved more than the fit's stated uncertainty: the placement is a correction,
+            // not a measurement, and the spans say so. A set that cannot fit stays put.
+            const int fits = lo <= 0 || endNs[last] + shift <= fenceNs;
+            if (getenv("CAJETA_XPU_VK_SYNC_LOG"))
+                fprintf(stderr, "cajeta.xpu.vulkan: bprof %d spans, shift %lld ns (cap %lld), "
+                        "fence - last end %lld ns%s\n", total, (long long) shift,
+                        (long long) slack, (long long) (fenceNs - endNs[last]),
+                        fits ? "" : ", does not fit");
+            if (shift != 0 && fits) {
+                const int beyond = shift > slack || shift < -slack;
+                for (int k = 0; k < total; ++k) {
+                    if (flags[k] < 0) continue;
+                    startNs[k] += shift;
+                    endNs[k] += shift;
+                    if (beyond) flags[k] |= CAJETA_SPAN_UNCORRELATED;
+                }
+            }
+        }
+    }
+    for (int k = 0; k < total; ++k) {
+        if (flags[k] < 0) { __cajeta_prof_vk_note_unavailable(); continue; }
+        if (__cajeta_prof_gpu_resolve_dispatch_flags(ids[k], startNs[k], endNs[k],
+                                                     CAJETA_PROF_TIER_EVENT, flags[k]))
+            __cajeta_prof_vk_note_resolved();
+    }
+}
+
 static void cajeta_xpu_vk_flush(void);          // defined with the launch path
 static void cajeta_xpu_vk_free_now(int64_t handle);
 
@@ -3051,6 +3199,8 @@ static int caj_vk_batch_begin(void) {
         if (getenv("CAJETA_XPU_VK_NOCHUNK")) { g_vk_batch.chunk = 0; g_vk_batch.firstChunk = 0; }
         else { g_vk_batch.chunk = chunk; g_vk_batch.firstChunk = first; }
         g_vk_sync_log = getenv("CAJETA_XPU_VK_SYNC_LOG") ? 1 : 0;
+        g_vk_stat_disp = 0;      // the flush line counts this batch alone
+        g_vk_stat_barrier = 0;
     }
     g_vk_batch.poolCursor = 0;
     memset(g_vk_batch.bound, 0, sizeof(g_vk_batch.bound));
@@ -3082,9 +3232,13 @@ static void caj_vk_batch_submit_chunk(void) {
         empty.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         if (g_xpu_vk.vkQueueSubmit(g_xpu_vk.queue, 1, &empty,
                                    g_vk_batch.fence) == VK_SUCCESS) {
+            const int64_t waitStart = __cajeta_currentTimeNanos();
             g_xpu_vk.vkWaitForFences(g_xpu_vk.device, 1, &g_vk_batch.fence,
                                      VK_TRUE, ~0ull);
+            const int64_t waitEnd = __cajeta_currentTimeNanos();
             g_xpu_vk.vkResetFences(g_xpu_vk.device, 1, &g_vk_batch.fence);
+            __cajeta_prof_vk_note_wait(0, waitStart, waitEnd);
+            caj_vk_bprof_resolve(waitEnd);
         }
         for (int i = 0; i < g_vk_batch.npools; ++i)
             g_xpu_vk.vkResetDescriptorPool(g_xpu_vk.device,
@@ -3133,13 +3287,17 @@ static void cajeta_xpu_vk_flush(void) {
         si.pCommandBuffers = &g_vk_batch.cmds[g_vk_batch.cur];
         if (g_xpu_vk.vkQueueSubmit(g_xpu_vk.queue, 1, &si, g_vk_batch.fence)
                 == VK_SUCCESS) {
+            const int64_t waitStart = __cajeta_currentTimeNanos();
             VkResult wr = g_xpu_vk.vkWaitForFences(
                 g_xpu_vk.device, 1, &g_vk_batch.fence, VK_TRUE, ~0ull);
+            const int64_t waitEnd = __cajeta_currentTimeNanos();
             if (wr != VK_SUCCESS)
                 fprintf(stderr, "cajeta.xpu.vulkan: batch fence wait FAILED "
                         "(%d) after %u dispatches\n", (int) wr,
                         g_vk_batch.dispatches);
             g_xpu_vk.vkResetFences(g_xpu_vk.device, 1, &g_vk_batch.fence);
+            __cajeta_prof_vk_note_wait(0, waitStart, waitEnd);
+            if (wr == VK_SUCCESS) caj_vk_bprof_resolve(waitEnd);
         } else {
             fprintf(stderr, "cajeta.xpu.vulkan: batch submit FAILED "
                     "(%u dispatches dropped)\n", g_vk_batch.chunkDispatches);
@@ -3174,8 +3332,15 @@ static void cajeta_xpu_vk_flush(void) {
 static int caj_vk_launch_batched(struct caj_vk_pipe* P,
                                  const int64_t* bindings,
                                  const uint8_t* kinds, int n,
-                                 unsigned gx, unsigned gy, unsigned gz) {
+                                 unsigned gx, unsigned gy, unsigned gz,
+                                 int64_t profLaunch) {
     if (!caj_vk_batch_begin()) return 0;
+    const int prof = profLaunch != 0 && caj_vk_bprof_ready();
+    // A chunk holds at most one query pool of brackets: submit it rather than drop one.
+    if (prof && g_vk_bprof.slot[g_vk_batch.cur].n >= CAJ_VK_PROF_CHUNK_MAX
+            && g_vk_batch.chunkDispatches > 0)
+        caj_vk_batch_submit_chunk();
+    if (!g_vk_batch.open) return 0;
     VkDescriptorSet ds = VK_NULL_HANDLE;
     if (!caj_vk_batch_alloc_set(P->setLayout, &ds)) {
         // Pool chain exhausted mid-batch: land what is recorded, start fresh.
@@ -3264,7 +3429,24 @@ static int caj_vk_launch_batched(struct caj_vk_pipe* P,
     g_xpu_vk.vkCmdBindDescriptorSets(g_vk_batch.cmds[g_vk_batch.cur],
                                      VK_PIPELINE_BIND_POINT_COMPUTE,
                                      P->pipeLayout, 0, 1, &ds, 0, NULL);
+    struct caj_vk_prof_slot* ps = prof ? &g_vk_bprof.slot[g_vk_batch.cur] : NULL;
+    if (ps) {
+        VkCommandBuffer cmd = g_vk_batch.cmds[g_vk_batch.cur];
+        if (ps->n == 0 && !g_xpu_vk.hasHostQueryReset)
+            g_xpu_vk.vkCmdResetQueryPool(cmd, ps->pool, 0, 2 * CAJ_VK_PROF_CHUNK_MAX);
+        const int64_t now = __cajeta_currentTimeNanos();
+        if (now - g_xpu_vk.lastCalibrateNs > CAJ_VK_RECAL_INTERVAL_NS)
+            caj_vk_calibrate_now(now);
+        g_xpu_vk.vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                     ps->pool, 2 * ps->n);
+    }
     g_xpu_vk.vkCmdDispatch(g_vk_batch.cmds[g_vk_batch.cur], gx, gy, gz);
+    if (ps) {
+        g_xpu_vk.vkCmdWriteTimestamp(g_vk_batch.cmds[g_vk_batch.cur],
+                                     VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                     ps->pool, 2 * ps->n + 1);
+        ps->ids[ps->n++] = profLaunch;
+    }
     g_vk_batch.dispatches++;
     g_vk_batch.chunkDispatches++;
     {
@@ -3502,13 +3684,14 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
     int ok = 0;
     if (P) {
         const int64_t profLaunch = __cajeta_prof_vk_current_launch();
-        if (eagerMode || profLaunch != 0) {
+        if (eagerMode) {
             // Ordering: anything already recorded must land first.
             cajeta_xpu_vk_flush();
             ok = caj_vk_launch_eager(P, bindings, kinds, n, gx, gy, gz,
                                      profLaunch);
         } else {
-            ok = caj_vk_launch_batched(P, bindings, kinds, n, gx, gy, gz);
+            // A profiled launch is bracketed inside the batch (Unit 2), not submitted alone.
+            ok = caj_vk_launch_batched(P, bindings, kinds, n, gx, gy, gz, profLaunch);
         }
     }
     if (!ok) {

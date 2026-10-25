@@ -581,6 +581,10 @@ const char* __cajeta_prof_cuda_events_reason(void) { return caj_gpu_cuda_events_
 int64_t     __cajeta_prof_cuda_event_spans(void)   { return caj_gpu_cuda_event_spans; }
 
 // The host instant a still-parked launch was issued at, or 0 if not parked.
+static int64_t caj_gpu_pending_host_launch(int64_t launchId);
+int64_t __cajeta_prof_gpu_pending_host_launch(int64_t launchId) {
+    return caj_gpu_pending_host_launch(launchId);
+}
 static int64_t caj_gpu_pending_host_launch(int64_t launchId) {
     int64_t v = 0;
     pthread_mutex_lock(&g_gpu_pending_lock);
@@ -743,8 +747,11 @@ static int32_t caj_gpu_vk_end(CajetaGpuEvent* ev) {
     return 0;
 }
 
-// Nothing buffers: anything still parked has no bracket coming and goes out host.
+// Land the open batch first (its brackets resolve at the fence), then anything
+// still parked has no bracket coming and goes out host.
+void __cajeta_xpu_vk_prof_flush(void);
 static int32_t caj_gpu_vk_collect(void) {
+    __cajeta_xpu_vk_prof_flush();
     return caj_gpu_drain_pending();
 }
 static int32_t caj_gpu_vk_calibrate(void) { return 1; }

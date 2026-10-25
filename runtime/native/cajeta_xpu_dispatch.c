@@ -993,6 +993,9 @@ int32_t __cajeta_xpu_device_supports(int32_t cap) {
 }
 
 // Synchronize the active backend (stream.sync); CPU is already synchronous.
+// The profiler's collect lands the Vulkan batch so in-stream brackets resolve first.
+void __cajeta_xpu_vk_prof_flush(void) { cajeta_xpu_vk_flush(); }
+
 static void cajeta_xpu_sync_active(void) {
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_CUDA: g_xpu_cuda.cuCtxSynchronize();

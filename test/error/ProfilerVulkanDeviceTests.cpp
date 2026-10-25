@@ -288,9 +288,11 @@ void runBracketBody() {
             << "brackets out of order — a reused slot carried a stale value";
     }
 
-    // §5.5.8 / §14.13 — every submit's blocked interval is an explicit span.
-    EXPECT_GE(waits.size(), 4u)
-        << "the host blocked on vkQueueWaitIdle without saying so";
+    // §5.5.8 / §14.13 — every blocked interval is an explicit span: one per fence
+    // wait since the brackets moved into the batch (vulkan-batch-pipelining Unit 2),
+    // one per launch under CAJETA_XPU_VK_SUBMIT=eager.
+    EXPECT_GE(waits.size(), 1u)
+        << "the host blocked on the GPU without saying so";
     for (const CajetaGpuEvent* w : waits) {
         EXPECT_EQ(w->tier, CAJETA_PROF_TIER_HOST);
         EXPECT_GE(w->dev_end_ns, w->dev_start_ns);

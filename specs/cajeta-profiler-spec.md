@@ -301,9 +301,17 @@ because its markers carry system-scope fences.
   reports as available carrying the previous use's value.
 - **5.5.6** When timestamps wrap at the device's valid-bit width, the wrap is
   handled without undefined behavior at 64 bits.
-- **5.5.8** When the host blocks on `vkQueueWaitIdle`, an explicit "host blocked
+- **5.5.8** When the host blocks on the GPU — a fence wait at a batch's flush or
+  ring wrap, or `vkQueueWaitIdle` on the eager path — an explicit "host blocked
   on GPU" span is emitted for the blocked interval (§14.13), rather than leaving
   the stall to be read out of a gap in the timeline.
+- **5.5.9** When a launch is recorded into the batched submission path (the
+  default), its bracket is a pair of timestamp queries inside the batch's own
+  command buffer, read by availability after the fence that covers its chunk and
+  resolved at EVENT tier; the profiled step keeps the unprofiled step's submit
+  cadence, and the span carries an `in_stream` annotation so a reader can tell
+  it from the eager bracket, which `CAJETA_XPU_VK_SUBMIT=eager` still takes
+  (vulkan-batch-pipelining spec 3, 2026-10-24).
 - **5.5.7** When device timestamps are non-monotonic — as happens on AMD APUs,
   which reset the timestamp register on low-power entry — the condition is
   detected and the affected spans are flagged rather than rendered as fact.

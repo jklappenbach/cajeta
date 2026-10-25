@@ -729,10 +729,14 @@ int64_t __cajeta_prof_gpu_emit(CajProfWriter* w, CajGpuTracks* seen,
                                    __cajeta_prof_clock_confidence(e->backend));
             // The checker's flags OR'd with what only the producer can know.
             int32_t integrity = __cajeta_prof_check_dispatch(e)
-                              | e->integrity_flags;
+                              | (e->integrity_flags & ~CAJETA_SPAN_INSTREAM);
             if (integrity != CAJETA_SPAN_OK) {
                 a += caj_prof_anno_int(anno + a, "integrity_flags", integrity);
             }
+            // Which bracket measured it: inside the submission stream, or an eager submit.
+            if (e->tier == CAJETA_PROF_TIER_EVENT && e->backend == CAJ_GPU_BACKEND_VULKAN)
+                a += caj_prof_anno_int(anno + a, "in_stream",
+                                       (e->integrity_flags & CAJETA_SPAN_INSTREAM) ? 1 : 0);
             CajPbBuf b = { w->scratch, CAJ_PROF_SCRATCH, 0, 0 };
             __cajeta_prof_emit_slice_anno(&b, w->seq_id, (uint64_t) e->dev_start_ns,
                                           que, CAJ_TE_SLICE_BEGIN, iid, iid ? NULL : kn,

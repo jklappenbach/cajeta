@@ -267,6 +267,7 @@ int32_t     __cajeta_prof_gpu_collect_all(void);
 #define CAJETA_SPAN_IMPLAUSIBLE   (1 << 2)  // duration outside any sane bound
 #define CAJETA_SPAN_UNCORRELATED  (1 << 3)  // no trustworthy mapping (§11.6)
 #define CAJETA_SPAN_OUTSIDE_HOST  (1 << 4)  // device span escapes its own launch
+#define CAJETA_SPAN_INSTREAM      (1 << 5)  // bracket recorded inside the submission stream, not an eager submit
 
 // Longest a dispatch may plausibly claim: an hour is a broken timestamp, not a kernel.
 #define CAJETA_SPAN_MAX_NS  (60LL * 1000000000LL)
