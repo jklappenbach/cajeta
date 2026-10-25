@@ -1666,7 +1666,7 @@ void __cajeta_xpu_buffer_host_copy(void* self, int64_t handle, void* host,
                 hp = (void*) (intptr_t) handle;
             break;
         case CAJ_XPU_VULKAN:
-            cajeta_xpu_vk_note_host_access(handle);   // order vs the open batch
+            cajeta_xpu_vk_note_host_access(handle, dir != 0);   // order vs the open batch
             if (dir) {
                 hp = cajeta_xpu_vk_mapped(handle);   // WC writes stream fine
             } else {
@@ -1708,7 +1708,7 @@ void __cajeta_xpu_buffer_upload_async(void* self, int64_t handle, void* host,
                                         (size_t) byteCount);
             return;
         case CAJ_XPU_VULKAN: {
-            cajeta_xpu_vk_note_host_access(handle);   // order vs the open batch
+            cajeta_xpu_vk_note_host_access(handle, 1);   // order vs the open batch
             void* m = cajeta_xpu_vk_mapped(handle);   // coherent map: immediate
             if (m) memcpy(m, data, (size_t) byteCount);
             return;
@@ -1743,7 +1743,7 @@ void __cajeta_xpu_buffer_download_async(void* self, int64_t handle, void* host,
                                         (size_t) byteCount);
             return;
         case CAJ_XPU_VULKAN: {
-            cajeta_xpu_vk_note_host_access(handle);   // order vs the open batch
+            cajeta_xpu_vk_note_host_access(handle, 0);   // order vs the open batch
             cajeta_xpu_vk_read(handle, data, byteCount);
             return;
         }
@@ -1845,7 +1845,8 @@ int64_t __cajeta_xpu_event_create(void) {
             CajXpuCpuEvent* e = (CajXpuCpuEvent*) calloc(1, sizeof *e);
             return e ? (int64_t) (intptr_t) e : 0;
         }
-        default: return 1;   // Vulkan: synchronous, always-signaled sentinel
+        case CAJ_XPU_VULKAN: return cajeta_xpu_vk_event_create();   // a VkEvent in the batch, or the sentinel 1
+        default: return 1;
     }
 }
 void __cajeta_xpu_event_record(void* self, int64_t handle, int64_t streamHandle) {
@@ -1860,8 +1861,7 @@ void __cajeta_xpu_event_record(void* self, int64_t handle, int64_t streamHandle)
             if (e && g_xpu_hip.hipEventRecord) g_xpu_hip.hipEventRecord(e, st);
             return;
         case CAJ_XPU_VULKAN:
-            // The sentinel promises "already signaled": land the open batch.
-            cajeta_xpu_vk_flush();
+            cajeta_xpu_vk_event_record(handle);   // set in the batch; the sentinel lands it
             return;
         case CAJ_XPU_CPU:
             // Synchronous stream: the tail is now.
@@ -1886,7 +1886,10 @@ void __cajeta_xpu_event_wait(void* self, int64_t handle) {
             if (e && g_xpu_hip.hipEventSynchronize)
                 g_xpu_hip.hipEventSynchronize(e);
             return;
-        default: return;   // CPU/Vulkan: work already done
+        case CAJ_XPU_VULKAN:
+            cajeta_xpu_vk_event_wait(handle);
+            return;
+        default: return;   // CPU: work already done
     }
 }
 bool __cajeta_xpu_event_query(void* self, int64_t handle) {
@@ -1901,7 +1904,8 @@ bool __cajeta_xpu_event_query(void* self, int64_t handle) {
             if (e && g_xpu_hip.hipEventQuery)
                 return g_xpu_hip.hipEventQuery(e) == 0;
             return true;
-        default: return true;   // CPU/Vulkan: always complete
+        case CAJ_XPU_VULKAN: return cajeta_xpu_vk_event_query(handle) != 0;
+        default: return true;   // CPU: always complete
     }
 }
 void __cajeta_xpu_event_destroy(void* self, int64_t handle) {
@@ -1917,6 +1921,9 @@ void __cajeta_xpu_event_destroy(void* self, int64_t handle) {
             return;
         case CAJ_XPU_CPU:
             if (handle != 1) free(e);
+            return;
+        case CAJ_XPU_VULKAN:
+            cajeta_xpu_vk_event_destroy(handle);
             return;
         default: return;
     }
@@ -2228,7 +2235,7 @@ void __cajeta_xpu_buffer_upload(void* self, int64_t handle, void* host,
                                     (size_t) byteCount);
             return;
         case CAJ_XPU_VULKAN: {
-            cajeta_xpu_vk_note_host_access(handle);   // order vs the open batch
+            cajeta_xpu_vk_note_host_access(handle, 1);   // order vs the open batch
             void* m = cajeta_xpu_vk_mapped(handle);   // host-coherent mapping
             if (m) memcpy(m, data, (size_t) byteCount);
             return;
@@ -2255,7 +2262,7 @@ void __cajeta_xpu_buffer_download(void* self, int64_t handle, void* host,
                                     (size_t) byteCount);
             return;
         case CAJ_XPU_VULKAN: {
-            cajeta_xpu_vk_note_host_access(handle);   // order vs the open batch
+            cajeta_xpu_vk_note_host_access(handle, 0);   // order vs the open batch
             cajeta_xpu_vk_read(handle, data, byteCount);
             return;
         }

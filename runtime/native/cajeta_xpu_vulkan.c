@@ -119,6 +119,11 @@ struct cajeta_vk {
     PFN_vkDestroyQueryPool vkDestroyQueryPool;
     PFN_vkCmdResetQueryPool vkCmdResetQueryPool;
     PFN_vkCmdWriteTimestamp vkCmdWriteTimestamp;
+    PFN_vkCreateEvent vkCreateEvent;        // events inside the batch (Unit 4)
+    PFN_vkDestroyEvent vkDestroyEvent;
+    PFN_vkCmdSetEvent vkCmdSetEvent;
+    PFN_vkResetEvent vkResetEvent;
+    PFN_vkGetEventStatus vkGetEventStatus;
     PFN_vkGetQueryPoolResults vkGetQueryPoolResults;
 #if defined(VK_VERSION_1_2)
     PFN_vkResetQueryPool vkResetQueryPool;   // host reset (core 1.2 / EXT alias)
@@ -849,6 +854,11 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     CAJ_VKD(vkDestroyQueryPool);
     CAJ_VKD(vkCmdResetQueryPool);
     CAJ_VKD(vkCmdWriteTimestamp);
+    CAJ_VKD(vkCreateEvent);
+    CAJ_VKD(vkDestroyEvent);
+    CAJ_VKD(vkCmdSetEvent);
+    CAJ_VKD(vkResetEvent);
+    CAJ_VKD(vkGetEventStatus);
     CAJ_VKD(vkGetQueryPoolResults);
 #if defined(VK_VERSION_1_2)
     if (g_xpu_vk.hasHostQueryReset) {
@@ -1200,13 +1210,20 @@ static struct {
     int poolCursor;                // pool currently allocating from
     // Open-addressing set of VkBuffer handles the open batch references.
     void* bound[CAJ_VK_BOUND_SLOTS];
+    uint64_t boundWriteSeq[CAJ_VK_BOUND_SLOTS];   // the last dispatch (sequence) writing it
     unsigned nbound;
     int boundOverflow;
+    int chunkHasEvent;             // the open chunk carries an event's set command
     int64_t pendingFree[CAJ_VK_PENDING_FREES];
     int npendingFree;
     int64_t pendingSampler[CAJ_VK_PENDING_SAMPLERS];
     int npendingSampler;
 } g_vk_batch;
+// Dispatches recorded into batches, ever, and the sequence every dispatch at or before
+// which has completed (a flush, or an awaited event): a host read of a buffer whose last
+// write is at or before it needs no flush (vulkan-batch-pipelining Unit 4, spec 5.3).
+static uint64_t g_vk_dispatch_seq;
+static uint64_t g_vk_awaited_seq;
 
 // In-stream profiler brackets (vulkan-batch-pipelining Unit 2): one timestamp query pool
 // per ring slot, two queries a dispatch, read by availability after the fence that
@@ -1373,6 +1390,28 @@ static void caj_vk_bound_note(void* buf) {
     g_vk_batch.bound[h] = buf;
     g_vk_batch.nbound++;
 }
+// Note that `buf` is written by dispatch `seq` (the open batch); it is bound too.
+static void caj_vk_bound_note_write(void* buf, uint64_t seq) {
+    if (!buf || g_vk_batch.boundOverflow) return;
+    caj_vk_bound_note(buf);
+    if (g_vk_batch.boundOverflow) return;
+    size_t h = ((size_t) buf >> 4) % CAJ_VK_BOUND_SLOTS;
+    while (g_vk_batch.bound[h]) {
+        if (g_vk_batch.bound[h] == buf) { g_vk_batch.boundWriteSeq[h] = seq; return; }
+        h = (h + 1) % CAJ_VK_BOUND_SLOTS;
+    }
+}
+// The sequence of the open batch's last write to `buf`, 0 when none (UINT64_MAX on overflow).
+static uint64_t caj_vk_bound_write_seq(void* buf) {
+    if (!buf) return 0;
+    if (g_vk_batch.boundOverflow) return UINT64_MAX;
+    size_t h = ((size_t) buf >> 4) % CAJ_VK_BOUND_SLOTS;
+    while (g_vk_batch.bound[h]) {
+        if (g_vk_batch.bound[h] == buf) return g_vk_batch.boundWriteSeq[h];
+        h = (h + 1) % CAJ_VK_BOUND_SLOTS;
+    }
+    return 0;
+}
 static int caj_vk_bound_has(void* buf) {
     if (!buf) return 0;
     if (g_vk_batch.boundOverflow) return 1;
@@ -1384,14 +1423,20 @@ static int caj_vk_bound_has(void* buf) {
     return 0;
 }
 
-// The host is about to READ or WRITE `handle`'s storage: if the open batch references
-// that VkBuffer, it must execute first.
-static void cajeta_xpu_vk_note_host_access(int64_t handle) {
+// The host is about to READ (`write` 0) or WRITE `handle`'s storage. A write lands the
+// open batch when it references the VkBuffer at all; a read lands it only when a dispatch
+// not yet known complete (past the last awaited event) writes the buffer (spec 5.3).
+static void cajeta_xpu_vk_note_host_access(int64_t handle, int write) {
     if (!g_vk_batch.open) return;
     pthread_mutex_lock(&g_xpu_vk_submit_mu);
     struct cajeta_vk_buf* r = cajeta_xpu_vk_rec(handle);
-    if (r && g_vk_batch.open && caj_vk_bound_has((void*) r->buffer))
-        cajeta_xpu_vk_flush();
+    if (r && g_vk_batch.open) {
+        if (write) {
+            if (caj_vk_bound_has((void*) r->buffer)) cajeta_xpu_vk_flush();
+        } else if (caj_vk_bound_write_seq((void*) r->buffer) > g_vk_awaited_seq) {
+            cajeta_xpu_vk_flush();
+        }
+    }
     pthread_mutex_unlock(&g_xpu_vk_submit_mu);
 }
 
@@ -1453,7 +1498,9 @@ static void cajeta_xpu_vk_read(int64_t handle, void* dst, uint64_t bytes) {
     struct cajeta_vk_buf* r = cajeta_xpu_vk_rec(handle);
     if (!r || !dst || bytes == 0) return;
     if (bytes > r->size) bytes = r->size;
-    if (r->host_cached && r->mapped) {
+    // A write-combined mapping reads slowly, but a few bytes (a token slot) cost less
+    // than a staged copy, which also waits for every submitted chunk (Unit 4).
+    if (r->mapped && (r->host_cached || bytes <= 4096)) {
         struct timespec t0, t1;
         if (s_readLog) clock_gettime(CLOCK_MONOTONIC, &t0);
         memcpy(dst, r->mapped, (size_t) bytes);
@@ -3204,15 +3251,18 @@ static int caj_vk_batch_begin(void) {
     }
     g_vk_batch.poolCursor = 0;
     memset(g_vk_batch.bound, 0, sizeof(g_vk_batch.bound));
+    memset(g_vk_batch.boundWriteSeq, 0, sizeof(g_vk_batch.boundWriteSeq));
     g_vk_batch.nbound = 0;
     g_vk_batch.boundOverflow = 0;
+    g_vk_batch.chunkHasEvent = 0;
     caj_vk_unsync_clear();   // flush waited on the fence: GPU is idle
     return 1;
 }
 
 // Hand the open chunk to the GPU (fenceless) and record into the next ring slot.
 static void caj_vk_batch_submit_chunk(void) {
-    if (!g_vk_batch.open || g_vk_batch.chunkDispatches == 0) return;
+    if (!g_vk_batch.open || (g_vk_batch.chunkDispatches == 0 && !g_vk_batch.chunkHasEvent)) return;
+    g_vk_batch.chunkHasEvent = 0;
     g_xpu_vk.vkEndCommandBuffer(g_vk_batch.cmds[g_vk_batch.cur]);
     VkSubmitInfo si;
     memset(&si, 0, sizeof(si));
@@ -3297,7 +3347,10 @@ static void cajeta_xpu_vk_flush(void) {
                         g_vk_batch.dispatches);
             g_xpu_vk.vkResetFences(g_xpu_vk.device, 1, &g_vk_batch.fence);
             __cajeta_prof_vk_note_wait(0, waitStart, waitEnd);
-            if (wr == VK_SUCCESS) caj_vk_bprof_resolve(waitEnd);
+            if (wr == VK_SUCCESS) {
+                g_vk_awaited_seq = g_vk_dispatch_seq;
+                caj_vk_bprof_resolve(waitEnd);
+            }
         } else {
             fprintf(stderr, "cajeta.xpu.vulkan: batch submit FAILED "
                     "(%u dispatches dropped)\n", g_vk_batch.chunkDispatches);
@@ -3414,6 +3467,7 @@ static int caj_vk_launch_batched(struct caj_vk_pipe* P,
             struct caj_vk_range e = { g_vk_ws.rngBuf[i], g_vk_ws.rngOff[i],
                                       g_vk_ws.rngEnd[i] };
             if ((P->writesMask >> i) & 1u) {
+                caj_vk_bound_note_write((void*) g_vk_ws.rngBuf[i], g_vk_dispatch_seq + 1);
                 if (g_vk_unsync.nw < CAJ_VK_UNSYNC_W)
                     g_vk_unsync.w[g_vk_unsync.nw++] = e;
             } else {
@@ -3447,6 +3501,7 @@ static int caj_vk_launch_batched(struct caj_vk_pipe* P,
                                      ps->pool, 2 * ps->n + 1);
         ps->ids[ps->n++] = profLaunch;
     }
+    g_vk_dispatch_seq++;
     g_vk_batch.dispatches++;
     g_vk_batch.chunkDispatches++;
     {
@@ -3656,6 +3711,125 @@ done:
     if (descPool) g_xpu_vk.vkDestroyDescriptorPool(g_xpu_vk.device, descPool,
                                                    NULL);
     return ok;
+}
+
+// ---- Events inside the batch (vulkan-batch-pipelining Unit 4, spec 5) --------------
+// A VkEvent set in the batch's command buffer after a host-visibility barrier; the host
+// waits by polling its status after the chunk holding it is submitted, so dispatches
+// recorded after it keep running. Handle 1 remains the sentinel (record lands the batch).
+struct caj_vk_event {
+    VkEvent ev;
+    uint64_t seq;        // dispatches recorded before it
+    unsigned chunkNo;    // chunksFlown at record: the chunk its set command sits in
+    int pending;         // set recorded, completion not yet seen
+};
+
+static int caj_vk_events_usable(void) {
+    const char* f = getenv("CAJETA_XPU_FAULT");
+    if (f && strstr(f, "vk-no-events")) return 0;
+    return g_xpu_vk.device && g_xpu_vk.vkCreateEvent && g_xpu_vk.vkDestroyEvent
+        && g_xpu_vk.vkCmdSetEvent && g_xpu_vk.vkResetEvent && g_xpu_vk.vkGetEventStatus;
+}
+
+static int64_t cajeta_xpu_vk_event_create(void) {
+    if (!caj_vk_events_usable()) return 1;
+    struct caj_vk_event* e = (struct caj_vk_event*) calloc(1, sizeof *e);
+    if (!e) return 1;
+    VkEventCreateInfo ci;
+    memset(&ci, 0, sizeof(ci));
+    ci.sType = VK_STRUCTURE_TYPE_EVENT_CREATE_INFO;
+    if (g_xpu_vk.vkCreateEvent(g_xpu_vk.device, &ci, NULL, &e->ev) != VK_SUCCESS) {
+        free(e);
+        return 1;
+    }
+    return (int64_t) (intptr_t) e;
+}
+
+// Wait for a pending event: submit its chunk if still open, then poll. Caller holds the mutex.
+static void caj_vk_event_wait_locked(struct caj_vk_event* e) {
+    if (!e->pending) return;
+    if (g_vk_batch.open && e->chunkNo == g_vk_batch.chunksFlown) caj_vk_batch_submit_chunk();
+    const int64_t t0 = __cajeta_currentTimeNanos();
+    for (;;) {
+        VkResult st = g_xpu_vk.vkGetEventStatus(g_xpu_vk.device, e->ev);
+        if (st == VK_EVENT_SET) break;
+        if (st != VK_EVENT_RESET) {
+            fprintf(stderr, "cajeta.xpu.vulkan: event status FAILED (%d)\n", (int) st);
+            break;
+        }
+        if (__cajeta_currentTimeNanos() - t0 > 60000000000LL) {
+            fprintf(stderr, "cajeta.xpu.vulkan: event wait timed out after 60 s\n");
+            break;
+        }
+        sched_yield();
+    }
+    const int64_t t1 = __cajeta_currentTimeNanos();
+    __cajeta_prof_vk_note_wait(0, t0, t1);
+    e->pending = 0;
+    if (e->seq > g_vk_awaited_seq) g_vk_awaited_seq = e->seq;
+}
+
+static void cajeta_xpu_vk_event_record(int64_t h) {
+    if (h == 1) { cajeta_xpu_vk_flush(); return; }   // the sentinel: land the batch
+    struct caj_vk_event* e = (struct caj_vk_event*) (intptr_t) h;
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);
+    if (e->pending) caj_vk_event_wait_locked(e);     // a re-record waits its old point first
+    g_xpu_vk.vkResetEvent(g_xpu_vk.device, e->ev);
+    if (!g_vk_batch.open || !caj_vk_batch_begin()) {
+        // Nothing queued: everything before this point has landed already.
+        e->seq = g_vk_dispatch_seq;
+        e->pending = 0;
+        pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+        return;
+    }
+    VkCommandBuffer cmd = g_vk_batch.cmds[g_vk_batch.cur];
+    // Shader writes before the event become visible to the host once it is set.
+    VkMemoryBarrier mb;
+    memset(&mb, 0, sizeof(mb));
+    mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    g_xpu_vk.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                  VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+    g_xpu_vk.vkCmdSetEvent(cmd, e->ev, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+    e->seq = g_vk_dispatch_seq;
+    e->chunkNo = g_vk_batch.chunksFlown;
+    e->pending = 1;
+    g_vk_batch.chunkHasEvent = 1;
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+}
+
+static void cajeta_xpu_vk_event_wait(int64_t h) {
+    if (h == 1) return;
+    struct caj_vk_event* e = (struct caj_vk_event*) (intptr_t) h;
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);
+    caj_vk_event_wait_locked(e);
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+}
+
+static int cajeta_xpu_vk_event_query(int64_t h) {
+    if (h == 1) return 1;
+    struct caj_vk_event* e = (struct caj_vk_event*) (intptr_t) h;
+    if (!e->pending) return 1;
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);
+    if (g_vk_batch.open && e->chunkNo == g_vk_batch.chunksFlown) caj_vk_batch_submit_chunk();
+    const int done = g_xpu_vk.vkGetEventStatus(g_xpu_vk.device, e->ev) == VK_EVENT_SET;
+    if (done) {
+        e->pending = 0;
+        if (e->seq > g_vk_awaited_seq) g_vk_awaited_seq = e->seq;
+    }
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+    return done;
+}
+
+static void cajeta_xpu_vk_event_destroy(int64_t h) {
+    if (h == 1) return;
+    struct caj_vk_event* e = (struct caj_vk_event*) (intptr_t) h;
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);
+    if (e->pending) caj_vk_event_wait_locked(e);
+    g_xpu_vk.vkDestroyEvent(g_xpu_vk.device, e->ev, NULL);
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+    free(e);
 }
 
 static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
@@ -3981,7 +4155,12 @@ static void cajeta_xpu_vk_read(int64_t h, void* d, uint64_t b) {
     (void) h; (void) d; (void) b;
 }
 static void cajeta_xpu_vk_flush(void) {}
-static void cajeta_xpu_vk_note_host_access(int64_t h) { (void) h; }
+static int64_t cajeta_xpu_vk_event_create(void) { return 1; }
+static void cajeta_xpu_vk_event_record(int64_t h) { (void) h; }
+static void cajeta_xpu_vk_event_wait(int64_t h) { (void) h; }
+static int cajeta_xpu_vk_event_query(int64_t h) { (void) h; return 1; }
+static void cajeta_xpu_vk_event_destroy(int64_t h) { (void) h; }
+static void cajeta_xpu_vk_note_host_access(int64_t h, int w) { (void) h; (void) w; }
 static void* cajeta_xpu_vk_mapped(int64_t h) { (void) h; return NULL; }
 static void cajeta_xpu_vk_free(int64_t h) { (void) h; }
 static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage,
