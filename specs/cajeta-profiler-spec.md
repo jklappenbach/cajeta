@@ -23,7 +23,7 @@ interactively.
 
 ### 1.2 The problem it solves
 Cajeta has no way to answer "where did the time go" for a running program. The
-`bench/` and `samples/profile/` suites measure *named benchmarks* against
+`bench/` suite (formerly also `samples/profile/`) measures *named benchmarks* against
 competitors; they say nothing about an arbitrary program. The debugger can stop
 a program but not characterize it. For GPU work there is nothing at all: kernel
 launches funnel through one runtime function and no timing is recorded, so a
@@ -80,8 +80,8 @@ backend serializes every dispatch.
 
 ### 1.6 Naming
 Three names are already taken in this codebase and must not be reused:
-`--profile` / `@Profile` (DI profile selection), `samples/profile/` and
-`specs/profile-spec.md` (the cross-language benchmark suite), and
+`--profile` / `@Profile` (DI profile selection), `bench/` (formerly
+`samples/profile/`, `specs/archive/profile-spec.md`: the cross-language benchmark suite), and
 `cajeta gpu-profile` (prints the device *capability* descriptor). This capability
 is `cajeta-profiler`; its CLI verb is `cajeta profiler`; its build flag is
 `--profiler`; its environment variable prefix is `CAJETA_PROFILER_`.

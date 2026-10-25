@@ -1,8 +1,10 @@
+> Superseded by benchmark-reference, 2026-10-25 (`specs/benchmark-reference-spec.md`).
+
 # profile — cross-language benchmark & diagnostic suite (spec)
 
 > Status: **draft, pending approval**. Authored with the **design** skill.
 > Sibling spec to the language **tour**; this is the *why* and the *what*.
-> The actionable *how* lives in `agents/cajeta/profile/profile-plan.md`.
+> The actionable *how* lives in `agents/archive/profile-plan.md`.
 > Competitor libraries, datasets, and methodology in §4–§15 are pinned from two
 > verified deep-research passes (25/25 then 24/25 claims confirmed 3-0); see §18 for the
 > suites we mirror and §17 for the resolved decisions.

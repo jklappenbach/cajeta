@@ -1,7 +1,7 @@
 # kernel-profile — GPU and kernel work, shaped for the profiler
 
-A sibling of [`profile`](../profile/README.md), pointed at a different question.
-`profile` asks *how fast is Cajeta against Rust and C++*. This one asks: **what does
+A sibling of the benchmark reference ([`bench/`](../../bench/README.md)), pointed at a different question.
+`bench/` asks *how fast is Cajeta against Rust and C++*. This one asks: **what does
 GPU work look like in the profiler, and what can you click on.**
 
 Nothing here is tuned. Every choice exists to put something specific on screen.

@@ -1,6 +1,6 @@
 {
     // kernel-profile — a workload shaped to DEMONSTRATE THE PROFILER on GPU
-    // and kernel work, not to benchmark it (that is samples/profile).
+    // and kernel work, not to benchmark it (that is bench/, the benchmark reference).
     //
     // Build + run from this directory:
     //   cajeta gpu         → build/kernel-profile-gpu  (device tracks)

@@ -39,7 +39,7 @@ class CajetaBuildRunnerTest {
     fun discoversTasksFromRealBinary() {
         val tool = buildToolOrNull()
         assumeTrue("cajeta build tool not built; skipping integration", tool != null)
-        val manifest = File(repoRoot, "samples/profile/cajeta.json")
+        val manifest = File(repoRoot, "bench/cajeta.json")
         assumeTrue("sample manifest missing; skipping", manifest.exists())
 
         val r = CajetaBuildRunner.discover(tool!!.path, manifest.path)
@@ -51,7 +51,7 @@ class CajetaBuildRunnerTest {
         assertTrue("manifest path should be absolute", model.manifest.endsWith("cajeta.json"))
         assertTrue("expected at least one task", model.tasks.isNotEmpty())
         assertTrue(
-            "expected a 'build' task in the profile sample",
+            "expected a 'build' task in the bench project",
             model.tasks.any { it.name == "build" },
         )
         // builtins always present from the contract.

@@ -7,7 +7,7 @@ import cajeta.xpu.KernelThread;
 
 // A workload shaped for the PROFILER, not for benchmarking.
 //
-// samples/profile answers "how fast is this against Rust and C++". This one
+// bench/ (the benchmark reference) answers "how fast is this against Rust and C++". This one
 // answers a different question: what does GPU work look like in the profiler's
 // timeline and flame graph, and what can you click on. Everything here exists
 // to put something specific on screen:
