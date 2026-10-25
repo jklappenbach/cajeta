@@ -26,7 +26,7 @@ CAJETA_BENCH_SMOKE=1 PROFILE_RUN_ID=math-run "$PROJ/build/bench" --run --area la
 CAJETA_BENCH_SMOKE=1 PROFILE_RUN_ID=math-run "$PROJ/build/bench" --run --area lang/dot-product --out "$OUTL.2" >>/tmp/math-run-lang.log 2>&1 \
     || { tail -15 /tmp/math-run-lang.log; fail "--run --area lang/dot-product crashed"; }
 tail -n +2 "$OUTL.2" >> "$OUTL"
-grep -hE "measured" /tmp/math-run.log /tmp/math-run-lang.log | sed 's/^/  /'
+grep -hE "^  (ok|skipped|invalid|failed)  " /tmp/math-run.log /tmp/math-run-lang.log | sed 's/^/  /' || true
 
 check() {   # check <csv> <benchmark> <want-area> [variant]
     local csv="$1" b="$2" want="$3" v="${4:-}" rows row st ar
@@ -37,7 +37,7 @@ check() {   # check <csv> <benchmark> <want-area> [variant]
         ar="$(printf '%s' "$row" | awk -F, '{print $5}')"
         [[ "$ar" == "$want" ]] || fail "$b area=$ar (want $want)"
         [[ "$st" == "ok" ]] || fail "$b${v:+/$v} status=$st"
-        printf '%s' "$row" | awk -F, '{print $30}' | grep -q '^smoke' || fail "$b row not tagged smoke"
+        printf '%s' "$row" | awk -F, '{print $30}' | grep -q 'smoke' || fail "$b row not tagged smoke"
         echo "[math] $want${v:+ [$v]} ok  min_ns=$(printf '%s' "$row" | awk -F, '{print $17}')"
     done <<< "$rows"
 }

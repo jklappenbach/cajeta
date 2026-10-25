@@ -2,7 +2,7 @@ package bench.hash;
 
 import cajeta.hash.XXHash3;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // XXHash3 (64-bit) COMPUTE-BOUND throughput over a 256 KiB buffer. The bulk
 // `xxhash3` bench hashes 1 MiB, which sits at the L2 boundary and bleeds into

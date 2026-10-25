@@ -1,6 +1,6 @@
 package bench.lang;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // Computer Language Benchmarks Game: mandelbrot. Escape-time membership over a
 // W×W grid (50 iterations, escape radius 2). Cross-check: the in-set pixel count

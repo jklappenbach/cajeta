@@ -1,6 +1,6 @@
 package bench.selftest;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // A real (if trivial) benchmark to exercise the measurement loop: each run sums
 // 0..9999 into a field, and checkResult verifies the field equals the closed-form

@@ -18,7 +18,7 @@ cd "$PROJ"
 echo "[variant] building..."
 "$CAJETA" release >/dev/null || fail "release build failed"  # benchmarks measured as --release (§1.4)
 
-OUT="/tmp/profile-variant.csv"
+OUT="/tmp/cajeta-bench-variant/results.csv"; mkdir -p /tmp/cajeta-bench-variant
 rm -f "$OUT"
 CAJETA_BENCH_SMOKE=1 CAJETA_BENCH_SCAFFOLD=1 PROFILE_RUN_ID=variant-run "$PROJ/build/bench" --run --bench variant-demo --out "$OUT" >/dev/null || fail "--run exited non-zero"
 [[ -f "$OUT" ]] || fail "results CSV not written"

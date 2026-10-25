@@ -2,7 +2,7 @@ package bench.lang;
 
 import cajeta.lang.Math;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // Computer Language Benchmarks Game: spectral-norm at N=100. Estimates the
 // largest singular value of the matrix A(i,j) = 1/((i+j)(i+j+1)/2 + i + 1) via

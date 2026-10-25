@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Unit 2 TDD smoke test — written before the report code.
-# Drives `profile --selftest --out <path>`, which writes a results CSV (+ a
-# sibling .env CSV) using the real reporting schema + a real /proc peak-RSS read.
-# Asserts: (1) header carries every schema column and exactly 32 columns;
-# (2) the ok row's peak_rss_kb is a positive integer (real /proc/self/status read);
-# (3) a status=skipped row is emitted; (4) env.csv captured a value read via
-# System.env.get (proving the env capability works).
+# Results-schema smoke (profile Unit 2, moved to bench/; schema v2 from
+# dev.cajeta.bench since benchmark-reference unit 2). Asserts:
+# (1) the header is schema v2: 37 columns, v1's 32 in order (backend at 32)
+#     then machine, os, driver, model, platform;
+# (2) an ok row carries schema_version 2, a positive peak_rss_kb (a real /proc
+#     read), the machine from CAJETA_BENCH_MACHINE and platform cajeta;
+# (3) a benchmark whose dataset is absent yields a status=skipped row with its
+#     reason (never a silent omission);
+# (4) env.csv lands beside results.csv with the run id, timestamp and machine.
 set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
@@ -20,42 +22,51 @@ cd "$PROJ"
 echo "[schema] building..."
 "$CAJETA" release >/dev/null || fail "release build failed"
 
-OUT="/tmp/profile-schema-test.csv"
-ENV="${OUT}.env"
-rm -f "$OUT" "$ENV"
-
-echo "[schema] running selftest..."
-PROFILE_RUN_TS=1750000000 PROFILE_RUN_ID=smoke-run "$PROJ/build/bench" --selftest --out "$OUT" || fail "selftest exited non-zero"
-
+D="/tmp/cajeta-bench-schema"; rm -rf "$D"; mkdir -p "$D"
+OUT="$D/results.csv"; ENV="$D/env.csv"
+CAJETA_BENCH_SCAFFOLD=1 CAJETA_BENCH_MACHINE=schemabox CAJETA_BENCH_RUN_ID=smoke-run CAJETA_BENCH_RUN_TS=1750000000 \
+    "$PROJ/build/bench" --run --bench sum --out "$OUT" >/dev/null || fail "--run exited non-zero"
 [[ -f "$OUT" ]] || fail "results CSV not written: $OUT"
 HEADER="$(head -1 "$OUT")"
 echo "[schema] header: $HEADER"
 
-# (1) required columns present
+# (1) v2 header
 for col in schema_version run_id timestamp_unix benchmark area language library flags \
            warmup trials min_ns median_ns mean_ns p95_ns throughput peak_rss_kb \
-           alloc_bytes alloc_count working_set_kb status check_ok notes variant; do
+           alloc_bytes alloc_count working_set_kb status check_ok notes variant backend \
+           machine os driver model platform; do
     echo "$HEADER" | tr ',' '\n' | grep -qx "$col" || fail "header missing column: $col"
 done
+NCOLS="$(echo "$HEADER" | awk -F, '{print NF}')"
+[[ "$NCOLS" == "37" ]] || fail "expected 37 columns, got $NCOLS"
+[[ "$(echo "$HEADER" | awk -F, '{print $32}')" == "backend" ]]  || fail "column 32 is not backend"
+[[ "$(echo "$HEADER" | awk -F, '{print $33}')" == "machine" ]]  || fail "column 33 is not machine"
+[[ "$(echo "$HEADER" | awk -F, '{print $37}')" == "platform" ]] || fail "column 37 is not platform"
 
-# (1) exactly 32 columns (schema v1's 31 + backend, appended last)
-NCOLS="$(head -1 "$OUT" | awk -F, '{print NF}')"
-[[ "$NCOLS" == "32" ]] || fail "expected 32 columns, got $NCOLS"
-[[ "$(head -1 "$OUT" | awk -F, '{print $32}')" == "backend" ]] || fail "column 32 is not backend"
+# (2) the ok row
+ROW="$(awk -F, 'NR>1 && $4=="sum"{print; exit}' "$OUT")"
+[[ -n "$ROW" ]] || fail "no sum row"
+get() { echo "$ROW" | awk -F, -v c="$1" '{print $c}'; }
+[[ "$(get 1)" == "2" ]]           || fail "schema_version $(get 1), want 2"
+[[ "$(get 28)" == "ok" ]]         || fail "sum status $(get 28)"
+PEAK="$(get 23)"
+[[ "$PEAK" =~ ^[0-9]+$ && "$PEAK" -gt 0 ]] || fail "peak_rss_kb not a positive integer: '$PEAK'"
+[[ "$(get 33)" == "schemabox" ]]  || fail "machine '$(get 33)', want schemabox"
+[[ "$(get 37)" == "cajeta" ]]     || fail "platform '$(get 37)', want cajeta"
+[[ -n "$(get 34)" ]]              || fail "os column empty"
+echo "[schema] peak_rss_kb=$PEAK machine=$(get 33) os=$(get 34)"
 
-# (2) ok row (line 2) peak_rss_kb (col 23) is a positive integer
-PEAK="$(awk -F, 'NR==2{print $23}' "$OUT")"
-[[ "$PEAK" =~ ^[0-9]+$ ]] || fail "peak_rss_kb not an integer: '$PEAK'"
-[[ "$PEAK" -gt 0 ]] || fail "peak_rss_kb not positive: $PEAK"
-echo "[schema] peak_rss_kb = $PEAK"
+# (3) skipped row: json-tokenize without PROFILE_DATA_DIR
+OUT2="$D/skip.csv"
+env -u PROFILE_DATA_DIR "$PROJ/build/bench" --run --area codec/json-tokenize --out "$OUT2" >/dev/null || fail "skip run exited non-zero"
+ROW="$(awk -F, 'NR>1 && $4=="json-tokenize"{print; exit}' "$OUT2")"
+[[ "$(get 28)" == "skipped" ]] || fail "expected skipped row, got status='$(get 28)'"
+[[ -n "$(get 30)" ]]           || fail "skipped row carries no reason"
 
-# (3) skipped row (line 3) status (col 28) == skipped
-STATUS3="$(awk -F, 'NR==3{print $28}' "$OUT")"
-[[ "$STATUS3" == "skipped" ]] || fail "expected skipped row, got status='$STATUS3'"
-
-# (4) env.csv captured run_id + a System.env.get value
+# (4) env.csv beside results.csv
 [[ -f "$ENV" ]] || fail "env CSV not written: $ENV"
-grep -q "^run_id,smoke-run$" "$ENV" || fail "env.csv missing run_id"
-grep -q "^timestamp_unix,1750000000$" "$ENV" || fail "env.csv missing System.env PROFILE_RUN_TS"
+grep -q "^run_id,smoke-run$" "$ENV"            || fail "env.csv missing run_id"
+grep -q "^timestamp_unix,1750000000$" "$ENV"   || fail "env.csv missing timestamp_unix"
+grep -q "^machine,schemabox$" "$ENV"           || fail "env.csv missing machine"
 
 echo "SCHEMA OK"

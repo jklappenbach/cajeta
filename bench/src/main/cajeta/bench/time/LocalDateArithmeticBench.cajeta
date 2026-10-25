@@ -2,7 +2,7 @@ package bench.time;
 
 import cajeta.time.LocalDate;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // LocalDate arithmetic throughput: N iterations of plusDays + toEpochDay
 // (calendar math). Cross-check: the accumulated epoch-day sum is the closed form

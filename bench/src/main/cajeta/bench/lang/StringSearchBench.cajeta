@@ -1,6 +1,6 @@
 package bench.lang;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // Substring search: indexOf a needle that doesn't occur in a ~360 KB text (a
 // full scan). Cross-check: returns -1 (not found). The text is built by doubling

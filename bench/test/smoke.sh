@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Harness lifecycle smoke (profile Unit 1, moved to bench/). Asserts:
-# (1) `cajeta release` produces build/bench and it runs with a banner;
-# (2) the entry drives a Benchmark's setup→run→teardown→checkResult in order,
-#     once (the selftest/ scaffold, registered under CAJETA_BENCH_SCAFFOLD=1);
-# (3) `--list` prints each benchmark's name + catalog path, and the scaffold
-#     is absent from the catalog listing without CAJETA_BENCH_SCAFFOLD.
+# Harness lifecycle smoke (profile Unit 1, moved to bench/; on dev.cajeta.bench
+# since benchmark-reference unit 2). Asserts:
+# (1) `cajeta release` produces build/bench; with no arguments it prints the
+#     usage and exits 2 (BenchMain has no run-everything default);
+# (2) a measured run drives setup once first, the workload for warmup (1) +
+#     trials (3) in short mode, checkResult once, and teardown once, last —
+#     on the selftest/ scaffold, registered only under CAJETA_BENCH_SCAFFOLD=1;
+# (3) `--list` prints each benchmark as <area>/<name>, and the scaffold is
+#     absent from the catalog listing without CAJETA_BENCH_SCAFFOLD.
 #
 # Override the compiler with CAJETA=/path/to/cajeta.
 set -euo pipefail
@@ -20,26 +23,35 @@ fail() { echo "SMOKE FAIL: $1" >&2; exit 1; }
 
 cd "$PROJ"
 
-# (1) build → build/bench
+# (1) build → build/bench; no arguments → usage, exit 2
 echo "[smoke] building..."
-"$CAJETA" release >/dev/null || fail "cajeta release build failed"  # default mode executes all benchmarks → --release (§1.4)
+"$CAJETA" release >/dev/null || fail "cajeta release build failed"
 [[ -x "$PROJ/build/bench" ]] || fail "expected binary build/bench not produced"
+set +e
+USAGE="$("$PROJ/build/bench" 2>&1)"; RC=$?
+set -e
+[[ "$RC" == "2" ]] || fail "no-argument run exited $RC, want 2 (usage)"
+printf '%s\n' "$USAGE" | grep -q "^usage:" || fail "no-argument run printed no usage"
 
-# (1) run → banner; (2) lifecycle order: each phase exactly once, in order.
-# The default (no --run) mode drives the selected benchmarks once each.
+# (2) lifecycle order in a measured short-mode run
 echo "[smoke] running..."
-OUT="$(CAJETA_BENCH_SCAFFOLD=1 "$PROJ/build/bench" --bench example)" || fail "build/bench exited non-zero"
-printf '%s\n' "$OUT"
-printf '%s\n' "$OUT" | grep -q "Cajeta bench" || fail "missing banner line"
-ORDER="$(printf '%s\n' "$OUT" | grep -oE 'example: (setup|run|teardown|checkResult)' | sed 's/example: //')"
-EXPECTED=$'setup\nrun\nteardown\ncheckResult'
-[[ "$ORDER" == "$EXPECTED" ]] || fail "lifecycle order wrong; expected [setup,run,teardown,checkResult] got [$(echo "$ORDER" | tr '\n' ',')]"
+D="/tmp/cajeta-bench-smoke"; mkdir -p "$D"
+OUT="$(CAJETA_BENCH_SCAFFOLD=1 CAJETA_BENCH_SMOKE=1 "$PROJ/build/bench" --run --bench example --out "$D/results.csv")" \
+    || fail "build/bench --run --bench example exited non-zero"
+ORDER="$(printf '%s\n' "$OUT" | grep -oE 'example: (setup|run|teardown|checkResult)' | sed 's/example: //' | tr '\n' ',')"
+echo "[smoke] lifecycle: $ORDER"
+[[ "$ORDER" == setup,* ]]       || fail "setup is not first: [$ORDER]"
+[[ "$ORDER" == *,teardown, ]]   || fail "teardown is not last: [$ORDER]"
+[[ "$(printf '%s' "$ORDER" | grep -o 'setup' | wc -l)" == "1" ]]       || fail "setup ran more than once: [$ORDER]"
+[[ "$(printf '%s' "$ORDER" | grep -o 'teardown' | wc -l)" == "1" ]]    || fail "teardown ran more than once: [$ORDER]"
+[[ "$(printf '%s' "$ORDER" | grep -o 'checkResult' | wc -l)" == "1" ]] || fail "checkResult did not run exactly once: [$ORDER]"
+[[ "$(printf '%s' "$ORDER" | grep -o 'run' | wc -l)" -ge 4 ]]          || fail "fewer than warmup 1 + trials 3 runs: [$ORDER]"
 
-# (3) --list prints name + catalog path; scaffold only under CAJETA_BENCH_SCAFFOLD
+# (3) --list prints <area>/<name>; scaffold only under CAJETA_BENCH_SCAFFOLD
 LIST="$(CAJETA_BENCH_SCAFFOLD=1 "$PROJ/build/bench" --list)" || fail "--list exited non-zero"
-printf '%s\n' "$LIST" | grep -q "example \[selftest/example\]" || fail "--list missing 'example [selftest/example]'"
+printf '%s\n' "$LIST" | grep -q "selftest/example/example" || fail "--list missing selftest/example/example"
 CAT="$("$PROJ/build/bench" --list)" || fail "--list exited non-zero"
 printf '%s\n' "$CAT" | grep -q "selftest/" && fail "scaffold benchmarks listed without CAJETA_BENCH_SCAFFOLD"
-printf '%s\n' "$CAT" | grep -q "hashmap-int \[collection/hashmap-int\]" || fail "--list missing 'hashmap-int [collection/hashmap-int]'"
+printf '%s\n' "$CAT" | grep -q "collection/hashmap-int/hashmap-int" || fail "--list missing collection/hashmap-int/hashmap-int"
 
 echo "SMOKE OK"

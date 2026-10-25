@@ -2,7 +2,7 @@ package bench.math;
 
 import cajeta.math.Tensor;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // Per-element write cost of a 1-D Tensor<float64> through flatSet
 // (tensor-element-access 1.2.1, the write half of the old flat

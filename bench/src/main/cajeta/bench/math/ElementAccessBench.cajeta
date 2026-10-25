@@ -3,7 +3,7 @@ package bench.math;
 import cajeta.collection.ArrayList;
 import cajeta.math.Tensor;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // Per-element read cost of a 1-D Tensor<float64> (tensor-element-access 1.2.1,
 // from the old flat bench/src/bench/ElementAccessBench): read through flatGet,

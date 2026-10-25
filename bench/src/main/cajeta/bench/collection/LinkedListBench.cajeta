@@ -2,7 +2,7 @@ package bench.collection;
 
 import cajeta.collection.LinkedList;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // Doubly-linked list: N appends then an O(N) contains traversal (search for the
 // last-inserted value). Cross-check: count == N and the value is found.

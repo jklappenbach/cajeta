@@ -23,13 +23,16 @@
     },
 
     "settings": {
-        // Benchmarks time workloads (clock), write CSV results / fetch datasets
-        // and read /proc for memory (filesystem), and read toolchain versions /
-        // flags / config from the environment (env: System.env.get). The core
-        // stdlib is built into the toolchain and dead-code-eliminated to what
-        // the harness actually uses.
-        "capabilities": ["filesystem", "clock", "env"],
-        "dependencies": {},
+        // The four capabilities are dev.cajeta.bench's own: it times trials
+        // (clock), writes the CSVs and reads /proc and /etc/os-release
+        // (filesystem), reads CAJETA_BENCH_* and the benchmarks' PROFILE_DATA_DIR
+        // (env), and runs nvidia-smi / hipconfig / vulkaninfo to record the
+        // driver (process). The core stdlib is built into the toolchain and
+        // dead-code-eliminated to what the benchmarks use.
+        "capabilities": ["filesystem", "clock", "env", "process"],
+        // The harness: Benchmark, Harness, the CSV schema (v2) and BenchMain,
+        // the shared --list / --run / --area / --bench / --out command line.
+        "dependencies": { "dev.cajeta.bench": "0.1.0" },
 
         "build": {
             "source-root":  "src/main/cajeta",
@@ -63,7 +66,9 @@
                 { "action": "build",
                   "flavor": { "base": "debug", "xpu-backend": "cpu" },
                   "output-path": "build/bench", "id": "art" },
-                { "action": "exec", "command": "${art.path}" }
+                // exec does not split its command string: arguments go in args.
+                { "action": "exec", "command": "${art.path}",
+                  "args": ["--run", "--out", "build/results.csv"] }
             ]
         },
 

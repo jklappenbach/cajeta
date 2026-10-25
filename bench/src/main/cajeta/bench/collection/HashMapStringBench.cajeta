@@ -2,7 +2,7 @@ package bench.collection;
 
 import cajeta.collection.HashMap;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // HashMap<String,int32> build + lookup with string keys ("key"+i) — the string
 // hashing/equality cost dominates here, vs the integer-key benchmark. Cross-check:

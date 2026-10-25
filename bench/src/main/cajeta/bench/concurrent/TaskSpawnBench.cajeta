@@ -1,6 +1,6 @@
 package bench.concurrent;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // Task spawn/await overhead: spawn N trivial async fibers, await each, accumulate
 // the results. Each spawn allocates a stackful fiber; spawning then awaiting

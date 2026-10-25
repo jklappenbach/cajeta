@@ -21,7 +21,7 @@ OUT="/tmp/profile-sort.csv"
 rm -f "$OUT"
 CAJETA_BENCH_SMOKE=1 PROFILE_RUN_ID=sort-run "$PROJ/build/bench" --run --area collection --out "$OUT" >/tmp/sort-run.log 2>&1 \
     || { grep -vE "example:" /tmp/sort-run.log | tail -15; fail "--run crashed"; }
-grep -E "measured (sort|binary)" /tmp/sort-run.log | sed 's/^/  /'
+grep -E "^  (ok|skipped|invalid|failed)  .*/(sort|binary)" /tmp/sort-run.log | sed 's/^/  /' || true
 
 col() { awk -F, -v b="$1" -v v="$2" -v c="$3" 'NR>1 && $4==b && $31==v {print $c; exit}' "$OUT"; }
 

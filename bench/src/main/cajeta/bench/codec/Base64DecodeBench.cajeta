@@ -2,7 +2,7 @@ package bench.codec;
 
 import cajeta.codec.Base64;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // Base64 decode throughput. setup() encodes a 1 MiB buffer once; each trial
 // decodes that string. The decoded length round-trips to the original size

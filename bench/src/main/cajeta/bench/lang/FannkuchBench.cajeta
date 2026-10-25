@@ -1,6 +1,6 @@
 package bench.lang;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // Computer Language Benchmarks Game: fannkuch-redux at N=10. Generates all N!
 // permutations, repeatedly reverses the first k elements (k = perm[0]) until the

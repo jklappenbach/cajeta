@@ -2,7 +2,7 @@ package bench.collection;
 
 import cajeta.collection.HashSet;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // HashSet dedup: insert N values where each distinct value appears twice
 // (i % (N/2)), so the set must absorb the duplicates. Cross-check: the final

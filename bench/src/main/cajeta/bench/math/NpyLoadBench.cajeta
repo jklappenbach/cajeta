@@ -3,7 +3,7 @@ package bench.math;
 import cajeta.math.Tensor;
 import cajeta.math.npio.Npy;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // `.npy` load (decode from an in-memory image) of a 2^23-element int32 tensor (32 MiB of payload) through
 // Npy.decodeI32 — the npio row of spec §6.8, split out of the old flat

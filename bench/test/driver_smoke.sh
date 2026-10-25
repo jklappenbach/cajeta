@@ -18,8 +18,8 @@ export CAJETA_BENCH_SMOKE=1
 
 # (1) --list works (build + list, no run)
 LIST="$(bash bench.sh --list 2>/dev/null)" || fail "bench.sh --list failed"
-echo "$LIST" | grep -q "saxpy \[lang/saxpy\]" || fail "--list missing saxpy [lang/saxpy]"
-echo "$LIST" | grep -q "matmul \[math/matmul\]" || fail "--list missing matmul [math/matmul]"
+echo "$LIST" | grep -q "lang/saxpy/saxpy" || fail "--list missing lang/saxpy/saxpy"
+echo "$LIST" | grep -q "math/matmul/matmul" || fail "--list missing math/matmul/matmul"
 
 # (2) --area filter runs only that package, full pipeline
 OUT="/tmp/cajeta-bench-driver-test"
@@ -35,7 +35,10 @@ awk -F, 'NR>1 && $4=="matmul" && $5=="math/matmul" && $28=="ok"' "$OUT/results.c
 
 # (4) --machine reached env.csv
 grep -qx "machine,smokebox" "$OUT/env.csv" || fail "env.csv missing machine,smokebox"
-grep -qx "smoke,1" "$OUT/env.csv" || fail "env.csv missing the smoke marker"
+grep -qx "smoke,true" "$OUT/env.csv" || fail "env.csv missing the smoke marker"
+grep -q "^cpu_cores," "$OUT/env.csv" || fail "env.csv missing the host block"
+[[ "$(grep -c "^os," "$OUT/env.csv")" == "1" ]] || fail "env.csv repeats the os key"
+awk -F, 'NR>1 && $33!="smokebox"' "$OUT/results.csv" | grep -q . && fail "a row's machine column is not smokebox"
 
 # (3) --bench selects a single benchmark
 OUT2="/tmp/cajeta-bench-driver-test2"; rm -rf "$OUT2"

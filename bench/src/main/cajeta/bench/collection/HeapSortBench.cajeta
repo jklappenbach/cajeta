@@ -2,7 +2,7 @@ package bench.collection;
 
 import cajeta.collection.Heap;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // Binary min-heap as a priority queue (heapsort): push N pseudo-random values,
 // then pop all and verify they come out non-decreasing. Cross-check: the pop

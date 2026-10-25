@@ -2,7 +2,7 @@ package bench.selftest;
 
 import cajeta.collection.ArrayList;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // Exercises the variant matrix: two variants ("small"/"large") with different
 // input sizes, each producing its own result row with the variant label. The

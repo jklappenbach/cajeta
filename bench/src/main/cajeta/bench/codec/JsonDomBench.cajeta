@@ -6,7 +6,7 @@ import cajeta.codec.json.JsonValue;
 import cajeta.io.file.File;
 import cajeta.time.Clock;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // JSON DOM-build throughput: Json.parse(bytes,len) materializes the full
 // JsonValue tree (Tier-3). Each trial reads a fresh buffer and parses; the

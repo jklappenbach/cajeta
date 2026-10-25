@@ -19,7 +19,7 @@ OUT="/tmp/profile-time.csv"
 rm -f "$OUT"
 CAJETA_BENCH_SMOKE=1 PROFILE_RUN_ID=time-run "$PROJ/build/bench" --run --area time --out "$OUT" >/tmp/time-run.log 2>&1 \
     || { grep -vE "example:" /tmp/time-run.log | tail -15; fail "--run crashed"; }
-grep -E "measured time-" /tmp/time-run.log | sed 's/^/  /'
+grep -E "^  (ok|skipped|invalid|failed)  .*/time-" /tmp/time-run.log | sed 's/^/  /' || true
 
 for b in time-instant-arith time-localdate-arith; do
     row="$(awk -F, -v b="$b" 'NR>1 && $4==b {print; exit}' "$OUT")"
@@ -27,7 +27,7 @@ for b in time-instant-arith time-localdate-arith; do
     st="$(printf '%s' "$row" | awk -F, '{print $28}')"
     ar="$(printf '%s' "$row" | awk -F, '{print $5}')"
     [[ "$ar" == time/* ]] || fail "$b area=$ar (want the time/ catalog path)"
-    printf '%s' "$row" | awk -F, '{print $30}' | grep -q '^smoke' || fail "$b row not tagged smoke"
+    printf '%s' "$row" | awk -F, '{print $30}' | grep -q 'smoke' || fail "$b row not tagged smoke"
     [[ "$st" == "ok" ]] || fail "$b status=$st"
     echo "[time] $b ok  min_ns=$(printf '%s' "$row" | awk -F, '{print $17}')"
 done

@@ -6,7 +6,7 @@ import cajeta.codec.json.JsonValue;
 import cajeta.io.file.File;
 import cajeta.time.Clock;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // JSON serialize throughput: parse the corpus to a DOM, then Json.toBytes back
 // to a byte buffer. Each trial reads + parses + serializes; the read+parse

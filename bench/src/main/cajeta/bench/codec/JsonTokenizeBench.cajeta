@@ -6,7 +6,7 @@ import cajeta.codec.json.JsonToken;
 import cajeta.io.file.File;
 import cajeta.time.Clock;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // JSON streaming tokenization throughput on the nativejson corpus
 // (twitter/citm_catalog/canada), one variant per file. Mirrors the proven

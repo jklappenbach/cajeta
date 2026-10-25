@@ -2,7 +2,7 @@ package bench.lang;
 
 import cajeta.collection.ArrayList;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // Sequential functional pipeline: filter (evens) -> map (+1) -> reduce (sum) over
 // N elements. Cross-check: the pipeline result equals a manual non-stream

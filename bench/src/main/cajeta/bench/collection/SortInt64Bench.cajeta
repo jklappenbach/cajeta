@@ -4,7 +4,7 @@ import cajeta.collection.ArrayList;
 import cajeta.collection.Sort;
 import cajeta.time.Clock;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // Unstable sort of N int64 across input PATTERNS (the sort-research-rs matrix's
 // pattern dimension, which also stands in for branch-predictor predictability):

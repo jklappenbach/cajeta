@@ -20,3 +20,10 @@ if command -v go     >/dev/null 2>&1; then emit go     true  "$(ver go go versio
 if command -v nvcc       >/dev/null 2>&1; then emit gpu_cuda   true  "$(ver nvcc nvcc --version)";   else emit gpu_cuda   false ""; fi
 if command -v hipcc      >/dev/null 2>&1; then emit gpu_hip    true  "$(ver hipcc hipcc --version)"; else emit gpu_hip    false ""; fi
 if command -v vulkaninfo >/dev/null 2>&1; then emit gpu_vulkan true  "present";                      else emit gpu_vulkan false ""; fi
+
+# The pinned toolchains and libraries (benchmark-reference unit 20): verify
+# them, never install from here. Its report goes to stderr so stdout stays the
+# CSV above; a failed verification fails the probe.
+HERE="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+bash "$HERE/../competitors/setup.sh" --verify >&2
+exit $?

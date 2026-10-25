@@ -2,7 +2,7 @@ package bench.lang;
 
 import cajeta.lang.StringBuilder;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // String build: append an 8-char piece N times via StringBuilder (amortized O(N)),
 // matching the competitors' builder pattern (Rust String::push_str, Java

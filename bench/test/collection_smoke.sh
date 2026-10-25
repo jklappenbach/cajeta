@@ -22,7 +22,7 @@ rm -f "$OUT"
 echo "[collection] running..."
 CAJETA_BENCH_SMOKE=1 PROFILE_RUN_ID=coll-run "$PROJ/build/bench" --run --area collection --out "$OUT" >/tmp/coll-run.log 2>&1 \
     || { grep -vE "example:" /tmp/coll-run.log | tail -15; fail "--run crashed"; }
-grep -E "measured (arraylist|hashmap|hashset|heap|redblack)" /tmp/coll-run.log | sed 's/^/  /'
+grep -E "^  (ok|skipped|invalid|failed)  .*/(arraylist|hashmap|hashset|heap|redblack)" /tmp/coll-run.log | sed 's/^/  /' || true
 
 for b in arraylist-append hashmap-int hashmap-string hashset-dedup linkedlist-insert-traverse heap-sort redblacktree-insert-lookup; do
     row="$(awk -F, -v b="$b" 'NR>1 && $4==b {print; exit}' "$OUT")"
@@ -30,7 +30,7 @@ for b in arraylist-append hashmap-int hashmap-string hashset-dedup linkedlist-in
     st="$(printf '%s' "$row" | awk -F, '{print $28}')"
     ar="$(printf '%s' "$row" | awk -F, '{print $5}')"
     [[ "$ar" == collection/* ]] || fail "$b area=$ar (want the collection/ catalog path)"
-    printf '%s' "$row" | awk -F, '{print $30}' | grep -q '^smoke' || fail "$b row not tagged smoke"
+    printf '%s' "$row" | awk -F, '{print $30}' | grep -q 'smoke' || fail "$b row not tagged smoke"
     isz="$(printf '%s' "$row" | awk -F, '{print $9}')"
     mn="$(printf '%s' "$row" | awk -F, '{print $17}')"
     [[ "$st" == "ok" ]] || fail "$b status=$st (cross-check failed)"

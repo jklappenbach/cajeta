@@ -2,7 +2,7 @@ package bench.hash;
 
 import cajeta.hash.XXHash3;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // XXHash3 bulk throughput over a 1 MiB buffer (SMHasher's bulk-throughput metric).
 // Cross-check: the digest of a non-trivial 1 MiB buffer is non-zero.

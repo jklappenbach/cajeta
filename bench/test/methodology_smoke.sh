@@ -18,7 +18,7 @@ cd "$PROJ"
 echo "[method] building..."
 "$CAJETA" release >/dev/null || fail "release build failed"  # benchmarks measured as --release (§1.4)
 
-OUT="/tmp/profile-method.csv"
+OUT="/tmp/cajeta-bench-method/results.csv"; mkdir -p /tmp/cajeta-bench-method
 rm -f "$OUT"
 echo "[method] running --run..."
 CAJETA_BENCH_SCAFFOLD=1 PROFILE_RUN_ID=method-run "$PROJ/build/bench" --run --bench sum --out "$OUT" >/dev/null || fail "--run exited non-zero"
@@ -48,7 +48,7 @@ echo "[method] trials=$TRIALS min=$MIN median=$MED mean=$MEAN p95=$P95 ws_kb=$WS
 
 # Short mode (spec §3.3.3): CAJETA_BENCH_SMOKE=1 collapses warmup to 1 and
 # trials to 3, and tags the row `smoke` so the publish step can never ship it.
-OUTS="/tmp/cajeta-bench-method-smoke.csv"; rm -f "$OUTS"
+OUTS="/tmp/cajeta-bench-method/smoke.csv"; rm -f "$OUTS"
 CAJETA_BENCH_SMOKE=1 CAJETA_BENCH_SCAFFOLD=1 PROFILE_RUN_ID=method-smoke "$PROJ/build/bench" --run --bench sum --out "$OUTS" >/dev/null \
     || fail "--run (smoke) exited non-zero"
 ROW="$(awk -F, 'NR>1 && $4=="sum"{print; exit}' "$OUTS")"

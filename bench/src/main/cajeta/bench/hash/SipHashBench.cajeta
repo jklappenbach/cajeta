@@ -2,7 +2,7 @@ package bench.hash;
 
 import cajeta.hash.SipHash;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // SipHash (keyed, DoS-resistant) bulk throughput over a 1 MiB buffer.
 // Cross-check: digest non-zero.

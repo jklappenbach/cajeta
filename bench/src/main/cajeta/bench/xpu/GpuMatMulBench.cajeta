@@ -8,7 +8,7 @@ import cajeta.xpu.Workgroup;
 import cajeta.xpu.Barrier;
 import cajeta.xpu.Shared;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // GPU dense N×N matrix multiply C = A·B (flat row-major float64), run as a real
 // device @Kernel — the first of the suite's GPU compute benchmarks. Built once

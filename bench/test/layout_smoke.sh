@@ -4,9 +4,10 @@
 #  (1) samples/profile is retired and the old flat bench/src/bench is gone;
 #  (2) every .cajeta file under bench/src/main/cajeta/bench/ sits inside a
 #      <package>/ directory, except the entry point Bench.cajeta; the only
-#      non-catalog directories are selftest/ (the harness's own scaffold
-#      benchmarks, registered only under CAJETA_BENCH_SCAFFOLD=1) and harness/
-#      (the local harness, until the project depends on dev.cajeta.bench);
+#      non-catalog directory is selftest/ (the harness's own scaffold
+#      benchmarks, registered only under CAJETA_BENCH_SCAFFOLD=1). The harness
+#      is the dev.cajeta.bench library: no local copy, and cajeta.json
+#      depends on it;
 #  (3) every catalog benchmark's area() is "<package>/<slug>", <package> being
 #      the directory it lives in, and it is registered in Bench.cajeta;
 #  (4) every <package> has a page directory bench/<package>/ and one of its
@@ -21,7 +22,7 @@ ENTRY="$SRC/Bench.cajeta"
 
 # spec §6: the language + stdlib catalog packages.
 PACKAGES="lang collection concurrent time hash codec io math nucleo wire search process reflect xpu toolchain"
-NONCATALOG="selftest harness"
+NONCATALOG="selftest"
 
 FAILS=0
 fail() { echo "LAYOUT FAIL: $1" >&2; FAILS=$((FAILS+1)); }
@@ -35,6 +36,9 @@ is_in() { case " $2 " in *" $1 "*) return 0;; *) return 1;; esac; }
 
 [[ -d "$SRC" ]] || { fail "no harness project at bench/src/main/cajeta/bench/"; echo "LAYOUT FAILED ($FAILS)"; exit 1; }
 [[ -f "$ENTRY" ]] || fail "no entry point bench/src/main/cajeta/bench/Bench.cajeta"
+[[ -e "$SRC/harness" ]] && fail "a local harness copy exists (bench/src/main/cajeta/bench/harness/); the harness is dev.cajeta.bench"
+grep -q '"dev.cajeta.bench"' "$PROJ/cajeta.json" || fail "cajeta.json does not depend on dev.cajeta.bench"
+grep -q 'BenchMain.run(args' "$ENTRY" 2>/dev/null || fail "Bench.cajeta does not hand off to dev.cajeta.bench's BenchMain.run"
 
 # (2) every file inside a package directory
 NB=0
@@ -50,6 +54,7 @@ while IFS= read -r f; do
 
     # (3) area() = "<package>/<slug>" for every Benchmark subclass
     grep -q 'extends Benchmark' "$f" || continue
+    grep -q '^import dev\.cajeta\.bench\.Benchmark;' "$f" || fail "$rel: Benchmark is not dev.cajeta.bench.Benchmark"
     NB=$((NB+1))
     cls="$(basename "$f" .cajeta)"
     area="$(grep -A2 'String area()' "$f" | grep -oE 'return "[^"]*"' | head -1 | sed 's/return "//; s/"$//')"

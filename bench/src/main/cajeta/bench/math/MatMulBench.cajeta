@@ -4,7 +4,7 @@ import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // Dense N×N matrix multiply C = A·B (flat row-major float64). A is the identity,
 // so C == B — a cheap, exact cross-check (checksum of C == checksum of B) while

@@ -2,7 +2,7 @@ package bench.time;
 
 import cajeta.time.Instant;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // Instant arithmetic throughput: N iterations of plusSeconds + getEpochSecond
 // (value-type time math). Cross-check: the accumulated epoch sum is the closed

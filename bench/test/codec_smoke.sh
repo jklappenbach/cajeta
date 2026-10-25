@@ -39,7 +39,7 @@ rm -f "$OUT"
 echo "[codec] running with corpus..."
 CAJETA_BENCH_SMOKE=1 PROFILE_RUN_ID=codec-run PROFILE_DATA_DIR="$DATA" "$PROJ/build/bench" --run --area codec --out "$OUT" >/tmp/codec-run.log 2>&1 \
     || { tail -20 /tmp/codec-run.log; fail "--run crashed"; }
-grep -E "measured json-tokenize|measured base64" /tmp/codec-run.log | sed 's/^/  /'
+grep -E "/(json-tokenize|base64)" /tmp/codec-run.log | sed 's/^/  /' || true
 
 col() { awk -F, -v b="$1" -v v="$2" -v c="$3" 'NR>1 && $4==b && $31==v {print $c; exit}' "$OUT"; }
 
@@ -75,7 +75,7 @@ for bench in json-dom json-serialize json-roundtrip; do
 done
 
 # Every row carries its catalog path and the smoke tag.
-bad="$(awk -F, 'NR>1 && ($5 !~ /^codec\// || $30 !~ /^smoke/)' "$OUT" | wc -l)"
+bad="$(awk -F, 'NR>1 && ($5 !~ /^codec\// || $30 !~ /smoke/)' "$OUT" | wc -l)"
 [[ "$bad" == "0" ]] || fail "$bad codec rows without a codec/ area or the smoke tag"
 
 # json-conformance: accept/reject vector all correct (self-contained)

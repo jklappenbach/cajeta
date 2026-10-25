@@ -2,7 +2,7 @@ package bench.codec;
 
 import cajeta.codec.Base64;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // Base64 encode throughput over a 1 MiB buffer. The output length is a structural
 // cross-check (4*ceil(N/3)). Self-generating, so it needs no dataset.

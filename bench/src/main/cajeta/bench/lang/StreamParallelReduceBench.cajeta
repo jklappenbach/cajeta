@@ -2,7 +2,7 @@ package bench.lang;
 
 import cajeta.collection.ArrayList;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // Parallel reduce via .parallel() (fork/join over Splittable shares). Cross-check:
 // the parallel sum equals the sequential sum (associativity + correct splitting).

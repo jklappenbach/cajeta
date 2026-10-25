@@ -2,7 +2,7 @@ package bench.concurrent;
 
 import cajeta.concurrent.AtomicInt64;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // Atomic counter throughput: N fetchAdd(1) on an AtomicInt64. Cross-check: the
 // final load() equals N (every increment landed).

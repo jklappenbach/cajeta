@@ -70,7 +70,8 @@ done
 [[ -n "$MACHINE" ]] || MACHINE="$(hostname -s 2>/dev/null || hostname)"
 export CAJETA_BENCH_MACHINE="$MACHINE"
 
-# --list short-circuits (build + list, no run).
+# --list short-circuits (build + list, no run). dev.cajeta.bench prints each
+# benchmark as `<area>/<name>  [backend]`.
 if [[ "$LIST" == "1" ]]; then
     "$CAJETA" release >/dev/null
     exec ./build/bench --list
@@ -91,8 +92,13 @@ echo "[bench] (2/4) build --release"
 "$CAJETA" release >/dev/null
 
 echo "[bench] (3/4) run benchmarks -> $OUT/results.csv"
-PROFILE_DATA_DIR="$DATA" PROFILE_RUN_ID="$TS" PROFILE_RUN_TS="$RUN_TS" \
-    ./build/bench --run --out "$OUT/results.csv" ${HARNESS_ARGS[@]+"${HARNESS_ARGS[@]}"}
+CAJETA_VER="$("$CAJETA" --version 2>/dev/null | head -1 || true)"
+# dev.cajeta.bench writes results.csv and env.csv; it exits 1 when a row failed
+# or was invalid (the run itself continues), so record that and carry on.
+RC=0
+PROFILE_DATA_DIR="$DATA" CAJETA_BENCH_RUN_ID="$TS" CAJETA_BENCH_RUN_TS="$RUN_TS" \
+    CAJETA_BENCH_CAJETA_VERSION="$(printf '%s' "$CAJETA_VER" | awk '{print $2}')" \
+    ./build/bench --run --out "$OUT/results.csv" ${HARNESS_ARGS[@]+"${HARNESS_ARGS[@]}"} || RC=$?
 
 if [[ "$RUN_COMPETITORS" == "1" ]]; then
     echo "[bench] (3b) competitors (cross-language; builds cargo/cmake/go on first run)"
@@ -105,13 +111,22 @@ if [[ "$RUN_COMPETITORS" == "1" ]]; then
     done
 fi
 
-echo "[bench] (4/4) capture env -> $OUT/env.csv"
-bash scripts/env-capture.sh > "$OUT/env.csv"
-echo "machine,${MACHINE//,/ }" >> "$OUT/env.csv"
-# Stamp the Cajeta compiler version (the Cajeta side emits no language_version
-# column of its own). Best-effort; never fail the run.
-CAJETA_VER="$("$CAJETA" --version 2>/dev/null | head -1)"
-[[ -n "$CAJETA_VER" ]] && echo "cajeta_version,${CAJETA_VER//,/ }" >> "$OUT/env.csv"
-[[ -n "${CAJETA_BENCH_SMOKE:-}" ]] && echo "smoke,1" >> "$OUT/env.csv"
+echo "[bench] (4/4) env -> $OUT/env.csv"
+# The harness wrote the run block (machine, os, kernel, cpu, cajeta_version,
+# smoke); append the host block it cannot reach, without repeating a key.
+touch "$OUT/env.csv"
+bash scripts/env-capture.sh | awk -F, 'NR==FNR {seen[$1]=1; next} !($1 in seen)' "$OUT/env.csv" - >> "$OUT/env.csv"
+[[ -n "$CAJETA_VER" ]] && ! grep -q '^cajeta_build,' "$OUT/env.csv" && echo "cajeta_build,${CAJETA_VER//,/ }" >> "$OUT/env.csv"
+
+# Fidelity gate (spec §1.5.3). A full-catalog run must hold every benchmark the
+# gate knows (--require-suite); a filtered run checks what it holds. Smoke rows
+# carry no meaningful numbers, so a smoke run is not gated.
+if [[ -z "${CAJETA_BENCH_SMOKE:-}" ]] && command -v python3 >/dev/null; then
+    GATE_ARGS=()
+    [[ "${#HARNESS_ARGS[@]}" == "0" ]] && GATE_ARGS+=(--require-suite)
+    echo "[bench] fidelity gate ${GATE_ARGS[*]:-}"
+    python3 scripts/verify-fidelity.py ${GATE_ARGS[@]+"${GATE_ARGS[@]}"} "$OUT/results.csv" || RC=1
+fi
 
 echo "[bench] done -> $OUT"
+exit "$RC"

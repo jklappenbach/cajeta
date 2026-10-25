@@ -102,17 +102,13 @@ if want python; then
     fi
 fi
 
-# ---- java: jackson-databind DOM (JDK has no stdlib JSON; jars vendored) ----
+# ---- java: jackson-databind DOM (JDK has no stdlib JSON) ----
+# The jars are the pinned ones competitors/setup.sh fetches and verifies
+# (pins.tsv, sha256) into competitors/third_party/java/; nothing is curled here.
 if want java; then
-    JJARS="$VENDOR/jackson"
-    JCP="$JJARS/jackson-databind-2.22.0.jar:$JJARS/jackson-core-2.22.0.jar:$JJARS/jackson-annotations-2.22.jar"
-    # Fetch the jars on demand (recorded in vendor/jackson.lock) if missing + network is up.
-    if [[ ! -f "$JJARS/jackson-databind-2.22.0.jar" ]] && command -v curl >/dev/null 2>&1; then
-        mkdir -p "$JJARS"; B=https://repo1.maven.org/maven2/com/fasterxml/jackson/core
-        curl -sSfL -o "$JJARS/jackson-core-2.22.0.jar"        "$B/jackson-core/2.22.0/jackson-core-2.22.0.jar"               2>/dev/null || true
-        curl -sSfL -o "$JJARS/jackson-databind-2.22.0.jar"    "$B/jackson-databind/2.22.0/jackson-databind-2.22.0.jar"       2>/dev/null || true
-        curl -sSfL -o "$JJARS/jackson-annotations-2.22.jar"   "$B/jackson-annotations/2.22/jackson-annotations-2.22.jar"     2>/dev/null || true
-    fi
+    JM="$DIR/third_party/java/com/fasterxml/jackson/core"
+    JCP="$JM/jackson-databind/2.22.0/jackson-databind-2.22.0.jar:$JM/jackson-core/2.22.0/jackson-core-2.22.0.jar:$JM/jackson-annotations/2.22/jackson-annotations-2.22.jar"
+    JJARS="$JM/jackson-databind/2.22.0"
     if command -v javac >/dev/null 2>&1 && [[ -f "$JJARS/jackson-databind-2.22.0.jar" ]]; then
         OUT="$BUILD/java-codec"; SRC="$DIR/java/codec/JsonDom.java"
         if [[ ! -f "$OUT/JsonDom.class" || "$SRC" -nt "$OUT/JsonDom.class" ]]; then
@@ -127,6 +123,6 @@ if want java; then
     elif ! command -v javac >/dev/null 2>&1; then
         skip_lang java jackson-databind "javac not installed"
     else
-        skip_lang java jackson-databind "jackson jars missing (vendor/jackson; needs network to fetch)"
+        skip_lang java jackson-databind "pinned jackson jars missing under competitors/third_party/java (run competitors/setup.sh)"
     fi
 fi

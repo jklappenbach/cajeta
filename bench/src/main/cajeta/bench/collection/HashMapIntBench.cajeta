@@ -2,7 +2,7 @@ package bench.collection;
 
 import cajeta.collection.HashMap;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // HashMap<int32,int32> build + lookup: insert N entries, then N successful
 // lookups summing the values. Cross-check: the value sum is the closed form

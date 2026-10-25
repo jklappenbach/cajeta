@@ -5,7 +5,7 @@ import cajeta.codec.json.Json;
 import cajeta.codec.json.JsonValue;
 import cajeta.error.Exception;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // JSON conformance (the JSON_checker accept/reject idea): feed a vector of
 // clearly-valid and clearly-malformed documents and assert the parser's verdict

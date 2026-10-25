@@ -3,7 +3,7 @@ package bench.collection;
 import cajeta.collection.Sort;
 import cajeta.time.Clock;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // Unstable sort of N random float64. Each trial copies the source and sorts it
 // (copy subtracted). Cross-check: non-decreasing.

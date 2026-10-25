@@ -1,6 +1,6 @@
 package bench.lang;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // Global replace: replace every "fox" (3 chars) with "feline" (6) in a ~360 KB
 // text. Cross-check: the output is longer than the input (the replacements grew

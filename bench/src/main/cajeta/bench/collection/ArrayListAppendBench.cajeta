@@ -2,7 +2,7 @@ package bench.collection;
 
 import cajeta.collection.ArrayList;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // ArrayList grow-on-demand append: N pushes into a fresh list each trial.
 // Cross-check: final count == N. (Self-generating; no dataset.)

@@ -2,7 +2,7 @@ package bench.hash;
 
 import cajeta.hash.XXHash3;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // XXH3-128 bulk throughput over a 1 MiB buffer (SMHasher's bulk-throughput
 // metric). The crown lever is the same as XXH3-64: the pure-Cajeta SIMD long

@@ -1,6 +1,6 @@
 package bench.lang;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // SAXPY: z = a*x + y over N float64. Vectorized with Vector<float64,8> load /
 // broadcast-scalar FMA / store, plus a Vector checksum accumulator horizontal-

@@ -1,6 +1,6 @@
 package bench.lang;
 
-import bench.harness.Benchmark;
+import dev.cajeta.bench.Benchmark;
 
 // Case folding: toUpperCase over a ~360 KB ASCII text. Cross-check: the result
 // has the same length as the input (ASCII case-fold is length-preserving).

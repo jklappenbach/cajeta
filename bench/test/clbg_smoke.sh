@@ -20,7 +20,7 @@ OUT="/tmp/profile-clbg.csv"
 rm -f "$OUT"
 CAJETA_BENCH_SMOKE=1 PROFILE_RUN_ID=clbg-run "$PROJ/build/bench" --run --area lang --out "$OUT" >/tmp/clbg-run.log 2>&1 \
     || { grep -vE "example:" /tmp/clbg-run.log | tail -15; fail "--run crashed"; }
-grep -E "measured clbg-" /tmp/clbg-run.log | sed 's/^/  /'
+grep -E "^  (ok|skipped|invalid|failed)  .*/clbg-" /tmp/clbg-run.log | sed 's/^/  /' || true
 
 for b in clbg-mandelbrot clbg-fannkuch-redux clbg-spectral-norm; do
     row="$(awk -F, -v b="$b" 'NR>1 && $4==b {print; exit}' "$OUT")"
@@ -28,7 +28,7 @@ for b in clbg-mandelbrot clbg-fannkuch-redux clbg-spectral-norm; do
     st="$(printf '%s' "$row" | awk -F, '{print $28}')"
     ar="$(printf '%s' "$row" | awk -F, '{print $5}')"
     [[ "$ar" == lang/* ]] || fail "$b area=$ar (want the lang/ catalog path)"
-    printf '%s' "$row" | awk -F, '{print $30}' | grep -q '^smoke' || fail "$b row not tagged smoke"
+    printf '%s' "$row" | awk -F, '{print $30}' | grep -q 'smoke' || fail "$b row not tagged smoke"
     [[ "$st" == "ok" ]] || fail "$b status=$st (canonical checksum mismatch)"
     echo "[clbg] $b ok  min_ns=$(printf '%s' "$row" | awk -F, '{print $17}')"
 done
