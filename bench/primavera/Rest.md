@@ -1,6 +1,6 @@
 # REST endpoint
 
-`primavera` — the `register-user` shape: a JSON request through dependency injection, request scope, validation and an authentication filter, answered with JSON. This is the request a service framework exists to serve; every competitor implements the same contract and is byte-compared before load.
+`primavera` — the `register-user` shape: a JSON `POST /users` through dependency injection, a request-scoped principal from an authentication stage, a singleton service, and validation, answered with JSON. Nothing is stored (there is no data layer yet; the id is minted from the body), so the same request can be sent under load. Every competitor implements the same contract and is byte-compared before load. Until the optimized-build link defect is fixed, primavera's server row is built at O0 and its `flags` column says so.
 
 ## Benchmarks
 

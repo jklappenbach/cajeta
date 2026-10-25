@@ -4,7 +4,7 @@ The register-user service shape, templated pages, start-up and footprint, build 
 
 | Page | |
 |---|---|
-| [REST endpoint](Rest.md) | The register-user shape: a JSON request through dependency injection, request scope, validation and an authentication filter, answered with JSON |
+| [REST endpoint](Rest.md) | The register-user shape: a JSON POST /users through dependency injection, a request-scoped principal from an authentication stage, a singleton service, and validation, answered with JSON |
 | [Templated page](Templates.md) | An HTML page rendered through cajeta-jinja from injected data |
 | [Start-up and footprint](Startup.md) | Cold start to the first response, and resident memory idle and under load |
 | [Build time](Build.md) | A clean build of the register-user service |

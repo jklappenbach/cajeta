@@ -6,9 +6,9 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `primavera/cold-start` | `exec` to first 200 response, 20 launches | Spring Boot (MVC, Java 25), Quarkus (JVM and native), Micronaut (JVM and native), ASP.NET Core, FastAPI | response |
-| `primavera/idle-rss` | resident set after start-up | Spring Boot (MVC, Java 25), Quarkus (JVM and native), Micronaut (JVM and native), ASP.NET Core, FastAPI | alive |
-| `primavera/loaded-rss` | resident set after 60 s at 512 connections | Spring Boot (MVC, Java 25), Quarkus (JVM and native), Micronaut (JVM and native), ASP.NET Core, FastAPI | alive |
+| `primavera/cold-start` | `exec` to the first 200 from `GET /health`, 20 launches | Spring Boot (MVC, Java 25), Quarkus (JVM and native), Micronaut (JVM and native), ASP.NET Core, FastAPI | response |
+| `primavera/idle-rss` | resident set 2 s after the first 200, over 5 launches | Spring Boot (MVC, Java 25), Quarkus (JVM and native), Micronaut (JVM and native), ASP.NET Core, FastAPI | alive |
+| `primavera/loaded-rss` | resident set after 60 s of `POST /users` load, three times | Spring Boot (MVC, Java 25), Quarkus (JVM and native), Micronaut (JVM and native), ASP.NET Core, FastAPI | alive |
 
 ## Results
 

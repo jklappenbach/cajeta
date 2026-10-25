@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `primavera/build-time` | clean build to a runnable artifact | Maven for Spring Boot, Quarkus and Micronaut (JVM; native-image as a second row), `dotnet publish`, none for FastAPI | artifact runs |
+| `primavera/build-time` | clean build to a runnable artifact, one build per platform, no warm-up | Maven for Spring Boot, Quarkus and Micronaut (JVM; native-image as a second row), `dotnet publish`, none for FastAPI | artifact runs |
 
 ## Results
 

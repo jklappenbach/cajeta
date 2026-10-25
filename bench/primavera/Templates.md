@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `primavera/templated-page` | `GET /fortunes`-shaped page of 12 rows | Thymeleaf under Spring, Qute under Quarkus, Razor under ASP.NET, Jinja2 under FastAPI | zero errors, markup equal |
+| `primavera/templated-page` | `GET /fortunes`: the twelve TechEmpower fortunes sorted per request, rendered through cajeta-jinja, at 64 connections | Thymeleaf under Spring, Qute under Quarkus, Razor under ASP.NET, Jinja2 under FastAPI | zero errors, markup equal |
 
 ## Results
 
