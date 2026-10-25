@@ -1181,13 +1181,17 @@ struct caj_vk_dpool { VkDescriptorPool pool; };
 // Chunked submission every CAJ_VK_CHUNK_DISPATCHES, so no single submit trips RADV's
 // hang detection. Chunks fly fenceless; the flush's final submit carries the fence.
 #define CAJ_VK_BATCH_CMDS 32
-#define CAJ_VK_CHUNK_DISPATCHES 100
+// The cadence measured best on the 8B (vulkan-batch-pipelining 1.3.2): the device
+// starts after 8 recorded dispatches, then takes 16 a submit.
+#define CAJ_VK_CHUNK_DISPATCHES 16
+#define CAJ_VK_FIRST_CHUNK_DISPATCHES 8
 static struct {
     int open;                      // recording?
     int inited;                    // cmds/fence created?
     unsigned dispatches;           // recorded in the open batch (all chunks)
     unsigned chunkDispatches;      // recorded in the open chunk
     unsigned chunksFlown;          // fenceless submits since last flush
+    unsigned firstChunk, chunk;   // dispatches before the first submit, and per chunk after it (0 = at flush)
     int cur;                       // ring index of the open command buffer
     VkCommandBuffer cmds[CAJ_VK_BATCH_CMDS];
     VkFence fence;
@@ -3035,6 +3039,19 @@ static int caj_vk_batch_begin(void) {
     g_vk_batch.dispatches = 0;
     g_vk_batch.chunkDispatches = 0;
     g_vk_batch.chunksFlown = 0;
+    // The cadence knobs are read per batch (a test sweeps them in one process):
+    // CAJETA_XPU_VK_NOCHUNK one submit at flush; CAJETA_XPU_VK_CHUNK=N both sizes;
+    // CAJETA_XPU_VK_FIRST_CHUNK=M the first alone.
+    {
+        const char* c = getenv("CAJETA_XPU_VK_CHUNK");
+        const char* f = getenv("CAJETA_XPU_VK_FIRST_CHUNK");
+        const unsigned chunk = (c && atoi(c) > 0) ? (unsigned) atoi(c) : CAJ_VK_CHUNK_DISPATCHES;
+        unsigned first = (c && atoi(c) > 0) ? chunk : CAJ_VK_FIRST_CHUNK_DISPATCHES;
+        if (f && atoi(f) > 0) first = (unsigned) atoi(f);
+        if (getenv("CAJETA_XPU_VK_NOCHUNK")) { g_vk_batch.chunk = 0; g_vk_batch.firstChunk = 0; }
+        else { g_vk_batch.chunk = chunk; g_vk_batch.firstChunk = first; }
+        g_vk_sync_log = getenv("CAJETA_XPU_VK_SYNC_LOG") ? 1 : 0;
+    }
     g_vk_batch.poolCursor = 0;
     memset(g_vk_batch.bound, 0, sizeof(g_vk_batch.bound));
     g_vk_batch.nbound = 0;
@@ -3130,9 +3147,9 @@ static void cajeta_xpu_vk_flush(void) {
     }
     if (g_vk_sync_log && g_vk_stat_disp) {
         fprintf(stderr, "cajeta.xpu.vulkan: sync-log %u dispatches, "
-                "%u barriers elided to %u\n", g_vk_stat_disp,
+                "%u barriers elided to %u, %u chunks, first %u\n", g_vk_stat_disp,
                 g_vk_stat_disp > 0 ? g_vk_stat_disp - 1 : 0,
-                g_vk_stat_barrier);
+                g_vk_stat_barrier, g_vk_batch.chunksFlown, g_vk_batch.firstChunk);
         g_vk_stat_disp = 0;
         g_vk_stat_barrier = 0;
     }
@@ -3168,10 +3185,7 @@ static int caj_vk_launch_batched(struct caj_vk_pipe* P,
     }
     if (!caj_vk_marshal_writes(ds, bindings, kinds, n, /*noteBound=*/1))
         return 0;
-    if (g_vk_elide < 0) {
-        g_vk_elide = getenv("CAJETA_XPU_VK_NOELIDE") ? 0 : 1;
-        g_vk_sync_log = getenv("CAJETA_XPU_VK_SYNC_LOG") ? 1 : 0;
-    }
+    if (g_vk_elide < 0) g_vk_elide = getenv("CAJETA_XPU_VK_NOELIDE") ? 0 : 1;
     int needSync;
     if (!g_vk_elide || g_vk_ws.sawImage || g_vk_ws.sawArray) {
         needSync = 1;   // opaque to the tracker: keep the old full barrier
@@ -3254,14 +3268,9 @@ static int caj_vk_launch_batched(struct caj_vk_pipe* P,
     g_vk_batch.dispatches++;
     g_vk_batch.chunkDispatches++;
     {
-        static int s_chunk = -1;
-        if (s_chunk < 0) {
-            // CAJETA_XPU_VK_CHUNK=N overrides the dispatches per submit (an experiment knob).
-            const char* c = getenv("CAJETA_XPU_VK_CHUNK");
-            s_chunk = getenv("CAJETA_XPU_VK_NOCHUNK")
-                          ? 0 : (c && atoi(c) > 0 ? atoi(c) : CAJ_VK_CHUNK_DISPATCHES);
-        }
-        if (s_chunk > 0 && g_vk_batch.chunkDispatches >= (unsigned) s_chunk)
+        // The first chunk goes early so the device starts while the host records the rest.
+        const unsigned lim = g_vk_batch.chunksFlown == 0 ? g_vk_batch.firstChunk : g_vk_batch.chunk;
+        if (lim > 0 && g_vk_batch.chunkDispatches >= lim)
             caj_vk_batch_submit_chunk();
     }
     return g_vk_batch.open;   // chunk rotation can close the batch on error

@@ -76,9 +76,9 @@ sequences decoding, `cajeta-llm` bench):
 ## 2. The first chunk is submitted early
 
 - **2.1** When a batch opens, its first chunk is submitted after `first`
-  dispatches (default 16), and every chunk after it after `chunk`
-  dispatches (default measured, see 4.2; 16 unless the ramp measures
-  better).
+  dispatches (default 8), and every chunk after it after `chunk`
+  dispatches (default 16); both measured on the 8B (4.2, the table in the
+  plan).
 - **2.2** When `CAJETA_XPU_VK_CHUNK=N` is set, both sizes are N;
   `CAJETA_XPU_VK_FIRST_CHUNK=N` sets the first alone;
   `CAJETA_XPU_VK_NOCHUNK` keeps meaning one submit at flush.
