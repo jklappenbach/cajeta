@@ -134,13 +134,18 @@
             "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
         },
 
-        "gpu": {
-            "description": "Release build with GPU backend (amdgpu, gfx1151) for the gpu-area @Kernel benchmarks; the active backend is chosen at runtime via CAJETA_XPU_BACKEND=hip. Output build/bench-gpu so it does not collide with the cpu-only build/bench. cpu is NOT in this flavor: the LDS-tiled matmul kernel has a barrier in its K-loop, which OOMs the CPU barrier-fission pass (see reference_cpu_barrier_fission_loop_oom); HIP compiles it natively. Vulkan is deferred (agents/gpu-vulkan-f64-plan.md).",
+        // Proton (Radeon 8060S, gfx1151, ROCm). amdgpu + cpu in one binary,
+        // like gpu-nvptx and gpu-vulkan; the backend is chosen at run time with
+        // CAJETA_XPU_BACKEND=hip (or =cpu). Replaces the retired `gpu` task
+        // (amdgpu only, output build/bench-gpu), which predates the xpu/
+        // catalog. Output build/bench-amdgpu.
+        "gpu-amdgpu": {
+            "description": "Release build with the amdgpu (gfx1151, Proton) and cpu XPU backends for the xpu/ and gfx/ @Kernel benchmarks; run with CAJETA_XPU_BACKEND=hip (or cpu). Output build/bench-amdgpu.",
             "actions": [
                 { "action": "build",
                   "flavor": { "base": "release", "opt": "O3", "cpu": "native",
-                              "xpu-backend": "amdgpu", "xpu-arch": "gfx1151" },
-                  "output-path": "build/bench-gpu", "id": "art" }
+                              "xpu-backend": "amdgpu,cpu", "xpu-arch": "gfx1151" },
+                  "output-path": "build/bench-amdgpu", "id": "art" }
             ],
             "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
         },

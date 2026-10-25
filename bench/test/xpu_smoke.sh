@@ -23,7 +23,8 @@
 #
 # Env: CAJETA (compiler, default <repo>/build/src/cajeta), CAJETA_BENCH_OUT
 # (directory for CSVs and logs, default /tmp), NO_BUILD=1 (reuse the binaries),
-# XPU_BUILDS (default "release gpu-nvptx gpu-vulkan"), CAJETA_BENCH_NO_GPU (default 1).
+# XPU_BUILDS (default "release gpu-nvptx gpu-vulkan"; Proton adds gpu-amdgpu, the hip leg),
+# CAJETA_BENCH_NO_GPU (default 1).
 set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
@@ -40,7 +41,7 @@ fail() { echo "XPU FAIL: $1" >&2; exit 1; }
 [[ -x "$CAJETA" ]] || fail "cajeta not found at $CAJETA"
 cd "$PROJ"
 
-bin_of() { case "$1" in release) echo build/bench ;; gpu-nvptx) echo build/bench-nvptx ;; gpu-vulkan) echo build/bench-vulkan ;; esac; }
+bin_of() { case "$1" in release) echo build/bench ;; gpu-nvptx) echo build/bench-nvptx ;; gpu-vulkan) echo build/bench-vulkan ;; gpu-amdgpu) echo build/bench-amdgpu ;; esac; }
 
 # (1) build + list
 for t in $BUILDS; do
@@ -109,6 +110,7 @@ for t in $BUILDS; do
     case "$t" in
         gpu-nvptx)  run_leg "$(bin_of "$t")" cuda   "cuda";   $CHECK rows "$LEG_CSV" "$want" | tail -1 | sed 's/^/[xpu] cuda: /' ;;
         gpu-vulkan) run_leg "$(bin_of "$t")" vulkan "vulkan"; $CHECK rows "$LEG_CSV" "$want" | tail -1 | sed 's/^/[xpu] vulkan: /' ;;
+        gpu-amdgpu) run_leg "$(bin_of "$t")" hip    "hip";    $CHECK rows "$LEG_CSV" "$want" | tail -1 | sed 's/^/[xpu] hip: /' ;;
     esac
 done
 if [[ ! -e "${ROCM_PATH:-/opt/rocm}/.info/version" ]]; then
