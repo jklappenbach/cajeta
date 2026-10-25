@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `concurrent/semaphore-acquire-release` | 16 fibers through a 4-permit semaphore, 1e6 passes each | C++ `counting_semaphore`, Rust tokio `Semaphore`, Go buffered channel, Java `Semaphore` | count |
+| `concurrent/semaphore-acquire-release` | 16 fibers through a 4-permit semaphore, 1e6 passes each | C++ POSIX `sem_t` (libstdc++ 13's `counting_semaphore` hangs at this shape and is recorded as a skip), Rust tokio `Semaphore`, Go buffered channel, Java `Semaphore` | count |
 
 ## Results
 

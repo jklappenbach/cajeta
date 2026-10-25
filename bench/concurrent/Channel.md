@@ -6,9 +6,9 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `concurrent/channel-spsc` | one producer, one consumer, 5e6 messages, capacity 1e3 | Rust crossbeam and std mpsc, Go channel, Java `ArrayBlockingQueue`, C++ `moodycamel` | sum |
+| `concurrent/channel-spsc` | one producer, one consumer, 5e6 messages, capacity 1e3 | Rust crossbeam and std mpsc, Go channel, Java `ArrayBlockingQueue`, C++ moodycamel `ConcurrentQueue` bounded by its `LightweightSemaphore` | sum |
 | `concurrent/channel-mpsc` | four producers, one consumer | same | sum |
-| `concurrent/channel-mpmc` | four producers, four consumers | same | sum |
+| `concurrent/channel-mpmc` | four producers, four consumers | same; Rust std mpsc has one receiver and skips | sum |
 
 ## Results
 

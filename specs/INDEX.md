@@ -20,6 +20,8 @@ tracked below: `cajeta-text-shaping` is a **new spec not yet written**, and
 
 | Spec | Plan | Status |
 |------|------|--------|
+| [carrier-deque-overflow-abort](carrier-deque-overflow-abort-spec.md) | — (defect, runtime) | **draft**: filed 2026-10-25 by benchmark-reference unit 7. The 2048-slot carrier deque aborts on a spawn burst or a channel close with many waiters; two mappings per fiber cap parked fibers near 520k under the default `vm.max_map_count`; spawn+await is 150 to 210 µs against the 24.6 µs recorded in June, about 7× regressed. |
+| [spawn-qualified-static-rejected](spawn-qualified-static-rejected-spec.md) | — (defect) | **draft**: filed 2026-10-25 by benchmark-reference unit 7. `spawn Class.method(...)` on a static method fails R3A as an instance call; the bare form works. |
 | [http-h2c-crash-above-256-streams](http-h2c-crash-above-256-streams-spec.md) | — (defect, cajeta-http) | **draft**: filed 2026-10-25 by benchmark-reference unit 18. The h2c server SIGSEGVs or stalls past `maxInFlight` (512 streams) in `Channel<Dispatch>.trySend`'s drop path; 256 streams run clean. |
 | [http-tls-handshake-collapse](http-tls-handshake-collapse-spec.md) | — (defect, cajeta-http) | **draft**: filed 2026-10-25 by benchmark-reference unit 18. TLS handshakes fall from 177/s at one connection to about 16/s at 8 or 64, with connection errors. |
 | [xxhash3-writebytesrange-offset](xxhash3-writebytesrange-offset-spec.md) | — (defect) | **draft**: filed 2026-10-25 by benchmark-reference unit 8. `XXHash3.writeBytesRange` ignores its offset; `hashSeeded` never takes the SIMD long path. |

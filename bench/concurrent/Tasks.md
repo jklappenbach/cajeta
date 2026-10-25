@@ -7,9 +7,9 @@
 | id | workload | against | check |
 |---|---|---|---|
 | `concurrent/task-spawn-await` | spawn and await 1e5 trivial tasks, sequentially | C++ `std::async`, Rust tokio `spawn`, Go `go` + channel, Java virtual threads, Python asyncio | count |
-| `concurrent/tasks-1m-footprint` | park 1e6 tasks on a channel; the row is resident memory | Rust tokio, Go, Java virtual threads, Python asyncio | count |
+| `concurrent/tasks-1m-footprint` | park 1e6 tasks, spawned in steps of 1024, on 1000 channels of 1000 waiters; the row is resident memory and bytes per task | Rust tokio, Go, Java virtual threads, Python asyncio | count |
 
-The footprint row skips with a reason on a machine under 16 GB.
+The footprint row skips with a reason under 16 GB free, and on a box whose `vm.max_map_count` is below 2 × N + 65536: a fiber is two mappings today (guard page and stack), so Phoenix's default 1,048,576 caps parked fibers near 520k. The carrier run deque is 2048 slots and aborts on overflow, which is why spawns are paced.
 
 ## Results
 

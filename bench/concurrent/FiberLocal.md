@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `concurrent/fiberlocal-get-set` | 1e8 get and set on one fiber | C++ `thread_local`, Rust `thread_local!`, Go (none; `context.Value`), Java `ScopedValue` and `ThreadLocal`, Python `contextvars` | sum |
+| `concurrent/fiberlocal-get-set` | 1e8 passes of `where(value, () -> get())` on one fiber (`FiberLocal` binds by scope; there is no `set`) | C++ `thread_local`, Rust `thread_local!`, Go `context.Value`, Java `ScopedValue.where(..).run(..)` and `ThreadLocal`, Python `contextvars` | sum |
 
 ## Results
 
