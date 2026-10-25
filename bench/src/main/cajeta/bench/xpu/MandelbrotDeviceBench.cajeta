@@ -1,0 +1,179 @@
+package bench.xpu;
+
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+
+import bench.xpu.XpuBench;
+import bench.xpu.XpuEnv;
+
+// xpu/mandelbrot-device: the Benchmarks Game mandelbrot at 16000 x 16000 on the
+// device (1600 x 1600 under CAJETA_BENCH_SMOKE=1 on the cpu backend): 50
+// iterations, escape at |z|^2 > 4, Cr = 2x/N - 1.5, Ci = 2y/N - 1, eight pixels
+// per output byte, most significant bit first. One thread per byte; each byte
+// is held in an int32 slot (byte stores are not portable to every backend).
+// Check: the set-pixel count against the host's, within 1e-5 relative (a
+// backend may contract z*z + c to an FMA, which moves boundary pixels), and the
+// exact match is stated in the notes. Throughput: pixels/s.
+public class MandelbrotDeviceBench extends XpuBench {
+
+    public uint32 n;
+    public int32[] hout;
+    public KernelBuffer<int32> dout;
+    public int64 hostCount;
+    public int64 devCount;
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void mandelK(KernelBuffer<int32> out, uint32 n) {
+        uint32 g = KernelThread.globalIdX();
+        uint32 rowBytes = n / 8;
+        if (g < n * rowBytes) {
+            uint32 y = g / rowBytes;
+            uint32 xb = g % rowBytes;
+            float64 ci = 2.0 * (float64) y / (float64) n - 1.0;
+            int32 bits = 0;
+            uint32 bit = 0;
+            while (bit < 8) {
+                uint32 x = xb * 8 + bit;
+                float64 cr = 2.0 * (float64) x / (float64) n - 1.5;
+                float64 zr = 0.0;
+                float64 zi = 0.0;
+                float64 tr = 0.0;
+                float64 ti = 0.0;
+                int32 k = 0;
+                while (k < 50 && tr + ti <= 4.0) {
+                    zi = 2.0 * zr * zi + ci;
+                    zr = tr - ti + cr;
+                    tr = zr * zr;
+                    ti = zi * zi;
+                    k = k + 1;
+                }
+                bits = bits * 2;
+                if (tr + ti <= 4.0) {
+                    bits = bits + 1;
+                }
+                bit = bit + 1;
+            }
+            out[g] = bits;
+        }
+    }
+
+    public static void mandel(KernelStream s, KernelBuffer<int32> out, uint32 n) {
+        uint32 total = n * (n / 8);
+        mandelK.launch(s, grid: [(total + 255) / 256], block: [256])(out, n);
+    }
+
+    public MandelbrotDeviceBench() {
+        this.n = (uint32) 16000;
+        this.hostCount = 0;
+        this.devCount = -1;
+    }
+
+    public String name() {
+        return "mandelbrot-device";
+    }
+
+    public String unit() {
+        return "pixels/s";
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n * (int64) this.n;
+    }
+
+    public String competitorNote() {
+        String ex = "";
+        if (this.devCount == this.hostCount) {
+            ex = "set pixels equal the host's exactly";
+        } else {
+            ex = "set pixels " + this.devCount + " vs host " + this.hostCount;
+        }
+        return "N=" + this.n + ", 50 iterations, float64 (the Benchmarks Game program); " + ex
+            + "; competitors: CUDA C++ mandelbrot kernel (devserver), HIP C++";
+    }
+
+    public static int64 popcount(int32 v) {
+        int64 c = 0;
+        int32 x = v;
+        int32 i = 0;
+        while (i < 8) {
+            c = c + (int64) (x % 2);
+            x = x / 2;
+            i = i + 1;
+        }
+        return c;
+    }
+
+    // The same arithmetic on the host, in the same order.
+    public static int64 hostSetPixels(uint32 n) {
+        int64 count = 0;
+        uint32 y = 0;
+        while (y < n) {
+            float64 ci = 2.0 * (float64) y / (float64) n - 1.0;
+            uint32 x = 0;
+            while (x < n) {
+                float64 cr = 2.0 * (float64) x / (float64) n - 1.5;
+                float64 zr = 0.0;
+                float64 zi = 0.0;
+                float64 tr = 0.0;
+                float64 ti = 0.0;
+                int32 k = 0;
+                while (k < 50 && tr + ti <= 4.0) {
+                    zi = 2.0 * zr * zi + ci;
+                    zr = tr - ti + cr;
+                    tr = zr * zr;
+                    ti = zi * zi;
+                    k = k + 1;
+                }
+                if (tr + ti <= 4.0) {
+                    count = count + 1;
+                }
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+        return count;
+    }
+
+    public void setupDevice() {
+        if (XpuEnv.reduced()) {
+            this.n = (uint32) 1600;
+        }
+        int32 bytes = (int32) (this.n * (this.n / 8));
+        this.hout = heap int32[bytes];
+        this.dout = heap KernelBuffer<int32>((uint64) bytes);
+        this.hostCount = MandelbrotDeviceBench.hostSetPixels(this.n);
+    }
+
+    public void prepare(String variant) {
+        if (!this.live) {
+            return;
+        }
+        if (this.comp != null) {
+            this.comp.prepare(variant);
+        }
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        MandelbrotDeviceBench.mandel(this.stream, this.dout, this.n);
+        this.stream.sync();
+    }
+
+    public boolean checkResult() {
+        this.dout.download(this.hout);
+        int32 bytes = (int32) (this.n * (this.n / 8));
+        int64 c = 0;
+        int32 i = 0;
+        while (i < bytes) {
+            c = c + MandelbrotDeviceBench.popcount(this.hout[i]);
+            i = i + 1;
+        }
+        this.devCount = c;
+        int64 d = c - this.hostCount;
+        if (d < 0) {
+            d = -d;
+        }
+        return this.hostCount > 0 && (float64) d <= 1e-5 * (float64) this.hostCount;
+    }
+}

@@ -1,0 +1,95 @@
+package bench.xpu;
+
+import cajeta.xpu.KernelBuffer;
+
+import bench.xpu.XpuBench;
+import bench.xpu.XpuKernels;
+
+// xpu/device-saxpy: y = a*x + y on the device at 2^26 float32, one launch per
+// trial (XpuKernels.saxpy, block 256). x[i] = i % 16, a = 2, y starts at 1, so
+// after r launches y[i] = 1 + 2r(i % 16) exactly in float32: the check reads
+// every element back against the host's value for the number of launches the
+// harness made (warmup, trials and its allocation run). Throughput is the
+// 12 bytes per element moved, in B/s.
+public class SaxpyBench extends XpuBench {
+
+    public uint32 n;
+    public int32 runs;
+    public float32[] hx;
+    public float32[] hy;
+    public KernelBuffer<float32> dx;
+    public KernelBuffer<float32> dy;
+
+    public SaxpyBench() {
+        this.n = (uint32) 67108864;
+        this.runs = 0;
+    }
+
+    public String name() {
+        return "device-saxpy";
+    }
+
+    public String unit() {
+        return "B/s";
+    }
+
+    public int64 inputSize() {
+        return 12 * (int64) this.n;
+    }
+
+    public String competitorNote() {
+        return "2^26 float32, block 256; competitors: CUDA C++ saxpy kernel (devserver), HIP C++, PyTorch torch.cuda (y.add_(x, alpha=a))";
+    }
+
+    public void setupDevice() {
+        int32 m = (int32) this.n;
+        this.hx = heap float32[m];
+        this.hy = heap float32[m];
+        int32 i = 0;
+        while (i < m) {
+            this.hx[i] = (float32) (i % 16);
+            i = i + 1;
+        }
+        this.dx = heap KernelBuffer<float32>((uint64) this.n);
+        this.dy = heap KernelBuffer<float32>((uint64) this.n);
+        this.dx.upload(this.hx);
+    }
+
+    public void prepare(String variant) {
+        if (!this.live) {
+            return;
+        }
+        int32 m = (int32) this.n;
+        int32 i = 0;
+        while (i < m) {
+            this.hy[i] = 1.0f;
+            i = i + 1;
+        }
+        this.dy.upload(this.hy);
+        this.runs = 0;
+        if (this.comp != null) {
+            this.comp.prepare(variant);
+        }
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        XpuKernels.saxpy(this.stream, this.dy, this.dx, 2.0f, this.n);
+        this.stream.sync();
+        this.runs = this.runs + 1;
+    }
+
+    public boolean checkResult() {
+        this.dy.download(this.hy);
+        int32 m = (int32) this.n;
+        float32 r2 = (float32) (2 * this.runs);
+        int32 i = 0;
+        while (i < m) {
+            float32 want = 1.0f + r2 * (float32) (i % 16);
+            if (this.hy[i] != want) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return this.runs > 0;
+    }
+}

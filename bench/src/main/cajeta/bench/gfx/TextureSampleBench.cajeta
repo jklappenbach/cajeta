@@ -1,0 +1,158 @@
+package bench.gfx;
+
+import cajeta.gfx.Sampler;
+import cajeta.gfx.Texture2D;
+import cajeta.gfx.TextureFormat;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+
+import bench.xpu.XpuBench;
+import bench.xpu.XpuEnv;
+
+// gfx/texture-sample-rate: a 4096 x 4096 RGBA8_UNORM Texture2D sampled 2^28
+// times per trial with a bilinear (linear, clamp) Sampler from a kernel: 2^20
+// threads x 256 samples (2^14 threads under CAJETA_BENCH_SMOKE=1 on the cpu
+// backend), each at a texel centre picked by a stride walk, the four channels
+// summed per thread. Sampling at texel centres makes the filtered value equal
+// to the texel whatever the hardware's filter precision, so the checksum is
+// comparable with the host's: the total within 1e-4 relative. The filter still
+// runs its four taps; the cost is that of a bilinear fetch. Throughput:
+// samples/s.
+public class TextureSampleBench extends XpuBench {
+
+    public uint32 threads;
+    public uint32 per;
+    public float64 want;
+    public float64 got;
+    public float32[] hout;
+    public KernelBuffer<float32> dout;
+    public Texture2D tex;
+    public Sampler samp;
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void sampleK(Texture2D tex, Sampler s, KernelBuffer<float32> out, uint32 per) {
+        uint32 g = KernelThread.globalIdX();
+        float32 acc = 0.0f;
+        uint32 k = 0;
+        while (k < per) {
+            uint32 tx = (g + k * 977) % 4096;
+            uint32 ty = (g / 16 + k * 131) % 4096;
+            float32 u = ((float32) tx + 0.5f) / 4096.0f;
+            float32 v = ((float32) ty + 0.5f) / 4096.0f;
+            Vector<float32, 4> c = tex.sample(s, u, v);
+            acc = acc + c.x + c.y + c.z + c.w;
+            k = k + 1;
+        }
+        out[g] = acc;
+    }
+
+    public static void sampleAll(KernelStream st, Texture2D tex, Sampler s, KernelBuffer<float32> out,
+                                 uint32 threads, uint32 per) {
+        sampleK.launch(st, grid: [threads / 256], block: [256])(tex, s, out, per);
+    }
+
+    public TextureSampleBench() {
+        this.threads = (uint32) 1048576;
+        this.per = (uint32) 256;
+        this.want = 0.0;
+        this.got = 0.0;
+    }
+
+    public String name() {
+        return "texture-sample-rate";
+    }
+
+    public String area() {
+        return "gfx";
+    }
+
+    public String unit() {
+        return "samples/s";
+    }
+
+    public int64 inputSize() {
+        return (int64) this.threads * (int64) this.per;
+    }
+
+    public String competitorNote() {
+        return "4096^2 RGBA8_UNORM, bilinear clamp, " + this.threads + " threads x " + this.per
+            + " samples at texel centres; competitors: CUDA texture objects (devserver), Vulkan sampled images (not built)";
+    }
+
+    public static int32 texel(int32 x, int32 y, int32 ch) {
+        return (x * 3 + y * 5 + ch * 7) % 256;
+    }
+
+    public void setupDevice() {
+        if (XpuEnv.reduced()) {
+            this.threads = (uint32) 16384;
+        }
+        int32 w = 4096;
+        float32[] px = heap float32[w * w * 4];
+        int32 y = 0;
+        while (y < w) {
+            int32 x = 0;
+            while (x < w) {
+                int32 o = (y * w + x) * 4;
+                px[o] = (float32) TextureSampleBench.texel(x, y, 0) / 255.0f;
+                px[o + 1] = (float32) TextureSampleBench.texel(x, y, 1) / 255.0f;
+                px[o + 2] = (float32) TextureSampleBench.texel(x, y, 2) / 255.0f;
+                px[o + 3] = (float32) TextureSampleBench.texel(x, y, 3) / 255.0f;
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+        this.tex = heap Texture2D((uint32) w, (uint32) w, TextureFormat.RGBA8_UNORM);
+        this.tex.upload(px);
+        this.samp = heap Sampler(1, 0);
+        this.hout = heap float32[(int32) this.threads];
+        this.dout = heap KernelBuffer<float32>((uint64) this.threads);
+        // The host's total over the same walk.
+        float64 s = 0.0;
+        uint32 g = 0;
+        while (g < this.threads) {
+            uint32 k = 0;
+            while (k < this.per) {
+                int32 tx = (int32) ((g + k * 977) % 4096);
+                int32 ty = (int32) ((g / 16 + k * 131) % 4096);
+                int32 sum = TextureSampleBench.texel(tx, ty, 0) + TextureSampleBench.texel(tx, ty, 1)
+                    + TextureSampleBench.texel(tx, ty, 2) + TextureSampleBench.texel(tx, ty, 3);
+                s = s + (float64) sum / 255.0;
+                k = k + 1;
+            }
+            g = g + 1;
+        }
+        this.want = s;
+    }
+
+    public void prepare(String variant) {
+        if (!this.live) {
+            return;
+        }
+        if (this.comp != null) {
+            this.comp.prepare(variant);
+        }
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        TextureSampleBench.sampleAll(this.stream, this.tex, this.samp, this.dout, this.threads, this.per);
+        this.stream.sync();
+    }
+
+    public boolean checkResult() {
+        this.dout.download(this.hout);
+        float64 s = 0.0;
+        int32 m = (int32) this.threads;
+        int32 i = 0;
+        while (i < m) {
+            s = s + (float64) this.hout[i];
+            i = i + 1;
+        }
+        this.got = s;
+        float64 d = s - this.want;
+        if (d < 0.0) { d = -d; }
+        return this.want > 0.0 && d <= 1e-4 * this.want;
+    }
+}

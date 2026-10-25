@@ -1,0 +1,188 @@
+package bench.xpu;
+
+import cajeta.collection.ArrayList;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Workgroup;
+
+import bench.xpu.XpuBench;
+import bench.xpu.XpuEnv;
+
+// xpu/mixbench-sweep: mixbench's "compute with global memory (block strided)"
+// float32 kernel (mixbench-cuda/mix_kernels_cuda.cu benchmark_func): 256
+// threads, 8 elements per thread, fusion degree 4, `compute_iterations` of
+// t = t*t + seed per element, a multiply-add reduction of the eight, and the
+// never-taken store when the sum is -1, over mixbench's 32M-element buffer
+// (2^22 under CAJETA_BENCH_SMOKE=1 on the cpu backend). One variant per
+// intensity: ci0 .. ci256 (mixbench sweeps 0..1024; these are its points up to
+// 256). Differences from the reference, stated in the notes: the iteration
+// count is a kernel argument, not a template constant, so the inner loop is not
+// unrolled by the compiler at a known count; the data are 0.5 and the seed 0.25
+// (a fixed point, so every element and the sum are exact) instead of 0 and 1;
+// thread 0 also writes its sum to a one-element buffer for the checksum.
+// Check: that sum is 1.0 and the data are untouched. Throughput: mixbench's
+// operation count, flop/s.
+public class MixbenchBench extends XpuBench {
+
+    public uint32 n;
+    public uint32 ci;
+    public float32[] hdata;
+    public float32[] hout;
+    public KernelBuffer<float32> ddata;
+    public KernelBuffer<float32> dout;
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void mixF32(KernelBuffer<float32> data, KernelBuffer<float32> out, float32 seed,
+                              uint32 ci, uint32 grid) {
+        uint32 tid = KernelThread.x();
+        uint32 idx = Workgroup.x() * 256 * 8 + tid;
+        uint32 big = grid * 256 * 8;
+        uint32 k = 0;
+        while (k < 4) {
+            uint32 base = idx + k * big;
+            float32 t0 = data[base];
+            float32 t1 = data[base + 256];
+            float32 t2 = data[base + 512];
+            float32 t3 = data[base + 768];
+            float32 t4 = data[base + 1024];
+            float32 t5 = data[base + 1280];
+            float32 t6 = data[base + 1536];
+            float32 t7 = data[base + 1792];
+            uint32 i = 0;
+            while (i < ci) {
+                t0 = t0 * t0 + seed;
+                t1 = t1 * t1 + seed;
+                t2 = t2 * t2 + seed;
+                t3 = t3 * t3 + seed;
+                t4 = t4 * t4 + seed;
+                t5 = t5 * t5 + seed;
+                t6 = t6 * t6 + seed;
+                t7 = t7 * t7 + seed;
+                i = i + 1;
+            }
+            float32 sum = 0.0f;
+            sum = t0 * t1 + sum;
+            sum = t2 * t3 + sum;
+            sum = t4 * t5 + sum;
+            sum = t6 * t7 + sum;
+            if (sum == -1.0f) {
+                data[base] = sum;
+            }
+            if (idx == 0 && k == 0) {
+                out[0] = sum;
+            }
+            k = k + 1;
+        }
+    }
+
+    public static void mix(KernelStream s, KernelBuffer<float32> data, KernelBuffer<float32> out,
+                           uint32 ci, uint32 n) {
+        uint32 grid = n / 8 / 4 / 256;
+        mixF32.launch(s, grid: [grid], block: [256])(data, out, 0.25f, ci, grid);
+    }
+
+    public MixbenchBench() {
+        this.n = (uint32) 33554432;
+        this.ci = 0;
+    }
+
+    public String name() {
+        return "mixbench-sweep";
+    }
+
+    public String unit() {
+        return "flop/s";
+    }
+
+    // mixbench's `computations`: (8 T + 16 ci T) x 4, T = n / 32 threads.
+    public int64 inputSize() {
+        int64 t = (int64) (this.n / 32);
+        return (8 * t + 16 * (int64) this.ci * t) * 4;
+    }
+
+    public String competitorNote() {
+        return "float32 block-strided, 256 threads x 8 elements x fusion 4, n=" + this.n
+            + ", ci=" + this.ci + " (ops/byte " + this.ci + "x0.5+0.25); runtime iteration count (mixbench: template constant), data 0.5 seed 0.25 (mixbench: 0 and 1); competitors: mixbench-cuda and mixbench-hip reference builds";
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("ci0");
+        v.add("ci1");
+        v.add("ci2");
+        v.add("ci4");
+        v.add("ci8");
+        v.add("ci16");
+        v.add("ci32");
+        v.add("ci64");
+        v.add("ci128");
+        v.add("ci256");
+        return v;
+    }
+
+    public static uint32 ciFor(String v) {
+        if (v.equals("ci1")) { return 1; }
+        if (v.equals("ci2")) { return 2; }
+        if (v.equals("ci4")) { return 4; }
+        if (v.equals("ci8")) { return 8; }
+        if (v.equals("ci16")) { return 16; }
+        if (v.equals("ci32")) { return 32; }
+        if (v.equals("ci64")) { return 64; }
+        if (v.equals("ci128")) { return 128; }
+        if (v.equals("ci256")) { return 256; }
+        return 0;
+    }
+
+    public void setupDevice() {
+        if (XpuEnv.reduced()) {
+            this.n = (uint32) 4194304;
+        }
+        int32 m = (int32) this.n;
+        this.hdata = heap float32[m];
+        int32 i = 0;
+        while (i < m) {
+            this.hdata[i] = 0.5f;
+            i = i + 1;
+        }
+        this.ddata = heap KernelBuffer<float32>((uint64) this.n);
+        this.ddata.upload(this.hdata);
+        this.hout = heap float32[1];
+        this.dout = heap KernelBuffer<float32>((uint64) 1);
+    }
+
+    public void prepare(String variant) {
+        if (!this.live) {
+            return;
+        }
+        this.ci = MixbenchBench.ciFor(variant);
+        this.hout[0] = 0.0f;
+        this.dout.upload(this.hout);
+        if (this.comp != null) {
+            this.comp.prepare(variant);
+        }
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        MixbenchBench.mix(this.stream, this.ddata, this.dout, this.ci, this.n);
+        this.stream.sync();
+    }
+
+    public boolean checkResult() {
+        this.dout.download(this.hout);
+        if (this.hout[0] != 1.0f) {
+            return false;
+        }
+        this.ddata.download(this.hdata);
+        int32 m = (int32) this.n;
+        int32 i = 0;
+        while (i < m) {
+            if (this.hdata[i] != 0.5f) {
+                return false;
+            }
+            i = i + 4099;
+        }
+        return true;
+    }
+}

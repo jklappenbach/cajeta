@@ -145,6 +145,36 @@
             "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
         },
 
+        // Phoenix (RTX 4090, sm_89, CUDA 13.3 under WSL2). nvptx + cpu in one
+        // binary; the backend is chosen at run time with CAJETA_XPU_BACKEND=cuda
+        // or =cpu. ptxas comes from $CUDA_PATH/bin (set CUDA_PATH=/usr/local/cuda:
+        // CUDA 12.0's ptxas miscompiles spilled cooperative-matrix tiles, and the
+        // compiler refuses anything below 12.1). Output build/bench-nvptx.
+        "gpu-nvptx": {
+            "description": "Release build with the nvptx (sm_89, Phoenix) and cpu XPU backends for the xpu/ and gfx/ @Kernel benchmarks; run with CAJETA_XPU_BACKEND=cuda (or cpu). Needs CUDA_PATH=/usr/local/cuda for ptxas >= 12.1. Output build/bench-nvptx.",
+            "actions": [
+                { "action": "build",
+                  "flavor": { "base": "release", "opt": "O3", "cpu": "native",
+                              "xpu-backend": "nvptx,cpu", "xpu-arch": "sm_89" },
+                  "output-path": "build/bench-nvptx", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+
+        // Vulkan through the cajeta-llvm fork's SPIR-V path (vulkan1.3 env, the
+        // vulkan default), plus cpu. Run with CAJETA_XPU_BACKEND=vulkan (or cpu).
+        // Phoenix (NVIDIA under WSL2's dozen/NVIDIA ICD) and Proton (RADV).
+        "gpu-vulkan": {
+            "description": "Release build with the vulkan (SPIR-V, vulkan1.3) and cpu XPU backends for the xpu/ and gfx/ @Kernel benchmarks; run with CAJETA_XPU_BACKEND=vulkan (or cpu). Output build/bench-vulkan.",
+            "actions": [
+                { "action": "build",
+                  "flavor": { "base": "release", "opt": "O3", "cpu": "native",
+                              "xpu-backend": "vulkan,cpu" },
+                  "output-path": "build/bench-vulkan", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+
         "clean": {
             "description": "Wipe build outputs",
             "actions": [ { "action": "clean" } ]

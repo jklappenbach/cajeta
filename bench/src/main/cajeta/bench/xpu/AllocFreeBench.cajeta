@@ -1,0 +1,76 @@
+package bench.xpu;
+
+import cajeta.xpu.KernelBuffer;
+
+import bench.xpu.XpuBench;
+import bench.xpu.XpuEnv;
+
+// xpu/kernelbuffer-alloc-free: 1e4 allocate-and-free of a 64 MB KernelBuffer
+// (16M float32) per trial (1e2 under CAJETA_BENCH_SMOKE=1 on the cpu backend),
+// `heap KernelBuffer<float32>(n)` then an explicit free(). Nothing is written,
+// so this is the allocator's cost, not first-touch paging. Check: every
+// allocation reported the requested length, and the count matches the trials.
+// Throughput: allocations/s.
+public class AllocFreeBench extends XpuBench {
+
+    public int32 count;
+    public int64 good;
+    public int64 runs;
+
+    public AllocFreeBench() {
+        this.count = 10000;
+        this.good = 0;
+        this.runs = 0;
+    }
+
+    public String name() {
+        return "kernelbuffer-alloc-free";
+    }
+
+    public String unit() {
+        return "allocs/s";
+    }
+
+    public int64 inputSize() {
+        return (int64) this.count;
+    }
+
+    public String competitorNote() {
+        return "" + this.count + " x 64 MB allocate + free per trial; competitors: cudaMalloc/cudaFree and hipMalloc/hipFree (devserver), PyTorch caching allocator (torch.empty + del)";
+    }
+
+    public void setupDevice() {
+        if (XpuEnv.reduced()) {
+            this.count = 100;
+        }
+    }
+
+    public void prepare(String variant) {
+        if (!this.live) {
+            return;
+        }
+        this.good = 0;
+        this.runs = 0;
+        if (this.comp != null) {
+            this.comp.prepare(variant);
+        }
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        uint64 want = (uint64) 16777216;
+        int32 i = 0;
+        while (i < this.count) {
+            KernelBuffer<float32> k = heap KernelBuffer<float32>(want);
+            if (k.length() == want) {
+                this.good = this.good + 1;
+            }
+            k.free();
+            i = i + 1;
+        }
+        this.runs = this.runs + 1;
+    }
+
+    public boolean checkResult() {
+        return this.runs > 0 && this.good == this.runs * (int64) this.count;
+    }
+}

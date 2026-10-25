@@ -1,0 +1,95 @@
+package bench.xpu;
+
+import cajeta.xpu.KernelBuffer;
+
+import bench.xpu.XpuBench;
+import bench.xpu.XpuKernels;
+
+// xpu/wave-reduce: the sum of 2^26 float32 on the device with wave
+// reductions: 1024 blocks of 256 threads stride over the input, each wave
+// folds with Wave.reduceSumF32 and writes one partial, and one workgroup folds
+// the partials with Workgroup.reduce (XpuKernels.reduce). x[i] = (i % 8) / 8.
+// Check: within 1e-5 relative of the host's float64 sum (the device adds in
+// float32 in a wave-width-dependent order). Throughput: 4 bytes per element, B/s.
+public class WaveReduceBench extends XpuBench {
+
+    public uint32 n;
+    public uint32 blocks;
+    public float64 want;
+    public float32 got;
+    public float32[] hx;
+    public float32[] hout;
+    public KernelBuffer<float32> dx;
+    public KernelBuffer<float32> dpart;
+    public KernelBuffer<float32> dout;
+
+    public WaveReduceBench() {
+        this.n = (uint32) 67108864;
+        this.blocks = (uint32) 1024;
+        this.want = 0.0;
+        this.got = 0.0f;
+    }
+
+    public String name() {
+        return "wave-reduce";
+    }
+
+    public String unit() {
+        return "B/s";
+    }
+
+    public int64 inputSize() {
+        return 4 * (int64) this.n;
+    }
+
+    public String competitorNote() {
+        return "2^26 float32; 1024 x 256 threads, Wave.reduceSumF32 then Workgroup.reduce; competitors: CUB DeviceReduce::Sum (devserver), rocPRIM, PyTorch sum";
+    }
+
+    public void setupDevice() {
+        int32 m = (int32) this.n;
+        this.hx = heap float32[m];
+        float64 s = 0.0;
+        int32 i = 0;
+        while (i < m) {
+            float32 v = (float32) (i % 8) * 0.125f;
+            this.hx[i] = v;
+            s = s + (float64) v;
+            i = i + 1;
+        }
+        this.want = s;
+        this.dx = heap KernelBuffer<float32>((uint64) this.n);
+        this.dx.upload(this.hx);
+        int32 slots = (int32) (this.blocks * 256 / 4);
+        float32[] z = heap float32[slots];
+        this.dpart = heap KernelBuffer<float32>((uint64) slots);
+        this.dpart.upload(z);
+        this.hout = heap float32[1];
+        this.dout = heap KernelBuffer<float32>((uint64) 1);
+        this.dout.upload(this.hout);
+    }
+
+    public void prepare(String variant) {
+        if (!this.live) {
+            return;
+        }
+        if (this.comp != null) {
+            this.comp.prepare(variant);
+        }
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        XpuKernels.reduce(this.stream, this.dout, this.dpart, this.dx, this.n, this.blocks);
+        this.stream.sync();
+    }
+
+    public boolean checkResult() {
+        this.dout.download(this.hout);
+        this.got = this.hout[0];
+        float64 d = (float64) this.got - this.want;
+        if (d < 0.0) {
+            d = -d;
+        }
+        return d <= 1e-5 * this.want;
+    }
+}

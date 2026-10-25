@@ -11,7 +11,7 @@
 #   - area/benchmark mapped to the catalog id <package>/<slug>:
 #       sort -> collection, string|stream|clbg -> lang,
 #       math/saxpy|math/dot-product -> lang (the SIMD rows of Math.md),
-#       math/matmul stays math, gpu/matmul -> xpu/gemm-f32,
+#       math/matmul stays math, gpu/matmul -> xpu/gemm-f64 (the first suite's float64 matmul),
 #       gpu/matmul-f16 -> xpu/gemm-f16; time, concurrent, hash, codec as is;
 #       scaffold/hello (the toolchain probe) -> selftest/hello;
 #   - backend defaults to cpu;
@@ -81,7 +81,7 @@ rows_v2() {
         if (area == "sort") return "collection" SUBSEP bench
         if (area == "string" || area == "stream" || area == "clbg") return "lang" SUBSEP bench
         if (key == "math/saxpy" || key == "math/dot-product") return "lang" SUBSEP bench
-        if (key == "gpu/matmul") return "xpu" SUBSEP "gemm-f32"
+        if (key == "gpu/matmul") return "xpu" SUBSEP "gemm-f64"
         if (key == "gpu/matmul-f16") return "xpu" SUBSEP "gemm-f16"
         if (area == "gpu") return "xpu" SUBSEP bench
         if (area == "scaffold") return "selftest" SUBSEP bench

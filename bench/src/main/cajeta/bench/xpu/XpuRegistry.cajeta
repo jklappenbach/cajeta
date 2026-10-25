@@ -4,13 +4,38 @@ import cajeta.collection.ArrayList;
 
 import dev.cajeta.bench.Benchmark;
 
-// Registers every xpu/ benchmark, in catalog order. A unit adds a xpu/
-// benchmark by writing the class in this directory and one `b.add(heap X());`
-// line here; Bench.cajeta calls this and is never edited for it.
+// Registers every xpu/ benchmark, in catalog order (bench/xpu/Device.md,
+// KernelBuffer.md, KernelStream.md, KernelTimer.md, mesh/MeshSimplifier.md).
+// A unit adds a xpu/ benchmark by writing the class in this directory and one
+// `b.add(heap X());` line here; Bench.cajeta calls this and is never edited for it.
 public final class XpuRegistry {
 
     public static void register(ArrayList<Benchmark> b) {
+        // Device.md
+        b.add(heap BabelStreamBench(0));
+        b.add(heap BabelStreamBench(1));
+        b.add(heap BabelStreamBench(2));
+        b.add(heap BabelStreamBench(3));
+        b.add(heap BabelStreamBench(4));
+        b.add(heap SaxpyBench());
+        b.add(heap WaveReduceBench());
+        b.add(heap ScanBench());
         b.add(heap GpuMatMulBench());
+        b.add(heap GemmBench(false));
         b.add(heap GpuMatMulF16Bench());
+        b.add(heap GemmBench(true));
+        b.add(heap MandelbrotDeviceBench());
+        b.add(heap MixbenchBench());
+        b.add(heap LaunchOverheadBench());
+        b.add(heap CrossBackendShowcaseBench());
+        // KernelBuffer.md
+        b.add(heap AllocFreeBench());
+        b.add(heap TransferBench());
+        // KernelStream.md
+        b.add(heap TwoStreamBench());
+        // KernelTimer.md
+        b.add(heap KernelTimerBench());
+        // mesh/MeshSimplifier.md
+        b.add(heap MeshSimplifyBench());
     }
 }

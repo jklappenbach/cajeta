@@ -1,0 +1,181 @@
+package bench.xpu;
+
+import cajeta.io.file.File;
+import cajeta.io.file.FileReader;
+import cajeta.xpu.Device;
+
+// The environment every xpu/ and gfx/ benchmark reads, in one place.
+//
+//   CAJETA_XPU_BACKEND   the backend this process runs: cuda (nvptx), hip
+//                        (amdgpu), vulkan (spirv) or cpu. The runtime honours it
+//                        at the first device touch; the row's backend column
+//                        says it. Unset: cpu when CAJETA_BENCH_NO_GPU=1 (forced
+//                        before any touch), else whatever the runtime selects.
+//   CAJETA_BENCH_NO_GPU  1: another session holds the GPU. Every non-cpu row is
+//                        a `skipped` row and nothing touches a device: no
+//                        Device query, no stream, no buffer.
+//   CAJETA_BENCH_SMOKE   1: on the cpu backend the device workloads run at
+//                        the reduced sizes each benchmark names in its notes
+//                        (the software kernels at page size take minutes).
+public final class XpuEnv {
+
+    public XpuEnv() {
+        return;
+    }
+
+    public static boolean truthy(String v) {
+        if (v == null) {
+            return false;
+        }
+        return v.equals("1") || v.equals("true") || v.equals("yes");
+    }
+
+    public static boolean gpuHeld() {
+        return XpuEnv.truthy(System.env.get("CAJETA_BENCH_NO_GPU"));
+    }
+
+    public static boolean smoke() {
+        return XpuEnv.truthy(System.env.get("CAJETA_BENCH_SMOKE"));
+    }
+
+    // The requested backend in the runtime's vocabulary (cuda, hip, vulkan,
+    // cpu), or "" when CAJETA_XPU_BACKEND is unset, or "other" for a name the
+    // runtime does not know.
+    public static String requested() {
+        String bk = System.env.get("CAJETA_XPU_BACKEND");
+        if (bk == null) {
+            return "";
+        }
+        if (bk.equals("cuda") || bk.equals("nvptx") || bk.equals("nvidia")) {
+            return "cuda";
+        }
+        if (bk.equals("hip") || bk.equals("amdgpu") || bk.equals("rocm")) {
+            return "hip";
+        }
+        if (bk.equals("vulkan") || bk.equals("spirv")) {
+            return "vulkan";
+        }
+        if (bk.equals("cpu")) {
+            return "cpu";
+        }
+        return "other";
+    }
+
+    // The backend this process's rows run on. Never touches a device when the
+    // GPU is held: an unset request then means cpu.
+    public static String backend() {
+        String r = XpuEnv.requested();
+        if (r.equals("cuda")) {
+            return "cuda";
+        }
+        if (r.equals("hip")) {
+            return "hip";
+        }
+        if (r.equals("vulkan")) {
+            return "vulkan";
+        }
+        if (r.equals("cpu")) {
+            return "cpu";
+        }
+        if (r.equals("other")) {
+            return "none";
+        }
+        if (XpuEnv.gpuHeld()) {
+            return "cpu";
+        }
+        String a = Device.activeBackend();
+        if (a.equals("cuda")) {
+            return "cuda";
+        }
+        if (a.equals("hip")) {
+            return "hip";
+        }
+        if (a.equals("vulkan")) {
+            return "vulkan";
+        }
+        if (a.equals("cpu")) {
+            return "cpu";
+        }
+        return "none";
+    }
+
+    public static boolean onCpu() {
+        String b = XpuEnv.backend();
+        return b.equals("cpu");
+    }
+
+    // ROCm is looked for on disk only (ROCM_PATH or /opt/rocm), never by a
+    // device query.
+    public static boolean rocmPresent() {
+        String root = System.env.get("ROCM_PATH");
+        if (root != null) {
+            FileReader r #= File.openRead(root + "/.info/version");
+            if (r.fd >= 0) {
+                r.close();
+                return true;
+            }
+        }
+        FileReader o #= File.openRead("/opt/rocm/.info/version");
+        if (o.fd >= 0) {
+            o.close();
+            return true;
+        }
+        return false;
+    }
+
+    // Before the first device touch: force cpu when nothing was requested and
+    // the GPU is held, so the runtime's CUDA -> HIP -> Vulkan probe never runs.
+    public static void pin() {
+        if (XpuEnv.requested().isEmpty() && XpuEnv.gpuHeld()) {
+            try {
+                Device.force("cpu");
+            } catch (Throwable e) {
+                // already selected (an earlier benchmark pinned it)
+            }
+        }
+    }
+
+    // Why a row on this backend cannot run here; "" when it can. Decided from
+    // the environment and the disk alone, so a held GPU is never touched.
+    public static String blocker() {
+        String b = XpuEnv.backend();
+        if (b.equals("cpu")) {
+            return "";
+        }
+        if (b.equals("none")) {
+            return "unknown CAJETA_XPU_BACKEND (cuda, hip, vulkan, cpu)";
+        }
+        if (b.equals("hip") && !XpuEnv.rocmPresent()) {
+            return "no ROCm on this machine";
+        }
+        if (XpuEnv.gpuHeld()) {
+            return "GPU held by another session (CAJETA_BENCH_NO_GPU=1)";
+        }
+        // Allowed to touch the device: is the backend the runtime selected the
+        // one requested (a binary built without it falls back)?
+        String a = Device.activeBackend();
+        if (!a.equals(b)) {
+            return "backend " + b + " not bundled in this build or not available (runtime selected "
+                + a + "; build with cajeta gpu-nvptx, gpu-vulkan or gpu)";
+        }
+        return "";
+    }
+
+    public static boolean runnable() {
+        String why = XpuEnv.blocker();
+        return why.isEmpty();
+    }
+
+    // A size for this backend: the page's size, or the reduced smoke size on
+    // the cpu backend under CAJETA_BENCH_SMOKE=1.
+    public static int64 size(int64 page, int64 smokeCpu) {
+        if (XpuEnv.smoke() && XpuEnv.onCpu()) {
+            return smokeCpu;
+        }
+        return page;
+    }
+
+    public static boolean reduced() {
+        return XpuEnv.smoke() && XpuEnv.onCpu();
+    }
+}

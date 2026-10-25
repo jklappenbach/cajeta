@@ -1,0 +1,267 @@
+package bench.xpu;
+
+import cajeta.collection.ArrayList;
+import cajeta.io.file.File;
+import cajeta.io.file.FileReader;
+import cajeta.io.file.FileWriter;
+import cajeta.io.file.OpenMode;
+import cajeta.xpu.KernelBuffer;
+
+import bench.xpu.XpuBench;
+import bench.xpu.XpuEnv;
+import bench.xpu.XpuKernels;
+
+// xpu/cross-backend-showcase: the saxpy, wave reduce and CooperativeMatrix
+// GEMM kernels of XpuKernels (the same source the device-saxpy, wave-reduce and
+// gemm-f32 rows measure) run together, one trial = upload y, saxpy over 2^20,
+// reduce over 2^20, a 256 x 256 GEMM, sync. Variants cuda, hip, vulkan, cpu.
+// The runtime selects one backend per process, so each variant runs in the
+// process whose CAJETA_XPU_BACKEND names it and the others are skipped there.
+// Consistency: each process writes its outputs' digests to
+// $CAJETA_XPU_SHOWCASE_DIR/<backend>.digest (default build/) and compares with
+// every other backend's digest already present. saxpy and GEMM are exact
+// (integer-valued inputs; the digest is the float64 sum and position-weighted
+// sum of every output) and must match bit for bit; the float32 reduce is
+// compared with the host's float64 sum within 1e-5 relative (every backend
+// against the same reference, so any two agree within 2e-5).
+public class CrossBackendShowcaseBench extends XpuBench {
+
+    public uint32 n;
+    public uint32 g;
+    public String asked;
+    public String digest;
+    public String mismatch;
+    public float64 reduceWant;
+    public float32[] hx;
+    public float32[] hy;
+    public float32[] hr;
+    public float32[] ha;
+    public float32[] hb;
+    public float32[] hc;
+    public KernelBuffer<float32> dx;
+    public KernelBuffer<float32> dy;
+    public KernelBuffer<float32> dpart;
+    public KernelBuffer<float32> dred;
+    public KernelBuffer<float32> da;
+    public KernelBuffer<float32> db;
+    public KernelBuffer<float32> dc;
+
+    public CrossBackendShowcaseBench() {
+        this.n = (uint32) 1048576;
+        this.g = (uint32) 256;
+        this.asked = "";
+        this.digest = "";
+        this.mismatch = "";
+        this.reduceWant = 0.0;
+    }
+
+    public String name() {
+        return "cross-backend-showcase";
+    }
+
+    public String unit() {
+        return "trials/s";
+    }
+
+    public int64 inputSize() {
+        return 1;
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("cuda");
+        v.add("hip");
+        v.add("vulkan");
+        v.add("cpu");
+        return v;
+    }
+
+    public String backendFor(String variant) {
+        return variant;
+    }
+
+    // dev.cajeta.bench 0.1.1 asks supportsVariant(v) and, when false, reads
+    // skipReason() for that same v at once; remember which v it asked.
+    public boolean supportsVariant(String variant) {
+        this.asked #= variant.clone();
+        String b = XpuEnv.backend();
+        return this.live && variant.equals(b);
+    }
+
+    public String skipReason() {
+        String b = XpuEnv.backend();
+        if (this.asked.equals(b)) {
+            return this.why;
+        }
+        if (this.asked.equals("hip") && !XpuEnv.rocmPresent()) {
+            return "no ROCm on this machine";
+        }
+        return "one backend per process: this variant runs where CAJETA_XPU_BACKEND=" + this.asked;
+    }
+
+    public String competitorNote() {
+        String d = "";
+        if (!this.digest.isEmpty()) {
+            d = this.digest + "; ";
+        }
+        if (!this.mismatch.isEmpty()) {
+            d = d + "MISMATCH " + this.mismatch + "; ";
+        }
+        return d + "saxpy 2^20 + wave reduce 2^20 + CooperativeMatrix GEMM 256, one source; compared across the backends' digests in CAJETA_XPU_SHOWCASE_DIR";
+    }
+
+    public void setupDevice() {
+        int32 m = (int32) this.n;
+        this.hx = heap float32[m];
+        this.hy = heap float32[m];
+        float64 s = 0.0;
+        int32 i = 0;
+        while (i < m) {
+            this.hx[i] = (float32) (i % 16);
+            s = s + (float64) ((float32) (i % 16));
+            i = i + 1;
+        }
+        this.reduceWant = s;
+        this.dx = heap KernelBuffer<float32>((uint64) this.n);
+        this.dx.upload(this.hx);
+        this.dy = heap KernelBuffer<float32>((uint64) this.n);
+        float32[] z = heap float32[64 * 256 / 4];
+        this.dpart = heap KernelBuffer<float32>((uint64) (64 * 256 / 4));
+        this.dpart.upload(z);
+        this.hr = heap float32[1];
+        this.dred = heap KernelBuffer<float32>((uint64) 1);
+        int32 gg = (int32) (this.g * this.g);
+        this.ha = heap float32[gg];
+        this.hb = heap float32[gg];
+        this.hc = heap float32[gg];
+        i = 0;
+        while (i < gg) {
+            this.ha[i] = (float32) ((i / 7) % 4);
+            this.hb[i] = (float32) ((i / 3) % 5);
+            i = i + 1;
+        }
+        this.da = heap KernelBuffer<float32>((uint64) gg);
+        this.db = heap KernelBuffer<float32>((uint64) gg);
+        this.dc = heap KernelBuffer<float32>((uint64) gg);
+        this.da.upload(this.ha);
+        this.db.upload(this.hb);
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        int32 m = (int32) this.n;
+        int32 i = 0;
+        while (i < m) {
+            this.hy[i] = 1.0f;
+            i = i + 1;
+        }
+        this.dy.upload(this.hy);
+        XpuKernels.saxpy(this.stream, this.dy, this.dx, 2.0f, this.n);
+        XpuKernels.reduce(this.stream, this.dred, this.dpart, this.dx, this.n, (uint32) 64);
+        XpuKernels.gemmF32(this.stream, this.dc, this.da, this.db, this.g);
+        this.stream.sync();
+    }
+
+    public static #String digestOf(float32[] v, int32 m) {
+        float64 s = 0.0;
+        float64 w = 0.0;
+        int32 i = 0;
+        while (i < m) {
+            s = s + (float64) v[i];
+            w = w + (float64) v[i] * (float64) (i % 4096 + 1);
+            i = i + 1;
+        }
+        // Integer-valued sums, exact in float64 below 2^53: print them as integers.
+        return "" + (int64) s + "/" + (int64) w;
+    }
+
+    public static #String dirName() {
+        String d = System.env.get("CAJETA_XPU_SHOWCASE_DIR");
+        if (d == null || d.isEmpty()) {
+            return "build";
+        }
+        return "" + d;
+    }
+
+    public static #String readFile(String path) {
+        FileReader r #= File.openRead(path);
+        if (r.fd < 0) {
+            return "";
+        }
+        String text #= r.readString(4096);
+        r.close();
+        if (text == null) {
+            return "";
+        }
+        return text;
+    }
+
+    public boolean checkResult() {
+        int32 m = (int32) this.n;
+        this.dy.download(this.hy);
+        int32 i = 0;
+        while (i < m) {
+            if (this.hy[i] != 1.0f + 2.0f * (float32) (i % 16)) {
+                this.mismatch = "saxpy differs from the host";
+                return false;
+            }
+            i = i + 1;
+        }
+        this.dred.download(this.hr);
+        float64 d = (float64) this.hr[0] - this.reduceWant;
+        if (d < 0.0) { d = -d; }
+        if (d > 1e-5 * this.reduceWant) {
+            this.mismatch = "reduce outside 1e-5 of the host";
+            return false;
+        }
+        this.dc.download(this.hc);
+        int32 gn = (int32) this.g;
+        int32 s = 0;
+        while (s < 64) {
+            int32 r = (s * 37 + 11) % gn;
+            int32 c = (s * 101 + 5) % gn;
+            float64 want = 0.0;
+            int32 k = 0;
+            while (k < gn) {
+                want = want + (float64) this.ha[r * gn + k] * (float64) this.hb[k * gn + c];
+                k = k + 1;
+            }
+            if ((float64) this.hc[r * gn + c] != want) {
+                this.mismatch = "gemm differs from the host";
+                return false;
+            }
+            s = s + 1;
+        }
+        String ds #= CrossBackendShowcaseBench.digestOf(this.hy, m);
+        String dg #= CrossBackendShowcaseBench.digestOf(this.hc, gn * gn);
+        String exact = "saxpy " + ds + " gemm " + dg;
+        this.digest = exact + " reduce " + this.hr[0];
+        String dir #= CrossBackendShowcaseBench.dirName();
+        String me = XpuEnv.backend();
+        FileWriter w #= File.openWrite(dir + "/" + me + ".digest", OpenMode.WRITE);
+        if (w.fd >= 0) {
+            w.writeString(exact);
+            w.flush();
+            w.close();
+        }
+        boolean ok = true;
+        ArrayList<String> others #= this.variants();
+        int32 j = 0;
+        int32 cnt = others.count();
+        while (j < cnt) {
+            String o = others.get(j);
+            if (!o.equals(me)) {
+                String theirs #= CrossBackendShowcaseBench.readFile(dir + "/" + o + ".digest");
+                if (!theirs.isEmpty()) {
+                    if (!theirs.equals(exact)) {
+                        this.mismatch = this.mismatch + o + " (" + theirs + ") ";
+                        ok = false;
+                    } else {
+                        this.digest = this.digest + "; bit-exact with " + o;
+                    }
+                }
+            }
+            j = j + 1;
+        }
+        return ok;
+    }
+}

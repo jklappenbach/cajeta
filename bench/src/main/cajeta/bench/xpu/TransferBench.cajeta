@@ -1,0 +1,97 @@
+package bench.xpu;
+
+import cajeta.xpu.KernelBuffer;
+
+import bench.xpu.XpuBench;
+import bench.xpu.XpuEnv;
+
+// xpu/host-device-transfer: copy 1 GB host -> device -> host per trial (2^28
+// float32 = 1 GiB; 2^26 under CAJETA_BENCH_SMOKE=1 on the cpu backend, where
+// the "device" is host memory), KernelBuffer.upload then download, pageable
+// host arrays. Check: the round-tripped array's checksum equals the source's
+// (values i % 1000, summed exactly in float64), and the destination is
+// cleared before the last trial's check so a skipped copy cannot pass.
+// Throughput: both directions' bytes, B/s.
+public class TransferBench extends XpuBench {
+
+    public uint32 n;
+    public float32[] src;
+    public float32[] dst;
+    public float64 want;
+    public KernelBuffer<float32> dbuf;
+
+    public TransferBench() {
+        this.n = (uint32) 268435456;
+        this.want = 0.0;
+    }
+
+    public String name() {
+        return "host-device-transfer";
+    }
+
+    public String area() {
+        return "xpu";
+    }
+
+    public String unit() {
+        return "B/s";
+    }
+
+    public int64 inputSize() {
+        return 8 * (int64) this.n;
+    }
+
+    public String competitorNote() {
+        return "n=" + this.n + " float32 (" + (4 * (int64) this.n) + " bytes) each way, pageable host memory; competitors: cudaMemcpy and hipMemcpy (devserver), PyTorch .to() / .cpu()";
+    }
+
+    public void setupDevice() {
+        if (XpuEnv.reduced()) {
+            this.n = (uint32) 67108864;
+        }
+        int32 m = (int32) this.n;
+        this.src = heap float32[m];
+        this.dst = heap float32[m];
+        float64 s = 0.0;
+        int32 i = 0;
+        while (i < m) {
+            float32 v = (float32) (i % 1000);
+            this.src[i] = v;
+            s = s + (float64) v;
+            i = i + 1;
+        }
+        this.want = s;
+        this.dbuf = heap KernelBuffer<float32>((uint64) this.n);
+    }
+
+    public void prepare(String variant) {
+        if (!this.live) {
+            return;
+        }
+        if (this.comp != null) {
+            this.comp.prepare(variant);
+        }
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        this.dbuf.upload(this.src);
+        this.dbuf.download(this.dst);
+    }
+
+    public boolean checkResult() {
+        int32 m = (int32) this.n;
+        int32 i = 0;
+        while (i < m) {
+            this.dst[i] = 0.0f;
+            i = i + 1;
+        }
+        this.runVariant("", 1);
+        float64 s = 0.0;
+        i = 0;
+        while (i < m) {
+            s = s + (float64) this.dst[i];
+            i = i + 1;
+        }
+        return s == this.want;
+    }
+}

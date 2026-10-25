@@ -1,0 +1,93 @@
+package bench.xpu;
+
+import cajeta.xpu.KernelBuffer;
+
+import bench.xpu.XpuBench;
+import bench.xpu.XpuKernels;
+
+// xpu/scan: inclusive scan of 2^26 int32 on the device, reduce-then-scan over
+// tiles of 4096 (XpuKernels.scan: tile totals, one workgroup for the tile
+// offsets, then each tile with Workgroup.scan). x[i] = (i % 5) - 2. Check:
+// every element against the host's scan (the page asks for the last element
+// and spot checks; this is all of them). Throughput: 8 bytes per element
+// (read once, written once; the two passes over x are not counted), B/s.
+public class ScanBench extends XpuBench {
+
+    public uint32 n;
+    public int32[] hx;
+    public int32[] ref;
+    public int32[] hout;
+    public KernelBuffer<int32> dx;
+    public KernelBuffer<int32> dout;
+    public KernelBuffer<int32> dsums;
+    public KernelBuffer<int32> doffs;
+
+    public ScanBench() {
+        this.n = (uint32) 67108864;
+    }
+
+    public String name() {
+        return "scan";
+    }
+
+    public String unit() {
+        return "B/s";
+    }
+
+    public int64 inputSize() {
+        return 8 * (int64) this.n;
+    }
+
+    public String competitorNote() {
+        return "2^26 int32 inclusive, reduce-then-scan tiles of 4096 with Workgroup.scan; competitors: CUB DeviceScan::InclusiveSum (devserver), rocPRIM, PyTorch cumsum";
+    }
+
+    public void setupDevice() {
+        int32 m = (int32) this.n;
+        this.hx = heap int32[m];
+        this.ref = heap int32[m];
+        this.hout = heap int32[m];
+        int32 run = 0;
+        int32 i = 0;
+        while (i < m) {
+            int32 v = (i % 5) - 2;
+            this.hx[i] = v;
+            run = run + v;
+            this.ref[i] = run;
+            i = i + 1;
+        }
+        this.dx = heap KernelBuffer<int32>((uint64) this.n);
+        this.dx.upload(this.hx);
+        this.dout = heap KernelBuffer<int32>((uint64) this.n);
+        uint32 tiles = this.n / 4096;
+        this.dsums = heap KernelBuffer<int32>((uint64) tiles);
+        this.doffs = heap KernelBuffer<int32>((uint64) tiles);
+    }
+
+    public void prepare(String variant) {
+        if (!this.live) {
+            return;
+        }
+        if (this.comp != null) {
+            this.comp.prepare(variant);
+        }
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        XpuKernels.scan(this.stream, this.dout, this.dx, this.dsums, this.doffs, this.n);
+        this.stream.sync();
+    }
+
+    public boolean checkResult() {
+        this.dout.download(this.hout);
+        int32 m = (int32) this.n;
+        int32 i = 0;
+        while (i < m) {
+            if (this.hout[i] != this.ref[i]) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+}

@@ -10,8 +10,12 @@ import cajeta.xpu.Shared;
 import cajeta.xpu.BlockPadded;
 import cajeta.xpu.CooperativeMatrix;
 
-import dev.cajeta.bench.Benchmark;
+import bench.xpu.XpuBench;
+import bench.xpu.XpuEnv;
 
+// xpu/gemm-f16: 4096 x 4096 (256 under CAJETA_BENCH_SMOKE=1 on the cpu backend),
+// float16 operands, float32 accumulate, through CooperativeMatrix. Throughput 2 n^3 flop/s.
+//
 // Torch-recipe f16 WMMA GEMM (gpu-f16-torch-recipe) — implements torch's VERIFIED gfx1151
 // kernel shape: MT 96x128, depthU 64, MIWT 3x4 = 12 accumulators/wave, 4 waves (128 threads).
 // Wide 128-bit global loads on BOTH operands (GRVWA8/GRVWB8, vload<8>); B stored TRANSPOSED in
@@ -22,7 +26,7 @@ import dev.cajeta.bench.Benchmark;
 // next-panel staging is interleaved one slice per K-substep (load->WMMA->commit, ~4 vectors
 // live). torch hits 38.2 with this shape + PGR2 + LRVW16; this build = wide-loads + transposed
 // + bank-conflict-free reads. A = identity ⇒ C == B. n % 128 == 0 (N); M (96-tile) bounds-checked.
-public class GpuMatMulF16Bench extends Benchmark {
+public class GpuMatMulF16Bench extends XpuBench {
 
     public float16[] a;
     public float16[] b;
@@ -30,7 +34,6 @@ public class GpuMatMulF16Bench extends Benchmark {
     public KernelBuffer<float16> ka;
     public KernelBuffer<float16> kb;
     public KernelBuffer<float32> kc;
-    public KernelStream stream;
     public int32 nDim;
     public uint32 nU;
     public uint32 gridX;
@@ -39,6 +42,7 @@ public class GpuMatMulF16Bench extends Benchmark {
     public float64 cSum;
 
     @Kernel
+    @Occupancy(maxThreads = 128)   // four waves of 32, the shape the tiling assumes
     public static void gemmF16(KernelBuffer<float32> c, KernelBuffer<float16> a,
                                KernelBuffer<float16> b, uint32 n) {
         uint32 blockRow = Workgroup.y();
@@ -168,91 +172,41 @@ public class GpuMatMulF16Bench extends Benchmark {
         }
     }
 
+    public GpuMatMulF16Bench() {
+        this.nDim = 4096;
+    }
+
     public String name() {
         return "gemm-f16";
     }
 
-    public String area() {
-        return "xpu";
+    public String unit() {
+        return "flop/s";
     }
 
-    public String backend() {
-        String bk = System.env.get("CAJETA_XPU_BACKEND");
-        if (bk == null) {
-            return "cpu";
-        }
-        if (bk.equals("hip")) {
-            return "hip";
-        }
-        if (bk.equals("vulkan")) {
-            return "vulkan";
-        }
-        if (bk.equals("amdgpu")) {
-            return "amdgpu";
-        }
-        if (bk.equals("cpu")) {
-            return "cpu";
-        }
-        return "cpu";
-    }
-
-    public boolean available() {
-        String bk = System.env.get("CAJETA_XPU_BACKEND");
-        if (bk == null) {
-            return true;
-        }
-        if (bk.equals("hip") || bk.equals("amdgpu") || bk.equals("vulkan")
-                || bk.equals("cpu")) {
-            return true;
-        }
-        return false;
-    }
-
-    public String skipReason() {
-        return "xpu backend not available in this build (CAJETA_XPU_BACKEND)";
-    }
-
-    public int32 warmupIters() {
-        return 5;
-    }
-
-    public int32 measuredIters() {
-        return 30;
+    public String competitorNote() {
+        return "float16 operands, float32 accumulate, the gfx1151 torch-recipe tiling (MT 96x128, 4 waves of 32, wave width assumed 32), A = identity; competitors: cuBLAS cublasGemmEx f16/f32-acc (devserver), rocBLAS, PyTorch matmul f16";
     }
 
     public #ArrayList<String> variants() {
         ArrayList<String> v = heap ArrayList<String>();
-        v.add("n256");
-        v.add("n512");
-        v.add("n1024");
-        v.add("n2048");
+        if (XpuEnv.reduced()) {
+            v.add("n256");
+        } else {
+            v.add("n4096");
+        }
         return v;
     }
 
-    private int32 sizeFor(String variant) {
-        if (variant.equals("n256")) {
-            return 256;
-        }
-        if (variant.equals("n512")) {
-            return 512;
-        }
-        if (variant.equals("n1024")) {
-            return 1024;
-        }
-        if (variant.equals("n2048")) {
-            return 2048;
-        }
-        return 256;
-    }
-
-    public void setup() {
-        this.stream #= KernelStream.current();
-    }
-
-    // A = identity, B[idx]=idx%100 (exact in f16) ⇒ C == B exactly. f32 accumulate
-    // holds the f16 product without loss for these inputs — exact cross-check.
+    // A = identity, B[idx]=idx%100 (exact in f16) ⇒ C == B exactly.
     public void prepare(String variant) {
-        this.nDim = this.sizeFor(variant);
+        if (!this.live) {
+            return;
+        }
+        this.nDim = 4096;
+        if (XpuEnv.reduced()) {
+            this.nDim = 256;
+        }
         int32 sz = this.nDim * this.nDim;
         this.a = heap float16[sz];
         this.b = heap float16[sz];
@@ -305,13 +259,17 @@ public class GpuMatMulF16Bench extends Benchmark {
         this.nU = (uint32) this.nDim;
         this.gridX = this.nU / 128;          // N blocks: one workgroup per 128 cols
         this.gridM = (this.nU + 95) / 96;    // M blocks: 96-row tiles (ceil; bounds-checked)
+        if (this.comp != null) {
+            this.comp.prepare(variant);
+        }
     }
 
     public int64 inputSize() {
-        return (int64) (this.nDim * this.nDim);   // N² → report derives 2·N³ GFLOP
+        int64 m = (int64) this.nDim;
+        return 2 * m * m * m;
     }
 
-    public void run(int32 iterations) {
+    public void runVariant(String variant, int32 iterations) {
         gemmF16.launch(this.stream, grid: [this.gridX, this.gridM], block: [128])(
             this.kc, this.ka, this.kb, this.nU);
         this.stream.sync();

@@ -4,12 +4,12 @@ import cajeta.collection.ArrayList;
 
 import dev.cajeta.bench.Benchmark;
 
-// Registers every gfx/ benchmark, in catalog order. A unit adds a gfx/
-// benchmark by writing the class in this directory and one `b.add(heap X());`
-// line here; Bench.cajeta calls this and is never edited for it.
+// Registers every gfx/ benchmark, in catalog order (bench/gfx/Texture2D.md).
+// A unit adds a gfx/ benchmark by writing the class in this directory and one
+// `b.add(heap X());` line here; Bench.cajeta calls this and is never edited for it.
 public final class GfxRegistry {
 
     public static void register(ArrayList<Benchmark> b) {
-        // No gfx/ benchmarks yet.
+        b.add(heap TextureSampleBench());
     }
 }

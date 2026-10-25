@@ -1,0 +1,115 @@
+package bench.xpu;
+
+import cajeta.collection.ArrayList;
+import cajeta.xpu.KernelStream;
+
+import dev.cajeta.bench.Benchmark;
+
+// The base of every device benchmark in xpu/ and gfx/: one backend per
+// process (CAJETA_XPU_BACKEND), a `skipped` row with the reason wherever that
+// backend cannot run here (XpuEnv.blocker: the GPU held by another session,
+// no ROCm, a backend this binary does not bundle), and setup() that touches
+// no device unless the row can run.
+//
+// A subclass overrides name(), the workload (prepareDevice / runVariant /
+// checkResult) and, for a device competitor measured in interleaved rounds,
+// the competitor hooks (XpuCompetitor wires them to the CUDA/HIP reference
+// server when CAJETA_XPU_COMPETITOR names one).
+public class XpuBench extends Benchmark {
+
+    public KernelStream stream;
+    public boolean live;
+    public String why;
+    public XpuCompetitor comp;
+
+    public XpuBench() {
+        this.live = false;
+        this.why = "";
+    }
+
+    public String area() {
+        return "xpu";
+    }
+
+    public String backend() {
+        return XpuEnv.backend();
+    }
+
+    public String unit() {
+        return "";
+    }
+
+    public int32 warmupIters() {
+        return 3;
+    }
+
+    public int32 measuredIters() {
+        return 20;
+    }
+
+    public boolean supportsVariant(String variant) {
+        return this.live;
+    }
+
+    public String skipReason() {
+        return this.why;
+    }
+
+    // Decides whether this process's backend can run, then (only if it can)
+    // takes the stream and lets the subclass allocate.
+    public void setup() {
+        XpuEnv.pin();
+        String b #= XpuEnv.blocker();
+        this.why #= b;
+        this.live = this.why.isEmpty();
+        if (!this.live) {
+            return;
+        }
+        this.stream #= KernelStream.current();
+        this.comp #= XpuCompetitor.forBench(this.name(), this.backend());
+        this.setupDevice();
+    }
+
+    // Subclass hook: allocate what every variant shares. The device may be touched.
+    public void setupDevice() {
+    }
+
+    public void teardown() {
+        if (this.comp != null) {
+            this.comp.close();
+        }
+    }
+
+    // ---- interleaved device rounds (dev.cajeta.bench, plan 14.1.3) ----------
+    // The harness interleaves ours and the competitor's rounds when
+    // hasCompetitor() and backend() != cpu. The competitor is the reference
+    // server (competitors/cuda/xpu/devserver) running the same workload id and
+    // variant on the same device; see XpuCompetitor.
+
+    public boolean hasCompetitor() {
+        if (!this.live || this.comp == null) {
+            return false;
+        }
+        return this.comp.present();
+    }
+
+    public String competitorLanguage() {
+        return this.comp.language();
+    }
+
+    public String competitorPlatform() {
+        return this.comp.platform();
+    }
+
+    public String competitorVersion() {
+        return this.comp.version();
+    }
+
+    public void runCompetitor(String variant, int32 iterations) {
+        this.comp.run(variant);
+    }
+
+    public boolean checkCompetitor() {
+        return this.comp.check();
+    }
+}

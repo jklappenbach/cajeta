@@ -1,0 +1,386 @@
+package bench.xpu;
+
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Workgroup;
+import cajeta.xpu.Barrier;
+import cajeta.xpu.Shared;
+import cajeta.xpu.Wave;
+import cajeta.xpu.GroupOp;
+import cajeta.xpu.CooperativeMatrix;
+
+// Every @Kernel of the xpu/ catalog that more than one benchmark launches, and
+// the one launcher per kernel (a launch stays in the kernel's own class). The
+// cross-backend showcase launches exactly these, so "one source on every
+// backend" is literal: the saxpy, reduce and GEMM a page row measures are the
+// ones the showcase compares.
+//
+// Block sizes are literals and each kernel declares the block it is built for
+// (@Occupancy), as the compiler's kernel gate requires.
+public final class XpuKernels {
+
+    public XpuKernels() {
+        return;
+    }
+
+    // ---- BabelStream v5.0 (src/cuda/CUDAStream.cu), float64, TBSIZE 1024 ----
+
+    @Kernel
+    @Occupancy(maxThreads = 1024)
+    public static void bsCopy(KernelBuffer<float64> a, KernelBuffer<float64> c, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            c[i] = a[i];
+        }
+    }
+
+    @Kernel
+    @Occupancy(maxThreads = 1024)
+    public static void bsMul(KernelBuffer<float64> b, KernelBuffer<float64> c, float64 scalar, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            b[i] = scalar * c[i];
+        }
+    }
+
+    @Kernel
+    @Occupancy(maxThreads = 1024)
+    public static void bsAdd(KernelBuffer<float64> a, KernelBuffer<float64> b, KernelBuffer<float64> c, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            c[i] = a[i] + b[i];
+        }
+    }
+
+    @Kernel
+    @Occupancy(maxThreads = 1024)
+    public static void bsTriad(KernelBuffer<float64> a, KernelBuffer<float64> b, KernelBuffer<float64> c,
+                               float64 scalar, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            a[i] = b[i] + scalar * c[i];
+        }
+    }
+
+    // BabelStream's dot: a grid-stride partial per thread, a shared-memory tree
+    // to one value per block (the tree unrolled: TBSIZE is 1024), the block
+    // partials summed on the host as BabelStream does.
+    @Kernel
+    @Occupancy(maxThreads = 1024)
+    public static void bsDot(KernelBuffer<float64> a, KernelBuffer<float64> b, KernelBuffer<float64> sums,
+                             uint32 n, uint32 nblocks) {
+        Shared<float64> tb = shared float64[1024];
+        uint32 lid = KernelThread.x();
+        uint32 i = Workgroup.x() * 1024 + lid;
+        uint32 step = nblocks * 1024;
+        float64 acc = 0.0;
+        while (i < n) {
+            acc = acc + a[i] * b[i];
+            i = i + step;
+        }
+        tb[lid] = acc;
+        Barrier.workgroup();
+        if (lid < 512) { tb[lid] = tb[lid] + tb[lid + 512]; }
+        Barrier.workgroup();
+        if (lid < 256) { tb[lid] = tb[lid] + tb[lid + 256]; }
+        Barrier.workgroup();
+        if (lid < 128) { tb[lid] = tb[lid] + tb[lid + 128]; }
+        Barrier.workgroup();
+        if (lid < 64) { tb[lid] = tb[lid] + tb[lid + 64]; }
+        Barrier.workgroup();
+        if (lid < 32) { tb[lid] = tb[lid] + tb[lid + 32]; }
+        Barrier.workgroup();
+        if (lid < 16) { tb[lid] = tb[lid] + tb[lid + 16]; }
+        Barrier.workgroup();
+        if (lid < 8) { tb[lid] = tb[lid] + tb[lid + 8]; }
+        Barrier.workgroup();
+        if (lid < 4) { tb[lid] = tb[lid] + tb[lid + 4]; }
+        Barrier.workgroup();
+        if (lid < 2) { tb[lid] = tb[lid] + tb[lid + 2]; }
+        Barrier.workgroup();
+        if (lid == 0) {
+            sums[Workgroup.x()] = tb[0] + tb[1];
+        }
+    }
+
+    public static void copy(KernelStream s, KernelBuffer<float64> a, KernelBuffer<float64> c, uint32 n) {
+        bsCopy.launch(s, grid: [(n + 1023) / 1024], block: [1024])(a, c, n);
+    }
+
+    public static void mul(KernelStream s, KernelBuffer<float64> b, KernelBuffer<float64> c, float64 k, uint32 n) {
+        bsMul.launch(s, grid: [(n + 1023) / 1024], block: [1024])(b, c, k, n);
+    }
+
+    public static void add(KernelStream s, KernelBuffer<float64> a, KernelBuffer<float64> b,
+                           KernelBuffer<float64> c, uint32 n) {
+        bsAdd.launch(s, grid: [(n + 1023) / 1024], block: [1024])(a, b, c, n);
+    }
+
+    public static void triad(KernelStream s, KernelBuffer<float64> a, KernelBuffer<float64> b,
+                             KernelBuffer<float64> c, float64 k, uint32 n) {
+        bsTriad.launch(s, grid: [(n + 1023) / 1024], block: [1024])(a, b, c, k, n);
+    }
+
+    public static void dot(KernelStream s, KernelBuffer<float64> a, KernelBuffer<float64> b,
+                           KernelBuffer<float64> sums, uint32 n, uint32 nblocks) {
+        bsDot.launch(s, grid: [nblocks], block: [1024])(a, b, sums, n, nblocks);
+    }
+
+    // ---- saxpy, float32: y = a*x + y ----------------------------------------
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void saxpyK(KernelBuffer<float32> y, KernelBuffer<float32> x, float32 a, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            y[i] = a * x[i] + y[i];
+        }
+    }
+
+    public static void saxpy(KernelStream s, KernelBuffer<float32> y, KernelBuffer<float32> x, float32 a, uint32 n) {
+        saxpyK.launch(s, grid: [(n + 255) / 256], block: [256])(y, x, a, n);
+    }
+
+    // ---- wave reduce, float32 -------------------------------------------------
+    // Pass 1: each thread sums a grid-stride slice, Wave.reduceSumF32 folds the
+    // wave, and the wave's first lane writes the wave's partial (slot = global
+    // wave index; slots a narrower wave never reaches stay at the zero they were
+    // uploaded with). Pass 2: one workgroup folds the partials with
+    // Workgroup.reduce (waves, then one barrier) into out[0].
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void reduceWaves(KernelBuffer<float32> partials, KernelBuffer<float32> x,
+                                   uint32 n, uint32 stride) {
+        uint32 g = KernelThread.globalIdX();
+        float32 acc = 0.0f;
+        uint32 i = g;
+        while (i < n) {
+            acc = acc + x[i];
+            i = i + stride;
+        }
+        float32 w = Wave.reduceSumF32(acc);
+        if (Wave.isFirstLane()) {
+            partials[g / Wave.width()] = w;
+        }
+    }
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void reduceFinal(KernelBuffer<float32> out, KernelBuffer<float32> partials, uint32 m) {
+        uint32 t = KernelThread.x();
+        float32 acc = 0.0f;
+        uint32 i = t;
+        while (i < m) {
+            acc = acc + partials[i];
+            i = i + 256;
+        }
+        float32 total = Workgroup.reduce(GroupOp.Add, acc);
+        if (t == 0) {
+            out[0] = total;
+        }
+    }
+
+    // blocks * 256 threads stride over x; partials holds blocks * 256 / 4 slots
+    // (enough for any wave of 4 lanes or more).
+    public static void reduce(KernelStream s, KernelBuffer<float32> out, KernelBuffer<float32> partials,
+                              KernelBuffer<float32> x, uint32 n, uint32 blocks) {
+        uint32 stride = blocks * 256;
+        reduceWaves.launch(s, grid: [blocks], block: [256])(partials, x, n, stride);
+        uint32 m = stride / 4;
+        reduceFinal.launch(s, grid: [1], block: [256])(out, partials, m);
+    }
+
+    // ---- inclusive scan, int32 ------------------------------------------------
+    // Reduce-then-scan over tiles of 4096 (256 threads x 16 items):
+    //   scanTileSums  tile totals,
+    //   scanOffsets   one workgroup turns the totals into exclusive tile offsets,
+    //   scanTiles     each thread's 16 items, its exclusive Workgroup.scan
+    //                 within the tile plus the tile's offset, written inclusive.
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void scanTileSums(KernelBuffer<int32> sums, KernelBuffer<int32> x) {
+        uint32 t = KernelThread.x();
+        uint32 base = Workgroup.x() * 4096 + t * 16;
+        int32 acc = 0;
+        uint32 k = 0;
+        while (k < 16) {
+            acc = acc + x[base + k];
+            k = k + 1;
+        }
+        int32 total = Workgroup.reduce(GroupOp.Add, acc);
+        if (t == 0) {
+            sums[Workgroup.x()] = total;
+        }
+    }
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void scanOffsets(KernelBuffer<int32> offs, KernelBuffer<int32> sums, uint32 per) {
+        uint32 t = KernelThread.x();
+        uint32 base = t * per;
+        int32 acc = 0;
+        uint32 k = 0;
+        while (k < per) {
+            acc = acc + sums[base + k];
+            k = k + 1;
+        }
+        int32 before = Workgroup.scan(GroupOp.Add, acc);
+        int32 run = before;
+        uint32 j = 0;
+        while (j < per) {
+            offs[base + j] = run;
+            run = run + sums[base + j];
+            j = j + 1;
+        }
+    }
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void scanTiles(KernelBuffer<int32> out, KernelBuffer<int32> x, KernelBuffer<int32> offs) {
+        uint32 t = KernelThread.x();
+        uint32 tile = Workgroup.x();
+        uint32 base = tile * 4096 + t * 16;
+        int32 local = 0;
+        uint32 k = 0;
+        while (k < 16) {
+            local = local + x[base + k];
+            k = k + 1;
+        }
+        int32 before = Workgroup.scan(GroupOp.Add, local);
+        int32 run = before + offs[tile];
+        uint32 j = 0;
+        while (j < 16) {
+            run = run + x[base + j];
+            out[base + j] = run;
+            j = j + 1;
+        }
+    }
+
+    // n a multiple of 4096 * 256 (tiles a multiple of 256).
+    public static void scan(KernelStream s, KernelBuffer<int32> out, KernelBuffer<int32> x,
+                            KernelBuffer<int32> sums, KernelBuffer<int32> offs, uint32 n) {
+        uint32 tiles = n / 4096;
+        uint32 per = tiles / 256;
+        scanTileSums.launch(s, grid: [tiles], block: [256])(sums, x);
+        scanOffsets.launch(s, grid: [1], block: [256])(offs, sums, per);
+        scanTiles.launch(s, grid: [tiles], block: [256])(out, x, offs);
+    }
+
+    // ---- GEMM through CooperativeMatrix ---------------------------------------
+    // C[MxN] = A[MxK] . B[KxN], row-major, every dimension a multiple of 64.
+    // One wave (block 32) per 16x64 strip of C: the A tile is loaded once per
+    // K-step and multiplied into four accumulators. float32 has no native
+    // matrix-core config on any backend (the portable software tier, a
+    // [mma-tiering] note); bfloat16 operands with a float32 accumulator are
+    // native WMMA on sm_80+ and RDNA3.
+
+    @Kernel
+    @Occupancy(maxThreads = 32)
+    public static void gemmF32K(KernelBuffer<float32> c, KernelBuffer<float32> a, KernelBuffer<float32> b,
+                                uint32 n) {
+        uint32 strips = n / 64;
+        uint32 wid = Workgroup.x();
+        uint32 mi = wid / strips;
+        uint32 nj = wid % strips;
+        CooperativeMatrix<float32,16,16,2> c0; c0.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> c1; c1.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> c2; c2.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> c3; c3.splat(0.0f);
+        CooperativeMatrix<float32,16,16,0> ta;
+        CooperativeMatrix<float32,16,16,1> tb0;
+        CooperativeMatrix<float32,16,16,1> tb1;
+        CooperativeMatrix<float32,16,16,1> tb2;
+        CooperativeMatrix<float32,16,16,1> tb3;
+        uint32 rowA = mi * 16 * n;
+        uint32 col = nj * 64;
+        uint32 kk = 0;
+        while (kk < n) {
+            ta.load(a, rowA + kk, 0, n);
+            uint32 rb = kk * n + col;
+            tb0.load(b, rb, 0, n);
+            tb1.load(b, rb + 16, 0, n);
+            tb2.load(b, rb + 32, 0, n);
+            tb3.load(b, rb + 48, 0, n);
+            c0.mma(ta, tb0);
+            c1.mma(ta, tb1);
+            c2.mma(ta, tb2);
+            c3.mma(ta, tb3);
+            kk = kk + 16;
+        }
+        uint32 rc = mi * 16 * n + col;
+        c0.store(c, rc, 0, n);
+        c1.store(c, rc + 16, 0, n);
+        c2.store(c, rc + 32, 0, n);
+        c3.store(c, rc + 48, 0, n);
+    }
+
+    @Kernel
+    @Occupancy(maxThreads = 32)
+    public static void gemmBf16K(KernelBuffer<float32> c, KernelBuffer<bfloat16> a, KernelBuffer<bfloat16> b,
+                                 uint32 n) {
+        uint32 strips = n / 64;
+        uint32 wid = Workgroup.x();
+        uint32 mi = wid / strips;
+        uint32 nj = wid % strips;
+        CooperativeMatrix<float32,16,16,2> c0; c0.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> c1; c1.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> c2; c2.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> c3; c3.splat(0.0f);
+        CooperativeMatrix<bfloat16,16,16,0> ta;
+        CooperativeMatrix<bfloat16,16,16,1> tb0;
+        CooperativeMatrix<bfloat16,16,16,1> tb1;
+        CooperativeMatrix<bfloat16,16,16,1> tb2;
+        CooperativeMatrix<bfloat16,16,16,1> tb3;
+        uint32 rowA = mi * 16 * n;
+        uint32 col = nj * 64;
+        uint32 kk = 0;
+        while (kk < n) {
+            ta.load(a, rowA + kk, 0, n);
+            uint32 rb = kk * n + col;
+            tb0.load(b, rb, 0, n);
+            tb1.load(b, rb + 16, 0, n);
+            tb2.load(b, rb + 32, 0, n);
+            tb3.load(b, rb + 48, 0, n);
+            c0.mma(ta, tb0);
+            c1.mma(ta, tb1);
+            c2.mma(ta, tb2);
+            c3.mma(ta, tb3);
+            kk = kk + 16;
+        }
+        uint32 rc = mi * 16 * n + col;
+        c0.store(c, rc, 0, n);
+        c1.store(c, rc + 16, 0, n);
+        c2.store(c, rc + 32, 0, n);
+        c3.store(c, rc + 48, 0, n);
+    }
+
+    public static void gemmF32(KernelStream s, KernelBuffer<float32> c, KernelBuffer<float32> a,
+                               KernelBuffer<float32> b, uint32 n) {
+        uint32 g = (n / 16) * (n / 64);
+        gemmF32K.launch(s, grid: [g], block: [32])(c, a, b, n);
+    }
+
+    public static void gemmBf16(KernelStream s, KernelBuffer<float32> c, KernelBuffer<bfloat16> a,
+                                KernelBuffer<bfloat16> b, uint32 n) {
+        uint32 g = (n / 16) * (n / 64);
+        gemmBf16K.launch(s, grid: [g], block: [32])(c, a, b, n);
+    }
+
+    // ---- the empty kernel (launch overhead, timer resolution) ------------------
+
+    @Kernel
+    @Occupancy(maxThreads = 32)
+    public static void emptyK(KernelBuffer<int32> sink, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            sink[i] = sink[i];
+        }
+    }
+
+    public static void empty(KernelStream s, KernelBuffer<int32> sink) {
+        emptyK.launch(s, grid: [1], block: [32])(sink, 0);
+    }
+}

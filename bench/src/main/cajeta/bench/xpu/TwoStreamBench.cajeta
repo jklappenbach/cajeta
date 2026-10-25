@@ -1,0 +1,164 @@
+package bench.xpu;
+
+import cajeta.collection.ArrayList;
+import cajeta.time.Clock;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+
+import bench.xpu.XpuBench;
+import bench.xpu.XpuKernels;
+
+// xpu/two-stream-overlap: two independent chains of 16 saxpy launches over
+// 2^24 float32 each, either both on one stream (variant one-stream, the
+// launches interleaved A, B, A, B, ...) or each on its own KernelStream.create()
+// stream (two-streams), then a sync of every stream used. The two-streams row's
+// notes carry the speed-up: the fastest one-stream trial over the fastest
+// two-streams trial, as this benchmark timed them itself around the same calls.
+// On the cpu backend create() is the default (synchronous) stream, so the
+// speed-up there is about 1. Check: both chains' results equal the host's
+// value for the launches made (exact in float32) in both variants.
+public class TwoStreamBench extends XpuBench {
+
+    public uint32 n;
+    public int32 chain;
+    public int32 runs;
+    public int64 bestOne;
+    public int64 bestTwo;
+    public float32[] hx;
+    public float32[] hy;
+    public KernelBuffer<float32> dx;
+    public KernelBuffer<float32> ya;
+    public KernelBuffer<float32> yb;
+    public KernelStream s1;
+    public KernelStream s2;
+    public String cur;
+
+    public TwoStreamBench() {
+        this.n = (uint32) 16777216;
+        this.chain = 16;
+        this.runs = 0;
+        this.bestOne = -1;
+        this.bestTwo = -1;
+        this.cur = "";
+    }
+
+    public String name() {
+        return "two-stream-overlap";
+    }
+
+    public String unit() {
+        return "B/s";
+    }
+
+    public int64 inputSize() {
+        return 2 * (int64) this.chain * 12 * (int64) this.n;
+    }
+
+    public String competitorNote() {
+        String sp = "";
+        if (this.cur.equals("two-streams") && this.bestOne > 0 && this.bestTwo > 0) {
+            float64 r = (float64) this.bestOne / (float64) this.bestTwo;
+            int64 h = (int64) (r * 1000.0 + 0.5);
+            sp = "speed-up of two streams over one = " + (h / 1000) + "." + (h % 1000 / 100) + (h % 100 / 10) + (h % 10)
+                + " (fastest trials " + this.bestOne + " / " + this.bestTwo + " ns); ";
+        }
+        return sp + "two chains of 16 saxpy launches on 2^24 float32; competitors: CUDA and HIP streams (devserver)";
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("one-stream");
+        v.add("two-streams");
+        return v;
+    }
+
+    public void setupDevice() {
+        int32 m = (int32) this.n;
+        this.hx = heap float32[m];
+        this.hy = heap float32[m];
+        int32 i = 0;
+        while (i < m) {
+            this.hx[i] = (float32) (i % 16);
+            i = i + 1;
+        }
+        this.dx = heap KernelBuffer<float32>((uint64) this.n);
+        this.dx.upload(this.hx);
+        this.ya = heap KernelBuffer<float32>((uint64) this.n);
+        this.yb = heap KernelBuffer<float32>((uint64) this.n);
+        this.s1 #= KernelStream.create();
+        this.s2 #= KernelStream.create();
+    }
+
+    public void teardown() {
+        if (this.live) {
+            this.s1.destroy();
+            this.s2.destroy();
+        }
+        if (this.comp != null) {
+            this.comp.close();
+        }
+    }
+
+    public void prepare(String variant) {
+        if (!this.live) {
+            return;
+        }
+        this.cur #= variant.clone();
+        int32 m = (int32) this.n;
+        int32 i = 0;
+        while (i < m) {
+            this.hy[i] = 1.0f;
+            i = i + 1;
+        }
+        this.ya.upload(this.hy);
+        this.yb.upload(this.hy);
+        this.runs = 0;
+        if (this.comp != null) {
+            this.comp.prepare(variant);
+        }
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        int64 t0 = Clock.nanoTime();
+        boolean two = variant.equals("two-streams");
+        int32 i = 0;
+        while (i < this.chain) {
+            XpuKernels.saxpy(this.s1, this.ya, this.dx, 2.0f, this.n);
+            if (two) {
+                XpuKernels.saxpy(this.s2, this.yb, this.dx, 2.0f, this.n);
+            } else {
+                XpuKernels.saxpy(this.s1, this.yb, this.dx, 2.0f, this.n);
+            }
+            i = i + 1;
+        }
+        this.s1.sync();
+        if (two) {
+            this.s2.sync();
+        }
+        int64 d = Clock.nanoTime() - t0;
+        if (two) {
+            if (this.bestTwo < 0 || d < this.bestTwo) { this.bestTwo = d; }
+        } else {
+            if (this.bestOne < 0 || d < this.bestOne) { this.bestOne = d; }
+        }
+        this.runs = this.runs + 1;
+    }
+
+    public boolean checkResult() {
+        float32 step = (float32) (2 * this.chain * this.runs);
+        int32 m = (int32) this.n;
+        this.ya.download(this.hy);
+        int32 i = 0;
+        while (i < m) {
+            if (this.hy[i] != 1.0f + step * (float32) (i % 16)) { return false; }
+            i = i + 1;
+        }
+        this.yb.download(this.hy);
+        i = 0;
+        while (i < m) {
+            if (this.hy[i] != 1.0f + step * (float32) (i % 16)) { return false; }
+            i = i + 1;
+        }
+        return this.runs > 0;
+    }
+}

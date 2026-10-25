@@ -1,0 +1,166 @@
+package bench.xpu;
+
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+
+import bench.xpu.XpuBench;
+import bench.xpu.XpuKernels;
+
+// xpu/babelstream-{copy,mul,add,triad,dot}: BabelStream v5.0's five kernels at
+// its default 2^25 float64 elements, with its initial values (a = 0.1, b = 0.2,
+// c = 0.0, scalar = 0.4) and its block size (TBSIZE 1024); dot uses
+// 4 x multiprocessors blocks and sums the block partials on the host, as
+// BabelStream's CUDA model does. One benchmark per kernel, so prepare() runs the
+// kernels that precede it once (copy, mul, add, triad), which leaves the arrays
+// where BabelStream's first iteration has them; each kernel is then idempotent
+// across trials. Throughput is BabelStream's byte count (2 or 3 arrays moved)
+// per second, in B/s. Check: every element of the written array against the
+// host's value (1e-12; triad may contract to an FMA), dot within 1e-8 relative.
+public class BabelStreamBench extends XpuBench {
+
+    public int32 kind;          // 0 copy, 1 mul, 2 add, 3 triad, 4 dot
+    public uint32 n;
+    public uint32 nblocks;
+    public float64 scalar;
+    public KernelBuffer<float64> da;
+    public KernelBuffer<float64> db;
+    public KernelBuffer<float64> dc;
+    public KernelBuffer<float64> dsums;
+    public float64[] host;
+    public float64[] sums;
+    public float64 dotValue;
+
+    public BabelStreamBench(int32 kind) {
+        this.kind = kind;
+        this.n = (uint32) 33554432;
+        this.scalar = 0.4;
+        this.dotValue = 0.0;
+    }
+
+    public String name() {
+        if (this.kind == 0) { return "babelstream-copy"; }
+        if (this.kind == 1) { return "babelstream-mul"; }
+        if (this.kind == 2) { return "babelstream-add"; }
+        if (this.kind == 3) { return "babelstream-triad"; }
+        return "babelstream-dot";
+    }
+
+    public String unit() {
+        return "B/s";
+    }
+
+    public String competitorNote() {
+        return "2^25 float64, TBSIZE 1024, BabelStream 5.0 init and byte counts; competitors: BabelStream 5.0 cuda-stream (nvcc 13.3 sm_89) and hip-stream";
+    }
+
+    public int64 inputSize() {
+        int64 arrays = 3;
+        if (this.kind == 0 || this.kind == 1 || this.kind == 4) {
+            arrays = 2;
+        }
+        return arrays * 8 * (int64) this.n;
+    }
+
+    public void setupDevice() {
+        uint64 cnt = (uint64) this.n;
+        this.da = heap KernelBuffer<float64>(cnt);
+        this.db = heap KernelBuffer<float64>(cnt);
+        this.dc = heap KernelBuffer<float64>(cnt);
+        int32 mp = Device.multiprocessorCount();
+        if (mp < 1) {
+            mp = 1;
+        }
+        this.nblocks = (uint32) (4 * mp);
+        this.dsums = heap KernelBuffer<float64>((uint64) this.nblocks);
+        this.sums = heap float64[(int32) this.nblocks];
+        this.host = heap float64[(int32) this.n];
+    }
+
+    public void prepare(String variant) {
+        if (!this.live) {
+            return;
+        }
+        int32 m = (int32) this.n;
+        int32 i = 0;
+        while (i < m) { this.host[i] = 0.1; i = i + 1; }
+        this.da.upload(this.host);
+        i = 0;
+        while (i < m) { this.host[i] = 0.2; i = i + 1; }
+        this.db.upload(this.host);
+        i = 0;
+        while (i < m) { this.host[i] = 0.0; i = i + 1; }
+        this.dc.upload(this.host);
+        if (this.kind >= 1) { XpuKernels.copy(this.stream, this.da, this.dc, this.n); }
+        if (this.kind >= 2) { XpuKernels.mul(this.stream, this.db, this.dc, this.scalar, this.n); }
+        if (this.kind >= 3) { XpuKernels.add(this.stream, this.da, this.db, this.dc, this.n); }
+        if (this.kind >= 4) { XpuKernels.triad(this.stream, this.da, this.db, this.dc, this.scalar, this.n); }
+        this.stream.sync();
+        if (this.comp != null) {
+            this.comp.prepare(variant);
+        }
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        if (this.kind == 0) {
+            XpuKernels.copy(this.stream, this.da, this.dc, this.n);
+        } else if (this.kind == 1) {
+            XpuKernels.mul(this.stream, this.db, this.dc, this.scalar, this.n);
+        } else if (this.kind == 2) {
+            XpuKernels.add(this.stream, this.da, this.db, this.dc, this.n);
+        } else if (this.kind == 3) {
+            XpuKernels.triad(this.stream, this.da, this.db, this.dc, this.scalar, this.n);
+        } else {
+            XpuKernels.dot(this.stream, this.da, this.db, this.dsums, this.n, this.nblocks);
+            this.stream.sync();
+            this.dsums.download(this.sums);
+            float64 s = 0.0;
+            int32 j = 0;
+            int32 nb = (int32) this.nblocks;
+            while (j < nb) { s = s + this.sums[j]; j = j + 1; }
+            this.dotValue = s;
+        }
+        this.stream.sync();
+    }
+
+    // The value BabelStream's sequence leaves in the array this kernel writes.
+    public boolean checkResult() {
+        float64 a = 0.1;
+        float64 b = 0.2;
+        float64 c = 0.0;
+        c = a;
+        b = this.scalar * c;
+        c = a + b;
+        a = b + this.scalar * c;
+        if (this.kind == 4) {
+            float64 want = a * b * (float64) this.n;
+            float64 d = this.dotValue - want;
+            if (d < 0.0) { d = -d; }
+            return d <= 1e-8 * want;
+        }
+        float64 exp = 0.0;
+        if (this.kind == 0) {
+            this.dc.download(this.host);
+            exp = 0.1;
+        } else if (this.kind == 1) {
+            this.db.download(this.host);
+            exp = this.scalar * 0.1;
+        } else if (this.kind == 2) {
+            this.dc.download(this.host);
+            exp = 0.1 + this.scalar * 0.1;
+        } else {
+            this.da.download(this.host);
+            exp = a;
+        }
+        int32 m = (int32) this.n;
+        int32 i = 0;
+        while (i < m) {
+            float64 e = this.host[i] - exp;
+            if (e < 0.0) { e = -e; }
+            if (e > 1e-12) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+}

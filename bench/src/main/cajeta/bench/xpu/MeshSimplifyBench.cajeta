@@ -1,0 +1,186 @@
+package bench.xpu;
+
+import cajeta.collection.ArrayList;
+import cajeta.lang.Math;
+import cajeta.xpu.mesh.MeshSimplifier;
+
+import dev.cajeta.bench.Benchmark;
+
+// xpu/mesh-simplify: cajeta.xpu.mesh.MeshSimplifier (Garland-Heckbert edge
+// collapse) on a regular-grid height field z = 0.1 sin(3 pi x) cos(3 pi y) over
+// the unit square, simplified to a tenth of its triangles. MeshSimplifier is
+// host code (the stdlib has no device simplifier), so the row's backend is cpu,
+// and its driver scans every live triangle per collapse, O(triangles^2): the
+// page's 1e6 -> 1e5 would take days, so the measured variant is 1.98e4 -> 1.98e3
+// (a 100 x 100-cell grid; 2048 -> 204 under CAJETA_BENCH_SMOKE=1), and the
+// 1e6 variant is a skipped row saying why. meshoptimizer's
+// meshopt_simplify is run at both sizes by competitors/xpu.sh.
+// Check: the survivor count is in (0, target], every surviving triangle is
+// non-degenerate, and every vertex a survivor uses lies within 0.02 of the
+// original surface (the one-sided, vertex-to-surface Hausdorff bound).
+public class MeshSimplifyBench extends Benchmark {
+
+    public int32 cells;
+    public int32 target;
+    public int32 vertexCount;
+    public float32[] base;
+    public float32[] pos;
+    public int32[] idx;
+    public int32[] out;
+
+    public MeshSimplifyBench() {
+        this.cells = 100;
+        this.target = 0;
+        this.vertexCount = 0;
+    }
+
+    public String name() {
+        return "mesh-simplify";
+    }
+
+    public String area() {
+        return "xpu";
+    }
+
+    public String unit() {
+        return "triangles/s";
+    }
+
+    public int32 warmupIters() {
+        return 1;
+    }
+
+    public int32 measuredIters() {
+        return 5;
+    }
+
+    public int64 inputSize() {
+        return (int64) (2 * this.cells * this.cells);
+    }
+
+    public static boolean smoke() {
+        String s = System.env.get("CAJETA_BENCH_SMOKE");
+        return s != null && (s.equals("1") || s.equals("true"));
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("1e6-to-1e5");
+        if (MeshSimplifyBench.smoke()) {
+            v.add("2048-to-204");
+        } else {
+            v.add("19800-to-1980");
+        }
+        return v;
+    }
+
+    public boolean supportsVariant(String variant) {
+        return !variant.equals("1e6-to-1e5");
+    }
+
+    public String skipReason() {
+        return "MeshSimplifier.simplify scans every triangle per collapse (O(triangles^2)); 1e6 -> 1e5 is about 5e11 edge costs, days on one core";
+    }
+
+    public String competitorNote() {
+        if (this.target == 0) {
+            return "page size 1e6 -> 1e5 triangles not run; competitor: meshoptimizer meshopt_simplify (C++, pinned) at both sizes";
+        }
+        return "grid height field, " + (2 * this.cells * this.cells) + " -> " + this.target
+            + " triangles, host code (backend cpu); competitor: meshoptimizer meshopt_simplify (C++, pinned)";
+    }
+
+    public static float32 height(float32 x, float32 y) {
+        float64 pi = 3.141592653589793;
+        return (float32) (0.1 * Math.sin(3.0 * pi * (float64) x) * Math.cos(3.0 * pi * (float64) y));
+    }
+
+    public void prepare(String variant) {
+        this.cells = 100;
+        if (variant.equals("2048-to-204")) {
+            this.cells = 32;
+        }
+        int32 c = this.cells;
+        int32 vs = c + 1;
+        this.vertexCount = vs * vs;
+        this.target = (2 * c * c) / 10;
+        this.base = heap float32[this.vertexCount * 3];
+        this.pos = heap float32[this.vertexCount * 3];
+        int32 j = 0;
+        while (j < vs) {
+            int32 i = 0;
+            while (i < vs) {
+                int32 v = j * vs + i;
+                float32 x = (float32) i / (float32) c;
+                float32 y = (float32) j / (float32) c;
+                this.base[v * 3] = x;
+                this.base[v * 3 + 1] = y;
+                this.base[v * 3 + 2] = MeshSimplifyBench.height(x, y);
+                i = i + 1;
+            }
+            j = j + 1;
+        }
+        this.idx = heap int32[2 * c * c * 3];
+        int32 t = 0;
+        j = 0;
+        while (j < c) {
+            int32 i = 0;
+            while (i < c) {
+                int32 v0 = j * vs + i;
+                int32 v1 = v0 + 1;
+                int32 v2 = v0 + vs;
+                int32 v3 = v2 + 1;
+                this.idx[t] = v0; this.idx[t + 1] = v1; this.idx[t + 2] = v3;
+                this.idx[t + 3] = v0; this.idx[t + 4] = v3; this.idx[t + 5] = v2;
+                t = t + 6;
+                i = i + 1;
+            }
+            j = j + 1;
+        }
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        int32 m = this.vertexCount * 3;
+        int32 i = 0;
+        while (i < m) {
+            this.pos[i] = this.base[i];
+            i = i + 1;
+        }
+        this.out #= MeshSimplifier.simplify(this.pos, this.idx, this.vertexCount, this.target);
+    }
+
+    public boolean checkResult() {
+        int32 len = (int32) this.out.count();
+        int32 tris = len / 3;
+        if (tris <= 0 || tris > this.target || len % 3 != 0) {
+            return false;
+        }
+        int32 k = 0;
+        while (k < len) {
+            int32 a = this.out[k];
+            int32 b = this.out[k + 1];
+            int32 c = this.out[k + 2];
+            if (a == b || b == c || a == c) {
+                return false;
+            }
+            k = k + 3;
+        }
+        k = 0;
+        while (k < len) {
+            int32 v = this.out[k];
+            float32 x = this.pos[v * 3];
+            float32 y = this.pos[v * 3 + 1];
+            float32 z = this.pos[v * 3 + 2];
+            if (x < -0.02f || x > 1.02f || y < -0.02f || y > 1.02f) {
+                return false;
+            }
+            float32 dz = z - MeshSimplifyBench.height(x, y);
+            if (dz < 0.0f) { dz = -dz; }
+            if (dz > 0.02f) {
+                return false;
+            }
+            k = k + 1;
+        }
+        return true;
+    }
+}

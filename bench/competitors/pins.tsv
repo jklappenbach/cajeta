@@ -44,6 +44,12 @@ concurrentqueue	library	git	https://github.com/cameron314/concurrentqueue	v1.0.4
 # --- device reference suites (§6.13, §8.3): fetched only, never built here ---
 babelstream	checkout	git	https://github.com/UoB-HPC/BabelStream	v5.0	f6ae48de899408cf50c24079417dc71a03dbb5a8
 mixbench	checkout	git	https://github.com/ekondis/mixbench	master	06297d6b4882729079fef586407e3ff7ecba437b
+# --- xpu/ (unit 14): built by competitors/drivers/xpu/*.sh, not here ---
+# BabelStream and mixbench above are built by drivers/xpu/babelstream.sh and mixbench.sh
+# (nvcc 13.3, sm_89 on Phoenix). cuBLAS on Phoenix is the nvidia-cublas wheel (13.1.1.3)
+# that the venv's torch 2.14.1+cu130 pulls in; /usr/local/cuda 13.3 ships none. CUB is
+# the toolkit's CCCL.
+meshoptimizer	library	git	https://github.com/zeux/meshoptimizer	v0.25	6daea4695c48338363b08022d2fb15deaef6ac09
 # --- Java jars (Maven Central, transitive closure as resolved by Maven 3.8.7 on 2026-10-25) ---
 # Jackson stays at the vendor/jackson.lock versions (2.22.0 / 2.22); setup.sh cross-checks.
 jackson-annotations	library	jar	com/fasterxml/jackson/core/jackson-annotations/2.22/jackson-annotations-2.22.jar	2.22	21ddb598807d3a51a876704eb979d9296e1c6a6f47ab1826ff88c6d6a127a2d0

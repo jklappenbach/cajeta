@@ -1,0 +1,174 @@
+package bench.xpu;
+
+import cajeta.io.file.FileReader;
+import cajeta.io.file.FileWriter;
+import cajeta.process.Command;
+import cajeta.process.Process;
+
+// The device competitor of an interleaved row: the reference server
+// competitors/cuda/xpu/devserver (CUDA C++, built by
+// competitors/drivers/xpu/device.sh; the HIP build of the same source on
+// Proton), started once per benchmark with `--serve` and driven one line at a
+// time, so the harness can time ours, theirs, ours, theirs on one device:
+//
+//   prepare <bench> <variant>   -> "ok <language>|<platform>|<version>" or "unsupported <reason>"
+//   run                         -> "ok"            (one iteration, synchronized)
+//   check                       -> "ok 1" | "ok 0" (the same check as ours)
+//   quit
+//
+// CAJETA_XPU_COMPETITOR names the cuda server binary, CAJETA_XPU_COMPETITOR_HIP
+// the hip one. Neither set, or a cpu row: no competitor, and the row is
+// measured alone (its competitors come from competitors/xpu.sh as separate rows).
+// The timed round includes one pipe round trip (tens of microseconds), which
+// the notes state; device-event times are in the standalone rows.
+public class XpuCompetitor {
+
+    public Process proc;
+    public FileWriter tx;
+    public FileReader rx;
+    public boolean started;
+    public boolean prepared;
+    public boolean lastOk;
+    public String bench;
+    public String lang;
+    public String plat;
+    public String ver;
+
+    public XpuCompetitor() {
+        this.started = false;
+        this.prepared = false;
+        this.lastOk = false;
+        this.bench = "";
+        this.lang = "";
+        this.plat = "";
+        this.ver = "";
+    }
+
+    public static #XpuCompetitor forBench(String bench, String backend) {
+        XpuCompetitor c = heap XpuCompetitor();
+        c.bench #= bench.clone();
+        String path = null;
+        if (backend.equals("cuda")) {
+            path = System.env.get("CAJETA_XPU_COMPETITOR");
+        } else if (backend.equals("hip")) {
+            path = System.env.get("CAJETA_XPU_COMPETITOR_HIP");
+        }
+        if (path == null || path.isEmpty()) {
+            return #c;
+        }
+        String[] argv = heap String[2];
+        argv[0] = "" + path;
+        argv[1] = "--serve";
+        Command cmd = heap Command(#argv);
+        cmd.pipeStdin();
+        cmd.pipeStdout();
+        c.proc #= cmd.start();
+        if (c.proc.launched()) {
+            c.tx #= c.proc.stdin();
+            c.rx #= c.proc.stdout();
+            c.started = true;
+        }
+        return #c;
+    }
+
+    // The harness decides to interleave before prepare(variant) runs, so this
+    // is "a server is running"; a variant the server refuses reads as a failed
+    // check on the competitor row.
+    public boolean present() {
+        return this.started;
+    }
+
+    public void prepare(String variant) {
+        this.prepared = false;
+        if (!this.started) {
+            return;
+        }
+        String reply #= this.ask("prepare " + this.bench + " " + variant);
+        if (!reply.startsWith("ok ")) {
+            return;
+        }
+        // ok <language>|<platform>|<version>
+        int32 n = reply.byteLength();
+        int32 a = (int32) reply.indexOf("|");
+        if (a < 0) {
+            return;
+        }
+        int32 b = (int32) reply.indexOfFrom("|", (int64) (a + 1));
+        if (b < 0) {
+            return;
+        }
+        this.lang #= reply.substring(3, a);
+        this.plat #= reply.substring(a + 1, b);
+        this.ver #= reply.substring(b + 1, n);
+        this.prepared = true;
+    }
+
+    public void run(String variant) {
+        if (!this.prepared) {
+            this.lastOk = false;
+            return;
+        }
+        String reply #= this.ask("run");
+        this.lastOk = reply.startsWith("ok");
+    }
+
+    public boolean check() {
+        if (!this.prepared) {
+            return false;
+        }
+        String reply #= this.ask("check");
+        return reply.equals("ok 1");
+    }
+
+    public String language() {
+        return this.lang;
+    }
+
+    public String platform() {
+        return this.plat;
+    }
+
+    public String version() {
+        return this.ver;
+    }
+
+    public void close() {
+        if (!this.started) {
+            return;
+        }
+        String q = "quit\n";
+        this.tx.writeString(q);
+        this.tx.flush();
+        this.proc.close();
+        this.started = false;
+    }
+
+    // One request line out, one reply line back (without its newline).
+    public #String ask(String line) {
+        String out = line + "\n";
+        this.tx.writeString(out);
+        this.tx.flush();
+        int8[] acc = heap int8[512];
+        int32 n = 0;
+        int8[] one = heap int8[1];
+        boolean done = false;
+        while (!done) {
+            int32 got = this.rx.read(one, 1);
+            if (got <= 0) {
+                done = true;
+            } else if (one[0] == (int8) 10) {
+                done = true;
+            } else if (n < 512) {
+                acc[n] = one[0];
+                n = n + 1;
+            }
+        }
+        int8[] cp = heap int8[n];
+        int32 i = 0;
+        while (i < n) {
+            cp[i] = acc[i];
+            i = i + 1;
+        }
+        return heap String(#cp, n);
+    }
+}

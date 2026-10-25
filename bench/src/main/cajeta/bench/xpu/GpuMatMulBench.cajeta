@@ -8,14 +8,16 @@ import cajeta.xpu.Workgroup;
 import cajeta.xpu.Barrier;
 import cajeta.xpu.Shared;
 
-import dev.cajeta.bench.Benchmark;
+import bench.xpu.XpuBench;
+import bench.xpu.XpuEnv;
 
-// GPU dense N×N matrix multiply C = A·B (flat row-major float64), run as a real
-// device @Kernel — the first of the suite's GPU compute benchmarks. Built once
-// for amdgpu+vulkan+cpu (the `gpu` flavor); the active backend is chosen at run
-// time via CAJETA_XPU_BACKEND, so the SAME binary produces one labeled row per
-// backend. A is the identity, so C == B — a cheap exact cross-check at every
-// swept size (checksum of C == checksum of B) while doing the full N^3 work.
+// xpu/gemm-f64: the first suite's device matmul (it was listed as gemm-f32;
+// it has always been float64), now at the page's 4096 x 4096 (256 under
+// CAJETA_BENCH_SMOKE=1 on the cpu backend). C = A·B, flat row-major float64,
+// one binary per backend build (gpu, gpu-nvptx, gpu-vulkan), the backend chosen
+// at run time via CAJETA_XPU_BACKEND. A is the identity, so C == B — an exact
+// check against the host's B (checksum of C == checksum of B) while doing the
+// full N^3 work. Throughput: 2 n^3 flop/s.
 //
 // Double-buffered LDS-tiled, register-blocked fp64 GEMM. A 64x64 output tile per
 // workgroup, K stepped by 8, each of the 256 threads computing a 4x4 micro-tile
@@ -26,7 +28,7 @@ import dev.cajeta.bench.Benchmark;
 // 2x the naive single-accumulator kernel: 423 GFLOP/s at n=1024 on gfx1151/HIP
 // (~94% of rocBLAS/PyTorch's 449) and WINS at n=256 (253 vs 247). The last ~6% is
 // vendor-BLAS fp64-VALU scheduling. Assumes n % 64 == 0 (all swept sizes are).
-public class GpuMatMulBench extends Benchmark {
+public class GpuMatMulBench extends XpuBench {
 
     public float64[] a;
     public float64[] b;
@@ -34,7 +36,6 @@ public class GpuMatMulBench extends Benchmark {
     public KernelBuffer<float64> ka;
     public KernelBuffer<float64> kb;
     public KernelBuffer<float64> kc;
-    public KernelStream stream;
     public int32 nDim;
     public uint32 nU;
     public uint32 gridX;
@@ -115,102 +116,41 @@ public class GpuMatMulBench extends Benchmark {
         c[(r0 + 3) * n + cc + 0] = c3_0; c[(r0 + 3) * n + cc + 1] = c3_1; c[(r0 + 3) * n + cc + 2] = c3_2; c[(r0 + 3) * n + cc + 3] = c3_3;
     }
 
+    public GpuMatMulBench() {
+        this.nDim = 4096;
+    }
+
     public String name() {
-        return "gemm-f32";
+        return "gemm-f64";
     }
 
-    public String area() {
-        return "xpu";
+    public String unit() {
+        return "flop/s";
     }
 
-    // The runtime-selected device backend, reported on the result row. The gpu
-    // build bundles amdgpu+vulkan+cpu; the driver forces one per run via
-    // CAJETA_XPU_BACKEND, so echoing it labels the row accurately. Unset → cpu.
-    public String backend() {
-        String bk = System.env.get("CAJETA_XPU_BACKEND");
-        if (bk == null) {
-            return "cpu";
-        }
-        // Return a literal (borrow) — matches the base non-`#` signature and
-        // avoids transferring the owned env string out of scope.
-        if (bk.equals("hip")) {
-            return "hip";
-        }
-        if (bk.equals("vulkan")) {
-            return "vulkan";
-        }
-        if (bk.equals("amdgpu")) {
-            return "amdgpu";
-        }
-        if (bk.equals("cpu")) {
-            return "cpu";
-        }
-        return "cpu";
+    public String competitorNote() {
+        return "float64, LDS-tiled register-blocked kernel (64x64 tile, 4x4 per thread, block 256), A = identity; competitors: cuBLAS cublasDgemm (devserver), rocBLAS, PyTorch matmul f64";
     }
 
-    // Device-availability gate: skip cleanly (recorded, never a crash) when the
-    // selected backend is not one this build can target. A CPU-only host that
-    // forces an absent GPU backend gets a skip row instead of a failed suite.
-    public boolean available() {
-        String bk = System.env.get("CAJETA_XPU_BACKEND");
-        if (bk == null) {
-            return true;
-        }
-        if (bk.equals("hip") || bk.equals("amdgpu") || bk.equals("vulkan")
-                || bk.equals("cpu")) {
-            return true;
-        }
-        return false;
-    }
-
-    public String skipReason() {
-        return "xpu backend not available in this build (CAJETA_XPU_BACKEND)";
-    }
-
-    public int32 warmupIters() {
-        return 5;
-    }
-
-    public int32 measuredIters() {
-        return 30;
-    }
-
-    // Problem-size sweep: one labeled row per size. All are % 8 == 0. The sweep
-    // exposes the overhead→compute crossover (small N: GPU launch-bound; large N:
-    // compute-bound, GPU wins).
     public #ArrayList<String> variants() {
         ArrayList<String> v = heap ArrayList<String>();
-        v.add("n256");
-        v.add("n512");
-        v.add("n1024");
-        v.add("n2048");
+        if (XpuEnv.reduced()) {
+            v.add("n256");
+        } else {
+            v.add("n4096");
+        }
         return v;
     }
 
-    private int32 sizeFor(String variant) {
-        if (variant.equals("n256")) {
-            return 256;
-        }
-        if (variant.equals("n512")) {
-            return 512;
-        }
-        if (variant.equals("n1024")) {
-            return 1024;
-        }
-        if (variant.equals("n2048")) {
-            return 2048;
-        }
-        return 256;
-    }
-
-    public void setup() {
-        this.stream #= KernelStream.current();
-    }
-
-    // Build the per-variant inputs and upload them: A = identity, B[idx]=idx%100
-    // ⇒ C == B. Reallocating the fields drops the prior variant's buffers.
+    // A = identity, B[idx]=idx%100 ⇒ C == B. Reallocating the fields drops the prior variant's buffers.
     public void prepare(String variant) {
-        this.nDim = this.sizeFor(variant);
+        if (!this.live) {
+            return;
+        }
+        this.nDim = 4096;
+        if (XpuEnv.reduced()) {
+            this.nDim = 256;
+        }
         int32 sz = this.nDim * this.nDim;
         this.a = heap float64[sz];
         this.b = heap float64[sz];
@@ -249,13 +189,17 @@ public class GpuMatMulBench extends Benchmark {
         this.nU = (uint32) this.nDim;
         this.blockX = 256;            // 256 threads/workgroup, each a 4x4 micro-tile
         this.gridX = this.nU / 64;    // one workgroup per 64x64 output tile (square)
+        if (this.comp != null) {
+            this.comp.prepare(variant);
+        }
     }
 
     public int64 inputSize() {
-        return (int64) (this.nDim * this.nDim);   // N² → report derives 2·N³ GFLOP
+        int64 m = (int64) this.nDim;
+        return 2 * m * m * m;
     }
 
-    public void run(int32 iterations) {
+    public void runVariant(String variant, int32 iterations) {
         gpuMatmul.launch(this.stream, grid: [this.gridX, this.gridX], block: [this.blockX])(
             this.kc, this.ka, this.kb, this.nU);
         this.stream.sync();

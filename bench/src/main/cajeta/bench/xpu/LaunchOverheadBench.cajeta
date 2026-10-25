@@ -1,0 +1,74 @@
+package bench.xpu;
+
+import cajeta.xpu.KernelBuffer;
+
+import bench.xpu.XpuBench;
+import bench.xpu.XpuKernels;
+
+// xpu/launch-overhead: 1e4 launches of an empty kernel (one block of 32 that
+// does nothing: XpuKernels.empty) and one sync, per trial. The row's min/median
+// are for the 1e4 launches; time per launch is that divided by 1e4, and the
+// throughput column is launches/s. (The page asks for the row to be the time
+// per launch; dev.cajeta.bench 0.1.1, which this project builds against, has
+// no per-trial reported time, so the division is the reader's or the site's.)
+// Check: every launch was made (a count kept beside each call, compared with
+// the trials the harness ran).
+public class LaunchOverheadBench extends XpuBench {
+
+    public int32 launches;
+    public int64 made;
+    public int64 runs;
+    public KernelBuffer<int32> sink;
+
+    public LaunchOverheadBench() {
+        this.launches = 10000;
+        this.made = 0;
+        this.runs = 0;
+    }
+
+    public String name() {
+        return "launch-overhead";
+    }
+
+    public String unit() {
+        return "launches/s";
+    }
+
+    public int64 inputSize() {
+        return (int64) this.launches;
+    }
+
+    public String competitorNote() {
+        return "1e4 empty launches + 1 sync per trial; per-launch time = min_ns / 1e4; competitors: CUDA and HIP empty kernels (devserver), Vulkan compute (not built)";
+    }
+
+    public void setupDevice() {
+        this.sink = heap KernelBuffer<int32>((uint64) 32);
+    }
+
+    public void prepare(String variant) {
+        if (!this.live) {
+            return;
+        }
+        this.made = 0;
+        this.runs = 0;
+        if (this.comp != null) {
+            this.comp.prepare(variant);
+        }
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        int32 i = 0;
+        while (i < this.launches) {
+            XpuKernels.empty(this.stream, this.sink);
+            this.made = this.made + 1;
+            i = i + 1;
+        }
+        this.stream.sync();
+        this.runs = this.runs + 1;
+    }
+
+    public boolean checkResult() {
+        return this.runs > 0 && this.made == this.runs * (int64) this.launches;
+    }
+}

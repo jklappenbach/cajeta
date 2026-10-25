@@ -1,0 +1,149 @@
+package bench.xpu;
+
+import cajeta.collection.ArrayList;
+import cajeta.xpu.KernelBuffer;
+
+import bench.xpu.XpuBench;
+import bench.xpu.XpuEnv;
+import bench.xpu.XpuKernels;
+
+// xpu/gemm-f32 and xpu/gemm-bf16: a 4096 x 4096 GEMM through CooperativeMatrix
+// (XpuKernels.gemmF32 / gemmBf16: one wave per 16 x 64 strip, four
+// accumulators). bf16 operands accumulate in float32. Inputs are small
+// integers (A in 0..3, B in 0..4), exact in bf16 and float32 and with every
+// product sum under 2^24, so the check is exact: 512 entries of C against the
+// host's dot product. On the cpu backend under CAJETA_BENCH_SMOKE=1 the size is
+// 256 (the software tile at 4096 takes minutes). Throughput: 2 n^3 flop/s.
+public class GemmBench extends XpuBench {
+
+    public boolean bf16;
+    public uint32 n;
+    public float32[] ha;
+    public float32[] hb;
+    public float32[] hc;
+    public KernelBuffer<float32> dc;
+    public KernelBuffer<float32> da32;
+    public KernelBuffer<float32> db32;
+    public KernelBuffer<bfloat16> da16;
+    public KernelBuffer<bfloat16> db16;
+
+    public GemmBench(boolean bf16) {
+        this.bf16 = bf16;
+        this.n = (uint32) 4096;
+    }
+
+    public String name() {
+        if (this.bf16) {
+            return "gemm-bf16";
+        }
+        return "gemm-f32";
+    }
+
+    public String unit() {
+        return "flop/s";
+    }
+
+    public int64 inputSize() {
+        int64 m = (int64) this.n;
+        return 2 * m * m * m;
+    }
+
+    public String competitorNote() {
+        String sz = "4096";
+        if (XpuEnv.reduced()) {
+            sz = "256 (smoke, cpu backend)";
+        }
+        if (this.bf16) {
+            return "n=" + sz + ", CooperativeMatrix<bfloat16> operands, float32 accumulator, one wave per 16x64 strip; competitors: cuBLAS cublasGemmEx bf16/f32-acc (devserver), rocBLAS, PyTorch matmul bf16";
+        }
+        return "n=" + sz + ", CooperativeMatrix<float32> (no native f32 matrix-core config: the software tier on every backend), one wave per 16x64 strip; competitors: cuBLAS cublasSgemm (devserver), rocBLAS, PyTorch matmul f32 (TF32 off)";
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        if (XpuEnv.reduced()) {
+            v.add("n256");
+        } else {
+            v.add("n4096");
+        }
+        return v;
+    }
+
+    public void setupDevice() {
+        if (XpuEnv.reduced()) {
+            this.n = (uint32) 256;
+        }
+        int32 m = (int32) (this.n * this.n);
+        this.ha = heap float32[m];
+        this.hb = heap float32[m];
+        this.hc = heap float32[m];
+        int32 i = 0;
+        while (i < m) {
+            this.ha[i] = (float32) ((i / 7) % 4);
+            this.hb[i] = (float32) ((i / 3) % 5);
+            this.hc[i] = 0.0f;
+            i = i + 1;
+        }
+        this.dc = heap KernelBuffer<float32>((uint64) m);
+        this.dc.upload(this.hc);
+        if (this.bf16) {
+            bfloat16[] a = heap bfloat16[m];
+            bfloat16[] b = heap bfloat16[m];
+            int32 j = 0;
+            while (j < m) {
+                a[j] = (bfloat16) this.ha[j];
+                b[j] = (bfloat16) this.hb[j];
+                j = j + 1;
+            }
+            this.da16 = heap KernelBuffer<bfloat16>((uint64) m);
+            this.db16 = heap KernelBuffer<bfloat16>((uint64) m);
+            this.da16.upload(a);
+            this.db16.upload(b);
+        } else {
+            this.da32 = heap KernelBuffer<float32>((uint64) m);
+            this.db32 = heap KernelBuffer<float32>((uint64) m);
+            this.da32.upload(this.ha);
+            this.db32.upload(this.hb);
+        }
+    }
+
+    public void prepare(String variant) {
+        if (!this.live) {
+            return;
+        }
+        if (this.comp != null) {
+            this.comp.prepare(variant);
+        }
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        if (this.bf16) {
+            XpuKernels.gemmBf16(this.stream, this.dc, this.da16, this.db16, this.n);
+        } else {
+            XpuKernels.gemmF32(this.stream, this.dc, this.da32, this.db32, this.n);
+        }
+        this.stream.sync();
+    }
+
+    public boolean checkResult() {
+        this.dc.download(this.hc);
+        int32 nn = (int32) this.n;
+        int32 s = 0;
+        while (s < 512) {
+            int32 r = (s * 37 + 11) % nn;
+            int32 c = (s * 101 + 5) % nn;
+            float64 want = 0.0;
+            int32 k = 0;
+            while (k < nn) {
+                want = want + (float64) this.ha[r * nn + k] * (float64) this.hb[k * nn + c];
+                k = k + 1;
+            }
+            float64 got = (float64) this.hc[r * nn + c];
+            if (got != want) {
+                return false;
+            }
+            s = s + 1;
+        }
+        return true;
+    }
+}
