@@ -47,5 +47,5 @@ Every row records the compiler and competitor versions, flags, machine, OS and d
 
 ## See also
 
-- Benchmark source: `bench/src/main/cajeta/bench/http/`
+- Benchmark source: `cajeta-http/bench/`
 - Library: `cajeta-http`, benchmark code in `cajeta-http/bench/`

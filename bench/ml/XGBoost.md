@@ -41,5 +41,5 @@ Every row records the compiler and competitor versions, flags, machine, OS and d
 
 ## See also
 
-- Benchmark source: `bench/src/main/cajeta/bench/ml/`
+- Benchmark source: `cajeta-ml/bench/ and cajeta-xgboost/bench/`
 - Library: `cajeta-xgboost`, benchmark code in `cajeta-xgboost/bench/`

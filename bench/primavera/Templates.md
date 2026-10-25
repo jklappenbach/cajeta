@@ -29,5 +29,5 @@ Every row records the compiler and competitor versions, flags, machine, OS and d
 
 ## See also
 
-- Benchmark source: `bench/src/main/cajeta/bench/primavera/`
+- Benchmark source: `cajeta-primavera/bench/`
 - Library: `cajeta-primavera`

@@ -49,5 +49,5 @@ Every row records the compiler and competitor versions, flags, machine, OS and d
 
 ## See also
 
-- Benchmark source: `bench/src/main/cajeta/bench/codec/`
+- Benchmark source: `cajeta-codec/bench/src/main/cajeta/bench/codec/`
 - Library: `cajeta-codec`

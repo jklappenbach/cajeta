@@ -20,6 +20,7 @@ tracked below: `cajeta-text-shaping` is a **new spec not yet written**, and
 
 | Spec | Plan | Status |
 |------|------|--------|
+| [json-parse-accepts-invalid](json-parse-accepts-invalid-spec.md) | — (defect) | **draft**: filed 2026-10-25 by benchmark-reference unit 9. `Json.parse` accepts 9 of 31 JSON_checker fail files (trailing content, leading zero, raw control characters, malformed exponents); every competitor rejects all 31. The float half (canada does not round-trip at 6 fraction digits) is `float64-tostring-roundtrip`. |
 | [inherited-constructor-heap-segv](inherited-constructor-heap-segv-spec.md) | — (defect) | **draft**: filed 2026-10-25 by benchmark-reference unit 17. A subclass with no constructor whose base declares one segfaults on the first field access after `heap`; an explicit constructor fixes it. |
 | [buildtool-path-dependency-inert](buildtool-path-dependency-inert-spec.md) | — (defect) | **draft**: filed 2026-10-25 by benchmark-reference unit 17. A `{ "path": ".." }` dependency parses and resolves nothing, so a library's own `bench/` cannot measure its checkout and depends on the Olla release instead. |
 | [keep-owned-primitive-array-local](keep-owned-primitive-array-local-spec.md) | — (defect) | **draft**: filed 2026-10-25 by benchmark-reference unit 2. `this.out = w;` with `w` an owned local `int64[]` compiles and dangles (sort-int64 read `invalid` until spelled `#=`); the field-store-ownership rule-3 check does not fire for primitive-array locals. |
