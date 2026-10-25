@@ -1,0 +1,66 @@
+package bench.concurrent;
+
+import cajeta.concurrent.Mutex;
+
+import dev.cajeta.bench.Benchmark;
+
+// concurrent/mutex-uncontended: 1e8 lock-increment-unlock through
+// Mutex<int64>.withLock on one fiber (Mutex.md). The loop runs inside one
+// spawned fiber, so the fiber lock path is what is measured. Cross-check: the
+// protected value equals N.
+public class MutexUncontendedBench extends Benchmark {
+
+    public int32 n;
+    public int64 result;
+
+    public static async int64 body(int32 n) {
+        Mutex<int64> m = heap Mutex<int64>(0L);
+        int32 i = 0;
+        while (i < n) {
+            m.withLock((v) -> v + 1L);
+            i = i + 1;
+        }
+        return m.get();
+    }
+
+    public String name() {
+        return "mutex-uncontended";
+    }
+
+    public String area() {
+        return "concurrent";
+    }
+
+    public int32 warmupIters() {
+        return 1;
+    }
+
+    // ~100 ns a pass on Phoenix (2026-10-25), so a 1e8 trial is ~10 s.
+    public int32 measuredIters() {
+        return 5;
+    }
+
+    public void setup() {
+        this.n = ConcSize.pick(100000000, 1000000);
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public String unit() {
+        return "Mop/s";
+    }
+
+    public String competitorNote() {
+        return ConcSize.join("Mutex.withLock on one fiber", ConcSize.smokeNote("1e6 ops"));
+    }
+
+    public void run(int32 iterations) {
+        this.result = await spawn body(this.n);
+    }
+
+    public boolean checkResult() {
+        return this.result == (int64) this.n;
+    }
+}

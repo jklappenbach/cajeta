@@ -1,0 +1,165 @@
+package bench.concurrent;
+
+import cajeta.concurrent.AtomicInt64;
+import cajeta.concurrent.Channel;
+import cajeta.lang.Optional;
+
+import dev.cajeta.bench.Benchmark;
+
+import dev.cajeta.bench.report.Memory;
+
+import cajeta.io.file.File;
+import cajeta.io.file.FileReader;
+
+// concurrent/tasks-1m-footprint: park 1e6 tasks on channels and read the
+// resident memory while they are all parked (Tasks.md). The row's metric is
+// memory: peak_rss_kb, which the parked fibers dominate; the notes carry the
+// RSS growth while parked and the bytes per task.
+//
+// Two runtime limits shape the workload (both measured 2026-10-25):
+//  - a carrier's run deque is fixed at 2048 slots and aborts on overflow, so
+//    spawning is paced (every 1024 spawns waits until the earlier ones have
+//    started and parked), and a single channel cannot hold 1e6 waiters: close()
+//    wakes every waiter onto the deques at once. The tasks park in groups of
+//    1000 on 1000 channels, released one channel at a time.
+//  - every fiber stack is two mappings (guard page + stack), so 1e6 parked
+//    fibers need 2e6 entries under vm.max_map_count. The row skips with the
+//    reason when the limit is lower, and when MemAvailable is under 16 GB.
+// Cross-check: all N tasks parked and all N completed after release (count).
+public class TasksFootprintBench extends Benchmark {
+
+    public int32 n;
+    public int64 parked;
+    public int64 completed;
+    public int64 rssParkedKb;
+    public int64 rssBeforeKb;
+    public String why;
+
+    public static async int32 park(Channel<int32> ch, AtomicInt64 started, AtomicInt64 done) {
+        started.fetchAdd(1L);
+        Optional<int32> o = ch.receive();
+        done.fetchAdd(1L);
+        return 0;
+    }
+
+    public String name() {
+        return "tasks-1m-footprint";
+    }
+
+    public String area() {
+        return "concurrent";
+    }
+
+    public int32 warmupIters() {
+        return 0;
+    }
+
+    public int32 measuredIters() {
+        return 1;
+    }
+
+    public void setup() {
+        this.n = ConcSize.pick(1000000, 10000);
+        this.parked = 0;
+        this.completed = 0;
+        this.rssParkedKb = 0;
+        this.rssBeforeKb = 0;
+        this.why = "";
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public static int64 readFirstInt(String path, String key) {
+        FileReader r #= File.openRead(path);
+        if (r == null) {
+            return (int64) -1;
+        }
+        String text #= r.readString(65536);
+        r.close();
+        if (text == null) {
+            return (int64) -1;
+        }
+        if (key.isEmpty()) {
+            return Memory.parseIntAfter("v " + text, "v ");
+        }
+        return Memory.parseIntAfter(text, key);
+    }
+
+    public boolean supportsVariant(String variant) {
+        int64 availKb = TasksFootprintBench.readFirstInt("/proc/meminfo", "MemAvailable:");
+        if (availKb >= 0 && availKb < 16L * 1024L * 1024L) {
+            this.why = "MemAvailable " + (availKb / 1024L) + " MiB is under the 16 GB this row needs";
+            return false;
+        }
+        int64 maps = TasksFootprintBench.readFirstInt("/proc/sys/vm/max_map_count", "");
+        int64 need = 2L * (int64) this.n + 65536L;
+        if (maps >= 0 && maps < need) {
+            this.why = "vm.max_map_count " + maps + " is under the " + need
+                + " mappings " + this.n + " parked fibers need (guard page + stack each); raise it with sysctl to run this row";
+            return false;
+        }
+        return true;
+    }
+
+    public String skipReason() {
+        return "" + this.why;
+    }
+
+    public String competitorNote() {
+        String s = "1000 channels x 1000 parked tasks each (one Channel cannot release 1e6 waiters: the 2048-slot carrier deque); spawn paced at 1024";
+        if (this.rssParkedKb > 0) {
+            int64 grew = this.rssParkedKb - this.rssBeforeKb;
+            s = s + "; RSS grew " + grew + " KiB while parked = " + (grew * 1024L / (int64) this.n) + " B/task";
+        }
+        return ConcSize.join(s, ConcSize.smokeNote("1e4 tasks"));
+    }
+
+    public void run(int32 iterations) {
+        int32 n = this.n;
+        int32 group = 1000;
+        int32 groups = (n + group - 1) / group;
+        Channel<int32>[] chs = heap Channel<int32>[groups];
+        int32 g = 0;
+        while (g < groups) {
+            chs[g] #= heap Channel<int32>(1);
+            g = g + 1;
+        }
+        AtomicInt64 started = heap AtomicInt64(0L);
+        AtomicInt64 done = heap AtomicInt64(0L);
+        this.rssBeforeKb = Memory.currentRssKb();
+        scope {
+            int32 i = 0;
+            while (i < n) {
+                spawn park(chs[i / group], started, done);
+                i = i + 1;
+                if (i % 1024 == 0) {
+                    while (started.load() < (int64) (i - 1024)) {
+                    }
+                }
+            }
+            while (started.load() < (int64) n) {
+            }
+            // Every task has started and is parked (or parking) in receive().
+            this.parked = started.load();
+            this.rssParkedKb = Memory.currentRssKb();
+            g = 0;
+            while (g < groups) {
+                chs[g].close();
+                g = g + 1;
+                int64 want = (int64) g * (int64) group;
+                if (want > (int64) n) {
+                    want = (int64) n;
+                }
+                while (done.load() < want - (int64) group) {
+                }
+            }
+        }
+        this.completed = done.load();
+    }
+
+    public boolean checkResult() {
+        return this.parked == (int64) this.n && this.completed == (int64) this.n;
+    }
+}

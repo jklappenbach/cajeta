@@ -1,0 +1,67 @@
+package bench.concurrent;
+
+import cajeta.concurrent.AtomicInt64;
+
+import dev.cajeta.bench.Benchmark;
+
+// concurrent/atomic-cas: 1e8 compareAndSet(i, i + 1) on one AtomicInt64 with no
+// contention, so every CAS succeeds (AtomicInt64.md). Cross-check: the final
+// value equals N and no CAS failed.
+public class AtomicCasBench extends Benchmark {
+
+    public int32 n;
+    public int64 result;
+    public int64 failures;
+
+    public String name() {
+        return "atomic-cas";
+    }
+
+    public String area() {
+        return "concurrent";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public void setup() {
+        this.n = ConcSize.pick(100000000, 1000000);
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public String unit() {
+        return "Mop/s";
+    }
+
+    public String competitorNote() {
+        return ConcSize.join("seq_cst compareAndSet; uncontended so every CAS succeeds",
+            ConcSize.smokeNote("1e6 ops"));
+    }
+
+    public void run(int32 iterations) {
+        AtomicInt64 a = heap AtomicInt64(0);
+        int64 n = (int64) this.n;
+        int64 i = 0;
+        int64 fails = 0;
+        while (i < n) {
+            if (!a.compareAndSet(i, i + 1)) {
+                fails = fails + 1;
+            }
+            i = i + 1;
+        }
+        this.result = a.load();
+        this.failures = fails;
+    }
+
+    public boolean checkResult() {
+        return this.result == (int64) this.n && this.failures == 0;
+    }
+}

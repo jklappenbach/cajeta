@@ -1,0 +1,81 @@
+package bench.concurrent;
+
+import cajeta.concurrent.FiberLocal;
+
+import dev.cajeta.bench.Benchmark;
+
+// The accumulator the FiberLocal body adds into (a lambda captures primitives by
+// value, so the running sum lives in an object).
+class FiberLocalSum {
+    public int64 v;
+
+    public FiberLocalSum() {
+        this.v = 0;
+    }
+}
+
+// concurrent/fiberlocal-get-set: 1e8 set-and-get pairs on one fiber
+// (FiberLocal.md). FiberLocal has no bare set(): the binding API is
+// where(value, body), which binds for the body's extent and restores after, so
+// one pass is where(i, () -> sum += get()). That is the same shape as Java's
+// ScopedValue.where(..).run(..); the thread_local competitors do set(i) then
+// get(). Cross-check: the sum of the values read equals N(N-1)/2.
+public class FiberLocalBench extends Benchmark {
+
+    public int32 n;
+    public int64 result;
+
+    public static async int64 body(int32 n) {
+        FiberLocal<int64> fl = heap FiberLocal<int64>();
+        FiberLocalSum acc = heap FiberLocalSum();
+        int64 nn = (int64) n;
+        int64 j = 0;
+        while (j < nn) {
+            fl.where(j, () -> { acc.v = acc.v + fl.get(); });
+            j = j + 1L;
+        }
+        return acc.v;
+    }
+
+    public String name() {
+        return "fiberlocal-get-set";
+    }
+
+    public String area() {
+        return "concurrent";
+    }
+
+    public int32 warmupIters() {
+        return 1;
+    }
+
+    public int32 measuredIters() {
+        return 3;
+    }
+
+    public void setup() {
+        this.n = ConcSize.pick(100000000, 1000000);
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public String unit() {
+        return "Mop/s";
+    }
+
+    public String competitorNote() {
+        return ConcSize.join("set = FiberLocal.where(i; body) (no bare set() in the stdlib) and get() in the body; one fiber",
+            ConcSize.smokeNote("1e6 ops"));
+    }
+
+    public void run(int32 iterations) {
+        this.result = await spawn body(this.n);
+    }
+
+    public boolean checkResult() {
+        int64 nn = (int64) this.n;
+        return this.result == nn * (nn - 1) / 2;
+    }
+}

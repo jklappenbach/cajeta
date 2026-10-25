@@ -39,6 +39,8 @@ boost-container_hash	library	git	https://github.com/boostorg/container_hash	boos
 boost-config	library	git	https://github.com/boostorg/config	boost-1.89.0	bf8c8bd7960cd8505210838f86bd28fb4fb71071
 boost-describe	library	git	https://github.com/boostorg/describe	boost-1.89.0	b64177c39f929998e3a145992d0328712e095c29
 boost-mp11	library	git	https://github.com/boostorg/mp11	boost-1.89.0	2fb81c24534663a99f9570b99a3c748393a23dba
+# --- C++ additions for concurrent/ (Channel.md: moodycamel; header-only) ---
+concurrentqueue	library	git	https://github.com/cameron314/concurrentqueue	v1.0.4	6dd38b8a1dbaa7863aa907045f32308a56a6ff5d
 # --- device reference suites (§6.13, §8.3): fetched only, never built here ---
 babelstream	checkout	git	https://github.com/UoB-HPC/BabelStream	v5.0	f6ae48de899408cf50c24079417dc71a03dbb5a8
 mixbench	checkout	git	https://github.com/ekondis/mixbench	master	06297d6b4882729079fef586407e3ff7ecba437b

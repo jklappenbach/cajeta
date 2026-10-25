@@ -1,0 +1,87 @@
+package bench.concurrent;
+
+import cajeta.concurrent.AtomicInt64;
+import cajeta.concurrent.RwLock;
+
+import dev.cajeta.bench.Benchmark;
+
+// concurrent/rwlock-read-heavy: 16 fibers, each 1e6 operations on one
+// RwLock<int64>, every tenth a write (withWrite +1) and the rest reads
+// (read() snapshot, summed so no read can be elided) (RwLock.md). Fibers on the
+// Cajeta side, OS threads on the competitor side. Cross-check: the final value
+// equals 16 x 1e5 writes, and the read sums are recorded.
+public class RwLockBench extends Benchmark {
+
+    public int32 fibers;
+    public int32 per;
+    public int64 result;
+    public int64 readSum;
+
+    public static async int32 worker(RwLock<int64> rw, AtomicInt64 reads, int32 n) {
+        int64 sum = 0;
+        int32 i = 0;
+        while (i < n) {
+            if (i % 10 == 0) {
+                rw.withWrite((v) -> v + 1L);
+            } else {
+                sum = sum + rw.read();
+            }
+            i = i + 1;
+        }
+        reads.fetchAdd(sum);
+        return 0;
+    }
+
+    public String name() {
+        return "rwlock-read-heavy";
+    }
+
+    public String area() {
+        return "concurrent";
+    }
+
+    public int32 warmupIters() {
+        return 1;
+    }
+
+    public int32 measuredIters() {
+        return 5;
+    }
+
+    public void setup() {
+        this.fibers = 16;
+        this.per = ConcSize.pick(1000000, 10000);
+    }
+
+    public int64 inputSize() {
+        return (int64) this.fibers * (int64) this.per;
+    }
+
+    public String unit() {
+        return "Mop/s";
+    }
+
+    public String competitorNote() {
+        return ConcSize.join("16 fibers 90/10 read/write; competitors use 16 OS threads",
+            ConcSize.smokeNote("1e4 ops per fiber"));
+    }
+
+    public void run(int32 iterations) {
+        RwLock<int64> rw = heap RwLock<int64>(0L);
+        AtomicInt64 reads = heap AtomicInt64(0L);
+        scope {
+            int32 k = 0;
+            while (k < this.fibers) {
+                spawn worker(rw, reads, this.per);
+                k = k + 1;
+            }
+        }
+        this.result = rw.read();
+        this.readSum = reads.load();
+    }
+
+    public boolean checkResult() {
+        int64 writes = (int64) this.fibers * (int64) (this.per / 10);
+        return this.result == writes && this.readSum >= 0;
+    }
+}

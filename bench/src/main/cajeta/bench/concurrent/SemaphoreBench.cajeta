@@ -1,0 +1,90 @@
+package bench.concurrent;
+
+import cajeta.concurrent.AtomicInt64;
+import cajeta.concurrent.Semaphore;
+
+import dev.cajeta.bench.Benchmark;
+
+// concurrent/semaphore-acquire-release: 16 fibers through a 4-permit Semaphore,
+// 1e6 passes each (Semaphore.md). Inside the permit a pass bumps an in-flight
+// counter, records a violation if more than four are inside, and leaves.
+// Fibers on the Cajeta side, OS threads on the competitor side. Cross-check: the
+// pass count equals 16 x 1e6 and no pass ever saw more than four holders.
+public class SemaphoreBench extends Benchmark {
+
+    public int32 fibers;
+    public int32 per;
+    public int64 passes;
+    public int64 violations;
+
+    public static async int32 worker(Semaphore sem, AtomicInt64 inside, AtomicInt64 passes,
+                                     AtomicInt64 violations, int32 n) {
+        int32 i = 0;
+        while (i < n) {
+            sem.acquire();
+            int64 now = inside.fetchAdd(1L) + 1L;
+            if (now > 4L) {
+                violations.fetchAdd(1L);
+            }
+            inside.fetchAdd(-1L);
+            sem.release();
+            i = i + 1;
+        }
+        passes.fetchAdd((int64) n);
+        return 0;
+    }
+
+    public String name() {
+        return "semaphore-acquire-release";
+    }
+
+    public String area() {
+        return "concurrent";
+    }
+
+    public int32 warmupIters() {
+        return 1;
+    }
+
+    public int32 measuredIters() {
+        return 5;
+    }
+
+    public void setup() {
+        this.fibers = 16;
+        this.per = ConcSize.pick(1000000, 10000);
+    }
+
+    public int64 inputSize() {
+        return (int64) this.fibers * (int64) this.per;
+    }
+
+    public String unit() {
+        return "Mop/s";
+    }
+
+    public String competitorNote() {
+        return ConcSize.join("16 fibers through 4 permits; competitors use 16 OS threads (Rust: 16 tokio tasks on 16 workers)",
+            ConcSize.smokeNote("1e4 passes per fiber"));
+    }
+
+    public void run(int32 iterations) {
+        Semaphore sem = heap Semaphore(4);
+        AtomicInt64 inside = heap AtomicInt64(0L);
+        AtomicInt64 passCell = heap AtomicInt64(0L);
+        AtomicInt64 violCell = heap AtomicInt64(0L);
+        scope {
+            int32 k = 0;
+            while (k < this.fibers) {
+                spawn worker(sem, inside, passCell, violCell, this.per);
+                k = k + 1;
+            }
+        }
+        this.passes = passCell.load();
+        this.violations = violCell.load();
+    }
+
+    public boolean checkResult() {
+        return this.passes == (int64) this.fibers * (int64) this.per && this.violations == 0;
+    }
+}

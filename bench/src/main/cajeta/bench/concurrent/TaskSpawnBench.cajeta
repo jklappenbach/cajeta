@@ -2,12 +2,10 @@ package bench.concurrent;
 
 import dev.cajeta.bench.Benchmark;
 
-// Task spawn/await overhead: spawn N trivial async fibers, await each, accumulate
-// the results. Each spawn allocates a stackful fiber; spawning then awaiting
-// immediately keeps only one live at a time. The 1M-LIVE-task footprint was
-// blocked at 0.7.1 by the 65536 live-allocation cap; at 0.46.3 the cap is gone
-// (1M simultaneously live objects tracked exactly, re-tested in
-// benchmark-reference 2.2.4), so it is a separate benchmark for concurrent/.
+// concurrent/task-spawn-await: spawn and await 1e5 trivial tasks, sequentially
+// (Tasks.md). Each spawn allocates a stackful fiber; spawning then awaiting
+// immediately keeps only one live at a time. The 1M-live-task footprint is
+// concurrent/tasks-1m-footprint (TasksFootprintBench).
 // Cross-check: sum of (i+1) == N*(N+1)/2.
 public class TaskSpawnBench extends Benchmark {
 
@@ -18,6 +16,20 @@ public class TaskSpawnBench extends Benchmark {
         return x + 1;
     }
 
+    // The spawning loop runs as a fiber itself, so spawn and await are the
+    // fiber-to-fiber path (the competitors spawn from a task, a goroutine or an
+    // event loop); the main thread is not a fiber.
+    public static async int64 spawner(int32 n) {
+        int64 acc = 0;
+        int32 i = 0;
+        while (i < n) {
+            int32 r = await spawn leaf(i);
+            acc = acc + (int64) r;
+            i = i + 1;
+        }
+        return acc;
+    }
+
     public String name() {
         return "task-spawn-await";
     }
@@ -26,8 +38,9 @@ public class TaskSpawnBench extends Benchmark {
         return "concurrent";
     }
 
+    // ~200 us a spawn+await on Phoenix (2026-10-25): a 1e5 trial is ~20 s.
     public int32 warmupIters() {
-        return 2;
+        return 1;
     }
 
     public int32 measuredIters() {
@@ -35,24 +48,23 @@ public class TaskSpawnBench extends Benchmark {
     }
 
     public void setup() {
-        // ~24.6 µs per spawn+await (stackful fiber); keep N modest so the
-        // benchmark doesn't dominate the run.
-        this.n = 20000;
+        this.n = ConcSize.pick(100000, 10000);
     }
 
     public int64 inputSize() {
         return (int64) this.n;
     }
 
+    public String unit() {
+        return "Mop/s";
+    }
+
+    public String competitorNote() {
+        return ConcSize.join("spawn then await each from inside a fiber", ConcSize.smokeNote("1e4 tasks"));
+    }
+
     public void run(int32 iterations) {
-        int64 acc = 0;
-        int32 i = 0;
-        while (i < this.n) {
-            int32 r = await spawn leaf(i);
-            acc = acc + (int64) r;
-            i = i + 1;
-        }
-        this.result = acc;
+        this.result = await spawn spawner(this.n);
     }
 
     public boolean checkResult() {

@@ -4,8 +4,9 @@ import cajeta.concurrent.AtomicInt64;
 
 import dev.cajeta.bench.Benchmark;
 
-// Atomic counter throughput: N fetchAdd(1) on an AtomicInt64. Cross-check: the
-// final load() equals N (every increment landed).
+// concurrent/atomic-fetchadd: 1e8 fetchAdd(1) on one AtomicInt64, one thread
+// (AtomicInt64.md). The single-threaded loop is the hardware `lock xadd` floor.
+// Cross-check: the final load() equals N (every increment landed).
 public class AtomicBench extends Benchmark {
 
     public int32 n;
@@ -20,19 +21,28 @@ public class AtomicBench extends Benchmark {
     }
 
     public int32 warmupIters() {
-        return 10;
+        return 2;
     }
 
     public int32 measuredIters() {
-        return 50;
+        return 10;
     }
 
     public void setup() {
-        this.n = 1000000;
+        this.n = ConcSize.pick(100000000, 1000000);
     }
 
     public int64 inputSize() {
         return (int64) this.n;
+    }
+
+    public String unit() {
+        return "Mop/s";
+    }
+
+    public String competitorNote() {
+        return ConcSize.join("seq_cst fetchAdd (lock xadd on x86 in every language)",
+            ConcSize.smokeNote("1e6 ops"));
     }
 
     public void run(int32 iterations) {

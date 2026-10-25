@@ -1,0 +1,75 @@
+package bench.concurrent;
+
+import cajeta.concurrent.AtomicInt64;
+
+import dev.cajeta.bench.Benchmark;
+
+// concurrent/atomic-contended-16: 16 fibers each doing 1e6 fetchAdd(1) on one
+// shared AtomicInt64 (AtomicInt64.md). The fibers run on the carrier pool
+// (CAJETA_CARRIERS, default min(nproc, 4)); the competitors use 16 OS threads.
+// Cross-check: the final value equals 16 x 1e6.
+public class AtomicContendedBench extends Benchmark {
+
+    public int32 fibers;
+    public int32 per;
+    public int64 result;
+
+    public static async int32 adder(AtomicInt64 a, int32 n) {
+        int32 i = 0;
+        while (i < n) {
+            a.fetchAdd(1);
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    public String name() {
+        return "atomic-contended-16";
+    }
+
+    public String area() {
+        return "concurrent";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public void setup() {
+        this.fibers = 16;
+        this.per = ConcSize.pick(1000000, 10000);
+    }
+
+    public int64 inputSize() {
+        return (int64) this.fibers * (int64) this.per;
+    }
+
+    public String unit() {
+        return "Mop/s";
+    }
+
+    public String competitorNote() {
+        return ConcSize.join("16 fibers on the carrier pool; competitors use 16 OS threads",
+            ConcSize.smokeNote("1e4 ops per fiber"));
+    }
+
+    public void run(int32 iterations) {
+        AtomicInt64 a = heap AtomicInt64(0);
+        scope {
+            int32 k = 0;
+            while (k < this.fibers) {
+                spawn adder(a, this.per);
+                k = k + 1;
+            }
+        }
+        this.result = a.load();
+    }
+
+    public boolean checkResult() {
+        return this.result == (int64) this.fibers * (int64) this.per;
+    }
+}

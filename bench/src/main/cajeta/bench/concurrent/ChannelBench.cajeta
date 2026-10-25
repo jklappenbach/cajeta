@@ -1,0 +1,126 @@
+package bench.concurrent;
+
+import cajeta.concurrent.AtomicInt64;
+import cajeta.concurrent.Channel;
+import cajeta.lang.Optional;
+
+import dev.cajeta.bench.Benchmark;
+
+// concurrent/channel-spsc, channel-mpsc and channel-mpmc: the crossbeam-channel
+// harness shapes (Channel.md). 5e6 int64 messages through one bounded
+// Channel<int64> of capacity 1e3; P producers split the messages evenly and C
+// consumers drain until the channel is closed and empty. spsc is 1/1, mpsc 4/1,
+// mpmc 4/4. Producer p sends p*per+1 .. p*per+per, so every message 1..N is sent
+// exactly once. Cross-check: the consumers' sum equals N(N+1)/2 and they
+// received N messages.
+public class ChannelBench extends Benchmark {
+
+    public int32 producers;
+    public int32 consumers;
+    public int32 n;
+    public int64 sum;
+    public int64 received;
+
+    public ChannelBench(int32 producers, int32 consumers) {
+        this.producers = producers;
+        this.consumers = consumers;
+        this.n = 0;
+        this.sum = 0;
+        this.received = 0;
+    }
+
+    public static async int32 produce(Channel<int64> ch, int64 first, int32 count) {
+        int32 i = 0;
+        while (i < count) {
+            ch.send(first + (int64) i);
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    public static async int32 consume(Channel<int64> ch, AtomicInt64 sum, AtomicInt64 got) {
+        int64 s = 0;
+        int64 c = 0;
+        boolean more = true;
+        while (more) {
+            Optional<int64> o = ch.receive();
+            if (o.isPresent()) {
+                s = s + o.get();
+                c = c + 1;
+            } else {
+                more = false;
+            }
+        }
+        sum.fetchAdd(s);
+        got.fetchAdd(c);
+        return 0;
+    }
+
+    public String name() {
+        if (this.producers == 1) {
+            return "channel-spsc";
+        }
+        if (this.consumers == 1) {
+            return "channel-mpsc";
+        }
+        return "channel-mpmc";
+    }
+
+    public String area() {
+        return "concurrent";
+    }
+
+    public int32 warmupIters() {
+        return 1;
+    }
+
+    public int32 measuredIters() {
+        return 5;
+    }
+
+    public void setup() {
+        this.n = ConcSize.pick(5000000, 10000);
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public String unit() {
+        return "Mmsg/s";
+    }
+
+    public String competitorNote() {
+        return ConcSize.join("bounded capacity 1e3; producers and consumers are fibers; competitors use OS threads",
+            ConcSize.smokeNote("1e4 messages"));
+    }
+
+    public void run(int32 iterations) {
+        Channel<int64> ch = heap Channel<int64>(1000);
+        AtomicInt64 sumCell = heap AtomicInt64(0L);
+        AtomicInt64 gotCell = heap AtomicInt64(0L);
+        int32 per = this.n / this.producers;
+        scope {
+            int32 c = 0;
+            while (c < this.consumers) {
+                spawn consume(ch, sumCell, gotCell);
+                c = c + 1;
+            }
+            scope {
+                int32 p = 0;
+                while (p < this.producers) {
+                    spawn produce(ch, (int64) p * (int64) per + 1L, per);
+                    p = p + 1;
+                }
+            }
+            ch.close();
+        }
+        this.sum = sumCell.load();
+        this.received = gotCell.load();
+    }
+
+    public boolean checkResult() {
+        int64 nn = (int64) this.n;
+        return this.received == nn && this.sum == nn * (nn + 1) / 2;
+    }
+}

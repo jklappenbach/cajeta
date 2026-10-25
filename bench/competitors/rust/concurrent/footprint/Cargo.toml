@@ -1,0 +1,19 @@
+[package]
+name = "profile-footprint"
+version = "0.1.0"
+edition = "2021"
+
+# concurrent/tasks-1m-footprint on tokio (Tasks.md); its own process so the
+# peak RSS is this workload's.
+
+[dependencies]
+tokio = { version = "=1.53.1", features = ["rt", "rt-multi-thread", "time", "sync"] }
+
+[[bin]]
+name = "profile-footprint"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

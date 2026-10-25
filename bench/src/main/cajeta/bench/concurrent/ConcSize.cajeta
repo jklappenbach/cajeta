@@ -1,0 +1,43 @@
+package bench.concurrent;
+
+// Workload sizes for the concurrent/ benchmarks. Under CAJETA_BENCH_SMOKE=1 the
+// multi-fiber rows run 1e4 operations and the 1e8 single-fiber rows run 1e6, so
+// the smoke stays short; every such row says so in its notes ("smoke size").
+// The competitor programs read the same variable and shrink the same way.
+public final class ConcSize {
+
+    public static boolean smoke() {
+        String s = System.env.get("CAJETA_BENCH_SMOKE");
+        if (s == null) {
+            return false;
+        }
+        return s.equals("1") || s.equals("true");
+    }
+
+    // `full` normally, `small` under CAJETA_BENCH_SMOKE=1.
+    public static int32 pick(int32 full, int32 small) {
+        if (ConcSize.smoke()) {
+            return small;
+        }
+        return full;
+    }
+
+    // The notes fragment a shrunk row carries.
+    public static #String smokeNote(String what) {
+        if (ConcSize.smoke()) {
+            return "smoke size: " + what;
+        }
+        return "";
+    }
+
+    // `a; b`, dropping an empty side.
+    public static #String join(String a, String b) {
+        if (a.isEmpty()) {
+            return "" + b;
+        }
+        if (b.isEmpty()) {
+            return "" + a;
+        }
+        return a + "; " + b;
+    }
+}

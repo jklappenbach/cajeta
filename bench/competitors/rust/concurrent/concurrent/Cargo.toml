@@ -3,9 +3,13 @@ name = "profile-concurrent"
 version = "0.1.0"
 edition = "2021"
 
-# Stdlib only: AtomicI64 for the atomic counter, std::thread for the spawn/await
-# task primitive (OS threads — the honest cost of "spawn a task" without an async
-# runtime; contrast with Go goroutines, Python asyncio, and Cajeta's fibers).
+# std atomics, Mutex, RwLock, thread_local!, std::sync::mpsc; tokio for the
+# Semaphore, sleep and spawn rows; crossbeam-channel for the channel rows
+# (Channel.md: the crossbeam harness shapes). Versions are the Cargo.lock pins.
+
+[dependencies]
+tokio = { version = "=1.53.1", features = ["rt", "rt-multi-thread", "time", "sync"] }
+crossbeam-channel = "=0.5.16"
 
 [[bin]]
 name = "profile-concurrent"

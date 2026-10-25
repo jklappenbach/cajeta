@@ -11,6 +11,22 @@ public final class ConcurrentRegistry {
 
     public static void register(ArrayList<Benchmark> b) {
         b.add(heap AtomicBench());
+        b.add(heap Atomic32Bench());
+        b.add(heap AtomicCasBench());
+        b.add(heap AtomicContendedBench());
+        b.add(heap MutexUncontendedBench());
+        b.add(heap MutexContendedBench(4));
+        b.add(heap MutexContendedBench(16));
+        b.add(heap RwLockBench());
+        b.add(heap LockBench());
+        b.add(heap SemaphoreBench());
+        b.add(heap ChannelBench(1, 1));
+        b.add(heap ChannelBench(4, 1));
+        b.add(heap ChannelBench(4, 4));
+        b.add(heap FiberSleepBench());
+        b.add(heap FiberLocalBench());
         b.add(heap TaskSpawnBench());
+        // Last: its peak RSS dominates the process high-water mark.
+        b.add(heap TasksFootprintBench());
     }
 }

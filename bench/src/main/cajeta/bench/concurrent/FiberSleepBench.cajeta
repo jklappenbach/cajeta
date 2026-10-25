@@ -1,0 +1,97 @@
+package bench.concurrent;
+
+import cajeta.concurrent.Fiber;
+import cajeta.time.Clock;
+import cajeta.time.Duration;
+
+import dev.cajeta.bench.Benchmark;
+
+// concurrent/fiber-sleep-wake: Fiber.sleep(1 ms) wake-up latency (Fiber.md).
+// Every trial is one sleep in a fresh fiber, so the row's min/median/p95 are
+// the distribution over 1e4 sleeps; the harness subtracts baselineNanos = 1 ms
+// plus the median cost of an empty spawn+await calibrated in setup(), leaving
+// the overshoot. The runtime's timed-wait stall (about 1 in 60, open) shows in
+// p95, not in the median. Cross-check: every sleep ran (count).
+public class FiberSleepBench extends Benchmark {
+
+    public int64 spawnNs;
+    public int64 count;
+    public int64 expected;
+
+    public static async int32 nap() {
+        Fiber.sleep(Duration.ofMillis(1));
+        return 1;
+    }
+
+    public static async int32 noop() {
+        return 1;
+    }
+
+    public String name() {
+        return "fiber-sleep-wake";
+    }
+
+    public String area() {
+        return "concurrent";
+    }
+
+    public int32 warmupIters() {
+        return 100;
+    }
+
+    public int32 measuredIters() {
+        return 10000;
+    }
+
+    public void setup() {
+        // Median of 1001 empty spawn+await round trips: the part of a trial
+        // that is not the sleep.
+        int32 k = 1001;
+        int64[] s = heap int64[k];
+        int32 i = 0;
+        while (i < k) {
+            int64 t0 = Clock.nanoTime();
+            int32 r = await spawn noop();
+            s[i] = Clock.nanoTime() - t0 + (int64) (r - 1);
+            i = i + 1;
+        }
+        // insertion sort is fine at 1001
+        i = 1;
+        while (i < k) {
+            int64 v = s[i];
+            int32 j = i - 1;
+            while (j >= 0 && s[j] > v) {
+                s[j + 1] = s[j];
+                j = j - 1;
+            }
+            s[j + 1] = v;
+            i = i + 1;
+        }
+        this.spawnNs = s[k / 2];
+        this.count = 0;
+        this.expected = 0;
+    }
+
+    public int64 baselineNanos() {
+        return 1000000L + this.spawnNs;
+    }
+
+    public int64 inputSize() {
+        return (int64) 1;
+    }
+
+    public String competitorNote() {
+        return "row = overshoot past 1 ms per sleep (median and p95 over the trials); baseline subtracts 1 ms + "
+            + this.spawnNs + " ns calibrated spawn+await; the open ~1-in-60 timed-wait stall shows in p95";
+    }
+
+    public void run(int32 iterations) {
+        int32 r = await spawn nap();
+        this.count = this.count + (int64) r;
+        this.expected = this.expected + 1;
+    }
+
+    public boolean checkResult() {
+        return this.count == this.expected && this.count > 0;
+    }
+}

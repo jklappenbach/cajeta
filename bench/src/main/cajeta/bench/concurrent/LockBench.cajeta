@@ -1,0 +1,72 @@
+package bench.concurrent;
+
+import cajeta.concurrent.Lock;
+import cajeta.concurrent.LockGuard;
+
+import dev.cajeta.bench.Benchmark;
+
+// concurrent/lock-uncontended: 1e8 acquire and release of one Lock on one fiber
+// (Lock.md). Each pass takes the RAII guard from acquire() and lets it drop at
+// the block's end, which releases the lock; the counter is bumped while held.
+// Cross-check: the count equals N.
+public class LockBench extends Benchmark {
+
+    public int32 n;
+    public int64 result;
+
+    public static async int64 body(int32 n) {
+        Lock gate = heap Lock();
+        int64 count = 0;
+        int32 i = 0;
+        while (i < n) {
+            {
+                LockGuard g #= gate.acquire();
+                count = count + 1;
+            }
+            i = i + 1;
+        }
+        return count;
+    }
+
+    public String name() {
+        return "lock-uncontended";
+    }
+
+    public String area() {
+        return "concurrent";
+    }
+
+    public int32 warmupIters() {
+        return 1;
+    }
+
+    // ~100 ns a pass on Phoenix (2026-10-25), so a 1e8 trial is ~10 s.
+    public int32 measuredIters() {
+        return 5;
+    }
+
+    public void setup() {
+        this.n = ConcSize.pick(100000000, 1000000);
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public String unit() {
+        return "Mop/s";
+    }
+
+    public String competitorNote() {
+        return ConcSize.join("Lock.acquire() guard dropped per pass on one fiber",
+            ConcSize.smokeNote("1e6 ops"));
+    }
+
+    public void run(int32 iterations) {
+        this.result = await spawn body(this.n);
+    }
+
+    public boolean checkResult() {
+        return this.result == (int64) this.n;
+    }
+}
