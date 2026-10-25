@@ -7,7 +7,7 @@ Size on disk of hello-world and of the tour, stripped.
 | id | workload | against | check |
 |---|---|---|---|
 | `toolchain/binary-size-hello` | hello-world executable | C++, Rust, Go, Java jar plus runtime (noted), Python (interpreter noted) | runs |
-| `toolchain/binary-size-tour` | the tour executable and `.cja` | same | runs |
+| `toolchain/binary-size-tour` | the tour executable (debug build, stripped) and its `.cja` (checked with `cajeta archive verify`, since nothing runs a `.cja` directly); variants exe, cja | the synthetic program: C++, Rust, Go stripped, a Java jar and a Python zipapp, runtimes not counted | runs |
 
 ## Results
 

@@ -1,14 +1,14 @@
 # Start-up
 
-Time from `exec` to the first line of output for hello-world, as a native executable and as a `.cja` archive through the JIT, cold and warm.
+Time from `exec` to the first line of output for hello-world, as a native executable and through the JIT, cold and warm. No command runs a `.cja` archive through the JIT on v0.46.3 (`jit-run` takes a source root), so the JIT rows use `cajeta jit-run` on the hello source with an empty and a filled cache directory.
 
 ## Benchmarks
 
 | id | workload | against | check |
 |---|---|---|---|
 | `toolchain/startup-exe` | hello-world executable, 1e2 launches | C++, Rust, Go binaries, Java `java -jar`, Python | output |
-| `toolchain/startup-cja-cold` | `.cja` with an empty JIT cache | Java cold, Python cold | output |
-| `toolchain/startup-cja-warm` | `.cja` with the machine code cached | Java with CDS, Python with `.pyc` | output |
+| `toolchain/startup-cja-cold` | `cajeta jit-run` with an empty cache directory | Java with `-Xshare:off`, CPython with an emptied bytecode cache | output |
+| `toolchain/startup-cja-warm` | `cajeta jit-run` with the machine code cached | Java with an AppCDS archive, CPython with its bytecode cache filled | output |
 
 ## Results
 

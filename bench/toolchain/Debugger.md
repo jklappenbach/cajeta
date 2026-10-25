@@ -1,12 +1,12 @@
 # Debugger
 
-Attach time of the debug adapter.
+Time to a first breakpoint under the debug adapter. `cajeta dap` has no `attach` request on v0.46.3 (the debugging guide lists one; only launch is handled, filed), so the Cajeta row launches the tour against a warm JIT cache and stops at one breakpoint, while the competitors attach to a running process.
 
 ## Benchmarks
 
 | id | workload | against | check |
 |---|---|---|---|
-| `toolchain/debugger-attach` | attach the DAP server to a running tour process and set one breakpoint, 20 times | jdb attach, gdb attach to a Rust and a C++ binary, delve attach, debugpy attach | breakpoint reported |
+| `toolchain/debugger-attach` | DAP launch of the tour to the first reported breakpoint, 20 times; competitors attach to a running process and stop at one breakpoint | jdb attach, gdb attach to a Rust and a C++ binary, delve attach, debugpy attach | breakpoint reported |
 
 ## Results
 

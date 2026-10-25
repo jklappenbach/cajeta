@@ -1,4 +1,4 @@
-# optimized-http-server-link-drop — no optimized build of a cajeta-http server links (defect spec)
+# optimized-http-server-link-drop — optimized builds drop template drop functions that are still referenced; no cajeta-http server and not the tour links above O0 (defect spec)
 
 > Status: **draft**, filed 2026-10-25 by benchmark-reference unit 19
 > (cajeta-primavera bench), measured on v0.46.3. Blocks every release-build
@@ -20,6 +20,12 @@ off and records that in `flags`; its register-user row reads about 4k req/s
 against 60k to 130k for the JVM and .NET stacks, a number that says nothing
 until the server is optimized. The DI app, which does not use the server,
 builds at release O3 normally.
+
+**Wider than http** (unit 15, 2026-10-25): `samples/tour` does not link at
+`--release`, `--release --lto=off` or `--mode=debug-release` either, with the
+same `undefined __cajeta_stack_*_drop` shape, so the toolchain benchmarks
+build the tour with the debug flavor. Any optimized program that instantiates
+a template whose drop lives in another module is at risk.
 
 ## 2. Use cases
 - **2.1** As a developer, when I build a cajeta-http server program with

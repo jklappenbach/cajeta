@@ -6,7 +6,7 @@ The cost of `cajeta build` when nothing changed.
 
 | id | workload | against | check |
 |---|---|---|---|
-| `toolchain/build-noop` | 1e2 no-op builds | Gradle and Maven no-op, cargo build no-op, go build no-op, ninja no-op | exit 0 |
+| `toolchain/build-noop` | 1e2 no-op builds | Gradle 9.8.2 (daemon) and Maven offline no-op, cargo build no-op, go build no-op, ninja no-op | exit 0 |
 
 ## Results
 

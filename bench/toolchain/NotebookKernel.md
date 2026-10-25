@@ -6,7 +6,7 @@ Time for the Jupyter kernel to answer its first `kernel_info` request and its fi
 
 | id | workload | against | check |
 |---|---|---|---|
-| `toolchain/kernel-startup` | kernel launch to first reply and first cell, 20 launches | IPython kernel, IJava, the Rust `evcxr` kernel | reply received |
+| `toolchain/kernel-startup` | kernel launch to first reply and first cell, 20 launches, through the existing `measure.py` (the Cajeta row skips on Phoenix: that compiler was built without libzmq) | IPython kernel, IJava, the Rust `evcxr` kernel | reply received |
 
 ## Results
 

@@ -1,15 +1,15 @@
 # Compile time
 
-How long the compiler takes: the tour cold and warm, a synthetic 10k-line program, and the link-time-optimization modes. The competitors compile an equivalent program with their own toolchains.
+How long the compiler takes: the tour cold and warm, a synthetic 10k-line program generated in six languages from one description, and the link-time-optimization modes. The tour has no counterpart in other languages, so its competitor rows compile the synthetic program, the closest in size (9.8k lines against 10k). The tour builds with the debug flavor because no optimized flavor links it on v0.46.3 (the filed drop-symbol link defect).
 
 ## Benchmarks
 
 | id | workload | against | check |
 |---|---|---|---|
-| `toolchain/compile-tour-cold` | `cajeta build` of `samples/tour` with an empty cache | javac on an equivalent tree, rustc, go build, g++ | binary runs |
-| `toolchain/compile-tour-warm` | the same with a warm compile cache and no edits | same | binary runs |
-| `toolchain/compile-10k` | a generated 10k-line, 200-class program | same | binary runs |
-| `toolchain/compile-lto` | the 10k program at `--lto=off`, `thin`, `full`; variants | rustc and clang LTO modes | binary runs |
+| `toolchain/compile-tour-cold` | `cajeta build` of a fresh copy of `samples/tour` with an empty cache | javac, cargo/rustc, go build, g++ through ninja, on the synthetic program | binary runs |
+| `toolchain/compile-tour-warm` | the same with a warm artifact cache and no edits (javac keeps no cache and recompiles) | same | binary runs |
+| `toolchain/compile-10k` | the generated 10k-line, 200-class, 202-file program | same | binary runs |
+| `toolchain/compile-lto` | the 10k program at `--lto=off`, `thin`, `full`; variants; the fork's lld is put on PATH, since the compiler looks for it nowhere else | cargo `lto` off/thin/fat and the fork clang++ `-flto=thin|full` with lld | binary runs |
 
 ## Results
 
