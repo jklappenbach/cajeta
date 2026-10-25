@@ -190,7 +190,7 @@ as a dependency. One `Benchmark` contract, one CSV schema, one `--list` /
 - New: `machine()` read from `CAJETA_BENCH_MACHINE` or the hostname;
   `competitorNote()` for the row's `notes`; `unit()` naming the throughput
   unit so the chart labels itself.
-- Schema v2 = v1's 31 columns plus `machine`, `os` (name and version, and
+- Schema v2 = v1's 32 columns (the 0.7.1 sample had 31; `backend` came later) plus `machine`, `os` (name and version, and
   `WSL2` when under it), `driver` (CUDA/ROCm/Vulkan driver version, empty on
   CPU), `model` (the LLM or ML model identity with its quantization, empty
   elsewhere), `platform` (the engine or library that produced the row:
@@ -517,8 +517,9 @@ C++ (g++ 13 or the fork's clang 23, pinned per machine), Rust stable, Go, Java
 xxhash, Jackson) plus the additions §6 names.
 
 ### 8.3 Device competitors (xpu)
-CUDA 12.x on Phoenix, ROCm on Proton: BabelStream and mixbench reference
-builds, cuBLAS/rocBLAS, CUB/rocPRIM, PyTorch CUDA/ROCm.
+CUDA 13.3 on Phoenix (measured 2026-10-25; the first draft said 12.x), ROCm on
+Proton: BabelStream and mixbench reference builds, cuBLAS/rocBLAS, CUB/rocPRIM,
+PyTorch CUDA/ROCm.
 
 ### 8.4 Data competitors (nucleo, math)
 pandas, polars, DuckDB; NumPy, SciPy, FFTW.
