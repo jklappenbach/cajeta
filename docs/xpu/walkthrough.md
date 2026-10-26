@@ -66,8 +66,8 @@ the Q6_K output head runs on the decode path 128 times per sequence.
     <text x="216" y="80">estimators over Tensor</text>
     <text x="216" y="160">columns, tape over Tensor</text>
     <text x="526" y="160">Tensor&lt;float32&gt; activations</text>
-    <text x="754" y="242" text-anchor="end">KernelBuffer, @Kernel launches</text>
-    <text x="526" y="242">Tensor storage ↔ KernelBuffer</text>
+    <text x="754" y="242" text-anchor="end">@Kernel launches</text>
+    <text x="526" y="242">Tensor → KernelBuffer</text>
   </g>
 </svg>
 <figcaption>The stack, bottom-up, and the path this page follows. The LLM engine builds on Math and XPU directly; it does not pass through nucleo, which shares the same substrate beside it.</figcaption>
@@ -562,9 +562,9 @@ source runs at wave 32 and wave 64.
     <path d="M595,170 L595,146 L850,146 L850,158"/>
     <path d="M595,284 L595,300 L850,300 L850,287"/>
     <path d="M135,74 L135,168"/>
-    <path d="M325,74 L325,230 L115,230 L115,248"/>
+    <path d="M325,74 L325,90 L45,90 L45,267 L58,267"/>
     <path d="M740,170 L740,110 L515,110 L515,76"/>
-    <path d="M850,190 L850,225 L115,225 L115,248" stroke-dasharray="4 3"/>
+    <path d="M850,190 L850,234 L115,234 L115,248" stroke-dasharray="4 3"/>
   </g>
   <g fill="currentColor" font-size="10" opacity="0.7">
     <text x="140" y="120">launches ~1 ms of host time</text>
