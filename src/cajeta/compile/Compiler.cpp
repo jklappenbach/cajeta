@@ -3716,6 +3716,13 @@ namespace cajeta {
         const bool isCoff = llvm::Triple(targetTriple).isOSBinFormatCOFF();
         std::unordered_set<std::string> reached = computeReachableSymbols(
             lmods, defs, /*excludeClinitRoots=*/false, /*rootAllLocals=*/isCoff);
+        // Runtime entry points that codegen adds calls to AFTER this walk: the AOT
+        // line frames' slow path (inlineLineFrames) and the cpu scalar-twin guard
+        // (Optimizer). Unrooted, the COFF erase below dropped their definitions and
+        // the late pass re-declared them, so every Windows --emit=exe link failed on
+        // __cajeta_shadow_cur_slow (CoffTreeShakeTests).
+        for (const char* late : {"__cajeta_shadow_cur_slow", "__cajeta_xpu_cpu_scalar_twin"})
+            reached.insert(late);
 
         // Prunable = every cajeta METHOD body, from Method->llvm::Function and never a
         // name prefix, so runtime/ABI helpers, ctors, clinits and reflect adapters are

@@ -756,6 +756,21 @@ jobs:
           echo "$out"
           echo "$out" | grep -q 'jit smoke ok'
 
+      # ---- Smoke test: the shipped binary links an executable ----------
+      # v0.46.3 through v0.47.0 shipped a Windows cajeta.exe whose every
+      # --emit=exe failed to link (`undefined symbol:
+      # __cajeta_shadow_cur_slow`: the COFF tree-shake erased a runtime
+      # function the line frames call after it), behind green --version and
+      # JIT smokes. The same program, linked and run.
+      - name: Smoke test (--emit=exe)
+        run: |
+          mkdir -p build/exe-smoke
+          ./build/src/cajeta --emit=exe -o build/exe-smoke/smoke.exe \
+            smoke.Main.run build/jit-smoke build/exe-smoke
+          out="$(./build/exe-smoke/smoke.exe 2>&1)" || true
+          echo "$out"
+          echo "$out" | grep -q 'jit smoke ok'
+
       # ---- Run the release regression subset ----------------------------
       #
       # NOT the full ~1725-test battery — running that on all four matrix
