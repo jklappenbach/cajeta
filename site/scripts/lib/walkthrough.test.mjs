@@ -114,3 +114,12 @@ test('marker ids are unique across the walkthrough', () => {
   const undefinedRefs = refs.filter((r) => !ids.includes(r));
   assert.deepEqual([...new Set(undefinedRefs)], [], 'a marker reference has no definition');
 });
+
+test('a diagram scrolls inside its figure on a narrow screen, its caption pinned', () => {
+  const css = readFileSync(resolve(docs, '..', 'site', 'src', 'styles', 'prose.css'), 'utf8');
+  const rule = (sel) => css.match(new RegExp(sel.replace(/[.]/g, '\\.') + '\\s*\\{([^}]*)\\}'))?.[1] ?? '';
+  assert.match(rule('.prose figure.diagram'), /overflow-x:\s*auto/);
+  assert.match(rule('.prose figure.diagram svg'), /min-width:\s*640px/);
+  assert.match(rule('.prose figure.diagram figcaption'), /position:\s*sticky/);
+  assert.match(rule('.prose figure.diagram figcaption'), /left:\s*0/);
+});

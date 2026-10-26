@@ -263,21 +263,27 @@
 /* --- inline diagrams ------------------------------------------------------
    <figure class="diagram"><svg viewBox=…> written straight into the
    markdown. The svg draws in currentColor and var(--accent), so it follows
-   the theme; it scales to the column and never widens the page. */
+   the theme. It fills the column, but never drops under 640px: on a narrow
+   screen the figure scrolls sideways inside itself (11px labels stay above
+   about 7.8px) and the page does not. The caption is pinned to the figure's
+   left edge, so it stays put while the drawing scrolls. */
 .prose figure.diagram {
   margin: 2rem 0;
   padding: 0;
   max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
   color: var(--ink);
 }
 .prose figure.diagram svg {
   display: block;
   width: 100%;
-  max-width: 100%;
+  min-width: 640px;
   height: auto;
-  overflow: visible;
 }
 .prose figure.diagram figcaption {
+  position: sticky;
+  left: 0;
   margin-top: 0.85rem;
   padding-top: 0.6rem;
   border-top: 1px solid var(--line);
