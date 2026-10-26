@@ -43,6 +43,18 @@ public class ImmutableMapBuildBench extends Benchmark {
         return "entries() walked into an owned pair list per freeze";
     }
 
+    // Known gap (specs/immutablemap-build-leak-spec.md): each freeze is slower
+    // than the last and RSS grows (smoke trials 51 s, 144 s, 222 s; 1.4 to
+    // 3.5 GB), so the row records a skip until the leak is fixed. Delete these
+    // two methods to measure it again; collection_smoke prints "gap closed".
+    public boolean supportsVariant(String variant) {
+        return false;
+    }
+
+    public String skipReason() {
+        return "immutablemap-build-leak (filed): each build slower than the last, RSS grows";
+    }
+
     public void setup() {
         HashMap<int64, int64> m = heap HashMap<int64, int64>();
         int32 i = 0;

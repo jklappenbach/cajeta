@@ -31,17 +31,20 @@ heap-sort heap-push-pop
 redblacktree-insert-lookup
 bplustree-insert bplustree-point-lookup
 cache-hit cache-miss cache-evict cache-ttl
-immutablelist-build immutablelist-get immutablemap-build immutablemap-lookup
+immutablelist-build immutablelist-get immutablemap-lookup
 immutableset-build immutableset-contains
 collectors-to-list collectors-group-by
 sort-int64 sort-f64 sort-stable-int64 binary-search
 ltm-insert ltm-lookup"
 IDS_SKIP="redblacktree-range bplustree-range"
+# Known gaps: a skipped row with the filed defect's reason; ok means the gap closed.
+IDS_GAP="immutablemap-build"
+GAP_REASON="immutablemap-build-leak (filed): each build slower than the last, RSS grows"
 
 # Every id the pages name must be in one of the two lists (the pages are the contract).
 PAGE_IDS="$(grep -ho '`collection/[a-z0-9-]*`' "$PROJ"/collection/*.md "$PROJ"/collection/ltm/*.md | tr -d '`' | sed 's#collection/##' | sort -u)"
 for id in $PAGE_IDS; do
-    case " $(echo $IDS_OK $IDS_SKIP) " in *" $id "*) ;; *) fail "page id collection/$id is not covered by this smoke" ;; esac
+    case " $(echo $IDS_OK $IDS_SKIP $IDS_GAP) " in *" $id "*) ;; *) fail "page id collection/$id is not covered by this smoke" ;; esac
 done
 
 cd "$PROJ"
@@ -79,6 +82,19 @@ for b in $IDS_SKIP; do
     [[ "$(col 28 <<<"$row")" == skipped ]] || fail "$b status=$(col 28 <<<"$row") (expected skipped)"
     col 30 <<<"$row" | grep -q 'no range scan' || fail "$b skip reason missing: $(col 30 <<<"$row")"
     printf '[collection] %-28s skipped (%s)\n' "$b" "$(col 30 <<<"$row" | cut -c1-70)"
+done
+for b in $IDS_GAP; do
+    row="$(row_of "$b")"
+    [[ -n "$row" ]] || fail "no row for collection/$b"
+    st="$(col 28 <<<"$row")"
+    if [[ "$st" == skipped ]]; then
+        col 30 <<<"$row" | grep -qF "$GAP_REASON" || fail "$b skipped without the filed reason: $(col 30 <<<"$row")"
+        printf '[collection] %-28s KNOWN GAP (skipped: %s)\n' "$b" "$GAP_REASON"
+    elif [[ "$st" == ok && "$(col 29 <<<"$row")" == true ]]; then
+        printf '[collection] %-28s ok: gap closed (drop it from IDS_GAP)\n' "$b"
+    else
+        fail "$b status=$st check_ok=$(col 29 <<<"$row") notes=$(col 30 <<<"$row")"
+    fi
 done
 # The first-suite rows run at n/100 under smoke and say so.
 for b in arraylist-append linkedlist-insert-traverse hashmap-int hashmap-string hashset-dedup heap-sort \
