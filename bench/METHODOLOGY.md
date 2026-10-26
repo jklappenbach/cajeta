@@ -75,7 +75,9 @@ between the clock and the hardware). CUDA rows are from Phoenix.
 
 A published run starts only when the load average is under 1, no CI runner
 job is active, and the GPU shows zero utilization and no compute processes.
-That evidence is recorded in the run's `env.csv`. Every run is announced
+That evidence is recorded in the run's `env.csv`. A CPU-only run made with
+`--no-gpu` does not probe the GPU and says so in `env.csv`; the load-average
+check still applies. Every run is announced
 before it starts with its start time, its estimated end and the basis of the
 estimate, and reported against that estimate when it ends.
 

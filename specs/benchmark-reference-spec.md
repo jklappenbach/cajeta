@@ -220,7 +220,9 @@ as a dependency. One `Benchmark` contract, one CSV schema, one `--list` /
   older runs stay committed and selectable.
 - Ecosystem repos write the same layout under their own `bench/results/`; the
   publish step (§9.4) copies their rows into the compiler repo's
-  `bench/results/<machine>/<run-id>/` with the `area` prefixed (`llm/decode`).
+  `bench/results/<machine>/<run-id>/` unchanged: a row's id is already
+  `<area>/<benchmark>` with `area` the package (`llm`), so nothing is
+  prefixed (corrected 2026-10-26; the first draft said to prefix).
 - `env.csv` carries cpu, cores, kernel, OS, governor, memory, cajeta version,
   every competitor toolchain version, GPU name and driver, and the quiet-box
   evidence (load average, GPU utilization at start).
@@ -547,7 +549,10 @@ dotnet absent**; clang 14 (too old; use g++ 13 or the fork's clang); Python
 `bench.sh` refuses to start a published run unless load average is under 1,
 no CI runner job is active, and GPU utilization is 0 with no compute
 processes (`feedback_check_gpu_free_before_runs`); it records the evidence in
-`env.csv`.
+`env.csv`. A `--no-gpu` run (CPU rows only) skips the GPU probe and records
+`quiet_gpu=not probed`; it is a valid published CPU run because the load
+average covers a GPU job's host side, and its rows say the GPU was not
+checked (decided 2026-10-26).
 
 ### 9.2 Announcement
 The run is announced per `td-project-workflow.md` § Runs: start time,
