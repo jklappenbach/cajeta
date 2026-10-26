@@ -8,6 +8,25 @@ written against one part **finds its shape on a part nobody has measured**,
 without a table of devices, without a vendor branch in the source, and
 without silently running slower or wrong.
 
+## The stack
+
+This tab is the compute stack of the language, bottom-up, and its sections
+read the same way:
+
+| layer | package or library | what it owns |
+|---|---|---|
+| **XPU** (this page and its neighbours) | `cajeta.xpu` | the kernel model and the device; the manifest, the adaptor, the [scheduler](scheduler.md), the filter, the measured choice and the store ([optimization](optimization.md)); the kernel catalogs of the two libraries built directly on it |
+| [**Math**](math/README.md) | `cajeta.math` | `Tensor`, dtypes, linear algebra, FFT, `.npy` |
+| [**Nucleo**](nucleo/README.md) | `cajeta.nucleo` | columns and tables, the autograd tape, `Fuse`, `Grad`, `Vmap`, `Jit` |
+| [**ML**](ml/README.md) | `dev.cajeta.ml`, `dev.cajeta.xgboost` | estimators, layers, trainers, boosted trees |
+| [**LLM**](llm/README.md) | `dev.cajeta.llm` | the decoder-only engine: load, prefill, decode, sampling, serving |
+
+The kernels of the LLM engine and of the boosted trees are `@Kernel` code
+against `cajeta.xpu`; nucleo's tensors and fusion sit on the same layer, and
+the LLM engine uses `cajeta.math.Tensor` and `cajeta.xpu` directly without
+nucleo. To see every layer at work on one concrete model, from the first
+instruction to the last token, read [One model, start to last token](walkthrough.md).
+
 The technology has three layers, and each answers one question.
 
 | question | answered by | when |
