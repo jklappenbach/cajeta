@@ -29,7 +29,66 @@ export function sectionFor(relPath) {
  * its directory (bench/collection/README.md -> /benchmarks/collection/), the
  * section README at the section root, which the section index renders.
  */
-export const INDEX_SECTIONS = ['benchmarks'];
+export const INDEX_SECTIONS = ['benchmarks', 'xpu'];
+
+/**
+ * Sections that render as a reference browser: a left index (sectionNav)
+ * shared by every page, the section README as its Overview.
+ */
+export const REF_SECTIONS = ['stdlib', 'benchmarks', 'xpu'];
+
+/** Tab labels where the directory name does not title-case well. */
+export const SECTION_LABELS = {
+  guides: 'Guides',
+  guide: 'Guide',
+  home: 'Home',
+  benchmarks: 'Benchmarks',
+  stdlib: 'Stdlib',
+  buildtool: 'Build Tool',
+  cajeta: 'Cajeta',
+  gpu: 'GPU',
+  xpu: 'XPU',
+  specification: 'Specification',
+  specs: 'Work Specs',
+  history: 'History',
+};
+
+/** The tab label of a top-level docs/ directory. */
+export function labelFor(section) {
+  return (
+    SECTION_LABELS[section] ??
+    section.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+  );
+}
+
+/**
+ * Sections whose sidebar follows a fixed order instead of the alphabet.
+ * `pages`: the section's own root pages (file stems) in order, after the
+ * README's Overview; root pages not listed trail alphabetically, listed
+ * pages not yet written are simply absent. `groups`: child directories in
+ * order with their sidebar names; unlisted groups trail alphabetically.
+ * XPU reads top-down the way the compute stack reads bottom-up
+ * (xpu-tab-and-walkthrough spec 2.2.2).
+ */
+export const SECTION_ORDER = {
+  xpu: {
+    pages: [
+      'walkthrough',
+      'scheduler',
+      'optimization',
+      'kernels-llm',
+      'kernels-xgboost',
+      'catalog-llm',
+      'catalog-xgboost',
+    ],
+    groups: [
+      ['math', 'Math'],
+      ['nucleo', 'Nucleo'],
+      ['ml', 'ML'],
+      ['llm', 'LLM'],
+    ],
+  },
+};
 
 /** Slug of the directory an index-section README stands for, else null. */
 function indexDirSlug(slug) {
@@ -257,7 +316,22 @@ const byTitleNumeric = (a, b) =>
 export function sectionNav(sectionDocs, sectionUrl) {
   const readme = sectionDocs.find((d) => d.group === '' && /(^|\/)readme$/.test(d.slug));
   const rest = sectionDocs.filter((d) => d !== readme);
-  const groupNames = [...new Set(rest.map((d) => d.group))].sort();
+  const order = SECTION_ORDER[sectionUrl.split('/').filter(Boolean)[0]] ?? null;
+  const fixedGroups = order ? order.groups.map(([dir]) => dir) : [];
+  const present = new Set(rest.map((d) => d.group));
+  const groupNames = [
+    ...(present.has('') ? [''] : []),
+    ...fixedGroups.filter((g) => present.has(g)),
+    ...[...present].filter((g) => g !== '' && !fixedGroups.includes(g)).sort(),
+  ];
+  const groupLabel = (name) =>
+    order?.groups.find(([dir]) => dir === name)?.[1] ?? (name === '' ? '' : name.split('/').join(' / '));
+  // a section's own root pages in its fixed order, unlisted ones after
+  const rank = (d) => {
+    const i = order ? order.pages.indexOf(d.slug.split('/').pop()) : -1;
+    return i === -1 ? Infinity : i;
+  };
+  const byOrder = (a, b) => rank(a) - rank(b) || (rank(a) === Infinity ? byTitleNumeric(a, b) : 0);
   // a group's own README (a package index) leads its group as "Overview"
   const isReadme = (d) => /(^|\/)readme$/.test(d.slug);
   return {
@@ -265,9 +339,10 @@ export function sectionNav(sectionDocs, sectionUrl) {
     groups: groupNames.map((name) => {
       const inGroup = rest.filter((d) => d.group === name);
       const index = inGroup.filter(isReadme).map((d) => ({ ...d, title: 'Overview' }));
+      const others = inGroup.filter((d) => !isReadme(d));
       return {
-        name: name === '' ? '' : name.split('/').join(' / '),
-        docs: [...index, ...inGroup.filter((d) => !isReadme(d)).sort(byTitleNumeric)],
+        name: groupLabel(name),
+        docs: [...index, ...others.sort(name === '' && order ? byOrder : byTitleNumeric)],
       };
     }),
   };

@@ -11,7 +11,7 @@ NVPTX, AMD through AMDGPU, any Vulkan device through SPIR-V, and the host CPU.
 
 The engine that drives these kernels (loading, the scheduler, the K/V
 cache, the API, serving) is documented under
-[Language models](../llm/README.md); this page is about the kernels.
+[Language models](llm/README.md); this page is about the kernels.
 
 Two facts about the workload decide the kernel designs. **Decode is a
 bandwidth problem**: generating one token reads every weight byte of the model

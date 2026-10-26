@@ -12,8 +12,10 @@ drift from the in-repo documentation.
    prose paragraph), section, URL, word count; per-section stats. It runs
    automatically before `dev` and `build`.
 2. **Tabs mirror the tree**: every top-level child of `docs/` becomes a
-   top-level tab — currently `guide`, `home`, `specification`, `stdlib` —
+   top-level tab — currently Home, Guide, Specification, Stdlib, XPU —
    and the loose top-level `.md` files are grouped as the **Guides** tab.
+   Labels that do not title-case well (`xpu` → XPU) live in
+   `SECTION_LABELS` in `scripts/lib/extract.mjs`.
    The sibling `../bench/` tree, when present, is ingested as a
    **Benchmarks** pseudo-section. Add a new top-level directory to `docs/`
    and it appears as a tab on the next regen; no code changes.
@@ -24,6 +26,12 @@ drift from the in-repo documentation.
    (`docs/specification/lang/MemoryModel.md` → `/specification/lang/memorymodel/`).
 4. Relative `*.md` links inside doc markdown are rewritten to site URLs at
    build time (`src/lib/rehype-docs-links.mjs`).
+   Reference sections (`REF_SECTIONS`: stdlib, benchmarks, xpu) get a left
+   index; it is alphabetical except where `SECTION_ORDER` fixes one — XPU
+   lists its own pages in stack order (Overview, walkthrough, scheduler,
+   optimization, the kernel pages, the catalogs), then Math, Nucleo, ML, LLM.
+   In benchmarks and xpu a subdirectory's README renders at its directory
+   (`docs/xpu/llm/README.md` → `/xpu/llm/`).
 5. **Benchmarks** (`../bench/`): `scripts/lib/bench-results.mjs` reads
    `bench/results/<machine>/<run>/results.csv` (the run `LATEST` names) and
    every page's ```` ```bench ````, ```` ```bench-standings ```` and
@@ -33,6 +41,12 @@ drift from the in-repo documentation.
    `BenchPage` island per page renders the machine selector and the charts
    into them. An unknown benchmark id fails the build. With no results the
    site builds and every chart shows its unmeasured state.
+6. **Redirects**: `public/_redirects` (copied to `dist/`, read by the
+   Cloudflare assets Worker) sends moved URLs to their new pages — today the
+   old `/kernels/…` and `/llm/…` tabs into `/xpu/`.
+   `scripts/lib/redirects.test.mjs` checks every target is a built page.
+   `npm run preview` (astro) ignores the file; `npx wrangler dev` serves
+   `dist/` with the redirects applied, locally.
 
 ## Commands
 

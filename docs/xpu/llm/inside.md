@@ -4,7 +4,7 @@ How a token is produced: the model's forward path, the scheduler that
 assembles each step from the running requests, the K/V cache and its store,
 the pipelined and batched decodes, and what lives on the device. This is the
 engine around the kernels; the kernels themselves are in
-[Language models on the device](../kernels/llm.md).
+[Language models on the device](../kernels-llm.md).
 
 ## 1. `CausalLM`: the forward path
 

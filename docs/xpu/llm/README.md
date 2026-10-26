@@ -21,8 +21,8 @@ that keeps a model loaded and serves conversations over stdio or WebSocket.
 
 The kernels the engine runs on, how they are chosen for a format and a shape,
 and the technology that adapts them to the device are documented under
-[Kernels](../kernels/README.md), with the complete
-[catalog of every cajeta-llm kernel](../kernels/catalog-llm.md).
+[Kernels](../README.md), with the complete
+[catalog of every cajeta-llm kernel](../catalog-llm.md).
 
 ## Status (2026-10-24)
 
@@ -36,7 +36,7 @@ The library is `dev.cajeta.llm` 0.1.5 on Olla; cabra is `dev.cajeta.cabra`
 - **Formats.** f16 and f32; Q4_0, Q4_1, Q5_0, Q5_1, Q8_0; Q2_K through Q6_K;
   the IQ2, IQ3 and IQ4 codebook formats; the ternary TQ1_0 and TQ2_0; MXFP4.
   Every format runs on the host; the device routes are in
-  [Models](models.md) and the [kernel catalog](../kernels/catalog-llm.md).
+  [Models](models.md) and the [kernel catalog](../catalog-llm.md).
 - **Engine.** Continuous batching with chunked prefill, admission against the
   K/V pool, youngest-victim preemption and FIFO resume; a paged K/V cache with
   a file-backed prefix store; device residency with a zero-allocation decode

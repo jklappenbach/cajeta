@@ -1,0 +1,23 @@
+# Cloudflare static redirects (Workers static assets read this file from the
+# assets directory; Astro copies public/ into dist/). First match wins, and a
+# source matches its path exactly, so each page is listed with and without
+# its trailing slash.
+# xpu-tab-and-walkthrough §3: the Kernels and Language models tabs folded
+# into XPU. scripts/lib/redirects.test.mjs checks every target exists.
+/kernels/                  /xpu/                  301
+/kernels                   /xpu/                  301
+/kernels/readme/           /xpu/                  301
+/kernels/readme            /xpu/                  301
+/kernels/llm/              /xpu/kernels-llm/      301
+/kernels/llm               /xpu/kernels-llm/      301
+/kernels/xgboost/          /xpu/kernels-xgboost/  301
+/kernels/xgboost           /xpu/kernels-xgboost/  301
+/kernels/catalog-llm/      /xpu/catalog-llm/      301
+/kernels/catalog-llm       /xpu/catalog-llm/      301
+/kernels/catalog-xgboost/  /xpu/catalog-xgboost/  301
+/kernels/catalog-xgboost   /xpu/catalog-xgboost/  301
+/llm/                      /xpu/llm/              301
+/llm                       /xpu/llm/              301
+/llm/readme/               /xpu/llm/              301
+/llm/readme                /xpu/llm/              301
+/llm/*                     /xpu/llm/:splat        301

@@ -9,7 +9,7 @@
 | `llm/decode-1seq` | 128 tokens after a 512-token prompt, one sequence; variants per model: Llama-3.1-8B at Q2_K, Q3_K_M, Q4_K_M, Q5_K_M, Q6_K, Q8_0; Qwen3-Coder-30B-A3B Q5_K_M | llama.cpp (CUDA on Phoenix; HIP and Vulkan on Proton), commit recorded on the row | greedy agreement ≥ 0.99 with llama.cpp |
 | `llm/decode-4seq` | the same at four sequences | llama.cpp (CUDA on Phoenix; HIP and Vulkan on Proton), commit recorded on the row | greedy agreement ≥ 0.99, tokens compared with the one-sequence walk |
 
-Method: [measuring](../../docs/llm/measuring.md). Interleaved rounds in the same minute, the median read.
+Method: [measuring](../../docs/xpu/llm/measuring.md). Interleaved rounds in the same minute, the median read.
 
 ## Results
 

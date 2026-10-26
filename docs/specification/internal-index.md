@@ -115,7 +115,7 @@ Core semantics: types, ownership, memory, dispatch.
   [NVPTX tensor cores](gpu/coopmatrix/nvptx-tensorcore-coopmatrix-spec.md).
 - [cajeta.xpu — one kernel, any device](xpu/CajetaXPU.md) — the accelerator substrate: the kernel model, compile-time adaptation (wave, tiers, occupancy, templates, the gates), the manifest, the device surface, the feasibility filter and the measured choice. Rewritten 2026-10-24.
 - [Kernel Routing](xpu/CajetaXPU-Routing.md) — which kernel serves which format in which regime, declared and audited.
-- [Kernels](../kernels/README.md) — the reader's map of the above, with the complete catalogs of the cajeta-llm and cajeta-xgboost kernels.
+- [Kernels](../xpu/README.md) — the reader's map of the above, with the complete catalogs of the cajeta-llm and cajeta-xgboost kernels.
 - [CajetaXPU-Matrix](xpu/CajetaXPU-Matrix.md) — the capability matrix across backends (2026-07; predates virtual waves, the host wave and the coop tiers).
 - [CajetaXPU-FFI](xpu/CajetaXPU-FFI.md) — launch and kernel-arg FFI contract (ABI v3 today; deferral not covered).
 - [CajetaXPU-Variance](xpu/CajetaXPU-Variance.md) — the variance discipline of the pre-AMD bring-up (historical).

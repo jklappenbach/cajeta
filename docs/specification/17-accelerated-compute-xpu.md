@@ -12,7 +12,7 @@ surface, and a filter and a timed choice reconcile the two at bind. The
 borrow checker's guarantees hold across the host/device boundary (§17.6). The
 internal contract is [cajeta.xpu — one kernel, any device](xpu/CajetaXPU.md);
 the reader's map and the catalogs of kernels built on it are under
-[Kernels](../kernels/README.md).
+[Kernels](../xpu/README.md).
 
 ## 17.1 Kernel Declarations and the Device Subset
 

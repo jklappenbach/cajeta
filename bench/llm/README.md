@@ -1,6 +1,6 @@
 # dev.cajeta.llm against llama.cpp
 
-Prefill and decode tokens per second, keyed by operating system, driver, model and platform. The matrix below is the page to read; the others are its cuts. Method: [measuring](../../docs/llm/measuring.md).
+Prefill and decode tokens per second, keyed by operating system, driver, model and platform. The matrix below is the page to read; the others are its cuts. Method: [measuring](../../docs/xpu/llm/measuring.md).
 
 | Page | |
 |---|---|

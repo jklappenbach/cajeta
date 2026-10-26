@@ -18,7 +18,11 @@ import {
   benchPageFor,
   isBenchCatalogPath,
   BENCH_CATALOG_GLOB,
+  labelFor,
+  REF_SECTIONS,
 } from './extract.mjs';
+import { docsRoot } from './docs-root.mjs';
+import { readdirSync } from 'node:fs';
 import { glob } from 'tinyglobby';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -416,4 +420,118 @@ test('BENCH_CATALOG_GLOB (the content collection) loads exactly the catalog page
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// xpu-tab-and-walkthrough 1.1.1: one XPU tab, its sidebar in stack order
+test('labelFor names the XPU tab and keeps the others', () => {
+  assert.equal(labelFor('xpu'), 'XPU');
+  assert.equal(labelFor('benchmarks'), 'Benchmarks');
+  assert.equal(labelFor('specification'), 'Specification');
+  assert.equal(labelFor('some_new-dir'), 'Some New Dir');
+});
+
+test('buildTabs: Home, Guide, Specification, Stdlib, XPU, Benchmarks', () => {
+  const sections = ['benchmarks', 'xpu', 'stdlib', 'home', 'guide', 'specification'].map((name) => ({
+    name,
+    label: labelFor(name),
+    url: `/${name}/`,
+  }));
+  assert.deepEqual(
+    buildTabs(sections, []).map((t) => `${t.label}:${t.url}`),
+    ['Home:/', 'Guide:/guide/', 'Specification:/specification/', 'Stdlib:/stdlib/', 'XPU:/xpu/', 'Benchmarks:/benchmarks/']
+  );
+});
+
+test('the docs tree itself yields the tabs Home, Guide, Specification, Stdlib, XPU, Benchmarks', () => {
+  const dirs = readdirSync(docsRoot(), { withFileTypes: true })
+    .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+    .map((e) => e.name);
+  const sections = [...dirs, 'benchmarks'].map((name) => ({ name, label: labelFor(name), url: `/${name}/` }));
+  assert.deepEqual(
+    buildTabs(sections, []).map((t) => t.label),
+    ['Home', 'Guide', 'Specification', 'Stdlib', 'XPU', 'Benchmarks']
+  );
+});
+
+test('xpu is a reference section with a sidebar, its READMEs index their directories', () => {
+  assert.ok(REF_SECTIONS.includes('xpu'));
+  assert.equal(urlForDoc('xpu/README.md'), '/xpu/');
+  assert.equal(urlForDoc('xpu/llm/README.md'), '/xpu/llm/');
+  assert.equal(urlForDoc('xpu/llm/measuring.md'), '/xpu/llm/measuring/');
+  assert.equal(urlForDoc('xpu/kernels-llm.md'), '/xpu/kernels-llm/');
+  assert.equal(routeSlugFor('xpu/readme'), null);
+  assert.equal(routeSlugFor('xpu/llm/readme'), 'xpu/llm');
+  assert.equal(rewriteMdHref('../xpu/catalog-llm.md', 'guide/25-xpu-kernels.md'), '/xpu/catalog-llm/');
+  assert.equal(rewriteMdHref('../../docs/xpu/llm/measuring.md', 'benchmarks/llm/Decode.md'), '/xpu/llm/measuring/');
+});
+
+const xpuDoc = (rel, title) => {
+  const path = `xpu/${rel}`;
+  return {
+    slug: slugForPath(path),
+    url: urlForDoc(path),
+    group: path.split('/').slice(1, -1).join('/'),
+    title,
+    order: null,
+  };
+};
+
+test('sectionNav(xpu): own pages in stack order, then Math, Nucleo, ML, LLM', () => {
+  // shuffled, and titles chosen so an alphabetical sort would differ
+  const docs = [
+    xpuDoc('llm/serving.md', 'Serving'),
+    xpuDoc('catalog-xgboost.md', 'Catalog: every cajeta-xgboost kernel'),
+    xpuDoc('ml/README.md', 'Machine learning'),
+    xpuDoc('optimization.md', 'Optimization'),
+    xpuDoc('llm/README.md', 'Language models'),
+    xpuDoc('kernels-xgboost.md', 'Gradient boosting on the device'),
+    xpuDoc('README.md', 'One kernel, any device'),
+    xpuDoc('math/README.md', 'Math'),
+    xpuDoc('scheduler.md', 'The tile scheduler'),
+    xpuDoc('catalog-llm.md', 'Catalog: every cajeta-llm kernel'),
+    xpuDoc('llm/engine.md', 'Engine'),
+    xpuDoc('walkthrough.md', 'Walkthrough'),
+    xpuDoc('nucleo/README.md', 'Nucleo'),
+    xpuDoc('kernels-llm.md', 'Language models on the device'),
+  ];
+  const nav = sectionNav(docs, '/xpu/');
+  assert.equal(nav.overview.title, 'Overview');
+  assert.equal(nav.overview.url, '/xpu/');
+  assert.deepEqual(nav.groups.map((g) => g.name), ['', 'Math', 'Nucleo', 'ML', 'LLM']);
+  assert.deepEqual(
+    nav.groups[0].docs.map((d) => d.slug),
+    [
+      'xpu/walkthrough',
+      'xpu/scheduler',
+      'xpu/optimization',
+      'xpu/kernels-llm',
+      'xpu/kernels-xgboost',
+      'xpu/catalog-llm',
+      'xpu/catalog-xgboost',
+    ]
+  );
+  assert.deepEqual(nav.groups[4].docs.map((d) => d.title), ['Overview', 'Engine', 'Serving']);
+  assert.equal(nav.groups[4].docs[0].url, '/xpu/llm/');
+});
+
+test('sectionNav(xpu): pages not yet written are simply absent, extras trail', () => {
+  const docs = [
+    xpuDoc('catalog-llm.md', 'Catalog: every cajeta-llm kernel'),
+    xpuDoc('llm/README.md', 'Language models'),
+    xpuDoc('README.md', 'One kernel, any device'),
+    xpuDoc('kernels-llm.md', 'Language models on the device'),
+    xpuDoc('aaa-extra.md', 'Aaa extra'),
+  ];
+  const nav = sectionNav(docs, '/xpu/');
+  assert.deepEqual(nav.groups.map((g) => g.name), ['', 'LLM']);
+  assert.deepEqual(nav.groups[0].docs.map((d) => d.slug), ['xpu/kernels-llm', 'xpu/catalog-llm', 'xpu/aaa-extra']);
+});
+
+test('sectionNav elsewhere stays alphabetical', () => {
+  const docs = [
+    { slug: 'stdlib/zeta/z', url: '/stdlib/zeta/z/', group: 'zeta', title: 'Z', order: null },
+    { slug: 'stdlib/llm/b', url: '/stdlib/llm/b/', group: 'llm', title: 'B', order: null },
+    { slug: 'stdlib/math/a', url: '/stdlib/math/a/', group: 'math', title: 'A', order: null },
+  ];
+  assert.deepEqual(sectionNav(docs, '/stdlib/').groups.map((g) => g.name), ['llm', 'math', 'zeta']);
 });

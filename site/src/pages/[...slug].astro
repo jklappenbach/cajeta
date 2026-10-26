@@ -5,11 +5,9 @@ import Toc from '../components/react/Toc.tsx';
 import GuideReader from '../components/GuideReader.astro';
 import manifest from '../data/manifest.json';
 import { splitChapters } from '../lib/chapters.mjs';
-import { fileChapters, sectionNav, routeSlugFor, benchPageFor } from '../../scripts/lib/extract.mjs';
+import { fileChapters, sectionNav, routeSlugFor, benchPageFor, REF_SECTIONS } from '../../scripts/lib/extract.mjs';
 import RefIndex from '../components/RefIndex.astro';
 import BenchContent from '../components/BenchContent.astro';
-
-export const REF_SECTIONS = ['stdlib', 'benchmarks'];
 
 export async function getStaticPaths() {
   const entries = [...(await getCollection('docs')), ...(await getCollection('bench'))];

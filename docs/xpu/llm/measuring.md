@@ -67,7 +67,7 @@ The single-sequence prefill of the 30B swings 1.75x between runs a minute
 apart on this box (the GPU clock), so it is read at four sequences.
 
 Where the remaining gaps are, kernel by kernel, is the subject of
-[Language models on the device](../kernels/llm.md): the 8B's Q2_K, Q3_K and
+[Language models on the device](../kernels-llm.md): the 8B's Q2_K, Q3_K and
 Q5_K prefill routes, the 30B's grouping sort (12 ms against llama.cpp's 2 in
 a 512-token prefill), its Q6_K expert banks still on the older id GEMM, and
 the mixture-of-experts single-sequence decode.

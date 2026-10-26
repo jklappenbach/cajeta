@@ -18,6 +18,7 @@ import {
   orderFromPath,
   buildTabs,
   isBenchCatalogPath,
+  labelFor,
 } from './lib/extract.mjs';
 import { docsRoot, SITE_ROOT } from './lib/docs-root.mjs';
 import { buildBenchData } from './lib/bench-results.mjs';
@@ -34,29 +35,6 @@ const ROOTS = [
   { root: DOCS_ROOT, pseudo: '', srcPrefix: 'docs/' },
   ...(existsSync(BENCH_ROOT) ? [{ root: BENCH_ROOT, pseudo: 'benchmarks/', srcPrefix: 'bench/' }] : []),
 ];
-
-const SECTION_LABELS = {
-  guides: 'Guides',
-  guide: 'Guide',
-  home: 'Home',
-  benchmarks: 'Benchmarks',
-  stdlib: 'Stdlib',
-  buildtool: 'Build Tool',
-  cajeta: 'Cajeta',
-  gpu: 'GPU',
-  kernels: 'Kernels',
-  llm: 'Language models',
-  specification: 'Specification',
-  specs: 'Work Specs',
-  history: 'History',
-};
-
-function labelFor(section) {
-  return (
-    SECTION_LABELS[section] ??
-    section.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
-  );
-}
 
 async function* mdFiles(dir) {
   for (const entry of await readdir(dir, { withFileTypes: true })) {

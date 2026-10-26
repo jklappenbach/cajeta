@@ -5,7 +5,7 @@ ceiling on a device you have never measured, in the regime it serves
 (decode, prefill, bind, or a fused chain), and how to know that it does.
 The substrate's contract is [cajeta.xpu — one kernel, any device](../specification/xpu/CajetaXPU.md);
 the reader's map, with the catalogs of every kernel in the LLM and XGBoost
-libraries, is [Kernels](../kernels/README.md); how the layer picks among
+libraries, is [Kernels](../xpu/README.md); how the layer picks among
 kernels is [Kernel Routing](../specification/xpu/CajetaXPU-Routing.md).
 
 Two kinds of rule follow. **The adaptation rules** (25.1, 25.8, 25.9) say how

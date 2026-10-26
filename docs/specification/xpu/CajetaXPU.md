@@ -6,10 +6,10 @@ what the compiler measures about it, what the runtime learns about the device
 it lands on, and how the two are reconciled so that the kernel runs at that
 device's ceiling without a table of parts and without a vendor branch in the
 source. This document is the contract. The map for readers is
-[One kernel, any device](../../kernels/README.md); the how-to is
+[One kernel, any device](../../xpu/README.md); the how-to is
 [Writing XPU Kernels](../../guide/25-xpu-kernels.md); the catalogs of kernels
-built on this substrate are [cajeta-llm](../../kernels/catalog-llm.md) and
-[cajeta-xgboost](../../kernels/catalog-xgboost.md).
+built on this substrate are [cajeta-llm](../../xpu/catalog-llm.md) and
+[cajeta-xgboost](../../xpu/catalog-xgboost.md).
 
 Every statement here describes what the toolchain does today (2026-10-24),
 with the engineering specification that governs it named where one exists.

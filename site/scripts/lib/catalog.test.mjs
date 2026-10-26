@@ -1,4 +1,4 @@
-// The kernel catalog pages (docs/kernels/catalog-*.md) render as tables that
+// The kernel catalog pages (docs/xpu/catalog-*.md) render as tables that
 // cannot wrap at the prose width: a few narrow grid columns, and each kernel's
 // role on its own full-width row underneath (spec benchmark-reference 10.3).
 // The pages are rendered here through the site's own markdown pipeline.
@@ -21,7 +21,7 @@ async function render(markdown, path) {
 }
 
 async function renderPage(name) {
-  const path = join(docsRoot(), 'kernels', name);
+  const path = join(docsRoot(), 'xpu', name);
   return render(readFileSync(path, 'utf8'), path);
 }
 

@@ -179,7 +179,7 @@
   white-space: nowrap;
 }
 
-/* --- kernel catalogs (docs/kernels/catalog-*.md, generated) -------------
+/* --- kernel catalogs (docs/xpu/catalog-*.md, generated) -------------
    A kernel is two rows: the grid row (name, counterpart or stage, the
    one-mark census columns) and its role on a full-width row underneath, so
    the grid stays narrow enough that no cell wraps at the prose width. The

@@ -99,7 +99,7 @@ the processors that will execute it.
   </div>
   <div class="feature">
     <h3>Every GPU, one source</h3>
-    <p>Kernels lower through LLVM directly to GPU architectures — NVIDIA PTX, AMD GCN, and SPIR-V for the Vulkan-portable path — and to the host CPU as a vectorised target. A kernel declares what only its author knows, the compiler measures the rest into a manifest, and at run time the device's own facts filter the candidate shapes and a timed choice, remembered per device, picks among the survivors. <a href="/kernels/">How it adapts, and every kernel in the LLM and XGBoost libraries</a>; <a href="/llm/">the language-model engine built on it</a>.</p>
+    <p>Kernels lower through LLVM directly to GPU architectures — NVIDIA PTX, AMD GCN, and SPIR-V for the Vulkan-portable path — and to the host CPU as a vectorised target. A kernel declares what only its author knows, the compiler measures the rest into a manifest, and at run time the device's own facts filter the candidate shapes and a timed choice, remembered per device, picks among the survivors. <a href="/xpu/">How it adapts, and every kernel in the LLM and XGBoost libraries</a>; <a href="/xpu/llm/">the language-model engine built on it</a>.</p>
   </div>
   <div class="feature">
     <h3>Lazy linking</h3>

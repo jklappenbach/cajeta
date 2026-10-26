@@ -42,8 +42,8 @@ Gemma 3 is specified and deferred; it is not in this release.
 Every format below has a host implementation, and a model whose format no
 device kernel serves still runs on the host. The device columns say which
 regimes have a dedicated kernel on the CUDA backend today; the catalog
-([every cajeta-llm kernel](../kernels/catalog-llm.md)) has the row-by-row
-record for every backend, and [Language models on the device](../kernels/llm.md)
+([every cajeta-llm kernel](../catalog-llm.md)) has the row-by-row
+record for every backend, and [Language models on the device](../kernels-llm.md)
 describes the routes.
 
 | format | block | decode (one row) | batched decode (several sequences) | prefill |

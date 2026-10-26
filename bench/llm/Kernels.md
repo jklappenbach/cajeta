@@ -30,4 +30,4 @@ Every row records the compiler and competitor versions, flags, machine, OS and d
 ## See also
 
 - Benchmark source: `bench/src/main/cajeta/bench/llm/`
-- The catalog of kernels and counterparts: [catalog](../../docs/kernels/catalog-llm.md)
+- The catalog of kernels and counterparts: [catalog](../../docs/xpu/catalog-llm.md)

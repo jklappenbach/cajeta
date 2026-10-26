@@ -26,16 +26,16 @@ The pages in this section:
 
 - **This page**: the model, the three layers, and the gates that keep them
   honest.
-- [Language models on the device](llm.md): the 265 kernels of
+- [Language models on the device](kernels-llm.md): the 265 kernels of
   `dev.cajeta.llm`, how they serve decode, prefill, batched decode,
   mixture-of-experts and attention, how a kernel is chosen for a weight
   format and a batch shape, what is measured at load and per problem, and
   where the library stands against llama.cpp.
-- [Gradient boosting on the device](xgboost.md): the 33 kernels of
+- [Gradient boosting on the device](kernels-xgboost.md): the 33 kernels of
   `dev.cajeta.xgboost`, how bit-identical results on every device constrain
   them, and the one adaptation they make.
 - The engine those kernels serve is its own section,
-  [Language models](../llm/README.md): loading, the API, the scheduler,
+  [Language models](llm/README.md): loading, the API, the scheduler,
   serving with cabra, and the measured standing.
 - The complete catalogs, one row per registered kernel with its source, its
   reference counterpart and its census standing on each backend:
@@ -70,7 +70,7 @@ synchronises a workgroup. The wave verbs (`Wave.reduceSumF32`,
 workgroup verbs (`Workgroup.reduce`, `Workgroup.scan`), the integer dot
 products (`dotSum`, `dotAccum`) and the cooperative matrix fragments
 (`CooperativeMatrix<T, 16, 16, Use>`, `TileOps`) are the vocabulary the
-kernels in [llm.md](llm.md) and [xgboost.md](xgboost.md) are written in.
+kernels in [llm.md](kernels-llm.md) and [xgboost.md](kernels-xgboost.md) are written in.
 
 Three things about this surface make adaptation possible rather than merely
 hoped for.
@@ -187,7 +187,7 @@ different partition of the same 256 bytes, so the compiler stages the words
 through shared memory in the layout the hardware's load expects and reloads
 them, once per fragment, sized from the kernel's declared block. The kernel
 source is one; the cost is confined to the backend that has no cheaper form,
-and it is a cost (the [llm catalog](llm.md) records a kernel that paid it at
+and it is a cost (the [llm catalog](kernels-llm.md) records a kernel that paid it at
 every fragment and was replaced by one that stages whole tiles instead).
 
 ### 2.4 The CPU backend
@@ -296,7 +296,7 @@ CPU backend it does not); does a prefetching variant of a mat-vec beat the
 plain one; does serving four sequences from one weight pass beat four passes;
 do fused launches beat separate ones. Each is an A/B of real launches at the
 real width, remembered per device and per kernel-code fingerprint, with a
-pin for tests. [llm.md §4](llm.md) lists them.
+pin for tests. [llm.md §4](kernels-llm.md) lists them.
 
 ### 4.4 The store
 
@@ -328,7 +328,7 @@ the backend registered must have been value-checked by some test against a
 host or oracle value, or be excused by name against a plan item; an uncovered
 kernel fails the run, and so does an excuse that is no longer needed. Running
 is not coverage. The committed census tables are the record of what each
-backend has proven ([llm.md §6](llm.md)).
+backend has proven ([llm.md §6](kernels-llm.md)).
 
 **Measurement discipline.** A device-timing bracket near the launch floor
 reads up to twelve percent of noise, so a timed choice uses twenty-launch
