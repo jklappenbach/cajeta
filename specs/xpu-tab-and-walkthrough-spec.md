@@ -31,15 +31,15 @@ The compute stack reads bottom-up, and the tab reads top-down the same way:
 **Kernels are XPU, not nucleo.** The kernels of `cajeta-llm` and
 `cajeta-xgboost` are `@Kernel` code written against `cajeta.xpu`; nucleo's
 tensors and fusion sit on top of the same layer, and the LLM engine uses
-`cajeta.math.Tensor` and `cajeta.xpu` directly without nucleo. "Kernels"
-therefore becomes the first section under XPU, holding what `docs/kernels/`
-holds today plus the scheduler and optimization material that lives only in
-the specification.
+`cajeta.math.Tensor` and `cajeta.xpu` directly without nucleo. The kernel
+material therefore is the XPU tab's own content, what `docs/kernels/` holds
+today plus the scheduler and optimization material that lives only in the
+specification; Math, Nucleo, ML and LLM are its children.
 
 ### 1.3 Scope
-1. **One tab: XPU.** `docs/xpu/` with sections `kernels/`, `math/`,
-   `nucleo/`, `ml/`, `llm/`; the Kernels and Language models tabs go away;
-   the old URLs redirect (§3).
+1. **One tab: XPU.** `docs/xpu/` whose own pages are the kernel material and
+   whose children are `math/`, `nucleo/`, `ml/`, `llm/`; the Kernels and
+   Language models tabs go away; the old URLs redirect (§3).
 2. **The walkthrough**: one document, in that tab, that follows one model
    end to end (§4).
 3. **Section landing pages** for Math, Nucleo and ML that exist today only
@@ -56,16 +56,19 @@ the specification.
 
 ## 2. The tab
 
-### 2.1 Tree
+### 2.1 Tree (Julian, 2026-10-25: "xpu is top, then math, nucleo, and ml are children")
+The XPU tab's own pages are the kernel material; there is no `kernels/`
+child. Math, Nucleo and ML are children, and LLM is the fourth child as first
+listed.
 ```
 docs/xpu/
-├── README.md                ← the stack, bottom-up, in one page; the map
-├── walkthrough.md           ← §4: one model, start to last token
-├── kernels/                 ← docs/kernels/* moved, plus:
-│   ├── README.md            ← One kernel, any device (today's)
-│   ├── scheduler.md         ← NEW: the tile manifest and the tile scheduler, from the specs
-│   ├── optimization.md      ← NEW: shape filter, autotune store, what is measured when
-│   ├── llm.md  xgboost.md  catalog-llm.md  catalog-xgboost.md
+├── README.md                ← One kernel, any device (today's docs/kernels/README.md), opening with the stack map
+├── walkthrough.md           ← §4: one model, start to last token, across every layer
+├── scheduler.md             ← NEW: the tile manifest and the tile scheduler, from the specs
+├── optimization.md          ← NEW: shape filter, autotune store, what is measured when
+├── kernels-llm.md           ← docs/kernels/llm.md
+├── kernels-xgboost.md       ← docs/kernels/xgboost.md
+├── catalog-llm.md  catalog-xgboost.md
 ├── math/README.md           ← NEW landing: Tensor, dtypes, linalg, fft, npio; links the stdlib pages
 ├── nucleo/README.md         ← NEW landing: columns, tables, tape, fusion, transforms
 ├── ml/README.md             ← NEW landing: dev.cajeta.ml and dev.cajeta.xgboost, from their repos' docs
@@ -76,9 +79,10 @@ docs/xpu/
 - **2.2.1** As a reader, when I open the site, then the tabs are Home,
   Guide, Specification, Stdlib, XPU, Benchmarks, and XPU opens on the map
   that names the five layers in order with one sentence each.
-- **2.2.2** As a reader on any XPU page, then the sidebar shows the five
-  sections in stack order (Kernels, Math, Nucleo, ML, LLM), not
-  alphabetically.
+- **2.2.2** As a reader on any XPU page, then the sidebar shows the tab's own
+  pages first (the map, the walkthrough, scheduler, optimization, the kernel
+  pages and catalogs) and then the children in stack order (Math, Nucleo,
+  ML, LLM), not alphabetically.
 - **2.2.3** As a holder of an old link (`/kernels/`, `/kernels/llm/`,
   `/kernels/catalog-llm/`, `/llm/`, `/llm/measuring/`), then it redirects
   to the new page; cajeta-llm's README links keep working.
