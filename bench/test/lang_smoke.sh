@@ -123,7 +123,17 @@ FID="$(lang_fidelity_tool "$REPO_ROOT" "$CAJETA")" || fail "verify-fidelity.py n
 # dot-product rows (measured 2026-10-25 above their ceilings on Phoenix, so
 # not a unit-5 regression), and a failure there is printed, not fatal.
 U5="$OUTD/cajeta-lang-unit5.csv"
-{ head -1 "$ALL"; cawk -v ids=" $LANG_IDS_UNIT5 " 'NR>1 { if (index(ids, " " $4 " ") || index(ids, " " $4 ":")) print }' "$ALL"; } > "$U5"
+# (the csv module copies the rows as CSV; cawk's rows are 0x1F-joined)
+python3 - "$ALL" "$U5" $LANG_IDS_UNIT5 <<'PY'
+import csv, sys
+src, dst, ids = sys.argv[1], sys.argv[2], {i.split(":")[0] for i in sys.argv[3:]}
+with open(src, newline="", encoding="utf-8") as f, open(dst, "w", newline="", encoding="utf-8") as g:
+    rd, w = csv.reader(f), csv.writer(g, lineterminator="\n")
+    w.writerow(next(rd))
+    for r in rd:
+        if r and len(r) > 3 and r[3] in ids:
+            w.writerow(r)
+PY
 python3 "$FID" "$U5" >"$OUTD/fidelity.log" 2>&1 \
     || { tail -5 "$OUTD/fidelity.log"; fail "verify-fidelity.py rejected the unit-5 lang rows"; }
 echo "[lang] verify-fidelity.py (unit-5 rows): ok"
