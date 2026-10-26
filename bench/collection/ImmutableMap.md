@@ -6,10 +6,10 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `collection/immutablemap-build` | freeze a 1e6-entry map, 10 times | Java `Map.copyOf`, Rust `HashMap` behind `Arc`, Go map copy, Python `MappingProxyType` | count |
+| `collection/immutablemap-build` | freeze a 1e6-entry map, 10 times (through `entries().forEach` into fresh pairs; building from a collected list throws because the pairs are borrows) | Java `Map.copyOf`, Rust `HashMap` behind `Arc`, Go map copy, Python `MappingProxyType` | count |
 | `collection/immutablemap-lookup` | 1e7 lookups | same | sum |
 
-On v0.46.3 each trial of `immutablemap-build` is slower than the one before it. A smoke run measured 51 s, 144 s and 222 s for its three trials, and resident memory rose from 1.4 GB to 3.5 GB across them (2026-10-25). Inside a whole `--area collection` smoke run it went past an hour (the rest of the package takes under three minutes). That growth is a known gap, not the cost of a freeze ([immutablemap-build-leak](../../specs/immutablemap-build-leak-spec.md)). Until it is fixed, the row records a skip with that reason.
+`immutablemap-build` is a known gap on v0.46.3 and is recorded as a skip: each build is slower than the last (51, 144, 222 s over three trials) with resident memory rising from 1.4 to 3.5 GB, filed as [immutablemap-build-leak](../../specs/immutablemap-build-leak-spec.md). The smoke prints "gap closed" the day the row runs clean.
 
 ## Results
 
