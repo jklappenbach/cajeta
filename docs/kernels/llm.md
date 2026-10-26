@@ -125,7 +125,7 @@ each other at each problem the engine meets.
 |---|---|---|
 | decode id mat-vecs `*Q8IdMatVecKernel`, fused `IdGateUpGlu`, `IdDownCombine` | 12 | one launch over every token's selected experts, llama.cpp's `mul_mat_vec_id` shape |
 | WMMA id GEMMs `q4k/q5k/q6kWmmaIdMwKernel`, the 16-row `Epi` and 128-row wide variants | 9 | the multi-wave shape: 8 waves, each a 16-column slice of one expert over up to 64 token rows |
-| `IdTile` (Q4_K) and `Q5IdTile` (Q5_K), class templates over the expert chunk maps | 2 templates × 2 shapes | the prefill tile design (§2.3) applied to expert banks |
+| `IdTile` (Q4_K), `Q5IdTile` (Q5_K) and `Q6IdTile` (Q6_K), class templates over the expert chunk maps | 3 templates × 2 shapes | the prefill tile design (§2.3) applied to expert banks |
 | `IdHandTile` | 1 | the multi-wave kernel listed as a family member, so timing can retire it |
 | the f16 coop id GEMMs | 2 | IQ3_XXS, IQ4_NL |
 | router and grouping: `routerF32MatVec`, `routerTopK`, `routerTopKWave`, `rmsnormRouterTopK`, `routerRowsF32`, `routeHist`, `moeTopK(Batch)`, `moeGroupKernel` | ~10 | the gate, top-k, and the device counting sort into 64- and 128-row chunk maps |
@@ -269,7 +269,7 @@ the engine's tune store (§4.4):
 
 A tile family is a list of shapes of one kernel design (`TileFamily` over
 `QkTile<…>`, `Q5Tile<…>`, `Q6Tile<…>`, `MwTile<…>`, `IdTile<…>`,
-`Q5IdTile<…>`). At a problem `(rows, outDim, cols)` the family builds a
+`Q5IdTile<…>`, `Q6IdTile<…>`). At a problem `(rows, outDim, cols)` the family builds a
 `ShapeFilter` over the device's facts (`DeviceFacts.current()`: register file,
 shared memory per block and per multiprocessor, threads and blocks per
 multiprocessor, multiprocessor count, from the driver) and the compiler's
