@@ -9,6 +9,8 @@
 | `collection/immutablemap-build` | freeze a 1e6-entry map, 10 times | Java `Map.copyOf`, Rust `HashMap` behind `Arc`, Go map copy, Python `MappingProxyType` | count |
 | `collection/immutablemap-lookup` | 1e7 lookups | same | sum |
 
+On v0.46.3 each trial of `immutablemap-build` is slower than the one before it. A smoke run measured 51 s, 144 s and 222 s for its three trials, and resident memory rose from 1.4 GB to 3.5 GB across them (2026-10-25). Inside a whole `--area collection` smoke run it went past an hour (the rest of the package takes under three minutes). That growth is a known gap, not the cost of a freeze.
+
 ## Results
 
 One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
