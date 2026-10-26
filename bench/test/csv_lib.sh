@@ -13,7 +13,7 @@ CSV_FS=$'\x1f'
 CSV_LIB_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 csv_fields() { python3 "$CSV_LIB_DIR/csv_fields.py" "$@"; }
 cawk() {
-    local opts=() prog="" have_prog=0 files=() f tmp rc
+    local opts=() prog="" have_prog=0 files=() f tmp rc st
     while [[ $# -gt 0 ]]; do
         if [[ "$have_prog" == "0" ]]; then
             case "$1" in
@@ -28,10 +28,19 @@ cawk() {
             files+=("$1"); shift
         fi
     done
+    # A reader that stops early (| grep -q, | head -1) closes the pipe; awk's
+    # SIGPIPE (141) is not a failed check, so it reads as 0, the way a plain
+    # awk over a file that wrote its output in one block never saw it.
     if [[ "${#files[@]}" == "0" ]]; then
         csv_fields | awk -F"$CSV_FS" -v OFS="$CSV_FS" ${opts[@]+"${opts[@]}"} "$prog"
+        st=("${PIPESTATUS[@]}")
+        [[ "${st[0]}" == 0 ]] || return "${st[0]}"
+        [[ "${st[1]}" == 141 ]] && return 0; return "${st[1]}"
     elif [[ "${#files[@]}" == "1" && "${files[0]}" != *=* ]]; then
         csv_fields "${files[0]}" | awk -F"$CSV_FS" -v OFS="$CSV_FS" ${opts[@]+"${opts[@]}"} "$prog"
+        st=("${PIPESTATUS[@]}")
+        [[ "${st[0]}" == 0 ]] || return "${st[0]}"
+        [[ "${st[1]}" == 141 ]] && return 0; return "${st[1]}"
     else
         # several operands: one parsed copy each, so NR==FNR idioms still work
         tmp="$(mktemp -d "${TMPDIR:-/tmp}/cawk.XXXXXX")"; local args=() i=0
@@ -40,6 +49,6 @@ cawk() {
             i=$((i+1)); csv_fields "$f" > "$tmp/$i"; args+=("$tmp/$i")
         done
         awk -F"$CSV_FS" -v OFS="$CSV_FS" ${opts[@]+"${opts[@]}"} "$prog" "${args[@]}"; rc=$?
-        rm -rf "$tmp"; return "$rc"
+        rm -rf "$tmp"; [[ "$rc" == 141 ]] && rc=0; return "$rc"
     fi
 }

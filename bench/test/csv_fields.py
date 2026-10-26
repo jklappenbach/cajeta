@@ -14,6 +14,7 @@ row printed by one check can be fed to the next. With no file, reads stdin.
 """
 import csv
 import io
+import os
 import sys
 
 US = "\x1f"
@@ -42,4 +43,13 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    # A reader that stops early (awk '{print; exit}', head) closes the pipe:
+    # that is not a failure of the parse, so exit 0 rather than fail the
+    # smoke's pipeline under `set -o pipefail`.
+    try:
+        rc = main(sys.argv[1:])
+        sys.stdout.flush()
+    except BrokenPipeError:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        rc = 0
+    sys.exit(rc)

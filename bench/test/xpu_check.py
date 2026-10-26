@@ -69,6 +69,12 @@ def main():
     if cmd == "rows":
         rs, expect = rows(sys.argv[2]), sys.argv[3]
         seen = set()
+        # The leg's backend: what its device rows run on. Since dev.cajeta.bench
+        # 0.1.5 (backendFor) each showcase variant's row carries its own backend
+        # (the [hip] row says hip in the cuda leg), so "own" is the variant of
+        # the leg's backend, not the row's.
+        legs = [r["backend"] for r in rs if r["benchmark"] not in ("cross-backend-showcase", "mesh-simplify")]
+        leg = max(set(legs), key=legs.count) if legs else ""
         for r in rs:
             rid = r["area"] + "/" + r["benchmark"]
             if rid not in ids:
@@ -92,7 +98,7 @@ def main():
                         "norocm": "no ROCm on this machine"}[expect]
                 if st != "skipped":
                     fail(f"{tag} status={st} (want skipped: {want})")
-                own = r["benchmark"] != "cross-backend-showcase" or v == r["backend"]
+                own = r["benchmark"] != "cross-backend-showcase" or v == leg
                 if own and want not in notes:
                     fail(f"{tag} skip reason is not '{want}': {notes}")
             print(f"  {st:8s} {tag:52s} backend={r['backend']:6s} min_ns={r['min_ns']}")

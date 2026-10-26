@@ -77,6 +77,12 @@ public class JsonConformanceBench extends Benchmark {
         this.passDocs = heap ArrayList<String>();
         this.failDocs = heap ArrayList<String>();
         this.failNames = heap ArrayList<String>();
+        this.missed = "";
+        // setup() runs before the skip decision (dev.cajeta.bench): with no
+        // JSONTestSuite files there is nothing to load (the row is skipped).
+        if (!this.available()) {
+            return;
+        }
         int32 i = 1;
         while (i <= 3) {
             String nm #= JsonConformanceBench.fileName("pass", i);

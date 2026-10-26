@@ -46,6 +46,11 @@ public class CsvWriteBench extends Benchmark {
     }
 
     public void prepare(String variant) {
+        // dev.cajeta.bench 0.1.5 calls prepare() before available(): with no
+        // data file there is nothing to read (the row is then skipped).
+        if (!CsvData.present()) {
+            return;
+        }
         String b #= CsvData.base();
         int8[] d #= File.readAllBytes(b + ".csv");
         this.fileBytes = (int64) d.count();
