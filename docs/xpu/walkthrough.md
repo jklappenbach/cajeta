@@ -229,13 +229,16 @@ request with a `prefill-batch-refused` record saying why. Inside a chunk:
      `attnFlashPrefillF16Kernel`, the single-pass online tile at llama.cpp's
      precision (64 query-head pairs on one K/V head, the query held in
      registers, keys and values staged through one shared tile, the softmax
-     kept running and the output rescaled in its fragments). Where that
-     kernel is not registered the route falls to `attnFlashPrefillOnlineKernel`,
-     the same tile carrying a residual pair for the query and the
-     probabilities, then to the two-pass `attnFlashPrefillTileKernel`, and on
-     a device where a load-time probe finds the tile does not pay, to the
-     wave kernel `attnFlashPrefillGqa4Kernel`, one wave reading each K/V
-     block once for the four query heads that share it;
+     kept running and the output rescaled in its fragments). It takes 45 KB
+     of shared memory, so it lowers on gfx1151 where the 88 KB
+     `attnFlashPrefillOnlineKernel`, the same tile carrying a residual pair
+     for the query and the probabilities, does not; on a backend that holds
+     the f16 kernel back (Vulkan today) the route serves on the residual
+     kernel. Where neither lowers it falls to the two-pass
+     `attnFlashPrefillTileKernel`, and on a device where a load-time probe
+     finds the tile does not pay, to the wave kernel
+     `attnFlashPrefillGqa4Kernel`, one wave reading each K/V block once for
+     the four query heads that share it;
   5. the output projection on its tile, accumulated into the residual
      (`addF32`);
   6. the post-attention norm and pack; gate and up projections on their
@@ -711,7 +714,7 @@ For every kernel this page named, where its configuration came from.
 | `qkvWaveMatVecKernel` | | | the fused-Cols A/B at load, in place on the real step | |
 | `*ColsKernel`, `*ColsSegPlain`, `*ColsSegPf` | | `colsReady` per projection latched once | the Cols probe per format at width 4 (`colsPays-…`), each candidate first checked against the host mat-vec | one Cols launch or single-row launches, from the probe |
 | `attnFlashDecodeGqa4Kernel`, `attnReducePackQ8Kernel`, the `Batch` twins | specialized at ratio 4 and head dimension 128; a batched twin generated from the per-row kernel and held byte-equal by a test | `KernelCap.usable` | | the split count follows the context |
-| `attnFlashPrefillF16Kernel`, `attnFlashPrefillOnlineKernel`, `attnFlashPrefillTileKernel`, `attnFlashPrefillGqa4Kernel` | the online tile at llama.cpp's precision: plain f16 into f32 accumulators, 45 KB of shared memory so two workgroups share an SM, against the residual-pair tile's 88 KB and one | `KernelCap.usable` in that order; the two-pass tile on a backend that declines the online kernel | `prefillTilePays` once per process: 128 rows at position 384, the tile against the wave kernel | |
+| `attnFlashPrefillF16Kernel`, `attnFlashPrefillOnlineKernel`, `attnFlashPrefillTileKernel`, `attnFlashPrefillGqa4Kernel` | the online tile at llama.cpp's precision: plain f16 into f32 accumulators, 45 KB of shared memory so two workgroups share an SM, against the residual-pair tile's 88 KB and one | `KernelCap.here` on each kernel's own id, the f16 one first, so a test can withhold either; the two-pass tile where neither lowers | `prefillTilePays` once per process: 128 rows at position 384, the tile against the wave kernel | |
 | `qkPrepKernel`, `qkPrepBatchKernel`, `gluFusedPackF32`, `rmsnormPackRowF32`, `attnReducePackQ8Kernel` | fusions chosen by design: each saves a launch and a pass over activations | | | |
 | `embedRowQ4kKernel`, `argmaxRowKernel` | | `pipelineReady`: the device embedding and argmax are what make the pipeline legal | | |
 | every one of them | the build gates: a spill or an unlowered backend fails the build by name | the registry answers absent, never falls through | a value is kept only against the build that measured it; a measurement under foreign load is used and not stored | the launch is checked after every submission: seven named refusals |
