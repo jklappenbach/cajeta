@@ -513,7 +513,7 @@ source runs at wave 32 and wave 64.
 <figure class="diagram">
 <svg viewBox="0 0 900 312" role="img" aria-label="The pipelined decode: the host queues step N+1 while step N runs; each step on the device embeds the token from a pinned slot, runs 32 resident layers of wave mat-vecs, K/V append and split attention, then the fused tail writes the argmax to the other slot and records an event; the host waits on the previous event and reads one integer." style="max-width:100%;height:auto;font-family:var(--font-ui);font-size:11px">
   <defs><marker id="da" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
-  <g fill="currentColor" font-weight="600"><text x="10" y="22">host</text><text x="10" y="150">device stream (deferred on CUDA: replayed as a graph)</text></g>
+  <g fill="currentColor" font-weight="600"><text x="10" y="22">host</text><text x="60" y="150">device stream (deferred on CUDA: replayed as a graph)</text></g>
   <line x1="10" y1="128" x2="890" y2="128" stroke="currentColor" stroke-dasharray="3 4" opacity="0.5"/>
   <g fill="none" stroke="currentColor" stroke-width="1.2">
     <rect x="60" y="40" width="150" height="34" rx="4"/>
@@ -562,7 +562,7 @@ source runs at wave 32 and wave 64.
     <path d="M595,170 L595,146 L850,146 L850,158"/>
     <path d="M595,284 L595,300 L850,300 L850,287"/>
     <path d="M135,74 L135,168"/>
-    <path d="M325,74 L325,90 L45,90 L45,267 L58,267"/>
+    <path d="M325,74 L325,90 L22,90 L22,267 L58,267"/>
     <path d="M740,170 L740,110 L515,110 L515,76"/>
     <path d="M850,190 L850,234 L115,234 L115,248" stroke-dasharray="4 3"/>
   </g>
