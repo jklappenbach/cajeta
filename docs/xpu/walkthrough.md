@@ -30,42 +30,42 @@ one model exercises the Q4_K and the Q6_K kernel families on every step, and
 the Q6_K output head runs on the decode path 128 times per sequence.
 
 <figure class="diagram">
-<svg viewBox="0 0 760 330" role="img" aria-label="The five layers of the compute stack and the path this walkthrough takes through them: the LLM engine uses Math's Tensor and XPU's kernels directly; nucleo and ml sit beside it on the same substrate." style="max-width:100%;height:auto;font-family:var(--font-ui);font-size:12px">
+<svg viewBox="0 0 840 330" role="img" aria-label="The five layers of the compute stack and the path this walkthrough takes through them: the LLM engine uses Math's Tensor and XPU's kernels directly; nucleo and ml sit beside it on the same substrate." style="max-width:100%;height:auto;font-family:var(--font-ui);font-size:12px">
   <defs><marker id="wa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
   <g fill="none" stroke="currentColor" stroke-width="1.2">
-    <rect x="20" y="250" width="720" height="56" rx="4"/>
-    <rect x="20" y="170" width="720" height="56" rx="4"/>
-    <rect x="20" y="90" width="340" height="56" rx="4"/>
-    <rect x="400" y="90" width="340" height="56" rx="4"/>
-    <rect x="20" y="10" width="340" height="56" rx="4"/>
-    <rect x="400" y="10" width="340" height="56" rx="4" stroke="var(--accent)" stroke-width="2"/>
+    <rect x="20" y="250" width="800" height="56" rx="4"/>
+    <rect x="20" y="170" width="800" height="56" rx="4"/>
+    <rect x="20" y="90" width="380" height="56" rx="4"/>
+    <rect x="440" y="90" width="380" height="56" rx="4"/>
+    <rect x="20" y="10" width="380" height="56" rx="4"/>
+    <rect x="440" y="10" width="380" height="56" rx="4" stroke="var(--accent)" stroke-width="2"/>
   </g>
   <g fill="currentColor">
     <text x="32" y="272" font-weight="600">XPU</text>
-    <text x="32" y="290" opacity="0.75">cajeta.xpu: @Kernel, Device, KernelBuffer, KernelStream, KernelTimer; manifest, adaptor, ShapeFilter, ShapeChoice, Autotune</text>
+    <text x="32" y="290" opacity="0.75">cajeta.xpu: @Kernel, Device, KernelBuffer, KernelStream, KernelTimer; the manifest, adaptor, filter, measured choice and store</text>
     <text x="32" y="192" font-weight="600">Math</text>
     <text x="32" y="210" opacity="0.75">cajeta.math: Tensor, dtypes, linalg, fft, npio</text>
     <text x="32" y="112" font-weight="600">Nucleo</text>
     <text x="32" y="130" opacity="0.75">Column, Table, Tape, Fuse, Grad, Vmap, Jit</text>
-    <text x="412" y="112" font-weight="600">LLM</text>
-    <text x="412" y="130" opacity="0.75">dev.cajeta.llm: load, scheduler, CausalLM, K/V, sampling</text>
+    <text x="452" y="112" font-weight="600">LLM</text>
+    <text x="452" y="130" opacity="0.75">dev.cajeta.llm: load, scheduler, CausalLM, K/V, sampling</text>
     <text x="32" y="32" font-weight="600">ML</text>
     <text x="32" y="50" opacity="0.75">dev.cajeta.ml, dev.cajeta.xgboost</text>
-    <text x="412" y="32" font-weight="600" fill="var(--accent)">this walkthrough</text>
-    <text x="412" y="50" opacity="0.75">Llama-3.1-8B Q4_K_M, 512 in, 128 out, 4 sequences</text>
+    <text x="452" y="32" font-weight="600" fill="var(--accent)">this walkthrough</text>
+    <text x="452" y="50" opacity="0.75">Llama-3.1-8B Q4_K_M, 512 in, 128 out, 4 sequences</text>
   </g>
   <g stroke="currentColor" stroke-width="1.2" fill="none" marker-end="url(#wa)">
-    <line x1="190" y1="66" x2="190" y2="88"/>
-    <line x1="190" y1="146" x2="190" y2="168"/>
-    <line x1="570" y1="66" x2="570" y2="88"/>
-    <line x1="500" y1="146" x2="500" y2="168"/>
-    <path d="M640,146 L640,240 L600,240 L600,248"/>
+    <line x1="210" y1="66" x2="210" y2="88"/>
+    <line x1="210" y1="146" x2="210" y2="168"/>
+    <line x1="630" y1="66" x2="630" y2="88"/>
+    <line x1="520" y1="146" x2="520" y2="168"/>
+    <path d="M760,146 L760,248"/>
   </g>
   <g fill="currentColor" font-size="11" opacity="0.75">
-    <text x="196" y="80">estimators over Tensor</text>
-    <text x="196" y="160">columns, tape over Tensor</text>
-    <text x="506" y="160">Tensor&lt;float32&gt; activations</text>
-    <text x="646" y="200">KernelBuffer, @Kernel launches</text>
+    <text x="216" y="80">estimators over Tensor</text>
+    <text x="216" y="160">columns, tape over Tensor</text>
+    <text x="526" y="160">Tensor&lt;float32&gt; activations</text>
+    <text x="754" y="200" text-anchor="end">KernelBuffer, @Kernel launches</text>
   </g>
 </svg>
 <figcaption>The stack, bottom-up, and the path this page follows. The LLM engine builds on Math and XPU directly; it does not pass through nucleo, which shares the same substrate beside it.</figcaption>
@@ -357,7 +357,7 @@ is the portable arm.
 
 
 <figure class="diagram">
-<svg viewBox="0 0 900 300" role="img" aria-label="Where the three backends part for this model: backend selection in a fixed order; on CUDA the int8 tiles are native wmma and the 128 member opts into 99 KB of shared memory, decode launches are replayed as a graph; on HIP the same tiles are native wave-32 WMMA but the 64 KB block limit prunes the 128 member so the 64 member serves, launches are issued one by one; on Vulkan the tile and widen routes are off and prefill goes through the f16 cooperative GEMM, the mmq tile or the dot floor, with no event clock." style="max-width:100%;height:auto;font-family:var(--font-ui);font-size:11px">
+<svg viewBox="0 0 920 300" role="img" aria-label="Where the three backends part for this model: backend selection in a fixed order; on CUDA the int8 tiles are native wmma and the 128 member opts into 99 KB of shared memory, decode launches are replayed as a graph; on HIP the same tiles are native wave-32 WMMA but the 64 KB block limit prunes the 128 member so the 64 member serves, launches are issued one by one; on Vulkan the tile and widen routes are off and prefill goes through the f16 cooperative GEMM, the mmq tile or the dot floor, with no event clock." style="max-width:100%;height:auto;font-family:var(--font-ui);font-size:11px">
   <defs><marker id="sa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
   <g fill="none" stroke="currentColor" stroke-width="1.2">
     <rect x="10" y="20" width="160" height="40" rx="4"/>
@@ -383,8 +383,8 @@ is the portable arm.
     <text x="240" y="114" opacity="0.7">opts into 99 KB; R3 passes</text>
     <text x="460" y="100">QkTile 64×64, native WMMA int8</text>
     <text x="460" y="114" opacity="0.7">128 member pruned by R3 at 64 KB</text>
-    <text x="680" y="100">q4kF16CoopKernel, else mmq, else dot</text>
-    <text x="680" y="114" opacity="0.7">tile and widen routes off: backendIsVulkan</text>
+    <text x="680" y="100">f16 coop GEMM, else mmq, else dot</text>
+    <text x="680" y="114" opacity="0.7">tile and widen routes off (backendIsVulkan)</text>
     <text x="20" y="170" font-weight="600">decode mat-vec</text>
     <text x="20" y="184" opacity="0.7">one row per wave</text>
     <text x="240" y="170">q4kQ8WaveMatVecKernel (Pf if it pays)</text>
@@ -400,14 +400,14 @@ is the portable arm.
     <text x="460" y="240">one launch at a time</text>
     <text x="460" y="254" opacity="0.7">the batched pipeline hides the host</text>
     <text x="680" y="240">one dispatch at a time</text>
-    <text x="680" y="254" opacity="0.7">host timing; the profiler's timestamp seam</text>
+    <text x="680" y="254" opacity="0.7">timed on the host; no event clock</text>
   </g>
   <g stroke="currentColor" stroke-width="1.2" fill="none" marker-end="url(#sa)">
     <line x1="170" y1="40" x2="228" y2="40"/>
     <path d="M200,40 L200,10 L550,10 L550,18"/>
     <path d="M200,10 L770,10 L770,18"/>
   </g>
-  <g fill="currentColor" font-size="10" opacity="0.7"><text x="176" y="34">among the bundled</text></g>
+  <g fill="currentColor" font-size="10" opacity="0.7"><text x="90" y="70" text-anchor="middle">among the backends the binary bundles</text></g>
 </svg>
 <figcaption>Where the backends part for this model. The source is one on every row; what differs is a fact the device reported (the shared-memory block limit, the wave), a tier the compiler recorded, or a mechanism one backend has and another lacks (graph replay, the event clock).</figcaption>
 </figure>
