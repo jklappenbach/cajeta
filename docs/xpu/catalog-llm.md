@@ -2,7 +2,7 @@
 
 Generated from the sources, `census/oracle-map.tsv` and the committed census tables of `dev.cajeta.llm` on 2026-10-26 by `tools/catalog/gen-catalog.py`. One entry per kernel registered in the test binary on any backend: the kernel's name, linked to its source line, the llama.cpp counterpart the parity harness compares it against (NONE where llama.cpp has no twin and the roofline judges it), the census class on `cuda`, `cpu` and `hip` (CHECKED: a test credited its values against a host or oracle answer; RAN-UNCHECKED and SKIP: excused against a named plan item; DECLINED: the compiler produced no device code there; blank: not registered on that backend), and under it the kernel's role from its own documentation. The families and routes are described in [Language models on the device](kernels-llm.md); the adaptation machinery in [One kernel, any device](README.md).
 
-271 library kernels, plus the probe, external and fixture kernels the binary also registers (listed last).
+273 library kernels, plus the probe, external and fixture kernels the binary also registers (listed last).
 
 Census marks, one per backend (hover a mark for its class): ✓ CHECKED, ○ RAN-UNCHECKED, – SKIP, ✗ DECLINED, blank: not registered on that backend. Each kernel's name links to its source line; the line under it is its role.
 
@@ -141,7 +141,7 @@ Census marks, one per backend (hover a mark for its class): ✓ CHECKED, ○ RAN
 </tbody>
 </table>
 
-## Cooperative-matrix GEMMs and tiles: prefill and expert GEMMs (llama.cpp mmq, mul_mat_id) (104)
+## Cooperative-matrix GEMMs and tiles: prefill and expert GEMMs (llama.cpp mmq, mul_mat_id) (106)
 
 <table class="kernel-catalog">
 <thead><tr><th>kernel</th><th>llama.cpp counterpart</th><th class="census">cuda</th><th class="census">cpu</th><th class="census">hip</th></tr></thead>
@@ -214,6 +214,10 @@ Census marks, one per backend (hover a mark for its class): ✓ CHECKED, ○ RAN
 <tr class="kernel-role"><td colspan="5">Q2_K coop GEMM, 32x64 warp tile. (format not in the reference model; judged at the q4_K prefill shapes)</td></tr>
 <tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-llm/blob/main/src/main/cajeta/dev/cajeta/llm/io/WmmaKernel.cajeta#L6268" title="io/WmmaKernel.cajeta:6268"><code>q2kWmmaDeqMw8Kernel</code></a></td><td>mmq.cu:mul_mat_q</td><td class="census" title="CHECKED">✓</td><td class="census" title="CHECKED">✓</td><td class="census" title="CHECKED">✓</td></tr>
 <tr class="kernel-role"><td colspan="5">10.12.45.D — the Q2_K T=8 deq GEMM: Q6&#x27;s slice geometry (16 of 16) in a 2x4 wave tiling — four weight fragments and two token fragments feed eight mmas per 16-k step — carrying Q4&#x27;s TWO-FACTOR drain. (format not in the reference model; judged at the q4_K prefill shapes; dequantizes to f16 then WMMA; same op as MMQ)</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-llm/blob/main/src/main/cajeta/dev/cajeta/llm/io/Q2Tile.cajeta#L74" title="io/Q2Tile.cajeta:74"><code>Q2Tile_128_128_32_64_128_q2kQ8</code></a></td><td>mmq.cu:mul_mat_q</td><td class="census" title="not registered"></td><td class="census" title="not registered"></td><td class="census" title="not registered"></td></tr>
+<tr class="kernel-role"><td colspan="5">Q2Tile&lt;128, 128, 32, 64, 128&gt;: a member of the tile family, one body written over its shape (Q6Tile&#x27;s staging and mma with Q2_K&#x27;s two-factor drain over the raw 84-byte blocks: per-16 integer scales folded per mma, the per-16 mins a rank-1 update against in-kernel activation sums; llama.cpp MMQ (15.2.15.3.4))</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-llm/blob/main/src/main/cajeta/dev/cajeta/llm/io/Q2Tile.cajeta#L74" title="io/Q2Tile.cajeta:74"><code>Q2Tile_64_64_32_32_128_q2kQ8</code></a></td><td>mmq.cu:mul_mat_q</td><td class="census" title="not registered"></td><td class="census" title="not registered"></td><td class="census" title="not registered"></td></tr>
+<tr class="kernel-role"><td colspan="5">Q2Tile&lt;64, 64, 32, 32, 128&gt;: a member of the tile family, one body written over its shape (Q6Tile&#x27;s staging and mma with Q2_K&#x27;s two-factor drain over the raw 84-byte blocks: per-16 integer scales folded per mma, the per-16 mins a rank-1 update against in-kernel activation sums; llama.cpp MMQ (15.2.15.3.4))</td></tr>
 <tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-llm/blob/main/src/main/cajeta/dev/cajeta/llm/io/QuantKernel.cajeta#L5874" title="io/QuantKernel.cajeta:5874"><code>q3kF16CoopX1Kernel</code></a></td><td>mmq.cu:mul_mat_q</td><td class="census" title="CHECKED">✓</td><td class="census" title="CHECKED">✓</td><td class="census" title="CHECKED">✓</td></tr>
 <tr class="kernel-role"><td colspan="5">Q3_K coop GEMM, 64x32 warp tile. (format not in the reference model; judged at the q4_K prefill shapes)</td></tr>
 <tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-llm/blob/main/src/main/cajeta/dev/cajeta/llm/io/QuantKernel.cajeta#L6011" title="io/QuantKernel.cajeta:6011"><code>q3kF16CoopX3Kernel</code></a></td><td>mmq.cu:mul_mat_q</td><td class="census" title="CHECKED">✓</td><td class="census" title="CHECKED">✓</td><td class="census" title="CHECKED">✓</td></tr>
@@ -584,7 +588,7 @@ Census marks, one per backend (hover a mark for its class): ✓ CHECKED, ○ RAN
 <tr class="kernel-role"><td colspan="5">The DWORD form of #splitScaleKernel: one work item per dword of a row&#x27;s scale prefix, so two blocks&#x27; f16 scales are assembled in registers and stored once through the word view. (cajeta&#x27;s resident split layout; llama.cpp stores blocks whole; judged by roofline)</td></tr>
 <tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-llm/blob/main/src/main/cajeta/dev/cajeta/llm/io/WmmaKernel.cajeta#L5620" title="io/WmmaKernel.cajeta:5620"><code>symScaleImageKernel</code></a></td><td>NONE</td><td class="census" title="CHECKED">✓</td><td class="census" title="CHECKED">✓</td><td class="census" title="CHECKED">✓</td></tr>
 <tr class="kernel-role"><td colspan="5">7.4.2 — the COMPACT SCALE IMAGE: one f16 per 32-element block, colsPad/32 a row, zero in the pad. (cajeta&#x27;s resident split layout; llama.cpp stores blocks whole; judged by roofline)</td></tr>
-<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-llm/blob/main/src/main/cajeta/dev/cajeta/llm/io/TcTile.cajeta#L465" title="io/TcTile.cajeta:465"><code>tcSplitFixupKernel</code></a></td><td>mmq.cu:mul_mat_q_stream_k_fixup</td><td class="census" title="CHECKED">✓</td><td class="census" title="CHECKED">✓</td><td class="census" title="CHECKED">✓</td></tr>
+<tr class="kernel"><td class="kernel-name"><a href="https://github.com/jklappenbach/cajeta-llm/blob/main/src/main/cajeta/dev/cajeta/llm/io/TcTile.cajeta#L525" title="io/TcTile.cajeta:525"><code>tcSplitFixupKernel</code></a></td><td>mmq.cu:mul_mat_q_stream_k_fixup</td><td class="census" title="CHECKED">✓</td><td class="census" title="CHECKED">✓</td><td class="census" title="CHECKED">✓</td></tr>
 <tr class="kernel-role"><td colspan="5">The split-K fixup: y[t][c] is the sum over the splits of their partial tiles, one thread an element. (the split-K tiles&#x27; fixup: the partial tiles summed into y, one thread an element; llama.cpp&#x27;s stream-K fixup)</td></tr>
 </tbody>
 </table>
