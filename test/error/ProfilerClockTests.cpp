@@ -141,6 +141,42 @@ TEST(ProfilerClock, driftTermIsLoadBearingFarFromTheAnchor) {
         << "the synthetic drift is too small to distinguish the two fits";
 }
 
+// vulkan-batch-pipelining 6.3.4 — one calibration burst, four reads microseconds apart
+// with the 20 us jitter a driver pairing has, cannot resolve a rate. The fit keeps the
+// nominal period until its samples span enough time, rather than a slope off by percents.
+TEST(ProfilerClock, aBurstTooShortToResolveARateKeepsTheNominalPeriod) {
+    ASSERT_EQ(clk().reset(D), 1);
+    ASSERT_EQ(clk().set_period(D, 10.0), 1);
+    ASSERT_EQ(clk().set_dispersion_cap(50000), 1);
+    SyntheticDevice dev{10.0, -17.0, 90000000000LL};
+    const int64_t jitter[4] = {15000, -12000, 9000, -16000};
+    for (int i = 0; i < 4; ++i) {
+        const int64_t truth = dev.offsetNs + 1000000 + (int64_t) i * 25000;
+        const int64_t mid = truth + jitter[i];
+        ASSERT_EQ(clk().sample(D, mid - 22000, dev.ticksFor(truth), mid + 22000), CAJETA_CLOCK_OK);
+    }
+    EXPECT_LT(std::fabs(clk().drift_ppm(D)), 200.0) << "a rate taken from 75 us of samples";
+    const int64_t far = dev.ticksFor(dev.offsetNs + 1001000000LL);
+    EXPECT_NEAR((double) clk().to_host(D, far), (double) dev.hostFor(far), 250000.0)
+        << "one second after the burst";
+}
+
+// The same burst followed by another one second later: now the rate is measured.
+TEST(ProfilerClock, aSecondBurstASecondLaterMeasuresTheRate) {
+    ASSERT_EQ(clk().reset(D), 1);
+    ASSERT_EQ(clk().set_period(D, 10.0), 1);
+    ASSERT_EQ(clk().set_dispersion_cap(50000), 1);
+    SyntheticDevice dev{10.0, 400.0, 90000000000LL};
+    const int64_t jitter[4] = {15000, -12000, 9000, -16000};
+    for (int64_t at : {0LL, 1000000000LL}) {
+        for (int i = 0; i < 4; ++i) {
+            const int64_t truth = dev.offsetNs + 1000000 + at + (int64_t) i * 25000;
+            clk().sample(D, truth + jitter[i] - 22000, dev.ticksFor(truth), truth + jitter[i] + 22000);
+        }
+    }
+    EXPECT_NEAR(clk().drift_ppm(D), 400.0, 40.0);
+}
+
 // §6.7 — a sample taken while the device was in an unfavourable power state
 // has a wide host-read sandwich, and folding it in tilts the fit. Rejected
 // samples must not reach the fit, and must be counted where a consumer can

@@ -15,6 +15,7 @@ typedef struct {
     double  originHost;
 
     double  n, sx, sy, sxx, sxy;   // OLS accumulators, about the origin
+    double  xMin, xMax;            // the samples' device-tick span, about the origin
 
     double  slope;           // host ns per device tick, MEASURED
     double  intercept;       // host ns at device tick 0
@@ -33,6 +34,9 @@ typedef struct {
 } CajClockDomain;
 
 static CajClockDomain caj_clock[CAJETA_CLOCK_MAX_DOMAINS];
+// A rate is measured only once the samples span this many sandwich widths (100 ppm).
+#define CAJ_CLOCK_RATE_SPAN_RATIO 10000.0
+
 // Defined with the snapshot ring at the foot of this file; used by calibrate.
 static void caj_clock_record_snapshot(int32_t domain, int64_t hostNs,
                                       int64_t devTicks);
@@ -51,8 +55,9 @@ static void caj_clock_refit(CajClockDomain* d) {
         d->slope = d->period;
     } else {
         double denom = d->n * d->sxx - d->sx * d->sx;
-        // Every sample on one tick value leaves the rate unknowable.
-        if (denom > 0.0) {
+        // Every sample on one tick value, or too short a span, leaves the rate unknowable.
+        const double spanNs = (d->xMax - d->xMin) * d->period;
+        if (denom > 0.0 && spanNs >= CAJ_CLOCK_RATE_SPAN_RATIO * (double) d->bestDispersion) {
             d->slope = (d->n * d->sxy - d->sx * d->sy) / denom;
         } else {
             d->slope = d->period;
@@ -142,6 +147,8 @@ int32_t __cajeta_prof_clock_sample(int32_t domain, int64_t hostBeforeNs,
     }
     double x = (double) devTicks - d->originDev;
     double y = (double) hostMid - d->originHost;
+    if (d->n == 0.0 || x < d->xMin) d->xMin = x;
+    if (d->n == 0.0 || x > d->xMax) d->xMax = x;
     d->n   += 1.0;
     d->sx  += x;
     d->sy  += y;
