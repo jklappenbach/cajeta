@@ -34,7 +34,7 @@ the Q6_K output head runs on the decode path 128 times per sequence.
   <defs><marker id="wa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
   <g fill="none" stroke="currentColor" stroke-width="1.2">
     <rect x="20" y="250" width="800" height="56" rx="4"/>
-    <rect x="20" y="170" width="800" height="56" rx="4"/>
+    <rect x="20" y="170" width="690" height="56" rx="4"/>
     <rect x="20" y="90" width="380" height="56" rx="4"/>
     <rect x="440" y="90" width="380" height="56" rx="4"/>
     <rect x="20" y="10" width="380" height="56" rx="4"/>
@@ -60,12 +60,14 @@ the Q6_K output head runs on the decode path 128 times per sequence.
     <line x1="630" y1="66" x2="630" y2="88"/>
     <line x1="520" y1="146" x2="520" y2="168"/>
     <path d="M760,146 L760,248"/>
+    <line x1="520" y1="226" x2="520" y2="248"/>
   </g>
   <g fill="currentColor" font-size="11" opacity="0.75">
     <text x="216" y="80">estimators over Tensor</text>
     <text x="216" y="160">columns, tape over Tensor</text>
     <text x="526" y="160">Tensor&lt;float32&gt; activations</text>
-    <text x="754" y="200" text-anchor="end">KernelBuffer, @Kernel launches</text>
+    <text x="754" y="242" text-anchor="end">KernelBuffer, @Kernel launches</text>
+    <text x="526" y="242">Tensor storage ↔ KernelBuffer</text>
   </g>
 </svg>
 <figcaption>The stack, bottom-up, and the path this page follows. The LLM engine builds on Math and XPU directly; it does not pass through nucleo, which shares the same substrate beside it.</figcaption>
@@ -246,23 +248,24 @@ served it.
   <defs><marker id="pa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
   <g fill="none" stroke="currentColor" stroke-width="1.2">
     <rect x="10" y="60" width="70" height="40" rx="4"/>
-    <rect x="120" y="60" width="110" height="40" rx="4"/>
+    <rect x="112" y="60" width="126" height="40" rx="4"/>
     <rect x="270" y="20" width="130" height="40" rx="4" stroke="var(--accent)" stroke-width="2"/>
     <rect x="270" y="80" width="130" height="40" rx="4" stroke="var(--accent)" stroke-width="2"/>
     <rect x="270" y="140" width="130" height="40" rx="4" stroke="var(--accent)" stroke-width="2"/>
     <rect x="440" y="80" width="110" height="40" rx="4"/>
     <rect x="590" y="80" width="130" height="40" rx="4"/>
     <rect x="760" y="80" width="130" height="40" rx="4" stroke="var(--accent)" stroke-width="2"/>
-    <rect x="120" y="220" width="110" height="40" rx="4"/>
+    <rect x="112" y="220" width="126" height="40" rx="4"/>
     <rect x="270" y="220" width="160" height="40" rx="4" stroke="var(--accent)" stroke-width="2"/>
     <rect x="470" y="220" width="120" height="40" rx="4"/>
     <rect x="630" y="220" width="130" height="40" rx="4" stroke="var(--accent)" stroke-width="2"/>
-    <rect x="590" y="150" width="130" height="30" rx="4" stroke-dasharray="4 3"/>
+    <rect x="575" y="150" width="190" height="30" rx="4" stroke-dasharray="4 3"/>
   </g>
   <g fill="currentColor">
-    <text x="45" y="84" text-anchor="middle">hs (rows×4096)</text>
+    <text x="45" y="76" text-anchor="middle">hs</text>
+    <text x="45" y="90" text-anchor="middle" font-size="10" opacity="0.7">rows × 4096</text>
     <text x="175" y="78" text-anchor="middle">norm + q8_K pack</text>
-    <text x="175" y="92" text-anchor="middle" opacity="0.7">rmsnormPackRowF32</text>
+    <text x="175" y="92" text-anchor="middle" opacity="0.7" font-size="10">rmsnormPackRowF32</text>
     <text x="335" y="38" text-anchor="middle">q · Q4_K tile</text>
     <text x="335" y="52" text-anchor="middle" opacity="0.7">QkTile_128_128…</text>
     <text x="335" y="98" text-anchor="middle">k · Q4_K tile</text>
@@ -275,9 +278,9 @@ served it.
     <text x="655" y="112" text-anchor="middle" opacity="0.7">attnFlashPrefillGqa4</text>
     <text x="825" y="98" text-anchor="middle">o · Q4_K tile, += hs</text>
     <text x="825" y="112" text-anchor="middle" opacity="0.7">QkTile_…, addF32</text>
-    <text x="655" y="169" text-anchor="middle" opacity="0.8">KvPool planes, f16, per layer</text>
+    <text x="670" y="169" text-anchor="middle" opacity="0.8" font-size="10">KvPool planes, f16, per layer</text>
     <text x="175" y="238" text-anchor="middle">norm + q8_K pack</text>
-    <text x="175" y="252" text-anchor="middle" opacity="0.7">rmsnormPackRowF32</text>
+    <text x="175" y="252" text-anchor="middle" opacity="0.7" font-size="10">rmsnormPackRowF32</text>
     <text x="350" y="238" text-anchor="middle">gate, up · Q4_K tiles</text>
     <text x="350" y="252" text-anchor="middle" opacity="0.7">QkTile_… ×2</text>
     <text x="530" y="238" text-anchor="middle">GLU + pack</text>
@@ -286,27 +289,27 @@ served it.
     <text x="695" y="252" text-anchor="middle" opacity="0.7">QkTile_… / Q6Tile_…</text>
   </g>
   <g stroke="currentColor" stroke-width="1.2" fill="none" marker-end="url(#pa)">
-    <line x1="80" y1="80" x2="118" y2="80"/>
-    <path d="M230,80 L250,80 L250,40 L268,40"/>
-    <line x1="230" y1="100" x2="268" y2="100"/>
-    <path d="M230,80 L250,80 L250,160 L268,160"/>
+    <line x1="80" y1="80" x2="110" y2="80"/>
+    <path d="M238,80 L250,80 L250,40 L268,40"/>
+    <line x1="238" y1="100" x2="268" y2="100"/>
+    <path d="M238,80 L250,80 L250,160 L268,160"/>
     <path d="M400,40 L420,40 L420,100 L438,100"/>
     <line x1="400" y1="100" x2="438" y2="100"/>
     <path d="M400,160 L420,160 L420,100"/>
     <line x1="550" y1="100" x2="588" y2="100"/>
     <line x1="720" y1="100" x2="758" y2="100"/>
     <line x1="495" y1="120" x2="495" y2="150" />
-    <path d="M495,150 L495,165 L588,165"/>
+    <path d="M495,150 L495,165 L573,165"/>
     <path d="M655,150 L655,120"/>
-    <path d="M825,120 L825,200 L60,200 L60,240 L118,240"/>
-    <line x1="230" y1="240" x2="268" y2="240"/>
+    <path d="M825,120 L825,200 L60,200 L60,240 L110,240"/>
+    <line x1="238" y1="240" x2="268" y2="240"/>
     <line x1="430" y1="240" x2="468" y2="240"/>
     <line x1="590" y1="240" x2="628" y2="240"/>
     <path d="M760,240 L800,240 L800,290 L45,290 L45,102"/>
   </g>
   <g fill="currentColor" font-size="10" opacity="0.7">
-    <text x="500" y="145" >writes k, v</text>
-    <text x="660" y="140">reads k, v</text>
+    <text x="500" y="145">writes k, v</text>
+    <text x="662" y="140">reads k, v</text>
     <text x="400" y="196">residual, after the output projection</text>
     <text x="400" y="286">residual, into the next layer</text>
   </g>
@@ -407,7 +410,7 @@ is the portable arm.
     <path d="M200,40 L200,10 L550,10 L550,18"/>
     <path d="M200,10 L770,10 L770,18"/>
   </g>
-  <g fill="currentColor" font-size="10" opacity="0.7"><text x="90" y="70" text-anchor="middle">among the backends the binary bundles</text></g>
+  <g fill="currentColor" font-size="10" opacity="0.7"><text x="10" y="74">among the backends the binary bundles</text></g>
 </svg>
 <figcaption>Where the backends part for this model. The source is one on every row; what differs is a fact the device reported (the shared-memory block limit, the wave), a tier the compiler recorded, or a mechanism one backend has and another lacks (graph replay, the event clock).</figcaption>
 </figure>
@@ -508,7 +511,7 @@ is `tid % Group.width()` at every one of the fifty-one sites, so the same
 source runs at wave 32 and wave 64.
 
 <figure class="diagram">
-<svg viewBox="0 0 900 310" role="img" aria-label="The pipelined decode: the host queues step N+1 while step N runs; each step on the device embeds the token from a pinned slot, runs 32 resident layers of wave mat-vecs, K/V append and split attention, then the fused tail writes the argmax to the other slot and records an event; the host waits on the previous event and reads one integer." style="max-width:100%;height:auto;font-family:var(--font-ui);font-size:11px">
+<svg viewBox="0 0 900 312" role="img" aria-label="The pipelined decode: the host queues step N+1 while step N runs; each step on the device embeds the token from a pinned slot, runs 32 resident layers of wave mat-vecs, K/V append and split attention, then the fused tail writes the argmax to the other slot and records an event; the host waits on the previous event and reads one integer." style="max-width:100%;height:auto;font-family:var(--font-ui);font-size:11px">
   <defs><marker id="da" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
   <g fill="currentColor" font-weight="600"><text x="10" y="22">host</text><text x="10" y="150">device stream (deferred on CUDA: replayed as a graph)</text></g>
   <line x1="10" y1="128" x2="890" y2="128" stroke="currentColor" stroke-dasharray="3 4" opacity="0.5"/>
@@ -535,7 +538,7 @@ source runs at wave 32 and wave 64.
     <text x="705" y="61">read 4 bytes, emit token</text>
     <text x="115" y="191">embed from slot 0</text>
     <text x="350" y="186">32 × residentLayer</text>
-    <text x="350" y="199" opacity="0.7">wave mat-vecs · qkPrep · flash decode + reduce-pack · GLU</text>
+    <text x="350" y="199" opacity="0.7">wave mat-vecs · qkPrep · attention · GLU</text>
     <text x="595" y="191">tail: norm, head, argmax</text>
     <text x="740" y="191">event N</text>
     <text x="115" y="271">embed from slot 1</text>
@@ -556,8 +559,8 @@ source runs at wave 32 and wave 64.
     <line x1="170" y1="267" x2="198" y2="267"/>
     <line x1="500" y1="267" x2="528" y2="267"/>
     <line x1="660" y1="267" x2="688" y2="267"/>
-    <path d="M660,180 L818,175"/>
-    <path d="M660,262 L818,270"/>
+    <path d="M595,170 L595,146 L850,146 L850,158"/>
+    <path d="M595,284 L595,300 L850,300 L850,287"/>
     <path d="M135,74 L135,168"/>
     <path d="M325,74 L325,230 L115,230 L115,248"/>
     <path d="M740,170 L740,110 L515,110 L515,76"/>
@@ -566,8 +569,8 @@ source runs at wave 32 and wave 64.
   <g fill="currentColor" font-size="10" opacity="0.7">
     <text x="140" y="120">launches ~1 ms of host time</text>
     <text x="520" y="105">the only host wait</text>
-    <text x="700" y="160">argmax →</text>
-    <text x="700" y="245">argmax →</text>
+    <text x="610" y="142">argmax to slot 1</text>
+    <text x="610" y="297">argmax to slot 0</text>
     <text x="330" y="222">next step reads the slot the previous argmax wrote</text>
   </g>
 </svg>
@@ -650,10 +653,10 @@ batched step (`:4000` onward):
   </g>
   <g fill="currentColor" font-size="10">
     <text x="96" y="22">one batched prefill, 2048 rows, chunked</text>
-    <text x="216" y="52" opacity="0.8">one batched decode step per token: Cols launches, one attention launch</text>
+    <text x="216" y="52" opacity="0.8">one batched decode step per token: one Cols launch per projection, one attention launch over every sequence</text>
     <text x="296" y="158" opacity="0.8">waiting: free blocks must cover its whole prompt plus decode headroom</text>
     <text x="536" y="193" opacity="0.8">prefill in chunks under the 150 ms budget, beside the decoders</text>
-    <text x="776" y="193" opacity="0.8">joins the batch</text>
+    <text x="776" y="158" opacity="0.8">joins the batch</text>
   </g>
 </svg>
 <figcaption>The scheduler over twenty steps for the measured run plus one late arrival. Colored bars are prefill, gray bars decode. The late request waits for blocks rather than preempting older work, and its prefill is chunked so the four decoders never pause longer than the budget.</figcaption>
