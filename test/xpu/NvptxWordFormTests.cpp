@@ -148,6 +148,24 @@ const char* kSource =
     "            out[(int64) i] = t[0] + t[1] + t[2] + t[3] + t[4] + t[5] + t[6] + t[7];\n"
     "        }\n"
     "    }\n"
+    "    /** dotS with the dot in a @Device helper that takes the weights as a parameter. */\n"
+    "    @Device\n"
+    "    static Vector<int32,8> dotHelper(Vector<int8,32> wv, Vector<int8,32> xv,\n"
+    "            Vector<int32,8> zv) {\n"
+    "        return wv.dotAccum(xv, zv);\n"
+    "    }\n"
+    "    @Kernel\n"
+    "    public static void dotSParam(KernelBuffer<int32> out,\n"
+    "            KernelBuffer<int8> w, KernelBuffer<int8> x, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            Vector<int32,8> zv = heap Vector<int32,8>(0, 0, 0, 0, 0, 0, 0, 0);\n"
+    "            Vector<int8,32> wv = w.vload<32>((int64) i * 32L);\n"
+    "            Vector<int8,32> xv = x.vload<32>((int64) i * 32L);\n"
+    "            Vector<int32,8> t = M.dotHelper(wv, xv, zv);\n"
+    "            out[(int64) i] = t[0] + t[1] + t[2] + t[3] + t[4] + t[5] + t[6] + t[7];\n"
+    "        }\n"
+    "    }\n"
     "    public static int32 run() { return 1; }\n"
     "}\n";
 
@@ -285,6 +303,19 @@ TEST(NvptxWordForm, dotAccumIsDp4aForSignedWeights) {
     EXPECT_EQ(countOf(l.ptx, "dp4a.u32.s32"), 0u)
         << "signed weights took the unsigned instruction, which reads -1 as 255\n"
         << l.ptx;
+}
+
+// The signedness rides the receiver's element type, and a @Device helper's
+// PARAMETER must carry it as a local does: measured 2026-10-24 in cajeta-llm's
+// Q8_0 Cols kernel, a Vector<int8,32> parameter lowered dp4a.u32.s32 and read
+// every negative weight as w + 256.
+TEST(NvptxWordForm, dotAccumKeepsSignedWeightsThroughADeviceParameter) {
+    const Lowered l = lower("dotSParam");
+    ASSERT_TRUE(l.ok) << l.why;
+    EXPECT_GE(countOf(l.ptx, "dp4a.s32.s32"), 8u) << l.ptx;
+    EXPECT_EQ(countOf(l.ptx, "dp4a.u32.s32"), 0u)
+        << "a signed weight vector through a @Device parameter took the "
+           "unsigned instruction\n" << l.ptx;
 }
 
 TEST(NvptxWordForm, aByteVectorAtAProvablyAlignedIndexLoadsWords) {

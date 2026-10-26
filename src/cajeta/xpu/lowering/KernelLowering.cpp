@@ -8884,8 +8884,12 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
             params.push_back({p->getName(), /*isBuffer=*/false, mt,
                               /*isSigned=*/false});
         } else if (llvm::Type* vt = deviceVectorType(t, ctx)) {
+            // A vector carries its element's SIGNED_FLAG, as a local's
+            // declared type does: a Vector<int8,32> @Device parameter read
+            // unsigned lowered its dotAccum as dp4a.u32.s32 (cajeta-llm's
+            // Q8_0 Cols kernel, 2026-10-24).
             params.push_back({p->getName(), /*isBuffer=*/false, vt,
-                              /*isSigned=*/false});
+                              typeIsSigned(t)});
         } else if (DeviceStructInfo si = deviceStructInfo(t, ctx); si.type) {
             params.push_back({p->getName(), /*isBuffer=*/false, si.type,
                               /*isSigned=*/false});
