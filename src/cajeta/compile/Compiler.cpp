@@ -3483,6 +3483,9 @@ namespace cajeta {
             callArgs.push_back(argsArray);
         }
 
+        if (entry->needsTransferWord()) {
+            callArgs.push_back(llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 0));
+        }
         llvm::Value* ret = b.CreateCall(entryExtern, callArgs);
         {
             llvm::FunctionType* shutdownTy = llvm::FunctionType::get(
