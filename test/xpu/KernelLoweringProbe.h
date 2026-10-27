@@ -48,6 +48,8 @@
 
 #include "cajeta/xpu/nvidia/NvptxBackend.h"
 #include "cajeta/xpu/nvidia/NvptxKernelLowering.h"
+#include "cajeta/xpu/amd/AmdgpuBackend.h"
+#include "cajeta/xpu/amd/AmdgpuKernelLowering.h"
 
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -143,6 +145,39 @@ inline Lowered lowerForNvptx(const std::string& source,
     { llvm::raw_string_ostream os(out.ir); dev.print(os, nullptr); }
     out.ptx = nvidia::emitPtx(dev, *tm);
     if (out.ptx.empty()) { out.why = "no ptx"; return out; }
+    out.ok = true;
+    return out;
+}
+
+// As lowerForNvptx, for AMDGPU: `ptx` holds the ISA, and `ir` the device IR
+// AFTER the backend's pipeline, so its function attributes show what the
+// pipeline proved (kernel-load-alignment Unit 2).
+inline Lowered lowerForAmdgpu(const std::string& source,
+                              const std::string& kernelName,
+                              const std::string& fqClassName = "test.M",
+                              const std::string& arch = "gfx1151",
+                              const std::string& tag = "probe") {
+    Lowered out;
+    Compiler compiler;
+    auto module = compileForInspection(compiler, source, fqClassName, tag);
+    auto klass = module->getStructures()[fqClassName];
+    if (!klass) { out.why = fqClassName + " did not compile"; return out; }
+    auto k = findMethod(klass, kernelName);
+    if (!k) { out.why = "no kernel " + kernelName; return out; }
+    auto tm = amd::createAmdgpuTargetMachine(arch);
+    if (!tm) { out.why = "no " + arch + " target machine"; return out; }
+    llvm::LLVMContext ctx;
+    llvm::Module dev("probe_dev", ctx);
+    amd::configureDeviceModule(dev, *tm);
+    try {
+        amd::lowerKernel(k, dev);
+    } catch (cajeta::Exception& e) {
+        out.why = e.getMessage();
+        return out;
+    } catch (const std::exception& e) { out.why = e.what(); return out; }
+    out.ptx = amd::emitIsa(dev, *tm);
+    { llvm::raw_string_ostream os(out.ir); dev.print(os, nullptr); }
+    if (out.ptx.empty()) { out.why = "no isa"; return out; }
     out.ok = true;
     return out;
 }
