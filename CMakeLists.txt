@@ -266,6 +266,19 @@ else()
   install(FILES "${CAJETA_SYMLINK_STAGE}"
           DESTINATION "${CMAKE_INSTALL_BINDIR}"
           COMPONENT cajeta)
+  # macOS: the dylibs and static OpenSSL a release bundles beside the binary
+  # (scripts/macos-bundle-deps.sh fills build/src/cajeta-deps before CPack).
+  # A development build has none, so the copy is conditional at install time.
+  if(APPLE)
+    set(CAJETA_MACOS_DEPS "${CMAKE_BINARY_DIR}/src/cajeta-deps")
+    install(CODE "
+      if(EXISTS \"${CAJETA_MACOS_DEPS}\")
+        file(INSTALL \"${CAJETA_MACOS_DEPS}\"
+             DESTINATION \"\${CMAKE_INSTALL_PREFIX}/${CAJETA_PAYLOAD_DIR}\"
+             USE_SOURCE_PERMISSIONS)
+      endif()"
+      COMPONENT cajeta)
+  endif()
 endif()
 
 # Documentation + license + version stamp.

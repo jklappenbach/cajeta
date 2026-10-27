@@ -19,6 +19,7 @@
 #include "CajetaModule.h"
 #include "NativeLink.h"
 #include "WindowsHostPaths.h"
+#include "MacHostPaths.h"
 #include "CajetaLlvmVisitor.h"
 #include "ScriptUnitSynthesis.h"
 #include "Optimizer.h"
@@ -38,6 +39,7 @@
 #include "llvm/IR/PassTimingInfo.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/SubtargetFeature.h"
 #include "llvm/Support/Program.h"
@@ -3170,7 +3172,7 @@ namespace cajeta {
             // search path, which on macOS does not include Homebrew's keg-only
             // openssl, and the link dies on X509_STORE_add_cert with the flags
             // looking perfectly correct.
-#ifdef CAJETA_OPENSSL_LIBDIR
+#if defined(CAJETA_OPENSSL_LIBDIR) && !defined(__APPLE__)
             opt.argv.push_back(std::string("-L") + CAJETA_OPENSSL_LIBDIR);
 #endif
 #if defined(_WIN32)
@@ -3187,8 +3189,21 @@ namespace cajeta {
             opt.argv.push_back("-luser32");
             opt.argv.push_back("-lpthread");  // winpthreads (resolved static via -static)
 #elif defined(__APPLE__)
-            opt.argv.push_back("-lssl");
-            opt.argv.push_back("-lcrypto");
+            // A release links OpenSSL statically from its own cajeta-deps/, so
+            // the program runs on a Mac without Homebrew (cloud-adapters 5.3.3);
+            // a development build searches the configured directory.
+            {
+                std::string self = llvm::sys::fs::getMainExecutable(nullptr, nullptr);
+                std::string selfDir = llvm::sys::path::parent_path(self).str();
+#ifdef CAJETA_OPENSSL_LIBDIR
+                const std::string configured = CAJETA_OPENSSL_LIBDIR;
+#else
+                const std::string configured;
+#endif
+                for (const auto& a : macOpenSslLinkArgs(selfDir, configured,
+                         [](const std::string& p) { return llvm::sys::fs::exists(p); }))
+                    opt.argv.push_back(a);
+            }
             opt.argv.push_back("-lpthread");
 #else
             opt.argv.push_back("-lssl");

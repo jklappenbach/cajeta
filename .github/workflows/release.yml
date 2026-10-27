@@ -868,6 +868,22 @@ jobs:
       # dotnet is preinstalled on windows-latest; the UI extension is needed by
       # the CPack-generated authoring. Append the tools dir to PATH for later
       # steps (msys2 inherits the Windows PATH, so the bash cpack step sees wix).
+      # ---- macOS: bundle the Homebrew dylibs beside the binary ------------
+      # cajeta-cloud-adapters 5.3.3 (Julian, 2026-10-27): the release must run
+      # on a Mac without Homebrew, and so must a program it builds. v0.46.3
+      # through v0.47.0 linked Homebrew's openssl@4, antlr4-cpp-runtime and
+      # zeromq by their Cellar paths and passed `-L<Cellar>/openssl@4/<ver>/lib`
+      # to every --emit=exe. Rewrite the binary in place, AFTER the tests and
+      # BEFORE CPack, so the .pkg and the tarball both carry the bundled one.
+      - name: Bundle macOS dependencies
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          SSL=$(sed -n 's/^OPENSSL_SSL_LIBRARY:FILEPATH=//p' build/CMakeCache.txt)
+          [ -n "$SSL" ] || { echo "::error::no OPENSSL_SSL_LIBRARY in build/CMakeCache.txt"; exit 1; }
+          scripts/macos-bundle-deps.sh build/src/cajeta "$(dirname "$SSL")"
+          otool -L build/src/cajeta
+
       - name: Provision WiX (Windows)
         if: runner.os == 'Windows'
         # NOT continue-on-error: a WiX provisioning failure must red the run.
@@ -1047,6 +1063,9 @@ jobs:
             fi
           else
             cp build/src/cajeta "$STAGE/bin/"
+            if [ "${{ runner.os }}" = "macOS" ]; then
+              cp -R build/src/cajeta-deps "$STAGE/bin/"
+            fi
           fi
           cp VERSION README.md "$STAGE/"
           [ -f LICENSE ] && cp LICENSE "$STAGE/" || true
@@ -1091,6 +1110,49 @@ jobs:
       # tar/zip extractor. So publish the raw executable per target (named
       # by triple) plus its SHA-256 in a small `<triple>.cvmmeta` metadata
       # file that the release job folds into index.json (the cvm manifest).
+      # Gate: the staged macOS tree runs with Homebrew's libraries out of reach,
+      # and so does a program it links. otool first: every load command of the
+      # binary and the bundled dylibs is system or @rpath. Then the Cellar
+      # directories the build linked are moved aside and the STAGED compiler
+      # runs --version, jit-run and --emit=exe; the built program must run and
+      # load no OpenSSL dylib. Asserting the gate FIRES: drop the bundle step
+      # and the otool check lists /opt/homebrew paths.
+      - name: Verify the staged macOS tree runs without Homebrew
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          C="$STAGE_DIR/bin/cajeta"
+          bad=0
+          for f in "$C" "$STAGE_DIR"/bin/cajeta-deps/*.dylib; do
+            while read -r p; do
+              case "$p" in
+                /usr/lib/*|/System/*|@rpath/*) ;;
+                *) echo "::error::$f loads $p"; bad=1 ;;
+              esac
+            done < <(otool -L "$f" | tail -n +2 | awk '{print $1}')
+          done
+          [ "$bad" = 0 ] || exit 1
+          [ -f "$STAGE_DIR/bin/cajeta-deps/libssl.a" ] && [ -f "$STAGE_DIR/bin/cajeta-deps/libcrypto.a" ] \
+            || { echo "::error::no static OpenSSL in cajeta-deps"; exit 1; }
+          CELLAR="$(brew --prefix)/Cellar"
+          hidden=()
+          for k in openssl@3 openssl@4 antlr4-cpp-runtime zeromq; do
+            if [ -d "$CELLAR/$k" ]; then sudo mv "$CELLAR/$k" "$CELLAR/$k.hidden"; hidden+=("$k"); fi
+          done
+          restore() { for k in "${hidden[@]}"; do sudo mv "$CELLAR/$k.hidden" "$CELLAR/$k"; done; }
+          trap restore EXIT
+          "$C" --version
+          rm -rf build/mac-smoke && mkdir -p build/mac-smoke
+          out="$("$C" jit-run build/jit-smoke smoke.Main.run 2>&1)" || true
+          echo "$out"; echo "$out" | grep -q 'jit smoke ok'
+          "$C" --emit=exe -o build/mac-smoke/smoke smoke.Main.run build/jit-smoke build/mac-smoke
+          otool -L build/mac-smoke/smoke
+          if otool -L build/mac-smoke/smoke | grep -qE 'libssl|libcrypto'; then
+            echo "::error::the built program loads an OpenSSL dylib"; exit 1
+          fi
+          out="$(build/mac-smoke/smoke 2>&1)" || true
+          echo "$out"; echo "$out" | grep -q 'jit smoke ok'
+
       - name: Stage cvm download asset + checksum
         shell: bash
         run: |

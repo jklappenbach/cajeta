@@ -1455,6 +1455,14 @@ if(NOT WIN32)
     if(APPLE)
         target_sources(${CMAKE_PROJECT_NAME} PRIVATE
                 ${PROJECT_SOURCE_DIR}/test/jit/EmutlsShim.c)
+        # A release bundles the Homebrew dylibs it links into cajeta-deps/
+        # beside the binary (scripts/macos-bundle-deps.sh, cloud-adapters
+        # 5.3.3). The rpath is baked at build time so `cmake --install` and
+        # CPack copy the binary untouched: an install-time rpath edit would
+        # void the ad hoc signature the bundle step applies.
+        set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
+                INSTALL_RPATH "@executable_path/cajeta-deps"
+                BUILD_WITH_INSTALL_RPATH ON)
     endif()
     # Don't export the static LLVM symbols (HIP's bundled LLVM would clash) —
     # the __cajeta_* runtime symbols the JIT dlsym's stay exported. `--exclude-libs`
