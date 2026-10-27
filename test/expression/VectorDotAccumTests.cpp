@@ -16,6 +16,12 @@
 #include "../jit/JitTestHelper.h"
 #include "../PortableEnv.h"   // setenv/unsetenv — absent from the MinGW CRT
 
+#include "llvm/AsmParser/Parser.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/Verifier.h"
+#include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Host.h"
 
 #include <cstdint>
@@ -471,4 +477,50 @@ TEST(VectorDotAccumTests, zeroFloorIsBitIdenticalOnTheScalarTier) {
     int32_t r = runI32(DOTACC_ZERO);
     unsetenv("CAJETA_SIMD_SCALAR_FALLBACK");
     EXPECT_EQ(r, 1);
+}
+
+// A host `dotSum` whose accumulator is a bare literal: the literal arrives as
+// int64, and an add of it to the int32 sum is invalid IR that crashed the
+// optimizer's inliner (cajeta-llm 15.2.19.3.3.4).
+const char* DOTSUM_LITERAL_ACC =
+    "package test;\n"
+    "public final class D {\n"
+    "    public static int32 run() {\n"
+    "        uint8[] w #= heap uint8[32];\n"
+    "        int8[] a #= heap int8[32];\n"
+    "        int32 want = 0;\n"
+    "        int32 i = 0;\n"
+    "        while (i < 32) {\n"
+    "            w[i] = (uint8) ((i * 5) % 16);\n"
+    "            a[i] = (int8) (((i * 37) % 255) - 127);\n"
+    "            want = want + (int32) w[i] * (int32) a[i];\n"
+    "            i = i + 1;\n"
+    "        }\n"
+    "        Vector<uint8,32> wv = w.vload<32>(0);\n"
+    "        Vector<int8,32> av = a.vload<32>(0);\n"
+    "        if (wv.dotSum(av, 0) != want) { return 2; }\n"
+    "        if (wv.dotSum(av, 7) * 3 != (want + 7) * 3) { return 3; }\n"
+    "        return 1;\n"
+    "    }\n"
+    "}\n";
+
+TEST(VectorDotAccumTests, dotSumCastsALiteralAccumulatorToInt32) {
+    std::string ir;
+    EXPECT_EQ(runI32(DOTSUM_LITERAL_ACC, true, &ir), 1);
+    // The captured text can hold several modules (a shared stdlib); verify each.
+    size_t at = ir.find("; ModuleID");
+    ASSERT_NE(at, std::string::npos) << "no module in the captured IR";
+    while (at != std::string::npos) {
+        size_t next = ir.find("; ModuleID", at + 1);
+        std::string one = ir.substr(at, next == std::string::npos ? std::string::npos : next - at);
+        llvm::LLVMContext ctx;
+        llvm::SMDiagnostic err;
+        auto m = llvm::parseAssemblyString(one, err, ctx);
+        std::string msg;
+        llvm::raw_string_ostream os(msg);
+        err.print("dotsum", os);
+        ASSERT_TRUE(m) << "the module IR must parse: " << os.str();
+        EXPECT_FALSE(llvm::verifyModule(*m, &llvm::errs()));
+        at = next;
+    }
 }

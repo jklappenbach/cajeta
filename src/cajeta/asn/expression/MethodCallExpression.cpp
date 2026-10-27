@@ -5595,6 +5595,12 @@ namespace cajeta {
                     llvm::Value* prod = builder->CreateMul(ww, aw,
                                                            "dotsum.p");
                     llvm::Value* sum = builder->CreateAddReduce(prod);
+                    if (!acc->getType()->isIntegerTy()) {
+                        throw Exception("Vector.dotSum's accumulator must be "
+                                        "an integer", "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    acc = builder->CreateSExtOrTrunc(acc, sum->getType(),
+                                                     "dotsum.acc");
                     resolvedType = CajetaType::of("int32");
                     return builder->CreateAdd(sum, acc, "dotsum");
                 }
