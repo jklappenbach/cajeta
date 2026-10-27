@@ -43,6 +43,8 @@
 #include <filesystem>
 #include <fstream>
 #include <random>
+#include <map>
+#include <sstream>
 #include <string>
 #include <vector>
 #include "KernelLoweringProbe.h"
@@ -1005,4 +1007,94 @@ TEST(XpuVulkanEmitTests, lowersFloatSpecConstantToOpSpecConstant) {
         EXPECT_TRUE(*valid) << "float spec-constant kernel produced invalid SPIR-V";
     else
         GTEST_SUCCEED() << "spirv-val not installed; skipped";
+}
+
+namespace {
+// Every OpPhi incoming that is an OpUndef must carry the phi's own result type.
+// Returns the offending lines, empty when the module is clean.
+std::string phiUndefTypeMismatches(const std::string& text) {
+    std::map<std::string, std::string> undefType;
+    std::istringstream in(text);
+    std::string line;
+    std::vector<std::vector<std::string>> phis;
+    while (std::getline(in, line)) {
+        std::istringstream ls(line);
+        std::vector<std::string> tok;
+        for (std::string t; ls >> t;) tok.push_back(t);
+        if (tok.size() >= 4 && tok[1] == "=" && tok[2] == "OpUndef")
+            undefType[tok[0]] = tok[3];
+        if (tok.size() >= 4 && tok[1] == "=" && tok[2] == "OpPhi")
+            phis.push_back(tok);
+    }
+    std::string bad;
+    for (auto& p : phis)
+        for (size_t i = 4; i < p.size(); i += 2) {
+            auto it = undefType.find(p[i]);
+            if (it != undefType.end() && it->second != p[3])
+                bad += p[0] + " = OpPhi " + p[3] + " takes " + p[i] + " = OpUndef "
+                    + it->second + "\n";
+        }
+    return bad;
+}
+}  // namespace
+
+// A cooperative-matrix operand loaded under a condition is undefined on the
+// other path, and mem2reg merges it as phi(load, undef). The backend lowered
+// that undef as an i64 OpUndef, so the OpPhi's incoming type disagreed with its
+// result type: spirv-val rejected the module and RADV faulted creating the
+// pipeline (cajeta-llm's iq3xxs/iq4nl F16CoopIdN64 kernels, 15.2.19.6.1).
+TEST(XpuVulkanEmitTests, aConditionallyLoadedCooperativeMatrixMergesWithItsOwnType) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.CooperativeMatrix;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void guarded(KernelBuffer<float16> a, KernelBuffer<float16> b,\n"
+        "                               KernelBuffer<float32> c, uint32 live, uint32 steps) {\n"
+        "        CooperativeMatrix<float32,16,16,2> mc;\n"
+        "        mc.splat(0.0f);\n"
+        "        uint32 k = 0;\n"
+        "        while (k < steps) {\n"
+        "            CooperativeMatrix<float16,16,16,0> ma;\n"
+        "            ma.load(a, k * 256, 0, 16);\n"
+        "            CooperativeMatrix<float16,16,16,1> mb;\n"
+        "            if (live > 0) { mb.load(b, k * 256, 0, 16); }\n"
+        "            if (live > 0) { mc.mma(ma, mb); }\n"
+        "            k = k + 1;\n"
+        "        }\n"
+        "        mc.store(c, 0, 0, 16);\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "guarded");
+    ASSERT_NE(k, nullptr);
+
+    auto tmText = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmText, nullptr);
+    llvm::LLVMContext textCtx;
+    llvm::Module textModule("xpu_coopmat_guarded_text", textCtx);
+    configureDeviceModule(textModule, *tmText);
+    lowerKernel(k, textModule);
+    std::string text = emitSpirvText(textModule, *tmText);
+    ASSERT_FALSE(text.empty());
+    ASSERT_NE(text.find("OpCooperativeMatrixMulAddKHR"), std::string::npos) << text;
+    std::string bad = phiUndefTypeMismatches(text);
+    EXPECT_TRUE(bad.empty()) << bad << text;
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_coopmat_guarded_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    lowerKernel(k, binModule);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv)) {
+        EXPECT_TRUE(*valid) << "spirv-val rejected the guarded cooperative-matrix module";
+    } else {
+        GTEST_SUCCEED() << "spirv-val not installed; skipped binary validation";
+    }
 }

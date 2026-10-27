@@ -13,6 +13,7 @@
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/IntrinsicsSPIRV.h"
 #include "llvm/Transforms/Scalar/EarlyCSE.h"
 #include "llvm/Transforms/Scalar/StructurizeCFG.h"
 #include "llvm/Transforms/Utils/FixIrreducible.h"
@@ -94,6 +95,44 @@ void expandRoundHalfAway(llvm::Module& m) {
     }
 }
 
+// An undefined cooperative matrix (an operand loaded on one path only, merged by
+// mem2reg as phi(load, undef)) reaches the backend as an undef of a target type, and
+// the backend lowers it as an OpUndef of another type: spirv-val rejects the phi and
+// RADV faulted creating the pipeline (cajeta-llm 15.2.19.6.1). The path that reads
+// the undef never uses the value, so any matrix serves: a zero splat built once per
+// type at the top of the function.
+void defineUndefCooperativeMatrices(llvm::Module& m) {
+#if CAJETA_HAS_SPV_COOP_MATRIX
+    for (llvm::Function& f : m) {
+        if (f.isDeclaration()) continue;
+        std::map<llvm::Type*, llvm::Value*> zeros;
+        auto zeroOf = [&](llvm::TargetExtType* ty) -> llvm::Value* {
+            auto it = zeros.find(ty);
+            if (it != zeros.end()) return it->second;
+            llvm::IRBuilder<> b(&*f.getEntryBlock().getFirstInsertionPt());
+            llvm::Type* elem = ty->getTypeParameter(0);
+            llvm::Function* splat = llvm::Intrinsic::getOrInsertDeclaration(
+                &m, llvm::Intrinsic::spv_cooperative_matrix_splat, {ty, elem});
+            llvm::Value* z = b.CreateCall(splat, {llvm::Constant::getNullValue(elem)},
+                                          "cm.undef.zero");
+            zeros[ty] = z;
+            return z;
+        };
+        for (llvm::BasicBlock& bb : f)
+            for (llvm::Instruction& inst : bb)
+                for (llvm::Use& u : inst.operands()) {
+                    auto* uv = llvm::dyn_cast<llvm::UndefValue>(u.get());
+                    if (!uv) continue;
+                    auto* tet = llvm::dyn_cast<llvm::TargetExtType>(uv->getType());
+                    if (!tet || tet->getName() != "spirv.CooperativeMatrixKHR") continue;
+                    u.set(zeroOf(tet));
+                }
+    }
+#else
+    (void) m;
+#endif
+}
+
 // Runs the codegen pipeline into an in-memory buffer, as SPIR-V text for Assembly or
 // binary for Object. False on failure, with an LLVM fatal error's reason in `failure`.
 bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
@@ -137,6 +176,7 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
         if (failure != nullptr) *failure = reason;
         return false;
     }
+    defineUndefCooperativeMatrices(m);
 
     // FP narrowing canonicalizes fptrunc(op(fpext a, fpext b)) into direct bfloat
     // arithmetic, which needs SPV_INTEL_bfloat16_arithmetic, not a Vulkan extension.
