@@ -1,6 +1,6 @@
 # Kernel load alignment
 
-Status: **draft**, 2026-10-27. Origin: cajeta-llm plan 15.2.19.8 and 15.2.19.10.
+Status: **approved** 2026-10-27 (Julian). Origin: cajeta-llm plan 15.2.19.8 and 15.2.19.10.
 Decided with Julian 2026-10-27: the proof and a stated form both, spelled
 `align:`, checked in debug and ubTraps builds, the llm masks removed after.
 
