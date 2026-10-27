@@ -1145,12 +1145,12 @@ jobs:
           rm -rf build/mac-smoke && mkdir -p build/mac-smoke
           out="$("$C" jit-run build/jit-smoke smoke.Main.run 2>&1)" || true
           echo "$out"; echo "$out" | grep -q 'jit smoke ok'
-          "$C" --emit=exe -o build/mac-smoke/smoke smoke.Main.run build/jit-smoke build/mac-smoke
-          otool -L build/mac-smoke/smoke
-          if otool -L build/mac-smoke/smoke | grep -qE 'libssl|libcrypto'; then
+          "$C" --emit=exe -o build/mac-smoke/smoke-exe smoke.Main.run build/jit-smoke build/mac-smoke
+          otool -L build/mac-smoke/smoke-exe
+          if otool -L build/mac-smoke/smoke-exe | grep -qE 'libssl|libcrypto'; then
             echo "::error::the built program loads an OpenSSL dylib"; exit 1
           fi
-          out="$(build/mac-smoke/smoke 2>&1)" || true
+          out="$(build/mac-smoke/smoke-exe 2>&1)" || true
           echo "$out"; echo "$out" | grep -q 'jit smoke ok'
 
       - name: Stage cvm download asset + checksum
