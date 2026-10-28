@@ -6,6 +6,8 @@
 #include "llvm/IR/GetElementPtrTypeIterator.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Support/KnownBits.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -185,6 +187,65 @@ uint64_t provenAlignment(llvm::Value* addr, const llvm::Argument* base,
 
 unsigned provenIndexTrailingZeros(llvm::Value* index, const llvm::DataLayout& dl) {
     return TrailingZeroProof(nullptr, 0, dl).of(index);
+}
+
+void stateAlignment(llvm::IRBuilderBase& b, llvm::Instruction* access,
+                    uint64_t bytes, uint64_t accessBytes) {
+    auto* ld = llvm::dyn_cast_or_null<llvm::LoadInst>(access);
+    auto* st = llvm::dyn_cast_or_null<llvm::StoreInst>(access);
+    if (!ld && !st) return;
+    const llvm::Align have = ld ? ld->getAlign() : st->getAlign();
+    if (bytes <= have.value()) return;
+    const llvm::Align stated(bytes);
+    if (bytes >= std::min<uint64_t>(16, accessBytes)) {
+        if (ld) ld->setAlignment(stated); else st->setAlignment(stated);
+        return;
+    }
+    llvm::Value* ptr = ld ? ld->getPointerOperand() : st->getPointerOperand();
+    b.CreateAlignmentAssumption(access->getModule()->getDataLayout(), ptr, bytes);
+}
+
+void applyStatedAlignments(llvm::Module& m) {
+    const llvm::DataLayout& dl = m.getDataLayout();
+    for (llvm::Function& f : m) {
+        // Each assumed-aligned address, by its base and constant offset.
+        std::vector<std::pair<llvm::Value*, uint64_t>> assumed;
+        for (llvm::BasicBlock& bb : f)
+            for (llvm::Instruction& i : bb) {
+                auto* a = llvm::dyn_cast<llvm::AssumeInst>(&i);
+                if (!a) continue;
+                for (unsigned k = 0; k < a->getNumOperandBundles(); ++k) {
+                    llvm::OperandBundleUse u = a->getOperandBundleAt(k);
+                    if (u.getTagName() != "align" || u.Inputs.size() != 2) continue;
+                    auto* c = llvm::dyn_cast<llvm::ConstantInt>(u.Inputs[1].get());
+                    if (!c || !llvm::isPowerOf2_64(c->getZExtValue())) continue;
+                    assumed.push_back({u.Inputs[0].get(), c->getZExtValue()});
+                }
+            }
+        if (assumed.empty()) continue;
+        for (llvm::BasicBlock& bb : f)
+            for (llvm::Instruction& i : bb) {
+                auto* ld = llvm::dyn_cast<llvm::LoadInst>(&i);
+                auto* st = llvm::dyn_cast<llvm::StoreInst>(&i);
+                if (!ld && !st) continue;
+                llvm::Value* ptr = ld ? ld->getPointerOperand() : st->getPointerOperand();
+                int64_t off = 0;
+                llvm::Value* base = llvm::GetPointerBaseWithConstantOffset(ptr, off, dl);
+                uint64_t best = 0;
+                for (auto& [p, bytes] : assumed) {
+                    int64_t poff = 0;
+                    llvm::Value* pbase = llvm::GetPointerBaseWithConstantOffset(p, poff, dl);
+                    if (pbase != base) continue;
+                    best = std::max<uint64_t>(
+                        best, llvm::commonAlignment(llvm::Align(bytes),
+                                                    (uint64_t) (off - poff)).value());
+                }
+                if (!best) continue;
+                const llvm::Align al(best);
+                if (ld && ld->getAlign() < al) ld->setAlignment(al);
+                if (st && st->getAlign() < al) st->setAlignment(al);
+            }
+    }
 }
 
 } // namespace cajeta::xpu

@@ -2261,10 +2261,18 @@ private:
                    MethodCallExpression* mc, const std::vector<Val>& a) {
         Where where{mc};
         Mem& m = *self.mem;
+        // A trailing `align: A` (kernel-load-alignment spec 3.1) promises the
+        // index; it never changes which elements are read or written.
+        size_t positional = a.size();
+        if ((nm == "vload" || nm == "vstore") && !mc->getParameters().empty()) {
+            std::string lab = mc->getParameters().back().label;
+            while (!lab.empty() && (lab.back() == ':' || lab.back() == ' ')) lab.pop_back();
+            if (lab == "align") --positional;
+        }
         if (nm == "vload") {
             const auto& ta = mc->getExplicitMethodTypeArgs();
             auto cN = ta.size() == 1 ? std::dynamic_pointer_cast<CajetaConstantType>(ta[0]) : nullptr;
-            if (!cN || a.size() != 1) refuse("`vload` without a constant lane count (" + where + ")");
+            if (!cN || positional != 1) refuse("`vload` without a constant lane count (" + where + ")");
             uint64_t base = indexOf(a[0], where);
             Val v;
             v.k = Val::Vector;
@@ -2273,7 +2281,7 @@ private:
             return v;
         }
         if (nm == "vstore") {
-            if (a.size() != 2 || a[1].k != Val::Vector) refuse("`vstore` takes (index, Vector) (" + where + ")");
+            if (positional != 2 || a[1].k != Val::Vector) refuse("`vstore` takes (index, Vector) (" + where + ")");
             uint64_t base = indexOf(a[0], where);
             for (size_t l = 0; l < a[1].lanes.size(); ++l) storeElem(m, base + l, a[1].lanes[l], where);
             return Val();

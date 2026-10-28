@@ -209,10 +209,20 @@ void raiseProvableBufferAlignment(llvm::Module& m) {
                     want = std::min<uint64_t>(dl.getABITypeAlign(ty).value(), 16);
                 }
                 if (!wordAlignCap16()) want = std::min<uint64_t>(want, 4);
-                if (want <= have) continue;
                 auto* arg = llvm::dyn_cast<llvm::Argument>(
                     llvm::getUnderlyingObject(ptr));
                 if (!arg || !arg->getType()->isPointerTy()) continue;
+                // An access already wider than its element's natural alignment
+                // was STATED (`align:`, kernel-load-alignment spec 3.1): the
+                // launch owes its base that alignment just as it owes a proven
+                // one (spec 5.1).
+                const uint64_t natural =
+                    dl.getABITypeAlign(ty->getScalarType()).value();
+                if (have > natural) {
+                    uint64_t& need = raised[arg->getArgNo()];
+                    need = std::max<uint64_t>(need, std::min<uint64_t>(have, 16));
+                }
+                if (want <= have) continue;
                 // The zeros of the address under the contract this pass would
                 // be signing the launch up to: the base aligned to a word.
                 const uint64_t byProof = cajeta::xpu::provenAlignment(ptr, arg, 16, dl);
@@ -285,6 +295,7 @@ void optimizeDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
     // After the pipeline: the proof needs the promoted, folded index.
     // CAJETA_XPU_NO_WORD_ALIGN=1 is the A/B arm.
     const char* noAlign = std::getenv("CAJETA_XPU_NO_WORD_ALIGN");
+    cajeta::xpu::applyStatedAlignments(m);
     if (lvl > 0 && !(noAlign && *noAlign && *noAlign != '0'))
         raiseProvableBufferAlignment(m);
 }

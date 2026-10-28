@@ -11,6 +11,9 @@ namespace llvm {
 class Argument;
 class DataLayout;
 class Value;
+class Instruction;
+class Module;
+class IRBuilderBase;
 }
 
 namespace cajeta::xpu {
@@ -33,5 +36,21 @@ namespace cajeta::xpu {
     /// index into a descriptor-bound buffer (Vulkan), whose base the driver
     /// aligns. Not capped; 0 when nothing is proven.
     unsigned provenIndexTrailingZeros(llvm::Value* index, const llvm::DataLayout& dl);
+
+    /// States `bytes` of alignment on a buffer load or store of
+    /// `accessBytes` (an `align:` statement, spec 3.1). A statement of the
+    /// full alignment the access can use (16, or the access width) goes on
+    /// the access itself: no proof can raise it further. A smaller one rides
+    /// as an `llvm.assume` align bundle on the address, so the pipeline
+    /// neither drops it (it drops metadata when it retypes a load) nor lets
+    /// it cap the alignment the proof finds later (spec 3.3); the backend's
+    /// applyStatedAlignments puts it on the access after the pipeline.
+    void stateAlignment(llvm::IRBuilderBase& b, llvm::Instruction* access,
+                        uint64_t bytes, uint64_t accessBytes);
+
+    /// Raises each load or store whose address an `align` assumption covers to
+    /// at least that alignment; run after the pipeline and before a
+    /// proof-based raise, so the emitted alignment is max(proven, stated).
+    void applyStatedAlignments(llvm::Module& m);
 
 }

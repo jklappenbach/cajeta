@@ -9,6 +9,10 @@
 #include <gtest/gtest.h>
 
 #include "cajeta/xpu/lowering/AlignmentProof.h"
+#include "KernelLoweringProbe.h"
+#include "cajeta/xpu/vulkan/SpirvBackend.h"
+#include "cajeta/xpu/vulkan/SpirvKernelLowering.h"
+#include "../jit/JitTestHelper.h"
 
 #include "llvm/AsmParser/Parser.h"
 #include "llvm/IR/Instructions.h"
@@ -17,6 +21,7 @@
 #include "llvm/Support/SourceMgr.h"
 
 #include <memory>
+#include <sstream>
 #include <string>
 
 namespace {
@@ -181,4 +186,172 @@ define <16 x i8> @f(ptr %b, i64 %i) {
   %v = load <16 x i8>, ptr %p, align 1
   ret <16 x i8> %v
 })"), 16u);
+}
+
+// ---------------------------------------------------------------------------
+// The stated form, `vload<N>(i, align: A)` / `vstore(i, v, align: A)`
+// (kernel-load-alignment plan Unit 4, spec 3.1-3.5).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using namespace cajeta::xpu::probe;
+
+// `off` is a parameter, so nothing proves `i * 16 + off` aligned; the
+// statement is the only source of the alignment.
+std::string statedSource(const std::string& call) {
+    return std::string(
+        "package test;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void k(KernelBuffer<int32> out, KernelBuffer<int8> x,\n"
+        "            uint32 n, uint32 off) {\n"
+        "        uint32 i = KernelThread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            int64 o = (int64) (i * 16 + off);\n"
+        "            int64 p = (int64) i * 16L;\n"
+        "            uint32 m = n;\n"
+        "            ") + call + "\n"
+        "            Vector<int32,4> zv = heap Vector<int32,4>(0, 0, 0, 0);\n"
+        "            Vector<int32,4> t = v.dotAccum(v, zv);\n"
+        "            out[(int64) i] = t[0] + t[1] + t[2] + t[3];\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() { return 1; }\n"
+        "}\n";
+}
+
+std::string vulkanText(const std::string& src) {
+    cajeta::Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M", "stated_vk");
+    auto k = findMethod(module->getStructures()["test.M"], "k");
+    if (!k) return "";
+    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
+    llvm::LLVMContext ctx;
+    llvm::Module m("stated_vk", ctx);
+    cajeta::xpu::vulkan::configureDeviceModule(m, *tm);
+    cajeta::xpu::vulkan::lowerKernel(k, m);
+    return cajeta::xpu::vulkan::emitSpirvText(m, *tm);
+}
+
+const char* kStated = "Vector<int8,16> v = x.vload<16>(o, align: 16);";
+
+}  // namespace
+
+// 4.1.1 (spec 3.1), NVPTX: the stated 16 makes the load one 16-byte vector.
+TEST(KernelAlignment, aStatedAlignmentWidensTheLoadOnNvptx) {
+    const Lowered l = lowerForNvptx(statedSource(kStated), "k", "test.M", "sm_89", "stated");
+    ASSERT_TRUE(l.ok) << l.why;
+    EXPECT_EQ(countOf(l.ptx, ".b8 ") + countOf(l.ptx, ".u8 ") + countOf(l.ptx, ".s8 "), 0u)
+        << l.ptx;
+    EXPECT_GE(countOf(l.ptx, ".v4.b32") + countOf(l.ptx, ".v4.u32"), 1u) << l.ptx;
+}
+
+// 4.1.1 (spec 3.1), NVPTX, does not fire: without the statement the same load
+// stays bytes (nothing proves `o`).
+TEST(KernelAlignment, withoutAStatementTheUnprovableLoadStaysBytesOnNvptx) {
+    const Lowered l = lowerForNvptx(
+        statedSource("Vector<int8,16> v = x.vload<16>(o);"), "k", "test.M", "sm_89", "stated0");
+    ASSERT_TRUE(l.ok) << l.why;
+    EXPECT_GE(countOf(l.ptx, ".b8") + countOf(l.ptx, ".u8") + countOf(l.ptx, ".s8"), 16u)
+        << l.ptx;
+}
+
+// 4.1.1 (spec 3.1), AMDGPU: the load is emitted at the stated alignment.
+TEST(KernelAlignment, aStatedAlignmentReachesTheAmdgpuLoad) {
+    const Lowered l = lowerForAmdgpu(statedSource(kStated), "k", "test.M", "gfx1151", "stated_amd");
+    ASSERT_TRUE(l.ok) << l.why;
+    // The pipeline may retype the byte vector (to <4 x i32>); the access is the
+    // `vload` value, whatever its type.
+    bool aligned = false;
+    std::istringstream in(l.ir);
+    for (std::string line; std::getline(in, line);)
+        if (line.find("%vload") != std::string::npos && line.find(" load ") != std::string::npos
+            && line.find("addrspace(1)") != std::string::npos
+            && line.find("align 16") != std::string::npos)
+            aligned = true;
+    EXPECT_TRUE(aligned) << l.ir;
+}
+
+// 4.1.1 (spec 3.1, 4.2), Vulkan: the statement reaches Mesa as an index mask,
+// the one alignment form it reads (Julian, 2026-10-28: the fork's backend
+// writes no SPIR-V `Aligned` operand).
+TEST(KernelAlignment, aStatedAlignmentReachesTheVulkanLoadAsAnIndexMask) {
+    std::string text = vulkanText(statedSource(kStated));
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("OpBitwiseAnd"), std::string::npos) << text;
+}
+
+// Does not fire: without the statement nothing proves `o`, so no mask.
+TEST(KernelAlignment, withoutAStatementTheVulkanIndexIsNotMasked) {
+    std::string text = vulkanText(statedSource("Vector<int8,16> v = x.vload<16>(o);"));
+    ASSERT_FALSE(text.empty());
+    EXPECT_EQ(text.find("OpBitwiseAnd"), std::string::npos) << text;
+}
+
+// 4.1.1 (spec 3.1), NVPTX: a statement below 16 still lifts the unprovable load
+// out of bytes, into words.
+TEST(KernelAlignment, aStatedWordAlignmentMakesWordLoadsOnNvptx) {
+    const Lowered l = lowerForNvptx(
+        statedSource("Vector<int8,16> v = x.vload<16>(o, align: 4);"), "k", "test.M", "sm_89",
+        "statedw");
+    ASSERT_TRUE(l.ok) << l.why;
+    EXPECT_EQ(countOf(l.ptx, ".b8 ") + countOf(l.ptx, ".u8 ") + countOf(l.ptx, ".s8 "), 0u)
+        << l.ptx;
+    EXPECT_EQ(countOf(l.ptx, ".v4.b32") + countOf(l.ptx, ".v4.u32"), 0u) << l.ptx;
+}
+
+// 4.1.3 (spec 3.3): the proof has 16 and the statement says 4; 16 is used.
+TEST(KernelAlignment, aSmallerStatementDoesNotLowerTheProvenAlignment) {
+    const Lowered l = lowerForNvptx(
+        statedSource("Vector<int8,16> v = x.vload<16>(p, align: 4);"), "k", "test.M", "sm_89",
+        "stated4");
+    ASSERT_TRUE(l.ok) << l.why;
+    EXPECT_GE(countOf(l.ptx, ".v4.b32") + countOf(l.ptx, ".v4.u32"), 1u) << l.ptx;
+}
+
+// 4.1.2 (spec 3.2, 3.4): each bad statement fails the kernel, naming the call.
+TEST(KernelAlignment, aBadStatementFailsNamingTheCall) {
+    struct Case { const char* call; const char* why; };
+    const Case cases[] = {
+        {"Vector<int8,16> v = x.vload<16>(o, align: 3);", "power of two"},
+        {"Vector<int8,16> v = x.vload<16>(o, align: 32);", "power of two"},
+        {"Vector<int8,16> v = x.vload<16>(o, align: m);", "constant"},
+        {"Vector<int8,4> w = x.vload<4>(o, align: 16); Vector<int8,16> v = x.vload<16>(p);",
+         "wider than"},
+        {"Vector<int8,16> v = x.vload<16>(o, aligned: 16);", "align:"},
+    };
+    for (const Case& c : cases) {
+        const Lowered l = lowerForNvptx(statedSource(c.call), "k", "test.M", "sm_89", "statedbad");
+        EXPECT_FALSE(l.ok) << c.call;
+        EXPECT_NE(l.why.find("vload"), std::string::npos) << c.call << ": " << l.why;
+        EXPECT_NE(l.why.find(c.why), std::string::npos) << c.call << ": " << l.why;
+        EXPECT_NE(l.why.find("line"), std::string::npos) << c.call << ": " << l.why;
+    }
+}
+
+// 4.1.2 (spec 3.5): outside a kernel the existing kernel-only error applies.
+TEST(KernelAlignment, aStatementOutsideAKernelIsTheKernelOnlyError) {
+    const char* src =
+        "package test;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "public class H {\n"
+        "    public static int32 run() {\n"
+        "        KernelBuffer<int8> x = heap KernelBuffer<int8>(0, 64);\n"
+        "        Vector<int8,16> v = x.vload<16>(0L, align: 16);\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    std::string err;
+    try {
+        auto jit = cajeta_test::CajetaJit::compile(src, "test.H");
+        EXPECT_EQ(jit, nullptr) << "a host vload compiled";
+    } catch (cajeta::Exception& e) {
+        err = e.getMessage();
+    } catch (const std::exception& e) {
+        err = e.what();
+    }
+    if (!err.empty()) EXPECT_NE(err.find("kernel-only"), std::string::npos) << err;
 }

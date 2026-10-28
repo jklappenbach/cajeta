@@ -453,6 +453,34 @@ TEST(XpuReferenceInterpreter, dotAccumMatchesTheCpuBackend) {
     }
 }
 
+// `align: A` is a promise about the index (kernel-load-alignment spec 3.1); the
+// reference takes it and reads the same elements (plan 4.3.1).
+TEST(XpuReferenceInterpreter, aStatedAlignmentIsAcceptedAndReadsTheSameElements) {
+    Pair p(R"CJ(
+    @Kernel
+    public static void refStated(KernelBuffer<int32> out, KernelBuffer<uint8> w,
+                                 KernelBuffer<int8> a, KernelBuffer<int32> seed) {
+        uint32 g = KernelThread.globalIdX();
+        int64 wo = (int64) g * 16L;
+        int64 so = (int64) g * 4L;
+        Vector<uint8,16> wv = w.vload<16>(wo, align: 16);
+        Vector<int8,16> av = a.vload<16>(wo, align: 4);
+        Vector<int32,4> acc = seed.vload<4>(so, align: 16);
+        out.vstore(so, wv.dotAccum(av, acc), align: 16);
+    }
+)CJ", "refStated");
+    ASSERT_EQ(p.failure, "");
+    EXPECT_TRUE(ref::refusals(p.kernel).empty());
+    const int G = 32;
+    std::vector<uint8_t> w(G * 16);
+    std::vector<int8_t> a(G * 16);
+    std::vector<int32_t> seed(G * 4);
+    for (int i = 0; i < G * 16; ++i) { w[i] = (uint8_t) (i * 37 + 200); a[i] = (int8_t) (i * 53 - 90); }
+    for (int i = 0; i < G * 4; ++i) seed[i] = i * 1000 - 50000;
+    std::vector<In> ins = {buffer(std::vector<int32_t>(G * 4)), buffer(w), buffer(a), buffer(seed)};
+    EXPECT_EQ(compareOn<int32_t>(p, ins, 0, shape(1, G)), "");
+}
+
 // KernelThread.clock() reads a free-running counter, so it has no reference
 // value by nature and stays refused; the tests below use it for that.
 TEST(XpuReferenceInterpreter, anOperationWithNoReferenceSemanticsIsRefusedByName) {

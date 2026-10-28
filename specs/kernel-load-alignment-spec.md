@@ -90,6 +90,10 @@ store lowering.
   and the index.
 - **4.2** When a release build without ubTraps violates a stated alignment,
   nothing is checked, and the behaviour is the backend's misaligned access.
+  On Vulkan it is not: the statement reaches Mesa as an index mask (the
+  fork's SPIR-V backend writes no `Aligned` operand, Q5), so a violated
+  statement reads or writes the elements at the index rounded down to a
+  multiple of A. (Julian, 2026-10-28.)
 - **4.3** When the check is on, a proven alignment (§2) adds no check. Only a
   statement the proof cannot confirm is checked.
 

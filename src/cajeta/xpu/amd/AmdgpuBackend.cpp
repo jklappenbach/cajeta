@@ -1,6 +1,7 @@
 // AMDGPU backend — see header.
 
 #include "AmdgpuBackend.h"
+#include "../lowering/AlignmentProof.h"
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/IR/Function.h"
@@ -171,11 +172,15 @@ void optimizeDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
         llvm::raw_fd_ostream pre(std::string(dumpDir) + "/" + m.getName().str() + ".pre.ll", ec);
         if (!ec) m.print(pre, nullptr);
         mpm.run(m, mam);
+        cajeta::xpu::applyStatedAlignments(m);
         llvm::raw_fd_ostream post(std::string(dumpDir) + "/" + m.getName().str() + ".post.ll", ec);
         if (!ec) m.print(post, nullptr);
         return;
     }
     mpm.run(m, mam);
+    // An `align:` statement, applied after the pipeline (kernel-load-alignment
+    // spec 3.1, 3.3).
+    cajeta::xpu::applyStatedAlignments(m);
 }
 
 /// Runs codegen to Assembly or Object in memory; false if that type cannot be emitted.

@@ -971,10 +971,11 @@ public:
 
     llvm::Value* vectorLoad(llvm::IRBuilderBase& b, llvm::Module& m,
                             llvm::Value* base, llvm::Type* elemTy,
-                            unsigned lanes, llvm::Value* index) override {
+                            unsigned lanes, llvm::Value* index,
+                            uint64_t statedAlign) override {
         auto* vecTy = llvm::FixedVectorType::get(elemTy, lanes);
         llvm::Value* vec = llvm::UndefValue::get(vecTy);
-        index = laneIndexBase(b, base, index);
+        index = maskStatedIndex(b, m, elemTy, laneIndexBase(b, base, index), statedAlign);
         llvm::Type* idxTy = index->getType();
         for (unsigned j = 0; j < lanes; ++j) {
             llvm::Value* jIdx = b.CreateAdd(
@@ -988,10 +989,26 @@ public:
         return vec;
     }
 
+    // An `align: A` statement reaches Mesa the one way it reads alignment:
+    // the index masked to a multiple of A's elements (the fork's backend
+    // writes no SPIR-V `Aligned` operand). A broken promise therefore reads
+    // the aligned-down elements in a release build, where the other backends
+    // read the right bytes slowly (kernel-load-alignment spec 4.2).
+    static llvm::Value* maskStatedIndex(llvm::IRBuilderBase& b, llvm::Module& m,
+                                        llvm::Type* elemTy, llvm::Value* index,
+                                        uint64_t statedAlign) {
+        const uint64_t elemBytes =
+            m.getDataLayout().getTypeStoreSize(elemTy).getFixedValue();
+        if (elemBytes == 0 || statedAlign <= elemBytes) return index;
+        const uint64_t k = statedAlign / elemBytes;
+        return b.CreateAnd(index, llvm::ConstantInt::get(index->getType(), ~(k - 1)),
+                           "idx.stated");
+    }
+
     void vectorStore(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* base,
                      llvm::Type* elemTy, unsigned lanes, llvm::Value* index,
-                     llvm::Value* value) override {
-        index = laneIndexBase(b, base, index);
+                     llvm::Value* value, uint64_t statedAlign) override {
+        index = maskStatedIndex(b, m, elemTy, laneIndexBase(b, base, index), statedAlign);
         llvm::Type* idxTy = index->getType();
         for (unsigned j = 0; j < lanes; ++j) {
             llvm::Value* jIdx = b.CreateAdd(

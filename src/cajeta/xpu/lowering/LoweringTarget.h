@@ -282,13 +282,22 @@ namespace xpu {
 
         // Kernel-aware vectorized load/store over `lanes` contiguous elements
         // (`index` i64). Default: bufferElementPtr + a packed vector op.
+        // `statedAlign` is the bytes an `align:` statement promises for the
+        // access (0: none; kernel-load-alignment spec 3.1); a target that
+        // honorsStatedAlignment emits at least that.
         virtual llvm::Value* vectorLoad(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* base,
-            llvm::Type* elemTy, unsigned lanes, llvm::Value* index);
+            llvm::Type* elemTy, unsigned lanes, llvm::Value* index,
+            uint64_t statedAlign = 0);
         virtual void vectorStore(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* base,
             llvm::Type* elemTy, unsigned lanes, llvm::Value* index,
-            llvm::Value* value);
+            llvm::Value* value, uint64_t statedAlign = 0);
+        // Whether an `align:` statement reaches this target's loads. The cpu
+        // backend accepts the statement and ignores it (spec 1.4): an aligned
+        // x86 vector load of a misaligned address faults where the unaligned
+        // one it emits today does not.
+        virtual bool honorsStatedAlignment() const { return true; }
 
         // Sample 2-D texture `texHandle` at normalized (u, v) through
         // `samplerHandle` at explicit mip `lod`. Default: unsupported (XPU-N01).

@@ -37,6 +37,7 @@ namespace {
 class CpuTarget : public LoweringTarget {
 public:
     const char* name() const override { return "cpu"; }
+    bool honorsStatedAlignment() const override { return false; }
 
     // A CPU cooperative wave is a SIMD vector of i32 lanes: the per-block
     // work-item loop, vectorized to waveW lanes. The cooperative-matrix kernels

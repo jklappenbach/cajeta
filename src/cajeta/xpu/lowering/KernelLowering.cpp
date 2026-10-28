@@ -4,6 +4,7 @@
 #include "../reference/KernelInterpreter.h"
 #include "KernelLowering.h"
 #include "LoweringTarget.h"
+#include "AlignmentProof.h"
 #include "WorkgroupUniformity.h"
 
 #include "../../method/Method.h"
@@ -3435,18 +3436,56 @@ private:
                         v, llvm::Type::getInt64Ty(ctx), exprSigned(e));
                 return v;
             };
+            // `align: A` (kernel-load-alignment spec 3): a trailing labelled
+            // argument, a constant power of two from 1 to 16 no wider than
+            // the access. Any other label, or a bad value, fails the kernel
+            // naming the call and its line.
+            const std::string where = name + " at line "
+                + std::to_string(mc->getSourceLine());
+            size_t positional = params.size();
+            const ExpressionPtr* alignExpr = nullptr;
+            for (size_t pi = 0; pi < params.size(); ++pi) {
+                std::string lab = params[pi].label;
+                while (!lab.empty() && (lab.back() == ':' || lab.back() == ' ')) lab.pop_back();
+                if (lab.empty()) continue;
+                if (lab != "align" || pi + 1 != params.size())
+                    unsupported(where + ": the only label a " + name
+                                + " takes is a trailing `align:`, not `" + lab + ":`");
+                alignExpr = &params[pi].expression;
+                positional = pi;
+            }
+            auto statedAlignment = [&](uint64_t accessBytes) -> uint64_t {
+                if (!alignExpr) return 0;
+                llvm::Value* av = lowerExpr(*alignExpr);
+                auto* ci = llvm::dyn_cast<llvm::ConstantInt>(av);
+                if (!ci)
+                    unsupported(where + ": `align:` must be a constant, the bytes "
+                                "the index is promised to be a multiple of");
+                const uint64_t a = ci->getZExtValue();
+                if (a == 0 || a > 16 || (a & (a - 1)) != 0)
+                    unsupported(where + ": `align: " + std::to_string(a)
+                                + "` is not a power of two from 1 to 16");
+                if (a > accessBytes)
+                    unsupported(where + ": `align: " + std::to_string(a)
+                                + "` is wider than the " + std::to_string(accessBytes)
+                                + "-byte access, which needs no more");
+                return a;
+            };
+            const uint64_t elemBytes =
+                mod.getDataLayout().getTypeStoreSize(elemTy).getFixedValue();
             if (name == "vload") {
                 const auto& targs = mc->getExplicitMethodTypeArgs();
                 if (targs.size() != 1)
                     unsupported("vload<N> requires one const lane-count arg");
                 auto cN = std::dynamic_pointer_cast<CajetaConstantType>(targs[0]);
                 if (!cN) unsupported("vload<N>: N must be an integer constant");
-                if (params.size() != 1) unsupported("vload<N> expects (index)");
+                if (positional != 1) unsupported("vload<N> expects (index)");
+                const unsigned lanes = (unsigned) cN->getValue();
+                const uint64_t stated = statedAlignment(elemBytes * lanes);
                 llvm::Value* idx = maybeSwizzle(base, toI64(params[0].expression));
-                return target.vectorLoad(builder, mod, base, elemTy,
-                                         (unsigned) cN->getValue(), idx);
+                return target.vectorLoad(builder, mod, base, elemTy, lanes, idx, stated);
             }
-            if (params.size() != 2)
+            if (positional != 2)
                 unsupported("vstore expects (index, value)");
             llvm::Value* idx = maybeSwizzle(base, toI64(params[0].expression));
             llvm::Value* val = lowerExpr(params[1].expression);
@@ -3454,7 +3493,8 @@ private:
                 unsupported("vstore value must be a Vector<T,N>");
             unsigned lanes = llvm::cast<llvm::FixedVectorType>(
                 val->getType())->getNumElements();
-            target.vectorStore(builder, mod, base, elemTy, lanes, idx, val);
+            const uint64_t stated = statedAlignment(elemBytes * lanes);
+            target.vectorStore(builder, mod, base, elemTy, lanes, idx, val, stated);
             return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
         }
 
@@ -7968,7 +8008,8 @@ llvm::Value* LoweringTarget::bufferElementPtr(llvm::IRBuilderBase& b,
 
 llvm::Value* LoweringTarget::vectorLoad(llvm::IRBuilderBase& b, llvm::Module& m,
                                         llvm::Value* base, llvm::Type* elemTy,
-                                        unsigned lanes, llvm::Value* index) {
+                                        unsigned lanes, llvm::Value* index,
+                                        uint64_t statedAlign) {
     // Packed contiguous load of `lanes` elements from element `index`, through
     // the same per-backend addressing seam as a scalar subscript. The base is
     // element-aligned. Vulkan overrides to split for the 4-component cap.
@@ -7976,18 +8017,25 @@ llvm::Value* LoweringTarget::vectorLoad(llvm::IRBuilderBase& b, llvm::Module& m,
     auto* vecTy = llvm::FixedVectorType::get(elemTy, lanes);
     auto* ld = b.CreateLoad(vecTy, ptr, "vload");
     ld->setAlignment(m.getDataLayout().getABITypeAlign(elemTy));
+    if (honorsStatedAlignment())
+        cajeta::xpu::stateAlignment(
+            b, ld, statedAlign, m.getDataLayout().getTypeStoreSize(vecTy).getFixedValue());
     return ld;
 }
 
 void LoweringTarget::vectorStore(llvm::IRBuilderBase& b, llvm::Module& m,
                                  llvm::Value* base, llvm::Type* elemTy,
                                  unsigned /*lanes*/, llvm::Value* index,
-                                 llvm::Value* value) {
+                                 llvm::Value* value, uint64_t statedAlign) {
     // Symmetric packed store of a `<N x T>` value to `lanes` contiguous elements
     // from element `index`. N is implicit in `value`'s vector type.
     llvm::Value* ptr = bufferElementPtr(b, m, base, elemTy, index);
     auto* st = b.CreateStore(value, ptr);
     st->setAlignment(m.getDataLayout().getABITypeAlign(elemTy));
+    if (honorsStatedAlignment())
+        cajeta::xpu::stateAlignment(
+            b, st, statedAlign,
+            m.getDataLayout().getTypeStoreSize(value->getType()).getFixedValue());
 }
 
 llvm::Value* LoweringTarget::bufferArrayElement(llvm::IRBuilderBase& b,
