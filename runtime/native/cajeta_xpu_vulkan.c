@@ -91,6 +91,7 @@ struct cajeta_vk {
     uint32_t minSubgroupSize;
     uint32_t maxSubgroupSize;
     uint32_t defaultSubgroupSize;    // 0 when the device did not say
+    uint64_t minStorageOffsetAlign;  // limits.minStorageBufferOffsetAlignment, 0 unknown
     // Deferred batch submission (v2 launch path).
     PFN_vkCreateFence vkCreateFence;
     PFN_vkWaitForFences vkWaitForFences;
@@ -571,7 +572,11 @@ static int cajeta_xpu_vulkan_init_locked(void) {
             (PFN_vkGetPhysicalDeviceProperties) g_xpu_vk.getInstanceProcAddr(
                 g_xpu_vk.instance, "vkGetPhysicalDeviceProperties");
         VkPhysicalDeviceProperties pp;
-        if (gp) { gp(g_xpu_vk.phys, &pp); devApi = pp.apiVersion; }
+        if (gp) {
+            gp(g_xpu_vk.phys, &pp);
+            devApi = pp.apiVersion;
+            g_xpu_vk.minStorageOffsetAlign = pp.limits.minStorageBufferOffsetAlignment;
+        }
     }
 #if defined(VK_VERSION_1_2)
     if (getFeatures2 && devApi >= VK_API_VERSION_1_2) {

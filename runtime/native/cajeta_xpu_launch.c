@@ -927,6 +927,37 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
                 g_xpu_vk.sizeCtlFeature ? "" : " with no size control");
         return;
     }
+    // A view is bound as its buffer's descriptor offset, which the device
+    // allows only at multiples of minStorageBufferOffsetAlignment. One
+    // anywhere else is invalid usage a driver may round down, so the launch
+    // is refused naming the argument (kernel-load-alignment spec 5.1, 5.2).
+    {
+        const uint64_t a = g_xpu_vk.minStorageOffsetAlign;
+        for (int i = 0; a > 1 && i < n; ++i) {
+            int64_t handles[1 + 16];
+            int nh = 0;
+            if (kp->kind[i] == CAJETA_KP_BUFFER && argv[i]) {
+                handles[nh++] = *(int64_t*) argv[i];
+            } else if (kp->kind[i] == CAJETA_KP_BUFFER_ARRAY && argv[i]) {
+                const int64_t* arr = (const int64_t*) argv[i];
+                for (int64_t k = 0; k < arr[0] && k < 16; ++k) handles[nh++] = arr[1 + k];
+            }
+            for (int h = 0; h < nh; ++h) {
+                struct cajeta_vk_buf* r = cajeta_xpu_vk_rec(handles[h]);
+                if (!r || r->view_offset % a == 0) continue;
+                cajeta_xpu_note_launch_refusal(kernelName, CAJ_XPU_VULKAN);
+                g_xpu_refusal_reason = 9;
+                g_xpu_refusal_detail[0] = i;
+                g_xpu_refusal_detail[1] = (int64_t) a;
+                g_xpu_refusal_detail[2] = (int64_t) r->view_offset;
+                fprintf(stderr, "cajeta.xpu: [xpu-launch-refused] %s: argument %d is a view "
+                        "at byte offset %llu, and this Vulkan device binds storage buffers "
+                        "only at multiples of %llu bytes\n", kernelName, i,
+                        (unsigned long long) r->view_offset, (unsigned long long) a);
+                return;
+            }
+        }
+    }
     int64_t bindings[64];
     uint8_t bkinds[64];                     // per-binding resource kind
     int64_t transient[64];                  // transient scalar view slots to free

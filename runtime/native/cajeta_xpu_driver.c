@@ -79,6 +79,7 @@ static void cajeta_xpu_note_align_fault(const char* name, int32_t backend,
 int32_t __cajeta_xpu_last_launch_failed(void) { return g_xpu_refusal_pending; }
 int32_t __cajeta_xpu_last_launch_backend(void) { return g_xpu_refusal_backend; }
 // Reason 8's detail: 0 the line, 1 the stated bytes, 2 the element index.
+// Reason 9's: 0 the argument, 1 the device's binding alignment, 2 the offset.
 int64_t __cajeta_xpu_last_launch_detail(int32_t which) {
     return which >= 0 && which < 3 ? g_xpu_refusal_detail[which] : 0;
 }

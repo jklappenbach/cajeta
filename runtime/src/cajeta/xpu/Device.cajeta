@@ -388,6 +388,14 @@ public final class Device {
                           + ": element index " + index + " is not a multiple of it";
             throw heap XpuLaunchException(#broke);
         }
+        if (reason == 9) {
+            int64 arg = Device.nativeLastLaunchDetail(0);
+            int64 align = Device.nativeLastLaunchDetail(1);
+            int64 offset = Device.nativeLastLaunchDetail(2);
+            why = "argument " + arg + " is a view at byte offset " + offset
+                + ", and this device binds storage buffers only at a multiple of "
+                + align + " bytes; slice it at a multiple of " + align;
+        }
         String msg #= "cajeta.xpu: launch refused for kernel '" + kernel
                     + "' on backend '" + backend
                     + "' (" + why + ")";

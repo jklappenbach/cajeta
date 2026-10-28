@@ -520,3 +520,71 @@ TEST(KernelAlignment, aViolatedStatementRaisesNamingTheCallOnHip) {
     CAJETA_SKIP_IF_NO_HIP();
     raisesOnDevice(cajeta::xpu::Backend::Amdgpu);
 }
+
+// ---------------------------------------------------------------------------
+// Views (kernel-load-alignment plan Unit 6, spec 5.1, 5.2). Vulkan binds a view
+// as its storage buffer's descriptor offset, which the device allows only at
+// multiples of minStorageBufferOffsetAlignment (16 on llvmpipe); a view
+// elsewhere is refused by name rather than bound as invalid usage.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+const char* kViewSource =
+    "package test;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
+    "import cajeta.xpu.XpuLaunchException;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void copy(KernelBuffer<int32> out, KernelBuffer<int8> x) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        out[(int64) i] = (int32) x[(int64) i];\n"
+    "    }\n"
+    "    /** 1 + 2/4/8 for the message naming the argument, the offset and the\n"
+    "     *  limit when the launch over a view at `off` threw; 100 + out[3]\n"
+    "     *  when it ran. */\n"
+    "    public static int32 run(int64 off) {\n"
+    "        int8[] h = heap int8[256];\n"
+    "        for (int32 j = 0; j < 256; ++j) { h[j] = (int8) (j & 63); }\n"
+    "        KernelBuffer<int8> x = heap KernelBuffer<int8>(256);\n"
+    "        x.upload(h);\n"
+    "        KernelBuffer<int8> v #= x.slice((uint64) off, (uint64) 64);\n"
+    "        KernelBuffer<int32> out = heap KernelBuffer<int32>(4);\n"
+    "        KernelStream s #= KernelStream.current();\n"
+    "        int32 r = 0;\n"
+    "        try {\n"
+    "            copy.launch(s, grid: [1], block: [4])(out, v);\n"
+    "            s.sync();\n"
+    "            int32[] o = heap int32[4];\n"
+    "            out.download(o);\n"
+    "            r = 100 + o[3];\n"
+    "        } catch (XpuLaunchException e) {\n"
+    "            String m = e.getMessage();\n"
+    "            System.stderr.println(m);\n"
+    "            r = 1;\n"
+    "            if (m.contains(\"argument 1\")) { r = r + 2; }\n"
+    "            if (m.contains(\"offset 4\")) { r = r + 4; }\n"
+    "            if (m.contains(\"multiple of 16\")) { r = r + 8; }\n"
+    "        }\n"
+    "        return r;\n"
+    "    }\n"
+    "}\n";
+
+}  // namespace
+
+// 6.1.1 (spec 5.1, 5.2), Vulkan: a view at an offset the device cannot bind is
+// refused naming the argument; one at an allowed offset runs.
+TEST(KernelAlignment, aVulkanViewAtAnUnbindableOffsetIsRefusedByName) {
+    CAJETA_SKIP_IF_NO_VULKAN();
+    cajeta_test::CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = cajeta_test::CajetaJit::compile(kViewSource, "test.M", o);
+    ASSERT_NE(jit, nullptr);
+    auto run = jit->lookup<int32_t (*)(int64_t)>("run");
+    ASSERT_NE(run, nullptr);
+    EXPECT_EQ(run(16), 100 + (19 & 63));   // allowed: element 3 of the view is byte 19
+    EXPECT_EQ(run(4), 1 + 2 + 4 + 8);
+    EXPECT_EQ(run(32), 100 + (35 & 63));   // and the next allowed one still runs
+}
