@@ -183,4 +183,8 @@ uint64_t provenAlignment(llvm::Value* addr, const llvm::Argument* base,
     return uint64_t(1) << std::min(tz, cap);
 }
 
+unsigned provenIndexTrailingZeros(llvm::Value* index, const llvm::DataLayout& dl) {
+    return TrailingZeroProof(nullptr, 0, dl).of(index);
+}
+
 } // namespace cajeta::xpu

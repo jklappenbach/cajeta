@@ -1,6 +1,7 @@
 // SPIR-V backend — see header.
 
 #include "SpirvBackend.h"
+#include "../lowering/AlignmentProof.h"
 #include "cajeta/xpu/core/CodegenGuard.h"
 
 #include "llvm/ADT/SmallString.h"
@@ -14,6 +15,7 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/IntrinsicsSPIRV.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Transforms/Scalar/EarlyCSE.h"
 #include "llvm/Transforms/Scalar/StructurizeCFG.h"
 #include "llvm/Transforms/Utils/FixIrreducible.h"
@@ -28,6 +30,7 @@
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/TargetParser/Triple.h"
 
+#include <algorithm>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -92,6 +95,85 @@ void expandRoundHalfAway(llvm::Module& m) {
         llvm::Value* half = b.CreateFCmpOGE(d, llvm::ConstantFP::get(ty, 0.5));
         ii->replaceAllUsesWith(b.CreateSelect(half, b.CreateFAdd(t, step), t));
         ii->eraseFromParent();
+    }
+}
+
+// A buffer element index, now promoted, takes the alignment the shared proof
+// gives its lane group as an explicit `& -k` (k elements, at most 16 bytes):
+// Mesa reads the mask, not the arithmetic, so a proven int8 vload<16> stops
+// being realigned with v_alignbyte/v_perm (kernel-load-alignment Unit 3, spec
+// 2.1). The lowering reads lane j of a vector access at
+// getpointer(handle, trunc(X + j)); X, the group's first index, is what is
+// proven and masked, once per X. Masking a value the proof shows is a
+// multiple of k changes nothing it computes. An index nothing proves passes
+// through unchanged (2.2). This runs after the pipeline, on the IR every
+// earlier pass (the virtual-wave rewrite included) has finished with.
+// CAJETA_XPU_VK_ALIGN_MASK=0 is the A/B arm.
+void maskProvenLaneIndices(llvm::Module& m) {
+    const char* off = std::getenv("CAJETA_XPU_VK_ALIGN_MASK");
+    if (off && std::strcmp(off, "0") == 0) return;
+    const llvm::DataLayout& dl = m.getDataLayout();
+    for (llvm::Function& f : m) {
+        if (f.isDeclaration()) continue;
+        llvm::DenseMap<llvm::Value*, llvm::Value*> masked;   // X -> X & -k (or X)
+        llvm::SmallVector<std::pair<llvm::Instruction*, unsigned>, 32> sites;
+        for (llvm::BasicBlock& bb : f)
+            for (llvm::Instruction& inst : bb) {
+                auto* ii = llvm::dyn_cast<llvm::IntrinsicInst>(&inst);
+                if (!ii || ii->getIntrinsicID() != llvm::Intrinsic::spv_resource_getpointer)
+                    continue;
+                // Element bytes from the access through the pointer.
+                uint64_t elemBytes = 0;
+                for (llvm::User* u : ii->users()) {
+                    llvm::Type* t = nullptr;
+                    if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(u)) t = ld->getType();
+                    else if (auto* st = llvm::dyn_cast<llvm::StoreInst>(u))
+                        t = st->getValueOperand()->getType();
+                    if (!t || !t->isSized()) { elemBytes = 0; break; }
+                    const uint64_t sz = dl.getTypeStoreSize(t).getFixedValue();
+                    if (elemBytes && elemBytes != sz) { elemBytes = 0; break; }
+                    elemBytes = sz;
+                }
+                if (!elemBytes || elemBytes >= cajeta::xpu::kMaxProvenAlignment) continue;
+                // Peel trunc(X + j) down to the operand that holds X.
+                llvm::Instruction* holder = ii;
+                unsigned opNo = 1;
+                llvm::Value* v = ii->getArgOperand(1);
+                if (auto* tr = llvm::dyn_cast<llvm::TruncInst>(v)) {
+                    holder = tr; opNo = 0; v = tr->getOperand(0);
+                }
+                if (auto* add = llvm::dyn_cast<llvm::BinaryOperator>(v);
+                    add && add->getOpcode() == llvm::Instruction::Add
+                    && llvm::isa<llvm::ConstantInt>(add->getOperand(1))) {
+                    holder = add; opNo = 0;
+                }
+                sites.push_back({holder, opNo});
+                const unsigned capTz = llvm::Log2_64(cajeta::xpu::kMaxProvenAlignment / elemBytes);
+                llvm::Value* x = holder->getOperand(opNo);
+                if (masked.count(x) || llvm::isa<llvm::Constant>(x)) continue;
+                const unsigned tz = std::min(cajeta::xpu::provenIndexTrailingZeros(x, dl), capTz);
+                llvm::Value* out = x;
+                if (tz > 0) {
+                    llvm::IRBuilder<> b(m.getContext());
+                    if (auto* xi = llvm::dyn_cast<llvm::Instruction>(x)) {
+                        if (llvm::isa<llvm::PHINode>(xi))
+                            b.SetInsertPoint(xi->getParent()->getFirstNonPHIIt());
+                        else
+                            b.SetInsertPoint(std::next(xi->getIterator()));
+                    } else {
+                        b.SetInsertPoint(f.getEntryBlock().getFirstInsertionPt());
+                    }
+                    llvm::Type* ty = x->getType();
+                    out = b.CreateAnd(x, llvm::ConstantInt::get(
+                        ty, ~((uint64_t(1) << tz) - 1), /*isSigned=*/false), "lane.aligned");
+                }
+                masked[x] = out;
+            }
+        for (auto& [holder, opNo] : sites) {
+            auto it = masked.find(holder->getOperand(opNo));
+            if (it != masked.end() && it->second != holder->getOperand(opNo))
+                holder->setOperand(opNo, it->second);
+        }
     }
 }
 
@@ -176,6 +258,7 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
         if (failure != nullptr) *failure = reason;
         return false;
     }
+    maskProvenLaneIndices(m);
     defineUndefCooperativeMatrices(m);
 
     // FP narrowing canonicalizes fptrunc(op(fpext a, fpext b)) into direct bfloat

@@ -1188,3 +1188,68 @@ TEST(XpuVulkanEmitTests, aSharedSliceFactorKeepsItsPerColumnIndex) {
     else
         GTEST_SUCCEED() << "spirv-val not installed; skipped binary validation";
 }
+
+namespace {
+const char* kAlignSource =
+    "package test;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void aligned(KernelBuffer<int32> out,\n"
+    "            KernelBuffer<int8> w, KernelBuffer<int8> x, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            Vector<int32,4> zv = heap Vector<int32,4>(0, 0, 0, 0);\n"
+    "            Vector<uint8,16> wv = w.vload<16>((int64) i * 16L).asUnsigned();\n"
+    "            Vector<int8,16> xv = x.vload<16>((int64) i * 16L);\n"
+    "            Vector<int32,4> t = wv.dotAccum(xv, zv);\n"
+    "            out[(int64) i] = t[0] + t[1] + t[2] + t[3];\n"
+    "        }\n"
+    "    }\n"
+    "    @Kernel\n"
+    "    public static void loose(KernelBuffer<int32> out,\n"
+    "            KernelBuffer<int8> w, KernelBuffer<int8> x, uint32 n, uint32 off) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            Vector<int32,4> zv = heap Vector<int32,4>(0, 0, 0, 0);\n"
+    "            Vector<uint8,16> wv = w.vload<16>((int64) (i + off)).asUnsigned();\n"
+    "            Vector<int8,16> xv = x.vload<16>((int64) (i + off));\n"
+    "            Vector<int32,4> t = wv.dotAccum(xv, zv);\n"
+    "            out[(int64) i] = t[0] + t[1] + t[2] + t[3];\n"
+    "        }\n"
+    "    }\n"
+    "}\n";
+
+std::string vulkanTextOf(const char* kernel) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kAlignSource, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], kernel);
+    if (!k) return "";
+    auto tm = createSpirvTargetMachine("vulkan1.3");
+    llvm::LLVMContext ctx;
+    llvm::Module m(std::string("xpu_align_") + kernel, ctx);
+    configureDeviceModule(m, *tm);
+    lowerKernel(k, m);
+    return emitSpirvText(m, *tm);
+}
+}  // namespace
+
+// kernel-load-alignment 3.1.1 (Q5, the index-mask form): a proven-aligned
+// int8 vload<16> carries its alignment as an `& -16` on the lane-group index,
+// the form Mesa reads (the llm's hand masks proved it: Q2_K 4-seq 146 -> 226
+// tok/s on RADV). Without it every int8 vload is realigned with v_alignbyte.
+TEST(XpuVulkanEmitTests, aProvenAlignedVloadCarriesItsAlignmentAsAnIndexMask) {
+    std::string text = vulkanTextOf("aligned");
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("OpBitwiseAnd"), std::string::npos)
+        << "no index mask on a provably 16-aligned vload\n" << text;
+}
+
+// Does not fire: nothing proves `i + off` aligned, so no mask is invented.
+TEST(XpuVulkanEmitTests, anUnprovableVloadIndexIsNotMasked) {
+    std::string text = vulkanTextOf("loose");
+    ASSERT_FALSE(text.empty());
+    EXPECT_EQ(text.find("OpBitwiseAnd"), std::string::npos)
+        << "a mask was put on an index nothing proves aligned\n" << text;
+}

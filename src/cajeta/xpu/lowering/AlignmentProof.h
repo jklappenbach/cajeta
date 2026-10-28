@@ -28,4 +28,10 @@ namespace cajeta::xpu {
     uint64_t provenAlignment(llvm::Value* addr, const llvm::Argument* base,
                              uint64_t baseAlign, const llvm::DataLayout& dl);
 
+    /// The low bits of an integer `index` that are provably zero, by the same
+    /// algebra, with no buffer base involved: the element alignment of an
+    /// index into a descriptor-bound buffer (Vulkan), whose base the driver
+    /// aligns. Not capped; 0 when nothing is proven.
+    unsigned provenIndexTrailingZeros(llvm::Value* index, const llvm::DataLayout& dl);
+
 }
