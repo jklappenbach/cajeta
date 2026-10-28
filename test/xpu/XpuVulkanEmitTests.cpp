@@ -1098,3 +1098,93 @@ TEST(XpuVulkanEmitTests, aConditionallyLoadedCooperativeMatrixMergesWithItsOwnTy
         GTEST_SUCCEED() << "spirv-val not installed; skipped binary validation";
     }
 }
+
+namespace {
+// Every OpAccessChain / OpInBoundsAccessChain that carries no index. A GEP the
+// backend lowered from a derived Workgroup pointer lost its index this way.
+std::string indexFreeAccessChains(const std::string& text) {
+    std::istringstream in(text);
+    std::string line, bad;
+    while (std::getline(in, line)) {
+        std::istringstream ls(line);
+        std::vector<std::string> tok;
+        for (std::string t; ls >> t;) tok.push_back(t);
+        if (tok.size() == 5 && tok[1] == "=" &&
+            (tok[2] == "OpAccessChain" || tok[2] == "OpInBoundsAccessChain"))
+            bad += line + "\n";
+    }
+    return bad;
+}
+}  // namespace
+
+// The software tile reads an epilogue factor at slice[c * stride] from a Shared
+// pointer already offset to the slice's base. The backend dropped that second
+// index, so every column read column 0's scale and every row row 0's factor
+// (cajeta-llm's Mw8 deq GEMMs on Vulkan, 15.2.19.6.3).
+TEST(XpuVulkanEmitTests, aSharedSliceFactorKeepsItsPerColumnIndex) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.Barrier;\n"
+        "import cajeta.xpu.CooperativeMatrix;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.Shared;\n"
+        "import cajeta.xpu.WaveVector;\n"
+        "public class M {\n"
+        "    @Kernel @Occupancy(maxThreads = 256)\n"
+        "    public static void sliced(KernelBuffer<float32> out, KernelBuffer<int8> a,\n"
+        "            KernelBuffer<int8> b, KernelBuffer<int32> sc, KernelBuffer<float32> dv) {\n"
+        "        Shared<int32> scS = shared int32[256];\n"
+        "        Shared<float32> dS = shared float32[256];\n"
+        "        uint32 tid = KernelThread.x();\n"
+        "        uint32 wid = tid / 32;\n"
+        "        scS[tid] = sc[tid];\n"
+        "        dS[tid] = dv[tid];\n"
+        "        Barrier.workgroup();\n"
+        "        CooperativeMatrix<int8,16,16,0> ma;\n"
+        "        CooperativeMatrix<int8,16,16,1> mb;\n"
+        "        CooperativeMatrix<int32,16,16,2> mc;\n"
+        "        CooperativeMatrix<int32,16,16,2> iacc;\n"
+        "        CooperativeMatrix<float32,16,16,2> facc;\n"
+        "        ma.load(a, wid * 256, 0, 16);\n"
+        "        mb.load(b, wid * 256, 1, 16);\n"
+        "        iacc.splat(0);\n"
+        "        facc.splat(0.0f);\n"
+        "        mc.splat(0);\n"
+        "        mc.mma(ma, mb);\n"
+        "        WaveVector<int32, 16> sv = WaveVector.ofSlice(scS, wid * 32, 2);\n"
+        "        mc.scaledAccumI32(iacc, sv);\n"
+        "        WaveVector<float32, 16> dw = WaveVector.ofSlice(dS, wid * 32, 1);\n"
+        "        iacc.scaledAccumInto(facc, dS[wid * 32 + 16], dw);\n"
+        "        facc.store(out, wid * 256, 0, 16);\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "sliced");
+    ASSERT_NE(k, nullptr);
+
+    auto tmText = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmText, nullptr);
+    llvm::LLVMContext textCtx;
+    llvm::Module textModule("xpu_shared_slice_text", textCtx);
+    configureDeviceModule(textModule, *tmText);
+    lowerKernel(k, textModule);
+    std::string text = emitSpirvText(textModule, *tmText);
+    ASSERT_FALSE(text.empty());
+    std::string bad = indexFreeAccessChains(text);
+    EXPECT_TRUE(bad.empty()) << "access chains that lost their index:\n" << bad << text;
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_shared_slice_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    lowerKernel(k, binModule);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv))
+        EXPECT_TRUE(*valid) << "spirv-val rejected the shared-slice module";
+    else
+        GTEST_SUCCEED() << "spirv-val not installed; skipped binary validation";
+}

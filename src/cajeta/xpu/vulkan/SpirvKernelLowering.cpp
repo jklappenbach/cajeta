@@ -934,12 +934,25 @@ public:
     }
 
     // Descriptor handles route through getpointer; shared-mem globals keep the GEP.
+    // A base already offset by an element GEP is folded onto its root with one
+    // summed index: the SPIR-V backend drops the index of a GEP on such a pointer.
     llvm::Value* bufferElementPtr(llvm::IRBuilderBase& b, llvm::Module& m,
                                   llvm::Value* base, llvm::Type* elemTy,
                                   llvm::Value* index) override {
         if (auto* tet = llvm::dyn_cast<llvm::TargetExtType>(base->getType())) {
             if (tet->getName() == "spirv.VulkanBuffer")
                 return getElementPtr(b, m, base, index);
+        }
+        while (auto* gep = llvm::dyn_cast<llvm::GEPOperator>(base)) {
+            if (gep->getNumIndices() != 1 || gep->getSourceElementType() != elemTy)
+                break;
+            llvm::Value* inner = gep->getOperand(1);
+            llvm::Type* wide = inner->getType()->getIntegerBitWidth()
+                    > index->getType()->getIntegerBitWidth()
+                ? inner->getType() : index->getType();
+            index = b.CreateAdd(b.CreateSExtOrTrunc(inner, wide),
+                                b.CreateSExtOrTrunc(index, wide), "idx.fold");
+            base = gep->getPointerOperand();
         }
         return b.CreateGEP(elemTy, base, {index}, "idx");
     }
