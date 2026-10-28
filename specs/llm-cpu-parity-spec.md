@@ -1,6 +1,6 @@
 # cajeta-llm on the cpu backend at llama.cpp's speed
 
-Status: **draft** 2026-10-28. Origin: cajeta-llm plan 15.2.14.3 and 15.2.14.4.
+Status: **approved** 2026-10-28 (Julian). Origin: cajeta-llm plan 15.2.14.3 and 15.2.14.4.
 Direction chosen by Julian 2026-10-28: threaded host int8 kernels on q8_K
 activations, as llama.cpp's CPU backend does.
 
@@ -124,7 +124,18 @@ chunk:
 - **7.4** When peak host memory is measured at ctx 4096, it is at most 1.25 of
   llama.cpp's CPU peak.
 
-## 8. Open questions
+## 8. Decisions
+
+Settled with the approval, 2026-10-28:
+
+- **Q1** The pool is chosen by measuring per-call overhead against 4.2: the cpu
+  XPU backend's native worker pool through a host entry, or a new pool in
+  cajeta-llm on `spawn`.
+- **Q2** The q8_K pack keeps its layout unless a measurement shows a host-side
+  layout pays.
+- **Q3** The kernels live in cajeta-llm's `Quant` for now.
+
+The questions as filed:
 
 - **Q1** Pool: reuse the cpu XPU backend's native worker pool through a host
   entry, or a new pool in cajeta-llm on `spawn`? The plan decides by
