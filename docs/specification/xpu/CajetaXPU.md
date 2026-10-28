@@ -113,6 +113,39 @@ answers for them.
 | `CooperativeMatrix<T, 16, 16, Use>`, `load`, `store`, `mma`, `fromWords`, `splat`, `TileOps.scaledAccumI32`, `rank1Accum`, `scaledAccumInto(2)` | the matrix fragments and their epilogues (§3.3) |
 | `Tile<T, Rows, Cols>`, `Group.mac` | the role-free fragment form; roles inferred from position |
 
+**Load alignment.** A `vload<N>` or `vstore` of N elements wants one wide
+access, and a device takes one only at an address aligned to its width. The
+compiler proves the alignment from the index's own arithmetic once the kernel
+is optimized: `row * blocks * 144 + 16 + 32 * g` is a multiple of 16 by its
+constants and needs nothing from the author. Where the proof cannot see, for
+an offset that arrives as a parameter, state it:
+
+```cajeta
+Vector<int8, 16> v = x.vload<16>(o, align: 16);
+out.vstore(so, acc, align: 16);
+```
+
+`align:` is a constant power of two from 1 to 16, no wider than the access,
+and the access is emitted at the larger of the proven and the stated
+alignment. A bad value fails the kernel naming the call and its line, and
+`align:` outside a kernel is the kernel-only error. The cpu backend and the
+reference interpreter accept a statement and read the same elements.
+
+A statement is a promise about the index. A build with `--ub-traps=on` (every
+debug build) tests each one the proof does not confirm: a violation is
+recorded, the access proceeds at the index rounded down to the statement, and
+the launch throws `XpuLaunchException` naming the kernel, the line and the
+index (cpu, CUDA and HIP; Vulkan has no test yet). A statement the proof
+confirms costs nothing. A build without ubTraps does not test, and a broken
+promise then behaves as the device does: a misaligned-address fault on CUDA, a
+correct unaligned read on AMDGPU, and the elements at the index rounded down
+on Vulkan.
+
+A view (`slice`, `wordView`, `halfView`) starts at its offset, and the launch
+holds its base to what the kernel needs: on CUDA to the widest access proven
+or stated over it, on Vulkan to the device's storage-buffer binding alignment
+(`minStorageBufferOffsetAlignment`, 4 bytes on RADV and 16 on llvmpipe).
+
 ### 2.4 Launch, streams, events
 
 ```cajeta
@@ -122,11 +155,12 @@ k.launch(stream, grid: [workgroups], block: [threads], sharedBytes: [n])(args);
 `grid` counts workgroups. `KernelStream.current()` is the per-thread default
 stream; `create()` a real stream; `sync()`, `waitFor(Event)` and `destroy()`
 the rest. After every launch the compiler emits `Device.checkLaunch()`, and a
-refused launch throws `XpuLaunchException` with one of seven reasons: no code
+refused launch throws `XpuLaunchException` with one of its reasons: no code
 registered, a misaligned buffer base, the scalar twin of a wave kernel would
 have run, an unsupported declared wave width, a block that differs from the
-one the kernel was pinned to, a missed deadline, too many threads or too much
-shared memory.
+one the kernel was pinned to, a missed deadline, too many threads, too much
+shared memory, a broken `align:` statement in a checked build, or a Vulkan
+view at an offset the device cannot bind.
 
 When every launch site of a kernel passes the same constant block, the
 compiler pins it and budgets registers for it (§3.4). A `KernelSubmission` in
@@ -140,7 +174,8 @@ stream's launches and flushes them at the next point where a result becomes
 observable. The first sight of a launch sequence runs direct; a sequence seen
 three times is recorded as a graph and replayed with its changed grids and
 arguments patched into the nodes. A launch carrying a texture, an image, a
-buffer array, or more than 48 arguments or 384 bytes of them goes direct.
+buffer array, a checked `align:` statement, or more than 48 arguments or 384
+bytes of them goes direct.
 `CAJETA_XPU_DEFER=0` never defers, `all` defers every stream from its first
 launch, unset leaves it to `setDeferred`. Deferral is a no-op on the other
 backends, and it is disabled while a profiler's device sink is live, because
