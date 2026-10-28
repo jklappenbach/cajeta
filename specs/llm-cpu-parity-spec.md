@@ -89,8 +89,10 @@ chunk:
   threads that persists across calls. No thread is created per call.
 - **4.2** When the pool hands out one mat-vec, the overhead per call is at most
   10 µs on proton, so the ~225 mat-vecs of a decode step cost under 2.5 ms.
-- **4.3** When the thread count is not set, it is the number of physical cores.
-  It can be set at engine start.
+- **4.3** When the thread count is not set, it is the number of hardware
+  threads (32 on proton). It can be set at engine start. Changed 2026-10-28
+  (Julian) from physical cores: on proton each CCD reads at most ~58 GB/s,
+  and 32 threads reach the ceiling (Q4_K 122 GB/s) where 16 do not (88-102).
 - **4.4** When the cpu XPU backend's own kernels run in the same step, the two
   pools do not oversubscribe the cores.
 - **4.5** When one mat-vec's output is split, the result is the same bit for
@@ -127,6 +129,10 @@ chunk:
 ## 8. Decisions
 
 Settled with the approval, 2026-10-28:
+
+- **Q4** (2026-10-28, from Unit 2's measurement) The default thread count is
+  every hardware thread (4.3). Not chosen: keep physical cores and close the
+  gap in the kernels first; 32 now with 16-thread tuning filed for later.
 
 - **Q1** The pool is chosen by measuring per-call overhead against 4.2: the cpu
   XPU backend's native worker pool through a host entry, or a new pool in
