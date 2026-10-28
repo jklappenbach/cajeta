@@ -45,6 +45,7 @@
 #include <random>
 #include <map>
 #include <sstream>
+#include <set>
 #include <string>
 #include <vector>
 #include "KernelLoweringProbe.h"
@@ -1208,6 +1209,18 @@ const char* kAlignSource =
     "        }\n"
     "    }\n"
     "    @Kernel\n"
+    "    public static void offset(KernelBuffer<int32> out,\n"
+    "            KernelBuffer<int8> w, KernelBuffer<int8> x, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            Vector<int32,4> zv = heap Vector<int32,4>(0, 0, 0, 0);\n"
+    "            Vector<uint8,16> wv = w.vload<16>((int64) (i * (uint32) 32) + 16L).asUnsigned();\n"
+    "            Vector<int8,16> xv = x.vload<16>((int64) (i * (uint32) 32) + 16L);\n"
+    "            Vector<int32,4> t = wv.dotAccum(xv, zv);\n"
+    "            out[(int64) i] = t[0] + t[1] + t[2] + t[3];\n"
+    "        }\n"
+    "    }\n"
+    "    @Kernel\n"
     "    public static void loose(KernelBuffer<int32> out,\n"
     "            KernelBuffer<int8> w, KernelBuffer<int8> x, uint32 n, uint32 off) {\n"
     "        uint32 i = KernelThread.globalIdX();\n"
@@ -1244,6 +1257,60 @@ TEST(XpuVulkanEmitTests, aProvenAlignedVloadCarriesItsAlignmentAsAnIndexMask) {
     ASSERT_FALSE(text.empty());
     EXPECT_NE(text.find("OpBitwiseAnd"), std::string::npos)
         << "no index mask on a provably 16-aligned vload\n" << text;
+}
+
+// Every lane of a vload indexes from ONE masked base, lane 0 included. The
+// first cut masked lanes 1..15 at (X & -16) + j but left lane 0 on the bare X
+// when X itself ended in a constant add (`(int64) (i * 32) + 16`): Mesa could
+// not merge lane 0, and RADV read it as a byte plus a v_perm splice (Proton,
+// 2026-10-28: +22 perms in q4kQ8WavePfMatVecKernel, -0.8% Q4_K_M decode).
+TEST(XpuVulkanEmitTests, everyLaneOfAMaskedVloadIndexesFromTheSameMask) {
+    std::string text = vulkanTextOf("offset");
+    ASSERT_FALSE(text.empty());
+    // id -> its defining line's opcode and operands.
+    std::map<std::string, std::vector<std::string>> def;
+    std::map<std::string, std::vector<std::string>> chainsByBase;  // base -> index ids
+    std::istringstream in(text);
+    for (std::string line; std::getline(in, line);) {
+        std::istringstream ws(line);
+        std::vector<std::string> tok;
+        for (std::string t; ws >> t;) tok.push_back(t);
+        if (tok.size() < 3 || tok[1] != "=") continue;
+        std::vector<std::string> rest(tok.begin() + 2, tok.end());
+        def[tok[0]] = rest;
+        // %r = OpAccessChain %ptrTy %base %zero %index
+        if (rest[0] == "OpAccessChain" && rest.size() == 5)
+            chainsByBase[rest[2]].push_back(rest[4]);
+    }
+    auto through = [&](std::string id) {   // past an integer conversion
+        auto it = def.find(id);
+        if (it != def.end() && (it->second[0] == "OpUConvert" || it->second[0] == "OpSConvert"))
+            return it->second[2];
+        return id;
+    };
+    // The mask a lane index stands on: itself, or the left operand of `+ j`.
+    auto maskOf = [&](const std::string& index) -> std::string {
+        std::string v = through(index);
+        auto it = def.find(v);
+        if (it == def.end()) return "";
+        if (it->second[0] == "OpBitwiseAnd") return v;
+        if (it->second[0] == "OpIAdd") {
+            auto a = def.find(it->second[2]);
+            if (a != def.end() && a->second[0] == "OpBitwiseAnd") return it->second[2];
+        }
+        return "";
+    };
+    int groups = 0;
+    for (auto& [base, idx] : chainsByBase) {
+        if (idx.size() < 16) continue;   // the int8 buffers, 16 lanes each
+        ++groups;
+        std::set<std::string> masks;
+        for (auto& i : idx) masks.insert(maskOf(i));
+        EXPECT_EQ(masks.size(), 1u) << "buffer " << base << " lanes stand on "
+                                    << masks.size() << " bases\n" << text;
+        EXPECT_EQ(masks.count(""), 0u) << "buffer " << base << " has an unmasked lane\n" << text;
+    }
+    EXPECT_EQ(groups, 2) << text;
 }
 
 // Does not fire: nothing proves `i + off` aligned, so no mask is invented.

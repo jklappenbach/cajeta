@@ -4,6 +4,7 @@
 #include "../lowering/AlignmentProof.h"
 #include "cajeta/xpu/core/CodegenGuard.h"
 
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/Module.h"
@@ -117,6 +118,9 @@ void maskProvenLaneIndices(llvm::Module& m) {
         if (f.isDeclaration()) continue;
         llvm::DenseMap<llvm::Value*, llvm::Value*> masked;   // X -> X & -k (or X)
         llvm::SmallVector<std::pair<llvm::Instruction*, unsigned>, 32> sites;
+        // Each access: the pointer, its element bytes, and its index operand.
+        struct Access { llvm::IntrinsicInst* gp; uint64_t elemBytes; };
+        llvm::SmallVector<Access, 32> accesses;
         for (llvm::BasicBlock& bb : f)
             for (llvm::Instruction& inst : bb) {
                 auto* ii = llvm::dyn_cast<llvm::IntrinsicInst>(&inst);
@@ -135,18 +139,42 @@ void maskProvenLaneIndices(llvm::Module& m) {
                     elemBytes = sz;
                 }
                 if (!elemBytes || elemBytes >= cajeta::xpu::kMaxProvenAlignment) continue;
-                // Peel trunc(X + j) down to the operand that holds X.
-                llvm::Instruction* holder = ii;
-                unsigned opNo = 1;
-                llvm::Value* v = ii->getArgOperand(1);
+                accesses.push_back({ii, elemBytes});
+            }
+        auto peelTrunc = [](llvm::Value* v) {
+            if (auto* tr = llvm::dyn_cast<llvm::TruncInst>(v)) return tr->getOperand(0);
+            return v;
+        };
+        auto laneAdd = [](llvm::Value* v) -> llvm::BinaryOperator* {
+            auto* add = llvm::dyn_cast<llvm::BinaryOperator>(v);
+            if (add && add->getOpcode() == llvm::Instruction::Add
+                && llvm::isa<llvm::ConstantInt>(add->getOperand(1)))
+                return add;
+            return nullptr;
+        };
+        // The group bases: every X some lane reads as X + j. Lane 0 reads X
+        // itself, and X may end in a constant add of its own (`i * 32 + 16`);
+        // peeling that add would mask a different value than lanes 1..j stand
+        // on, and Mesa could not merge lane 0 with them (Proton, 2026-10-28).
+        llvm::SmallPtrSet<llvm::Value*, 32> bases;
+        for (const Access& a : accesses)
+            if (auto* add = laneAdd(peelTrunc(a.gp->getArgOperand(1))))
+                bases.insert(add->getOperand(0));
+        for (const Access& a : accesses) {
+            llvm::IntrinsicInst* ii = a.gp;
+            const uint64_t elemBytes = a.elemBytes;
+            // Peel trunc(X + j) down to the operand that holds X.
+            llvm::Instruction* holder = ii;
+            unsigned opNo = 1;
+            llvm::Value* v = ii->getArgOperand(1);
+            if (!bases.count(v)) {
                 if (auto* tr = llvm::dyn_cast<llvm::TruncInst>(v)) {
                     holder = tr; opNo = 0; v = tr->getOperand(0);
                 }
-                if (auto* add = llvm::dyn_cast<llvm::BinaryOperator>(v);
-                    add && add->getOpcode() == llvm::Instruction::Add
-                    && llvm::isa<llvm::ConstantInt>(add->getOperand(1))) {
-                    holder = add; opNo = 0;
-                }
+                if (!bases.count(v))
+                    if (auto* add = laneAdd(v)) { holder = add; opNo = 0; }
+            }
+            {
                 sites.push_back({holder, opNo});
                 const unsigned capTz = llvm::Log2_64(cajeta::xpu::kMaxProvenAlignment / elemBytes);
                 llvm::Value* x = holder->getOperand(opNo);
@@ -169,6 +197,7 @@ void maskProvenLaneIndices(llvm::Module& m) {
                 }
                 masked[x] = out;
             }
+        }
         for (auto& [holder, opNo] : sites) {
             auto it = masked.find(holder->getOperand(opNo));
             if (it != masked.end() && it->second != holder->getOperand(opNo))
