@@ -2,6 +2,8 @@
 
 #include "../core/KernelManifest.h"
 #include "SpirvKernelLowering.h"
+
+#include <map>
 #include "SpirvBackend.h"
 #include "SpirvInterface.h"
 #include "SpirvVirtualWave.h"
@@ -145,6 +147,11 @@ llvm::Value* bindResource(llvm::IRBuilderBase& b, llvm::Module& m,
 }
 
 class SpirvTarget : public LoweringTarget {
+protected:
+    // The binding a checked `align:` build's fault record takes: the first
+    // after the kernel's own parameters (recordAlignFault).
+    unsigned faultBinding_ = 0;
+    std::map<llvm::Function*, llvm::Value*> faultHandles_;
 public:
     const char* name() const override { return "spirv"; }
     bool nativeBits64() const override { return false; }
@@ -270,8 +277,9 @@ public:
     // compute markers, LocalSize baked in; args arrive via descriptors.
     llvm::Function* createKernel(
         llvm::Module& m, const std::string& kname,
-        const std::vector<KernelParam>& /*params*/) override {
+        const std::vector<KernelParam>& params) override {
         llvm::LLVMContext& ctx = m.getContext();
+        faultBinding_ = (unsigned) params.size();
         auto* fnTy = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
                                              /*vararg=*/false);
         auto* fn = llvm::Function::Create(fnTy, llvm::Function::ExternalLinkage,
@@ -989,12 +997,40 @@ public:
         return vec;
     }
 
-    // No checked-build test on Vulkan yet: its fault record needs a storage
-    // binding of its own (kernel-load-alignment plan 5.2.2). The statement's
-    // mask still keeps the access defined.
-    llvm::Value* checkStatedAlignment(llvm::IRBuilderBase&, llvm::Module&, llvm::Value* index,
-                                      uint64_t, uint64_t, unsigned) override {
-        return index;
+    // The fault record of a checked `align:` build (kernel-load-alignment
+    // 5.2.2): a storage binding of four i32 words right after the kernel's own
+    // bindings, which the runtime recognizes by its Binding decoration, binds
+    // to a buffer of its own, and reads back once the launch is flushed. Words:
+    // 0 = (line << 8) | stated bytes, first violation wins; 2, 3 = the index.
+    // i32 so the kernel needs no 64-bit atomics.
+    void recordAlignFault(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* info,
+                          llvm::Value* index) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        auto* i32 = llvm::Type::getInt32Ty(ctx);
+        auto* i64 = llvm::Type::getInt64Ty(ctx);
+        llvm::Function* f = b.GetInsertBlock()->getParent();
+        llvm::Value*& handle = faultHandles_[f];
+        if (!handle) {
+            llvm::IRBuilder<> eb(&*f->getEntryBlock().getFirstInsertionPt());
+            handle = bindResource(eb, m, vkBufferType(ctx, i32, true), faultBinding_,
+                                  "__cajeta_xpu_align_fault");
+        }
+        auto word = [&](uint64_t w) {
+            return getElementPtr(b, m, handle, llvm::ConstantInt::get(i64, w));
+        };
+        auto* cas = b.CreateAtomicCmpXchg(word(0), llvm::ConstantInt::get(i32, 0),
+                                          b.CreateTrunc(info, i32), llvm::MaybeAlign(4),
+                                          llvm::AtomicOrdering::Monotonic,
+                                          llvm::AtomicOrdering::Monotonic);
+        llvm::Value* won = b.CreateExtractValue(cas, 1);
+        auto* firstBB = llvm::BasicBlock::Create(ctx, "align.first", f);
+        auto* doneBB = llvm::BasicBlock::Create(ctx, "align.recorded", f);
+        b.CreateCondBr(won, firstBB, doneBB);
+        b.SetInsertPoint(firstBB);
+        b.CreateStore(b.CreateTrunc(index, i32), word(2));
+        b.CreateStore(b.CreateTrunc(b.CreateLShr(index, 32), i32), word(3));
+        b.CreateBr(doneBB);
+        b.SetInsertPoint(doneBB);
     }
 
     // An `align: A` statement reaches Mesa the one way it reads alignment:
@@ -1216,6 +1252,7 @@ public:
     llvm::Function* createKernel(
         llvm::Module& m, const std::string& kname,
         const std::vector<KernelParam>& params) override {
+        faultBinding_ = (unsigned) params.size();
         llvm::LLVMContext& ctx = m.getContext();
         auto* fnTy = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
                                              /*vararg=*/false);
@@ -1320,6 +1357,7 @@ public:
 
     llvm::Function* createKernel(llvm::Module& m, const std::string& kname,
                                  const std::vector<KernelParam>& params) override {
+        faultBinding_ = (unsigned) params.size();
         if (narrow_) return SpirvTarget::createKernel(m, kname, params);
         llvm::LLVMContext& ctx = m.getContext();
         std::vector<llvm::Type*> coords(12, llvm::Type::getInt32Ty(ctx));

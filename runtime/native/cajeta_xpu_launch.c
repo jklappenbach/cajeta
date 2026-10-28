@@ -829,6 +829,52 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
 
 static int32_t caj_vk_last_virtual = 0;
 
+// Whether a SPIR-V module declares a descriptor at `binding` (OpDecorate
+// Binding): a checked `align:` build's fault record sits at the first binding
+// after the kernel's own (kernel-load-alignment 5.2.2).
+static int caj_vk_declares_binding(const void* spirv, uint64_t len, uint32_t binding) {
+    const uint32_t* w = (const uint32_t*) spirv;
+    const uint64_t nw = len / 4;
+    for (uint64_t i = 5; i < nw;) {
+        const uint32_t wc = w[i] >> 16, op = w[i] & 0xFFFF;
+        if (wc == 0) return 0;
+        if (op == 71 && wc >= 4 && w[i + 2] == 33 && w[i + 3] == binding) return 1;
+        if (op == 54) return 0;   // OpFunction: decorations are all before it
+        i += wc;
+    }
+    return 0;
+}
+
+// caj_vk_declares_binding, asked once per (image, binding): a launch must not
+// rescan its module. Open addressing on the image pointer; a full table just
+// rescans.
+static struct { const void* spirv; uint32_t binding; int has; } g_vk_binding_seen[1024];
+static pthread_mutex_t g_vk_binding_seen_mu = PTHREAD_MUTEX_INITIALIZER;
+static int caj_vk_has_fault_binding(const void* spirv, uint64_t len, uint32_t binding) {
+    uint32_t h = (uint32_t) (((uintptr_t) spirv >> 4) * 2654435761u) & 1023u;
+    pthread_mutex_lock(&g_vk_binding_seen_mu);
+    for (uint32_t k = 0; k < 1024; ++k, h = (h + 1) & 1023u) {
+        if (g_vk_binding_seen[h].spirv == spirv && g_vk_binding_seen[h].binding == binding) {
+            int has = g_vk_binding_seen[h].has;
+            pthread_mutex_unlock(&g_vk_binding_seen_mu);
+            return has;
+        }
+        if (!g_vk_binding_seen[h].spirv) {
+            int has = caj_vk_declares_binding(spirv, len, binding);
+            g_vk_binding_seen[h].spirv = spirv;
+            g_vk_binding_seen[h].binding = binding;
+            g_vk_binding_seen[h].has = has;
+            pthread_mutex_unlock(&g_vk_binding_seen_mu);
+            return has;
+        }
+    }
+    pthread_mutex_unlock(&g_vk_binding_seen_mu);
+    return caj_vk_declares_binding(spirv, len, binding);
+}
+
+// The runtime's own fault-record buffer for Vulkan, made once, host-mapped.
+static int64_t g_vk_align_fault;
+
 // The subgroup width a virtual wave of `w` runs over: 2w when the device can pin it (one lane
 // per invocation), else the widest it can pin below `w`, else the width it always runs.
 static uint32_t caj_vk_virtual_width(uint32_t w) {
@@ -1023,14 +1069,37 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
         fprintf(stderr, "cajeta.xpu: could not stage a scalar or sampler argument of "
                 "Vulkan kernel '%s'\n", launchName);
     }
+    // A checked `align:` build's fault record: zero it, bind it after the
+    // kernel's own bindings, flush after the launch and read it back.
+    int alignChecked = 0;
+    int nb = n;
+    if (built && n < 64 && caj_vk_has_fault_binding(spirv, len, (uint32_t) n)) {
+        if (!g_vk_align_fault) g_vk_align_fault = caj_vk_alloc_pref(16, 1);
+        void* rec = g_vk_align_fault ? cajeta_xpu_vk_mapped(g_vk_align_fault) : NULL;
+        if (rec) {
+            cajeta_xpu_vk_note_host_access(g_vk_align_fault, 1);
+            memset(rec, 0, 16);
+            bindings[n] = g_vk_align_fault;
+            bkinds[n] = CAJ_VKB_BUFFER;
+            nb = n + 1;
+            alignChecked = 1;
+        }
+    }
     if (built)
-        cajeta_xpu_vk_launch(spirv, len, launchName, bindings, bkinds, n,
+        cajeta_xpu_vk_launch(spirv, len, launchName, bindings, bkinds, nb,
                              (unsigned) gridX, (unsigned) gridY, (unsigned) gridZ,
                              (unsigned) (blockX > 0 ? blockX : 1),
                              (unsigned) (blockY > 0 ? blockY : 1),
                              (unsigned) (blockZ > 0 ? blockZ : 1),
                              (unsigned) (sharedBytes > 0 ? sharedBytes : 0),
                              (int) specCount, specValues);
+    if (built && alignChecked) {
+        uint32_t rec[4] = {0, 0, 0, 0};
+        cajeta_xpu_vk_flush();
+        cajeta_xpu_vk_read(g_vk_align_fault, rec, sizeof rec);
+        cajeta_xpu_note_align_fault(kernelName, CAJ_XPU_VULKAN, (int64_t) rec[0],
+                                    (int64_t) (((uint64_t) rec[3] << 32) | rec[2]));
+    }
     for (int i = 0; i < ntrans; ++i) cajeta_xpu_vk_free(transient[i]);
     for (int i = 0; i < nsamp; ++i) cajeta_xpu_vk_destroy_sampler(samplers[i]);
     cajeta_xpu_vk_scalar_end_launch();

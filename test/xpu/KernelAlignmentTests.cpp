@@ -515,6 +515,13 @@ TEST(KernelAlignment, aViolatedStatementRaisesNamingTheCallOnCuda) {
     raisesOnDevice(cajeta::xpu::Backend::Nvptx);
 }
 
+// 5.2.2 (spec 4.1), Vulkan: the record is a storage binding after the
+// kernel's own, read back once the launch's batch is flushed.
+TEST(KernelAlignment, aViolatedStatementRaisesNamingTheCallOnVulkan) {
+    CAJETA_SKIP_IF_NO_VULKAN();
+    raisesOnDevice(cajeta::xpu::Backend::Spirv);
+}
+
 // 5.1.1 (spec 4.1), HIP: the same record, read with the hip calls.
 TEST(KernelAlignment, aViolatedStatementRaisesNamingTheCallOnHip) {
     CAJETA_SKIP_IF_NO_HIP();

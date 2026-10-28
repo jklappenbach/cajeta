@@ -4224,6 +4224,7 @@ int32_t __cajeta_xpu_vk_has_host_query_reset(void) { return 0; }
 int32_t __cajeta_xpu_vk_has_sync2(void)            { return 0; }
 int32_t __cajeta_xpu_vk_has_calibrated_ts(void)    { return 0; }
 static int64_t cajeta_xpu_vk_alloc(uint64_t b) { (void) b; return 0; }
+static int64_t caj_vk_alloc_pref(uint64_t b, int s) { (void) b; (void) s; return 0; }
 static int64_t cajeta_xpu_vk_slice(int64_t p, uint64_t o) { (void) p; (void) o; return 0; }
 static void cajeta_xpu_vk_view_release(int64_t h) { (void) h; }
 static void cajeta_xpu_vk_scalar_begin_launch(void) {}
