@@ -86,8 +86,11 @@ store lowering.
 ## 4. Checking a stated alignment
 
 - **4.1** When a build has debug checks or ubTraps on and a stated alignment
-  is violated at run time, the kernel traps, naming the kernel, the call site
-  and the index.
+  is violated at run time, the launch raises, naming the kernel, the call site
+  and the index. The kernel does not trap: the violation is written to the
+  kernel's fault record, the access proceeds at the index rounded down, and
+  the runtime reads the record after the launch (Julian, 2026-10-28; a device
+  trap would poison the CUDA context and lose a Vulkan device).
 - **4.2** When a release build without ubTraps violates a stated alignment,
   nothing is checked, and the behaviour is the backend's misaligned access.
   On Vulkan it is not: the statement reaches Mesa as an index mask (the
