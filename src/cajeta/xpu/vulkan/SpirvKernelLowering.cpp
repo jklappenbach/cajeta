@@ -989,6 +989,14 @@ public:
         return vec;
     }
 
+    // No checked-build test on Vulkan yet: its fault record needs a storage
+    // binding of its own (kernel-load-alignment plan 5.2.2). The statement's
+    // mask still keeps the access defined.
+    llvm::Value* checkStatedAlignment(llvm::IRBuilderBase&, llvm::Module&, llvm::Value* index,
+                                      uint64_t, uint64_t, unsigned) override {
+        return index;
+    }
+
     // An `align: A` statement reaches Mesa the one way it reads alignment:
     // the index masked to a multiple of A's elements (the fork's backend
     // writes no SPIR-V `Aligned` operand). A broken promise therefore reads

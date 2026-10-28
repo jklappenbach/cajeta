@@ -296,6 +296,7 @@ void optimizeDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
     // CAJETA_XPU_NO_WORD_ALIGN=1 is the A/B arm.
     const char* noAlign = std::getenv("CAJETA_XPU_NO_WORD_ALIGN");
     cajeta::xpu::applyStatedAlignments(m);
+    cajeta::xpu::dropUnusedAlignFault(m);
     if (lvl > 0 && !(noAlign && *noAlign && *noAlign != '0'))
         raiseProvableBufferAlignment(m);
 }

@@ -248,4 +248,11 @@ void applyStatedAlignments(llvm::Module& m) {
     }
 }
 
+void dropUnusedAlignFault(llvm::Module& m) {
+    if (auto* g = m.getGlobalVariable(kAlignFaultGlobal, true)) {
+        g->removeDeadConstantUsers();
+        if (g->use_empty()) g->eraseFromParent();
+    }
+}
+
 } // namespace cajeta::xpu

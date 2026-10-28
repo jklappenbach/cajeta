@@ -379,11 +379,23 @@ public final class Device {
             why = "the kernel's shared memory for one block exceeds what this device "
                 + "allows; it was not submitted";
         }
+        if (reason == 8) {
+            int64 line = Device.nativeLastLaunchDetail(0);
+            int64 stated = Device.nativeLastLaunchDetail(1);
+            int64 index = Device.nativeLastLaunchDetail(2);
+            String broke #= "cajeta.xpu: kernel '" + kernel + "' on backend '" + backend
+                          + "' broke its `align: " + stated + "` at line " + line
+                          + ": element index " + index + " is not a multiple of it";
+            throw heap XpuLaunchException(#broke);
+        }
         String msg #= "cajeta.xpu: launch refused for kernel '" + kernel
                     + "' on backend '" + backend
                     + "' (" + why + ")";
         throw heap XpuLaunchException(#msg);
     }
+
+    @Native("__cajeta_xpu_last_launch_detail")
+    private static int64 nativeLastLaunchDetail(int32 which);
 
     @Native("__cajeta_xpu_last_launch_reason")
     private static int32 nativeLastLaunchReason();

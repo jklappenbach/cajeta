@@ -55,9 +55,33 @@ static void cajeta_xpu_clear_launch_refusal(void) {
     g_xpu_refusal_pending = 0;
 }
 
+// Reason 8: the kernel broke a stated `align:` (kernel-load-alignment Unit 5).
+// Its fault record names the call's line, the stated bytes and the element
+// index of the first violation.
+static __thread int64_t g_xpu_refusal_detail[3];   // line, stated bytes, index
+
+// Raises a fault record's first violation as refusal reason 8: `info` is
+// (line << 8) | stated bytes, zero when the launch broke nothing.
+static void cajeta_xpu_note_align_fault(const char* name, int32_t backend,
+                                        int64_t info, int64_t index) {
+    if (info == 0) return;
+    cajeta_xpu_note_launch_refusal(name, backend);
+    g_xpu_refusal_reason = 8;
+    g_xpu_refusal_detail[0] = info >> 8;
+    g_xpu_refusal_detail[1] = info & 0xFF;
+    g_xpu_refusal_detail[2] = index;
+    fprintf(stderr, "cajeta.xpu: kernel '%s' broke its `align: %lld` at line %lld: "
+            "element index %lld is not a multiple of it\n", name ? name : "?",
+            (long long) (info & 0xFF), (long long) (info >> 8), (long long) index);
+}
+
 // --- accessors for the stdlib launch-site check (Device.checkLaunch) -------- //
 int32_t __cajeta_xpu_last_launch_failed(void) { return g_xpu_refusal_pending; }
 int32_t __cajeta_xpu_last_launch_backend(void) { return g_xpu_refusal_backend; }
+// Reason 8's detail: 0 the line, 1 the stated bytes, 2 the element index.
+int64_t __cajeta_xpu_last_launch_detail(int32_t which) {
+    return which >= 0 && which < 3 ? g_xpu_refusal_detail[which] : 0;
+}
 
 // Copy the pending refusal's kernel name into a cajeta int8[] (payload at +8),
 // returning the byte count written — the reverse of the array ABI

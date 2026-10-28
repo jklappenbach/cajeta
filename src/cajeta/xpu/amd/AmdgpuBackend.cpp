@@ -173,6 +173,7 @@ void optimizeDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
         if (!ec) m.print(pre, nullptr);
         mpm.run(m, mam);
         cajeta::xpu::applyStatedAlignments(m);
+        cajeta::xpu::dropUnusedAlignFault(m);
         llvm::raw_fd_ostream post(std::string(dumpDir) + "/" + m.getName().str() + ".post.ll", ec);
         if (!ec) m.print(post, nullptr);
         return;
@@ -181,6 +182,7 @@ void optimizeDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
     // An `align:` statement, applied after the pipeline (kernel-load-alignment
     // spec 3.1, 3.3).
     cajeta::xpu::applyStatedAlignments(m);
+    cajeta::xpu::dropUnusedAlignFault(m);
 }
 
 /// Runs codegen to Assembly or Object in memory; false if that type cannot be emitted.

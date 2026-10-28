@@ -44,6 +44,7 @@
 #include "../../asn/expression/CallExpression.h"
 #include "../../type/StructureProperty.h"
 
+#include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
@@ -314,14 +315,27 @@ public:
     }
     // The most threads a launch of this kernel can have: sizes Workgroup.reduce's scratch.
     void setBlockLimit(unsigned n) { blockLimit_ = n; }
+    bool checkStatements_ = false;
     // The block every launch site passes (workgroup-reduce 6.8): workgroup size reads fold to it.
     void setPinnedBlock(const std::array<unsigned, 3>& b) {
         pinnedBlock_ = b;
         blockLimit_ = b[0] * b[1] * b[2];
     }
 
+    // The checked build's test of a statement (spec 4.1); the index unchanged
+    // where there is nothing to check.
+    llvm::Value* checkStatement(llvm::Value* idx, uint64_t stated, uint64_t elemBytes,
+                                int line) {
+        if (!checkStatements_ || !stated || stated <= elemBytes) return idx;
+        return target.checkStatedAlignment(builder, mod, idx, stated / elemBytes, stated,
+                                           (unsigned) std::max(line, 0));
+    }
+
     void lowerBody(const MethodPtr& method) {
         if (!cls) cls = method->getParent();   // for @Device helper resolution
+        // A build with ubTraps on checks every `align:` statement the proof
+        // does not confirm (kernel-load-alignment spec 4.1, 4.2).
+        if (auto owner = method->getModule()) checkStatements_ = owner->getFlags().ubTraps;
         builder.SetInsertPoint(llvm::BasicBlock::Create(ctx, "entry", fn));
         if (method && isFastMath(*method)) {
             llvm::FastMathFlags fmf;
@@ -3483,6 +3497,7 @@ private:
                 const unsigned lanes = (unsigned) cN->getValue();
                 const uint64_t stated = statedAlignment(elemBytes * lanes);
                 llvm::Value* idx = maybeSwizzle(base, toI64(params[0].expression));
+                idx = checkStatement(idx, stated, elemBytes, mc->getSourceLine());
                 return target.vectorLoad(builder, mod, base, elemTy, lanes, idx, stated);
             }
             if (positional != 2)
@@ -3494,6 +3509,7 @@ private:
             unsigned lanes = llvm::cast<llvm::FixedVectorType>(
                 val->getType())->getNumElements();
             const uint64_t stated = statedAlignment(elemBytes * lanes);
+            idx = checkStatement(idx, stated, elemBytes, mc->getSourceLine());
             target.vectorStore(builder, mod, base, elemTy, lanes, idx, val, stated);
             return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
         }
@@ -8021,6 +8037,57 @@ llvm::Value* LoweringTarget::vectorLoad(llvm::IRBuilderBase& b, llvm::Module& m,
         cajeta::xpu::stateAlignment(
             b, ld, statedAlign, m.getDataLayout().getTypeStoreSize(vecTy).getFixedValue());
     return ld;
+}
+
+llvm::Value* LoweringTarget::checkStatedAlignment(llvm::IRBuilderBase& b, llvm::Module& m,
+                                                 llvm::Value* index, uint64_t laneElems,
+                                                 uint64_t statedBytes, unsigned line) {
+    if (laneElems <= 1) return index;
+    llvm::LLVMContext& ctx = m.getContext();
+    llvm::Type* ity = index->getType();
+    llvm::Value* bad = b.CreateICmpNE(
+        b.CreateAnd(index, llvm::ConstantInt::get(ity, laneElems - 1)),
+        llvm::ConstantInt::get(ity, 0), "align.bad");
+    llvm::Function* f = b.GetInsertBlock()->getParent();
+    auto* faultBB = llvm::BasicBlock::Create(ctx, "align.fault", f);
+    auto* okBB = llvm::BasicBlock::Create(ctx, "align.ok", f);
+    b.CreateCondBr(bad, faultBB, okBB,
+                   llvm::MDBuilder(ctx).createBranchWeights(1, 1u << 20));
+    b.SetInsertPoint(faultBB);
+    auto* i64 = llvm::Type::getInt64Ty(ctx);
+    llvm::Value* info = llvm::ConstantInt::get(i64, ((uint64_t) line << 8) | statedBytes);
+    recordAlignFault(b, m, info, b.CreateSExtOrTrunc(index, i64));
+    b.CreateBr(okBB);
+    b.SetInsertPoint(okBB);
+    return b.CreateAnd(index, llvm::ConstantInt::get(ity, ~(laneElems - 1)), "idx.aligned");
+}
+
+void LoweringTarget::recordAlignFault(llvm::IRBuilderBase& b, llvm::Module& m,
+                                      llvm::Value* info, llvm::Value* index) {
+    llvm::LLVMContext& ctx = m.getContext();
+    auto* i64 = llvm::Type::getInt64Ty(ctx);
+    auto* recTy = llvm::ArrayType::get(i64, 2);
+    constexpr unsigned kGlobalAS = 1;   // NVPTX and AMDGPU global memory
+    auto* g = m.getGlobalVariable(cajeta::xpu::kAlignFaultGlobal, true);
+    if (!g)
+        g = new llvm::GlobalVariable(
+            m, recTy, /*isConstant=*/false, llvm::GlobalValue::ExternalLinkage,
+            llvm::ConstantAggregateZero::get(recTy), cajeta::xpu::kAlignFaultGlobal,
+            nullptr, llvm::GlobalValue::NotThreadLocal, kGlobalAS);
+    llvm::Value* word0 = b.CreateConstInBoundsGEP2_64(recTy, g, 0, 0);
+    llvm::Value* word1 = b.CreateConstInBoundsGEP2_64(recTy, g, 0, 1);
+    auto* cas = b.CreateAtomicCmpXchg(word0, llvm::ConstantInt::get(i64, 0), info,
+                                      llvm::MaybeAlign(8), llvm::AtomicOrdering::Monotonic,
+                                      llvm::AtomicOrdering::Monotonic);
+    llvm::Value* won = b.CreateExtractValue(cas, 1);
+    llvm::Function* f = b.GetInsertBlock()->getParent();
+    auto* firstBB = llvm::BasicBlock::Create(ctx, "align.first", f);
+    auto* doneBB = llvm::BasicBlock::Create(ctx, "align.recorded", f);
+    b.CreateCondBr(won, firstBB, doneBB);
+    b.SetInsertPoint(firstBB);
+    b.CreateStore(index, word1)->setVolatile(true);
+    b.CreateBr(doneBB);
+    b.SetInsertPoint(doneBB);
 }
 
 void LoweringTarget::vectorStore(llvm::IRBuilderBase& b, llvm::Module& m,

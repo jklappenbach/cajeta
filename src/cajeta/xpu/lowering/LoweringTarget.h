@@ -298,6 +298,19 @@ namespace xpu {
         // x86 vector load of a misaligned address faults where the unaligned
         // one it emits today does not.
         virtual bool honorsStatedAlignment() const { return true; }
+        // A checked build's test of an `align:` statement the proof may not
+        // confirm (kernel-load-alignment Unit 5, spec 4.1): when `index`
+        // (elements) is not a multiple of `laneElems`, records {line, stated
+        // bytes, index} with recordAlignFault; returns the index rounded down
+        // to a multiple of `laneElems`, so the access stays defined.
+        virtual llvm::Value* checkStatedAlignment(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* index,
+            uint64_t laneElems, uint64_t statedBytes, unsigned line);
+        // Writes one violation into the kernel's fault record. Default: the
+        // device global kAlignFaultGlobal, first violation wins. The cpu
+        // backend calls into the runtime instead.
+        virtual void recordAlignFault(llvm::IRBuilderBase& b, llvm::Module& m,
+                                      llvm::Value* info, llvm::Value* index);
 
         // Sample 2-D texture `texHandle` at normalized (u, v) through
         // `samplerHandle` at explicit mip `lod`. Default: unsupported (XPU-N01).

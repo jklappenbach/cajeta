@@ -118,9 +118,11 @@ inline Lowered lowerForNvptx(const std::string& source,
                              const std::string& kernelName,
                              const std::string& fqClassName = "test.M",
                              const std::string& arch = "sm_89",
-                             const std::string& tag = "probe") {
+                             const std::string& tag = "probe",
+                             const CompilerFlags& flags = CompilerFlags{}) {
     Lowered out;
     Compiler compiler;
+    compiler.setFlags(flags);
     auto module = compileForInspection(compiler, source, fqClassName, tag);
     auto klass = module->getStructures()[fqClassName];
     if (!klass) { out.why = fqClassName + " did not compile"; return out; }
@@ -156,9 +158,11 @@ inline Lowered lowerForAmdgpu(const std::string& source,
                               const std::string& kernelName,
                               const std::string& fqClassName = "test.M",
                               const std::string& arch = "gfx1151",
-                              const std::string& tag = "probe") {
+                              const std::string& tag = "probe",
+                              const CompilerFlags& flags = CompilerFlags{}) {
     Lowered out;
     Compiler compiler;
+    compiler.setFlags(flags);
     auto module = compileForInspection(compiler, source, fqClassName, tag);
     auto klass = module->getStructures()[fqClassName];
     if (!klass) { out.why = fqClassName + " did not compile"; return out; }

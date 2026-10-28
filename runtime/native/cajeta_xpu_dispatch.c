@@ -14,6 +14,10 @@ struct cajeta_xpu_module {
     int specState;
     cajeta_cudeviceptr specCountG;
     int32_t lastSpecCount;   // the count last written, -1 when unknown
+    // The module's alignment fault record (a checked `align:` build,
+    // kernel-load-alignment Unit 5): 0 not asked, 1 none, 2 at alignFaultG.
+    int alignState;
+    cajeta_cudeviceptr alignFaultG;
 };
 // An overflow is reported at registration (cajeta_xpu_register_module_impl).
 #define CAJETA_XPU_MAX_MODULES 1024
@@ -1022,6 +1026,23 @@ int32_t __cajeta_xpu_cpu_scalar_twin_hits(void) {
     return __atomic_load_n(&g_cpu_scalar_twin_hits, __ATOMIC_RELAXED);
 }
 
+// The cpu kernels' alignment fault record (kernel-load-alignment Unit 5): a
+// checked `align:` statement that is violated calls this, and the first
+// violation of the launch wins. Process-wide, since blocks run on workers;
+// the launcher clears it before the grid and raises it after.
+static int64_t g_cpu_align_fault[2];
+void __cajeta_xpu_cpu_align_fault(int64_t info, int64_t index) {
+    int64_t zero = 0;
+    if (__atomic_compare_exchange_n(&g_cpu_align_fault[0], &zero, info, 0,
+                                    __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+        __atomic_store_n(&g_cpu_align_fault[1], index, __ATOMIC_RELEASE);
+}
+static void cajeta_xpu_cpu_raise_align_fault(const char* name) {
+    int64_t info = __atomic_exchange_n(&g_cpu_align_fault[0], (int64_t) 0, __ATOMIC_ACQ_REL);
+    int64_t index = __atomic_load_n(&g_cpu_align_fault[1], __ATOMIC_ACQUIRE);
+    cajeta_xpu_note_align_fault(name, CAJ_XPU_CPU, info, index);
+}
+
 // CPU launch thunk: coord = [tid.xyz, ctaid.xyz, ntid.xyz, ...]; argv is shared.
 typedef void (*cajeta_cpu_launch_fn)(void** argv, const int32_t* coord);
 
@@ -1396,6 +1417,7 @@ static void cajeta_xpu_launch_cpu(const char* name,
 
 
     const int32_t twinsBefore = __cajeta_xpu_cpu_scalar_twin_hits();
+    __atomic_store_n(&g_cpu_align_fault[0], (int64_t) 0, __ATOMIC_RELAXED);
 
     // CAJETA_XPU_CPU_SERIAL forces single-threaded execution. Read once.
     static int force_serial = -1;
@@ -1439,6 +1461,7 @@ static void cajeta_xpu_launch_cpu(const char* name,
                                             specCount, specValues};
         cajeta_xpu_cpu_run_slice(&all);
         cajeta_xpu_cpu_refuse_if_twin_ran(name, twinsBefore, blockX);
+        cajeta_xpu_cpu_raise_align_fault(name);
         return;
     }
 
@@ -1470,6 +1493,7 @@ static void cajeta_xpu_launch_cpu(const char* name,
         cajeta_xpu_cpu_run_slice(&slices[i]);   // pool-short surplus, inline
     caj_kpool_join();
     cajeta_xpu_cpu_refuse_if_twin_ran(name, twinsBefore, blockX);
+    cajeta_xpu_cpu_raise_align_fault(name);
 }
 
 // --- Buffer<T> device memory (backend-dispatched) ---------------------------

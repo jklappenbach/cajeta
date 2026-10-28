@@ -408,6 +408,27 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
             }
         }
     }
+    // A kernel built with checked `align:` statements carries a fault record:
+    // zero it, launch directly (never queued), and read it back after the
+    // launch (kernel-load-alignment spec 4.1). A checked build pays a sync.
+    int alignChecked = 0;
+    if (mod && g_xpu_cuda.cuModuleGetGlobal && g_xpu_cuda.cuMemcpyHtoD
+            && g_xpu_cuda.cuMemcpyDtoH && g_xpu_cuda.cuStreamSynchronize) {
+        if (e->alignState == 0) {
+            cajeta_cudeviceptr g; size_t gbytes;
+            if (g_xpu_cuda.cuModuleGetGlobal(&g, &gbytes, mod, "__cajeta_xpu_align_fault") == 0
+                    && gbytes >= 2 * sizeof(int64_t)) {
+                e->alignFaultG = g;
+                e->alignState = 2;
+            } else {
+                e->alignState = 1;
+            }
+        }
+        if (e->alignState == 2) {
+            const int64_t zero[2] = {0, 0};
+            alignChecked = g_xpu_cuda.cuMemcpyHtoD(e->alignFaultG, zero, sizeof zero) == 0;
+        }
+    }
     // A deferred stream queues the launch here: every argument is copied by
     // value, so the launch site's frame can go. What cannot be queued (a
     // translated argument, a specialization written above, a kernel whose
@@ -417,7 +438,7 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
         void* st = (void*) (intptr_t) streamHandle;
         if (caj_defer_wants(st)) {
             if (kres->queueable && !kres->needsXlat && !kres->hasAccel && !specWrote
-                    && argv) {
+                    && !alignChecked && argv) {
                 const unsigned grid[3] = { (unsigned) gridX, (unsigned) gridY, (unsigned) gridZ };
                 const unsigned block[3] = { (unsigned) blockX, (unsigned) blockY, (unsigned) blockZ };
                 if (caj_defer_enqueue(st, kres, fn, kernelName, grid, block,
@@ -590,6 +611,11 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
         cajeta_xpu_note_launch_failure();
         fprintf(stderr, "cajeta.xpu: cuLaunchKernel('%s') failed (%d)\n",
                 kernelName, launchRc);
+    } else if (alignChecked) {
+        int64_t rec[2] = {0, 0};
+        if (g_xpu_cuda.cuStreamSynchronize((void*) (intptr_t) streamHandle) == 0
+                && g_xpu_cuda.cuMemcpyDtoH(rec, e->alignFaultG, sizeof rec) == 0)
+            cajeta_xpu_note_align_fault(kernelName, CAJ_XPU_CUDA, rec[0], rec[1]);
     }
 }
 
@@ -631,6 +657,17 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
                 g_xpu_hip.hipMemcpyHtoD(g, specValues,
                                         want <= gbytes ? want : gbytes);
             }
+        }
+    }
+    // The fault record of a checked `align:` build, as on CUDA.
+    void* alignFaultHip = NULL;
+    if (mod && g_xpu_hip.hipModuleGetGlobal && g_xpu_hip.hipMemcpyHtoD
+            && g_xpu_hip.hipMemcpyDtoH && g_xpu_hip.hipStreamSynchronize) {
+        void* g; size_t gbytes;
+        if (g_xpu_hip.hipModuleGetGlobal(&g, &gbytes, mod, "__cajeta_xpu_align_fault") == 0
+                && gbytes >= 2 * sizeof(int64_t)) {
+            const int64_t zero[2] = {0, 0};
+            if (g_xpu_hip.hipMemcpyHtoD(g, (void*) zero, sizeof zero) == 0) alignFaultHip = g;
         }
     }
     if (!fn) {
@@ -768,6 +805,12 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
                     kernelName, launchRc);
             launchOk = 0;
         }
+    }
+    if (launchOk && alignFaultHip) {
+        int64_t rec[2] = {0, 0};
+        if (g_xpu_hip.hipStreamSynchronize((void*) (intptr_t) streamHandle) == 0
+                && g_xpu_hip.hipMemcpyDtoH(rec, alignFaultHip, sizeof rec) == 0)
+            cajeta_xpu_note_align_fault(kernelName, CAJ_XPU_HIP, rec[0], rec[1]);
     }
     if (ntex > 0 || nsurf > 0 || nbufarr > 0) {
         if (launchOk)

@@ -38,6 +38,16 @@ class CpuTarget : public LoweringTarget {
 public:
     const char* name() const override { return "cpu"; }
     bool honorsStatedAlignment() const override { return false; }
+    // The blocks run on host workers, so the record is the runtime's: the
+    // launcher reads it when the grid is done (kernel-load-alignment 5.1.1).
+    void recordAlignFault(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* info,
+                          llvm::Value* index) override {
+        auto* i64 = llvm::Type::getInt64Ty(m.getContext());
+        llvm::FunctionCallee hook = m.getOrInsertFunction(
+            "__cajeta_xpu_cpu_align_fault",
+            llvm::FunctionType::get(llvm::Type::getVoidTy(m.getContext()), {i64, i64}, false));
+        b.CreateCall(hook, {info, index});
+    }
 
     // A CPU cooperative wave is a SIMD vector of i32 lanes: the per-block
     // work-item loop, vectorized to waveW lanes. The cooperative-matrix kernels

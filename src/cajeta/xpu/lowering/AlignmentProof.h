@@ -53,4 +53,16 @@ namespace cajeta::xpu {
     /// proof-based raise, so the emitted alignment is max(proven, stated).
     void applyStatedAlignments(llvm::Module& m);
 
+    /// The kernel's alignment fault record (kernel-load-alignment Unit 5, spec
+    /// 4.1): two i64 words in device global memory, zero until a checked
+    /// `align:` statement is violated. Word 0 is (line << 8) | the stated
+    /// bytes, written once by the first violation; word 1 its element index.
+    /// The runtime reads it after a launch of a kernel that has one.
+    constexpr const char* kAlignFaultGlobal = "__cajeta_xpu_align_fault";
+
+    /// Erases the fault record when the pipeline folded every check away (the
+    /// proof confirmed each statement, spec 4.3), so the launch owes no
+    /// readback.
+    void dropUnusedAlignFault(llvm::Module& m);
+
 }

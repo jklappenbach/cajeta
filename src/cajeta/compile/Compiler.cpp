@@ -3736,7 +3736,8 @@ namespace cajeta {
         // (Optimizer). Unrooted, the COFF erase below dropped their definitions and
         // the late pass re-declared them, so every Windows --emit=exe link failed on
         // __cajeta_shadow_cur_slow (CoffTreeShakeTests).
-        for (const char* late : {"__cajeta_shadow_cur_slow", "__cajeta_xpu_cpu_scalar_twin"})
+        for (const char* late : {"__cajeta_shadow_cur_slow", "__cajeta_xpu_cpu_scalar_twin",
+                                  "__cajeta_xpu_cpu_align_fault"})
             reached.insert(late);
 
         // Prunable = every cajeta METHOD body, from Method->llvm::Function and never a

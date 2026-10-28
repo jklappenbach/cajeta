@@ -10,6 +10,7 @@
 
 #include "cajeta/xpu/lowering/AlignmentProof.h"
 #include "KernelLoweringProbe.h"
+#include "XpuDeviceTestUtil.h"
 #include "cajeta/xpu/vulkan/SpirvBackend.h"
 #include "cajeta/xpu/vulkan/SpirvKernelLowering.h"
 #include "../jit/JitTestHelper.h"
@@ -238,14 +239,28 @@ std::string vulkanText(const std::string& src) {
 
 const char* kStated = "Vector<int8,16> v = x.vload<16>(o, align: 16);";
 
+// Byte loads in the PTX: `ld.*` lines of an 8-bit type. A plain `.b8` count
+// also matches a global's own declaration (the fault record is `.global .b8`).
+size_t byteLoads(const std::string& ptx) {
+    size_t n = 0;
+    std::istringstream in(ptx);
+    for (std::string line; std::getline(in, line);) {
+        const auto t = line.find_first_not_of(" \t");
+        if (t == std::string::npos || line.compare(t, 3, "ld.") != 0) continue;
+        if (line.find(".u8") != std::string::npos || line.find(".s8") != std::string::npos
+            || line.find(".b8") != std::string::npos)
+            ++n;
+    }
+    return n;
+}
+
 }  // namespace
 
 // 4.1.1 (spec 3.1), NVPTX: the stated 16 makes the load one 16-byte vector.
 TEST(KernelAlignment, aStatedAlignmentWidensTheLoadOnNvptx) {
     const Lowered l = lowerForNvptx(statedSource(kStated), "k", "test.M", "sm_89", "stated");
     ASSERT_TRUE(l.ok) << l.why;
-    EXPECT_EQ(countOf(l.ptx, ".b8 ") + countOf(l.ptx, ".u8 ") + countOf(l.ptx, ".s8 "), 0u)
-        << l.ptx;
+    EXPECT_EQ(byteLoads(l.ptx), 0u) << l.ptx;
     EXPECT_GE(countOf(l.ptx, ".v4.b32") + countOf(l.ptx, ".v4.u32"), 1u) << l.ptx;
 }
 
@@ -255,8 +270,7 @@ TEST(KernelAlignment, withoutAStatementTheUnprovableLoadStaysBytesOnNvptx) {
     const Lowered l = lowerForNvptx(
         statedSource("Vector<int8,16> v = x.vload<16>(o);"), "k", "test.M", "sm_89", "stated0");
     ASSERT_TRUE(l.ok) << l.why;
-    EXPECT_GE(countOf(l.ptx, ".b8") + countOf(l.ptx, ".u8") + countOf(l.ptx, ".s8"), 16u)
-        << l.ptx;
+    EXPECT_GE(byteLoads(l.ptx), 16u) << l.ptx;
 }
 
 // 4.1.1 (spec 3.1), AMDGPU: the load is emitted at the stated alignment.
@@ -298,8 +312,7 @@ TEST(KernelAlignment, aStatedWordAlignmentMakesWordLoadsOnNvptx) {
         statedSource("Vector<int8,16> v = x.vload<16>(o, align: 4);"), "k", "test.M", "sm_89",
         "statedw");
     ASSERT_TRUE(l.ok) << l.why;
-    EXPECT_EQ(countOf(l.ptx, ".b8 ") + countOf(l.ptx, ".u8 ") + countOf(l.ptx, ".s8 "), 0u)
-        << l.ptx;
+    EXPECT_EQ(byteLoads(l.ptx), 0u) << l.ptx;
     EXPECT_EQ(countOf(l.ptx, ".v4.b32") + countOf(l.ptx, ".v4.u32"), 0u) << l.ptx;
 }
 
@@ -354,4 +367,156 @@ TEST(KernelAlignment, aStatementOutsideAKernelIsTheKernelOnlyError) {
         err = e.what();
     }
     if (!err.empty()) EXPECT_NE(err.find("kernel-only"), std::string::npos) << err;
+}
+
+// ---------------------------------------------------------------------------
+// The check (kernel-load-alignment plan Unit 5, spec 4.1-4.3). A build with
+// ubTraps on (debug, or release with --ub-traps) tests every statement the
+// proof cannot confirm; a violation is recorded in the kernel's fault record
+// and the access proceeds at the index rounded down (Julian, 2026-10-28: a
+// fault record read at sync, never a device trap).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+cajeta::CompilerFlags flagsFor(cajeta::CompilerMode mode, bool ubTraps) {
+    cajeta::CompilerFlags f = cajeta::CompilerFlags::defaultsForMode(mode);
+    f.ubTraps = ubTraps;
+    return f;
+}
+
+bool carriesTheCheck(const Lowered& l) {
+    return l.ptx.find("__cajeta_xpu_align_fault") != std::string::npos;
+}
+
+}  // namespace
+
+// 5.1.1 (spec 4.1): a debug build records a statement nothing proves.
+TEST(KernelAlignment, aDebugBuildChecksAStatementNothingProves) {
+    const Lowered l = lowerForNvptx(statedSource(kStated), "k", "test.M", "sm_89", "chk_dbg",
+                                    flagsFor(cajeta::CompilerMode::Debug, true));
+    ASSERT_TRUE(l.ok) << l.why;
+    EXPECT_TRUE(carriesTheCheck(l)) << l.ptx;
+    EXPECT_GE(countOf(l.ptx, ".cas.b64"), 1u) << l.ptx;
+}
+
+// 5.1.2 (spec 4.1): a release build with ubTraps on checks it too.
+TEST(KernelAlignment, aReleaseBuildWithUbTrapsChecksAStatement) {
+    const Lowered l = lowerForNvptx(statedSource(kStated), "k", "test.M", "sm_89", "chk_rel1",
+                                    flagsFor(cajeta::CompilerMode::Release, true));
+    ASSERT_TRUE(l.ok) << l.why;
+    EXPECT_TRUE(carriesTheCheck(l)) << l.ptx;
+}
+
+// 5.1.3 (spec 4.2): a release build without ubTraps carries no check.
+TEST(KernelAlignment, aReleaseBuildWithoutUbTrapsCarriesNoCheck) {
+    const Lowered l = lowerForNvptx(statedSource(kStated), "k", "test.M", "sm_89", "chk_rel0",
+                                    flagsFor(cajeta::CompilerMode::Release, false));
+    ASSERT_TRUE(l.ok) << l.why;
+    EXPECT_FALSE(carriesTheCheck(l)) << l.ptx;
+}
+
+// 5.1.4 (spec 4.3): a statement the proof confirms adds no check, even in debug.
+TEST(KernelAlignment, aStatementTheProofConfirmsCarriesNoCheck) {
+    const Lowered l = lowerForNvptx(
+        statedSource("Vector<int8,16> v = x.vload<16>(p, align: 16);"), "k", "test.M", "sm_89",
+        "chk_proven", flagsFor(cajeta::CompilerMode::Debug, true));
+    ASSERT_TRUE(l.ok) << l.why;
+    EXPECT_FALSE(carriesTheCheck(l)) << l.ptx;
+}
+
+namespace {
+
+// `off` moves every work-item's index off the statement's 16-byte grid.
+const char* kCpuViolation =
+    "package test;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
+    "import cajeta.xpu.XpuLaunchException;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void stated(KernelBuffer<int32> out, KernelBuffer<int8> x, uint32 off) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        int64 o = (int64) (i * 16 + off);\n"
+    "        Vector<int8,16> v = x.vload<16>(o, align: 16);\n"
+    "        out[(int64) i] = (int32) v[0] + (int32) v[15];\n"
+    "    }\n"
+    "    /** 1 when the launch threw, plus 2/4/8/16 for each part of the message\n"
+    "     *  that names the call: the statement, its line, the index, the kernel;\n"
+    "     *  100 + out[1] when it did not throw. */\n"
+    "    public static int32 run(uint32 off) {\n"
+    "        int8[] h = heap int8[256];\n"
+    "        for (int32 j = 0; j < 256; ++j) { h[j] = (int8) (j & 63); }\n"
+    "        KernelBuffer<int8> x = heap KernelBuffer<int8>(256);\n"
+    "        KernelBuffer<int32> out = heap KernelBuffer<int32>(4);\n"
+    "        x.upload(h);\n"
+    "        KernelStream s #= KernelStream.current();\n"
+    "        int32 r = 0;\n"
+    "        try {\n"
+    "            stated.launch(s, grid: [1], block: [4])(out, x, off);\n"
+    "            s.sync();\n"
+    "            int32[] o = heap int32[4];\n"
+    "            out.download(o);\n"
+    "            r = 100 + o[1];\n"
+    "        } catch (XpuLaunchException e) {\n"
+    "            String m = e.getMessage();\n"
+    "            System.stderr.println(m);\n"
+    "            r = 1;\n"
+    "            if (m.contains(\"align: 16\")) { r = r + 2; }\n"
+    "            if (m.contains(\"line 11\")) { r = r + 4; }\n"
+    "            if (m.contains(\"index 4\")) { r = r + 8; }\n"
+    "            if (m.contains(\"stated\")) { r = r + 16; }\n"
+    "        }\n"
+    "        return r;\n"
+    "    }\n"
+    "}\n";
+
+}  // namespace
+
+// 5.1.1 (spec 4.1), cpu: a violated statement raises at the launch, naming the
+// kernel, the call's line and the index; the next conforming launch runs.
+TEST(KernelAlignment, aViolatedStatementRaisesNamingTheCallOnCpu) {
+    cajeta_test::CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
+    auto jit = cajeta_test::CajetaJit::compile(kCpuViolation, "test.M", o);
+    ASSERT_NE(jit, nullptr);
+    auto run = jit->lookup<int32_t (*)(uint32_t)>("run");
+    ASSERT_NE(run, nullptr);
+    // Work-item 0 reads at element 4: off the 16-byte grid.
+    EXPECT_EQ(run(4), 1 + 2 + 4 + 8 + 16);
+    // Conforming: work-item 1 reads bytes 16..31, so v[0] + v[15] = 16 + 31.
+    EXPECT_EQ(run(0), 100 + 16 + 31);
+}
+
+namespace {
+
+void raisesOnDevice(cajeta::xpu::Backend be) {
+    cajeta_test::CajetaJit::Options o;
+    o.xpuBackends = {be};
+    auto jit = cajeta_test::CajetaJit::compile(kCpuViolation, "test.M", o);
+    ASSERT_NE(jit, nullptr);
+    auto run = jit->lookup<int32_t (*)(uint32_t)>("run");
+    ASSERT_NE(run, nullptr);
+    // A device runs the four work-items at once, so any one may be the first
+    // to break the statement: index 4, 20, 36 or 52. The message names one.
+    const int32_t r = run(4);
+    EXPECT_TRUE(r == 1 + 2 + 4 + 8 + 16 || r == 1 + 2 + 4 + 16) << r;
+    // The record is read after the launch, never a trap: the context is
+    // intact and the next conforming launch runs.
+    EXPECT_EQ(run(0), 100 + 16 + 31);
+}
+
+}  // namespace
+
+// 5.1.1 (spec 4.1), CUDA: the fault record is read back after the launch.
+TEST(KernelAlignment, aViolatedStatementRaisesNamingTheCallOnCuda) {
+    CAJETA_SKIP_IF_NO_CUDA();
+    raisesOnDevice(cajeta::xpu::Backend::Nvptx);
+}
+
+// 5.1.1 (spec 4.1), HIP: the same record, read with the hip calls.
+TEST(KernelAlignment, aViolatedStatementRaisesNamingTheCallOnHip) {
+    CAJETA_SKIP_IF_NO_HIP();
+    raisesOnDevice(cajeta::xpu::Backend::Amdgpu);
 }
