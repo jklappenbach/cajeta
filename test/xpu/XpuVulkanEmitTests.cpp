@@ -1390,9 +1390,12 @@ TEST(XpuVulkanEmitTests, everyLaneOfAMaskedVloadIndexesFromTheSameMask) {
 }
 
 namespace {
-// RADV's ISA for one fixture kernel, built on RADV's null device for gfx1151
-// (proton's Strix Halo) by test/tools/radv_isa.c in a child process. Empty
-// when the helper, Mesa's radeon driver, or the null device is missing.
+// RADV's ISA for one fixture kernel, built by test/tools/radv_isa.c in a child
+// process: on RADV's null device for gfx1151 (proton's Strix Halo) where Mesa
+// still has RADV_FORCE_FAMILY (25.x), else on a real RADV device, which Mesa 26
+// needs (it removed the variable for drm-shim). Either way a pipeline is built
+// and nothing is dispatched. Empty when the helper, Mesa's radeon driver, or
+// any RADV device is missing.
 std::string radvIsaOf(const char* kernel, std::string* why) {
     namespace fs = std::filesystem;
     const fs::path helper = cajeta_self_exe().parent_path() / "cajeta_radv_isa";
@@ -1423,26 +1426,36 @@ std::string radvIsaOf(const char* kernel, std::string* why) {
         std::ofstream out(spv, std::ios::binary);
         out.write(reinterpret_cast<const char*>(spirv.data()), (std::streamsize) spirv.size());
     }
-    std::vector<std::string> envs = {"VK_DRIVER_FILES=" + icd, "VK_ICD_FILENAMES=" + icd,
-                                     "RADV_FORCE_FAMILY=gfx1151", "RADV_DEBUG=shaders,nocache",
-                                     "MESA_SHADER_CACHE_DISABLE=1"};
-    for (const char* keep : {"PATH", "HOME", "LD_LIBRARY_PATH"})
-        if (const char* v = std::getenv(keep)) envs.push_back(std::string(keep) + "=" + v);
-    llvm::SmallVector<llvm::StringRef, 8> env(envs.begin(), envs.end());
     const std::string helperStr = helper.string(), spvStr = spv.string(), errStr = err.string();
-    llvm::SmallVector<llvm::StringRef, 2> args = {helperStr, spvStr};
-    std::optional<llvm::StringRef> redirects[] = {std::nullopt, llvm::StringRef(errStr), llvm::StringRef(errStr)};
-    const int rc = llvm::sys::ExecuteAndWait(helperStr, args, env, redirects, /*SecondsToWait=*/120);
-    std::ifstream in(err);
-    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    auto build = [&](bool nullDevice, int* rc) {
+        std::vector<std::string> envs = {"VK_DRIVER_FILES=" + icd, "VK_ICD_FILENAMES=" + icd,
+                                         "RADV_DEBUG=shaders,nocache", "MESA_SHADER_CACHE_DISABLE=1"};
+        if (nullDevice) envs.push_back("RADV_FORCE_FAMILY=gfx1151");
+        for (const char* keep : {"PATH", "HOME", "LD_LIBRARY_PATH", "XDG_RUNTIME_DIR"})
+            if (const char* v = std::getenv(keep)) envs.push_back(std::string(keep) + "=" + v);
+        llvm::SmallVector<llvm::StringRef, 8> env(envs.begin(), envs.end());
+        llvm::SmallVector<llvm::StringRef, 2> args = {helperStr, spvStr};
+        std::optional<llvm::StringRef> redirects[] = {std::nullopt, llvm::StringRef(errStr), llvm::StringRef(errStr)};
+        *rc = llvm::sys::ExecuteAndWait(helperStr, args, env, redirects, /*SecondsToWait=*/120);
+        std::ifstream in(err);
+        return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    };
+    auto built = [](int rc, const std::string& text) {
+        return rc == 0 && text.find("radv_isa: pipeline built") != std::string::npos
+            && text.find("RADV") != std::string::npos;
+    };
+    int rc = 0;
+    std::string text = build(true, &rc);
+    if (!built(rc, text)) {
+        std::string first = text;
+        text = build(false, &rc);
+        if (!built(rc, text))
+            *why = "neither RADV's null device nor a real RADV device built the pipeline (rc "
+                 + std::to_string(rc) + "):\n" + first + "\n" + text;
+    }
     fs::remove(spv);
     fs::remove(err);
-    if (rc != 0 || text.find("radv_isa: pipeline built") == std::string::npos
-        || text.find("RADV") == std::string::npos) {
-        *why = "RADV's null device did not build the pipeline (rc " + std::to_string(rc) + "):\n" + text;
-        return "";
-    }
-    return text;
+    return why->empty() ? text : "";
 }
 
 size_t countOf(const std::string& text, const char* needle) {
