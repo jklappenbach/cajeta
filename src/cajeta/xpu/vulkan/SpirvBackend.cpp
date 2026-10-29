@@ -20,6 +20,7 @@
 #include "llvm/Transforms/Scalar/EarlyCSE.h"
 #include "llvm/Transforms/Scalar/StructurizeCFG.h"
 #include "llvm/Transforms/Utils/FixIrreducible.h"
+#include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/Mem2Reg.h"
 #include "llvm/Transforms/Utils/UnifyFunctionExitNodes.h"
 #include "llvm/MC/TargetRegistry.h"
@@ -32,6 +33,7 @@
 #include "llvm/TargetParser/Triple.h"
 
 #include <algorithm>
+#include <functional>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -100,25 +102,31 @@ void expandRoundHalfAway(llvm::Module& m) {
 }
 
 // A buffer element index, now promoted, takes the alignment the shared proof
-// gives its lane group as an explicit `& -k` (k elements, at most 16 bytes):
-// Mesa reads the mask, not the arithmetic, so a proven int8 vload<16> stops
-// being realigned with v_alignbyte/v_perm (kernel-load-alignment Unit 3, spec
-// 2.1). The lowering reads lane j of a vector access at
+// gives its lane group in the one form Mesa reads, so a proven int8 vload<16>
+// stops being realigned with v_alignbyte/v_perm (kernel-load-alignment Unit 3,
+// spec 2.1). The lowering reads lane j of a vector access at
 // getpointer(handle, trunc(X + j)); X, the group's first index, is what is
-// proven and masked, once per X. Masking a value the proof shows is a
-// multiple of k changes nothing it computes. An index nothing proves passes
-// through unchanged (2.2). This runs after the pipeline, on the IR every
-// earlier pass (the virtual-wave rewrite included) has finished with.
-// CAJETA_XPU_VK_ALIGN_MASK=0 is the A/B arm.
+// proven. Each lane's index is rebuilt in 32 bits as `(V & -k) + C + j`, where
+// X = V + C with C a constant multiple of the mask and k is one word of
+// elements. Measured on Mesa 25.2.8 (gfx1151, RADV null device, 2026-10-28):
+// any 64-bit index arithmetic, `i * 16L + 16L`, masked or not, left the load
+// realigned, and so did a mask over a constant add, `(V + C) & -4`, and a mask
+// wider than a word; the 32-bit `(V & -4) + C` read clean. One word is all
+// RADV's b128 buffer load needs. The access index is 32 bits, so narrowing is
+// exact, and masking a value the proof shows is a multiple of k changes
+// nothing it computes. A hand mask `(a + C) & -4` is the same value as
+// `(a & -4) + C` when C is a multiple of 4, and is rebuilt the same way. An
+// index nothing proves passes through unchanged (2.2). This runs after the
+// pipeline, on the IR every earlier pass (the virtual-wave rewrite included)
+// has finished with. CAJETA_XPU_VK_ALIGN_MASK=0 is the A/B arm.
 void maskProvenLaneIndices(llvm::Module& m) {
     const char* off = std::getenv("CAJETA_XPU_VK_ALIGN_MASK");
     if (off && std::strcmp(off, "0") == 0) return;
+    constexpr uint64_t kMaskBytes = 4;
     const llvm::DataLayout& dl = m.getDataLayout();
     for (llvm::Function& f : m) {
         if (f.isDeclaration()) continue;
-        llvm::DenseMap<llvm::Value*, llvm::Value*> masked;   // X -> X & -k (or X)
-        llvm::SmallVector<std::pair<llvm::Instruction*, unsigned>, 32> sites;
-        // Each access: the pointer, its element bytes, and its index operand.
+        // Each access: the pointer and its element bytes.
         struct Access { llvm::IntrinsicInst* gp; uint64_t elemBytes; };
         llvm::SmallVector<Access, 32> accesses;
         for (llvm::BasicBlock& bb : f)
@@ -126,6 +134,7 @@ void maskProvenLaneIndices(llvm::Module& m) {
                 auto* ii = llvm::dyn_cast<llvm::IntrinsicInst>(&inst);
                 if (!ii || ii->getIntrinsicID() != llvm::Intrinsic::spv_resource_getpointer)
                     continue;
+                if (!ii->getArgOperand(1)->getType()->isIntegerTy(32)) continue;
                 // Element bytes from the access through the pointer.
                 uint64_t elemBytes = 0;
                 for (llvm::User* u : ii->users()) {
@@ -138,7 +147,7 @@ void maskProvenLaneIndices(llvm::Module& m) {
                     if (elemBytes && elemBytes != sz) { elemBytes = 0; break; }
                     elemBytes = sz;
                 }
-                if (!elemBytes || elemBytes >= cajeta::xpu::kMaxProvenAlignment) continue;
+                if (!elemBytes || elemBytes >= kMaskBytes) continue;
                 accesses.push_back({ii, elemBytes});
             }
         auto peelTrunc = [](llvm::Value* v) {
@@ -154,55 +163,117 @@ void maskProvenLaneIndices(llvm::Module& m) {
         };
         // The group bases: every X some lane reads as X + j. Lane 0 reads X
         // itself, and X may end in a constant add of its own (`i * 32 + 16`);
-        // peeling that add would mask a different value than lanes 1..j stand
-        // on, and Mesa could not merge lane 0 with them (Proton, 2026-10-28).
+        // taking that add for a lane offset would rebuild lane 0 on a different
+        // base than lanes 1..j, and Mesa could not merge it (Proton, 2026-10-28).
         llvm::SmallPtrSet<llvm::Value*, 32> bases;
         for (const Access& a : accesses)
             if (auto* add = laneAdd(peelTrunc(a.gp->getArgOperand(1))))
                 bases.insert(add->getOperand(0));
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::DenseMap<llvm::Value*, llvm::Value*> rebuilt;   // X -> its 32-bit masked base, or null
+        llvm::SmallVector<llvm::WeakTrackingVH, 16> maybeDead;
         for (const Access& a : accesses) {
             llvm::IntrinsicInst* ii = a.gp;
-            const uint64_t elemBytes = a.elemBytes;
-            // Peel trunc(X + j) down to the operand that holds X.
-            llvm::Instruction* holder = ii;
-            unsigned opNo = 1;
-            llvm::Value* v = ii->getArgOperand(1);
-            if (!bases.count(v)) {
-                if (auto* tr = llvm::dyn_cast<llvm::TruncInst>(v)) {
-                    holder = tr; opNo = 0; v = tr->getOperand(0);
+            const unsigned capTz = llvm::Log2_64(kMaskBytes / a.elemBytes);
+            // Split the index into its group base X and lane offset j.
+            llvm::Value* idx = ii->getArgOperand(1);
+            llvm::Value* x = peelTrunc(idx);
+            llvm::APInt lane(32, 0);
+            if (!bases.count(x))
+                if (auto* add = laneAdd(x)) {
+                    lane = llvm::cast<llvm::ConstantInt>(add->getOperand(1))->getValue().trunc(32);
+                    x = add->getOperand(0);
                 }
-                if (!bases.count(v))
-                    if (auto* add = laneAdd(v)) { holder = add; opNo = 0; }
-            }
-            {
-                sites.push_back({holder, opNo});
-                const unsigned capTz = llvm::Log2_64(cajeta::xpu::kMaxProvenAlignment / elemBytes);
-                llvm::Value* x = holder->getOperand(opNo);
-                if (masked.count(x) || llvm::isa<llvm::Constant>(x)) continue;
+            if (llvm::isa<llvm::Constant>(x)) continue;
+            auto found = rebuilt.find(x);
+            if (found == rebuilt.end()) {
+                llvm::Value* base = nullptr;
                 const unsigned tz = std::min(cajeta::xpu::provenIndexTrailingZeros(x, dl), capTz);
-                llvm::Value* out = x;
                 if (tz > 0) {
-                    llvm::IRBuilder<> b(m.getContext());
-                    if (auto* xi = llvm::dyn_cast<llvm::Instruction>(x)) {
-                        if (llvm::isa<llvm::PHINode>(xi))
-                            b.SetInsertPoint(xi->getParent()->getFirstNonPHIIt());
-                        else
-                            b.SetInsertPoint(std::next(xi->getIterator()));
-                    } else {
-                        b.SetInsertPoint(f.getEntryBlock().getFirstInsertionPt());
+                    // X = V + C, C a multiple of the mask.
+                    llvm::Value* v = x;
+                    llvm::APInt tail(x->getType()->getIntegerBitWidth(), 0);
+                    auto peelTail = [&](unsigned bits) {
+                        while (auto* add = laneAdd(v)) {
+                            const llvm::APInt& c = llvm::cast<llvm::ConstantInt>(add->getOperand(1))->getValue();
+                            if (c.countr_zero() < bits) break;
+                            tail += c.sextOrTrunc(tail.getBitWidth());
+                            v = add->getOperand(0);
+                        }
+                    };
+                    peelTail(tz);
+                    // A hand mask `(a + C') & -2^n`, n >= tz, is `(a & -2^n) + C'`.
+                    unsigned maskTz = tz;
+                    if (auto* own = llvm::dyn_cast<llvm::BinaryOperator>(v))
+                        if (own->getOpcode() == llvm::Instruction::And)
+                            if (auto* c = llvm::dyn_cast<llvm::ConstantInt>(own->getOperand(1)))
+                                if (c->getValue().isNegatedPowerOf2() && c->getValue().countr_zero() >= tz) {
+                                    maskTz = c->getValue().countr_zero();
+                                    v = own->getOperand(0);
+                                    peelTail(maskTz);
+                                }
+                    if (!llvm::isa<llvm::Constant>(v)) {
+                        llvm::IRBuilder<> b(m.getContext());
+                        if (auto* xi = llvm::dyn_cast<llvm::Instruction>(x)) {
+                            if (llvm::isa<llvm::PHINode>(xi))
+                                b.SetInsertPoint(xi->getParent()->getFirstNonPHIIt());
+                            else
+                                b.SetInsertPoint(std::next(xi->getIterator()));
+                        } else {
+                            b.SetInsertPoint(f.getEntryBlock().getFirstInsertionPt());
+                        }
+                        // V in 32 bits: through the operations whose low 32 bits
+                        // depend only on their operands' low 32 bits.
+                        llvm::DenseMap<llvm::Value*, llvm::Value*> narrowed;
+                        std::function<llvm::Value*(llvm::Value*, int)> narrow =
+                            [&](llvm::Value* w, int depth) -> llvm::Value* {
+                            if (w->getType()->isIntegerTy(32)) return w;
+                            if (auto* c = llvm::dyn_cast<llvm::ConstantInt>(w))
+                                return llvm::ConstantInt::get(i32, c->getValue().trunc(32));
+                            auto hit = narrowed.find(w);
+                            if (hit != narrowed.end()) return hit->second;
+                            llvm::Value* r = nullptr;
+                            if (auto* ext = llvm::dyn_cast<llvm::CastInst>(w)) {
+                                llvm::Value* src = ext->getOperand(0);
+                                if (llvm::isa<llvm::ZExtInst>(ext) && src->getType()->getIntegerBitWidth() <= 32)
+                                    r = src->getType()->isIntegerTy(32) ? src : b.CreateZExt(src, i32);
+                                else if (llvm::isa<llvm::SExtInst>(ext) && src->getType()->getIntegerBitWidth() <= 32)
+                                    r = src->getType()->isIntegerTy(32) ? src : b.CreateSExt(src, i32);
+                            } else if (auto* bo = llvm::dyn_cast<llvm::BinaryOperator>(w); bo && depth < 8) {
+                                const auto op = bo->getOpcode();
+                                const bool shlOk = op == llvm::Instruction::Shl
+                                    && llvm::isa<llvm::ConstantInt>(bo->getOperand(1))
+                                    && llvm::cast<llvm::ConstantInt>(bo->getOperand(1))->getZExtValue() < 32;
+                                if (op == llvm::Instruction::Add || op == llvm::Instruction::Sub
+                                    || op == llvm::Instruction::Mul || op == llvm::Instruction::And
+                                    || op == llvm::Instruction::Or || op == llvm::Instruction::Xor || shlOk)
+                                    r = b.CreateBinOp(op, narrow(bo->getOperand(0), depth + 1),
+                                                      narrow(bo->getOperand(1), depth + 1));
+                            }
+                            if (!r) r = b.CreateTrunc(w, i32);
+                            narrowed[w] = r;
+                            return r;
+                        };
+                        base = b.CreateAnd(narrow(v, 0), llvm::ConstantInt::get(
+                            i32, ~((uint64_t(1) << maskTz) - 1), /*isSigned=*/false), "lane.aligned");
+                        const llvm::APInt t32 = tail.trunc(32);
+                        if (!t32.isZero()) base = b.CreateAdd(base, llvm::ConstantInt::get(i32, t32), "lane.tail");
                     }
-                    llvm::Type* ty = x->getType();
-                    out = b.CreateAnd(x, llvm::ConstantInt::get(
-                        ty, ~((uint64_t(1) << tz) - 1), /*isSigned=*/false), "lane.aligned");
                 }
-                masked[x] = out;
+                found = rebuilt.insert({x, base}).first;
             }
+            llvm::Value* base = found->second;
+            if (!base) continue;
+            llvm::Value* index = base;
+            if (!lane.isZero()) {
+                llvm::IRBuilder<> b(ii);
+                index = b.CreateAdd(base, llvm::ConstantInt::get(i32, lane), "lane.index");
+            }
+            if (auto* old = llvm::dyn_cast<llvm::Instruction>(idx)) maybeDead.push_back(old);
+            ii->setArgOperand(1, index);
         }
-        for (auto& [holder, opNo] : sites) {
-            auto it = masked.find(holder->getOperand(opNo));
-            if (it != masked.end() && it->second != holder->getOperand(opNo))
-                holder->setOperand(opNo, it->second);
-        }
+        // The 64-bit chains the lanes no longer read.
+        llvm::RecursivelyDeleteTriviallyDeadInstructionsPermissive(maybeDead);
     }
 }
 

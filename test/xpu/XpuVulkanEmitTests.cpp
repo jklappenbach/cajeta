@@ -40,6 +40,8 @@
 
 #include <cstdint>
 #include <cstring>
+#include <iterator>
+#include <optional>
 #include <filesystem>
 #include <fstream>
 #include <random>
@@ -49,6 +51,7 @@
 #include <string>
 #include <vector>
 #include "KernelLoweringProbe.h"
+#include "PortableEnv.h"
 
 using namespace cajeta::xpu::vulkan;
 using cajeta::Compiler;
@@ -1221,6 +1224,18 @@ const char* kAlignSource =
     "        }\n"
     "    }\n"
     "    @Kernel\n"
+    "    public static void hand(KernelBuffer<int32> out,\n"
+    "            KernelBuffer<int8> w, KernelBuffer<int8> x, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            Vector<int32,4> zv = heap Vector<int32,4>(0, 0, 0, 0);\n"
+    "            Vector<uint8,16> wv = w.vload<16>(((int64) i * 16L) & -4L).asUnsigned();\n"
+    "            Vector<int8,16> xv = x.vload<16>(((int64) i * 16L) & -4L);\n"
+    "            Vector<int32,4> t = wv.dotAccum(xv, zv);\n"
+    "            out[(int64) i] = t[0] + t[1] + t[2] + t[3];\n"
+    "        }\n"
+    "    }\n"
+    "    @Kernel\n"
     "    public static void loose(KernelBuffer<int32> out,\n"
     "            KernelBuffer<int8> w, KernelBuffer<int8> x, uint32 n, uint32 off) {\n"
     "        uint32 i = KernelThread.globalIdX();\n"
@@ -1259,6 +1274,66 @@ TEST(XpuVulkanEmitTests, aProvenAlignedVloadCarriesItsAlignmentAsAnIndexMask) {
         << "no index mask on a provably 16-aligned vload\n" << text;
 }
 
+// The mask is one word wide, `& -4` on an int8 index, never the full 16
+// bytes the proof gives. RADV's b128 buffer load needs only a word-aligned
+// offset, and Mesa 25.2.8 reads exactly `iand x, -4`: `& -8` and `& -16`
+// (and `& -16` under a hand `& -4`, which NIR folds to `& -16`) leave the
+// load realigned with 10 v_alignbyte and 6 v_perm on gfx1151 (RADV null
+// device, 2026-10-28). Mesa on proton reads the word mask too: it is what the
+// llm's hand masks spell.
+TEST(XpuVulkanEmitTests, theProvenMaskIsOneWordWide) {
+    std::string text = vulkanTextOf("aligned");
+    ASSERT_FALSE(text.empty());
+    const bool word = text.find("18446744073709551612") != std::string::npos
+                   || text.find("4294967292") != std::string::npos;
+    EXPECT_TRUE(word) << "no `& -4` on the int8 lane-group index\n" << text;
+    for (const char* wide : {"18446744073709551600", "4294967280", "18446744073709551608", "4294967288"})
+        EXPECT_EQ(text.find(wide), std::string::npos) << "a mask wider than a word (" << wide << ")\n" << text;
+}
+
+// An index with a constant tail, `i * 32 + 16`, is masked under the tail:
+// `(i * 32 & -4) + 16`. Mesa 25.2.8 left `(i * 32 + 16) & -4` realigned (10
+// v_alignbyte, 6 v_perm on gfx1151) and reads the tail form clean.
+TEST(XpuVulkanEmitTests, theMaskSitsUnderTheConstantTail) {
+    std::string text = vulkanTextOf("offset");
+    ASSERT_FALSE(text.empty());
+    std::map<std::string, std::vector<std::string>> def;
+    std::istringstream in(text);
+    for (std::string line; std::getline(in, line);) {
+        std::istringstream ws(line);
+        std::vector<std::string> tok;
+        for (std::string t; ws >> t;) tok.push_back(t);
+        if (tok.size() >= 3 && tok[1] == "=") def[tok[0]] = {tok.begin() + 2, tok.end()};
+    }
+    auto isConst = [&](const std::string& id) {
+        auto it = def.find(id);
+        return it != def.end() && it->second[0] == "OpConstant";
+    };
+    int masks = 0;
+    for (auto& [id, d] : def) {
+        if (d[0] != "OpBitwiseAnd") continue;
+        ++masks;
+        auto left = def.find(d[2]);
+        ASSERT_NE(left, def.end());
+        EXPECT_FALSE(left->second[0] == "OpIAdd" && isConst(left->second[3]))
+            << id << " masks a value that still ends in a constant add\n" << text;
+    }
+    EXPECT_GE(masks, 1) << text;
+}
+
+// Does not fire: an index the source already masks to a word gets no second
+// mask, so Mesa sees the `& -4` it reads and nothing folded over it.
+TEST(XpuVulkanEmitTests, aHandWordMaskIsNotMaskedAgain) {
+    std::string text = vulkanTextOf("hand");
+    ASSERT_FALSE(text.empty());
+    size_t ands = 0;
+    for (size_t at = text.find("OpBitwiseAnd"); at != std::string::npos;
+         at = text.find("OpBitwiseAnd", at + 1))
+        ++ands;
+    // Both buffers read at one index, so the source's mask is one OpBitwiseAnd.
+    EXPECT_EQ(ands, 1u) << "the hand mask, and nothing over it\n" << text;
+}
+
 // Every lane of a vload indexes from ONE masked base, lane 0 included. The
 // first cut masked lanes 1..15 at (X & -16) + j but left lane 0 on the bare X
 // when X itself ended in a constant add (`(int64) (i * 32) + 16`): Mesa could
@@ -1288,15 +1363,16 @@ TEST(XpuVulkanEmitTests, everyLaneOfAMaskedVloadIndexesFromTheSameMask) {
             return it->second[2];
         return id;
     };
-    // The mask a lane index stands on: itself, or the left operand of `+ j`.
+    // The mask a lane index stands on: itself, or the first mask down the left
+    // operands of its adds (`((V & -4) + 16) + j`).
     auto maskOf = [&](const std::string& index) -> std::string {
         std::string v = through(index);
-        auto it = def.find(v);
-        if (it == def.end()) return "";
-        if (it->second[0] == "OpBitwiseAnd") return v;
-        if (it->second[0] == "OpIAdd") {
-            auto a = def.find(it->second[2]);
-            if (a != def.end() && a->second[0] == "OpBitwiseAnd") return it->second[2];
+        for (int depth = 0; depth < 4; ++depth) {
+            auto it = def.find(v);
+            if (it == def.end()) return "";
+            if (it->second[0] == "OpBitwiseAnd") return v;
+            if (it->second[0] != "OpIAdd") return "";
+            v = it->second[2];
         }
         return "";
     };
@@ -1311,6 +1387,95 @@ TEST(XpuVulkanEmitTests, everyLaneOfAMaskedVloadIndexesFromTheSameMask) {
         EXPECT_EQ(masks.count(""), 0u) << "buffer " << base << " has an unmasked lane\n" << text;
     }
     EXPECT_EQ(groups, 2) << text;
+}
+
+namespace {
+// RADV's ISA for one fixture kernel, built on RADV's null device for gfx1151
+// (proton's Strix Halo) by test/tools/radv_isa.c in a child process. Empty
+// when the helper, Mesa's radeon driver, or the null device is missing.
+std::string radvIsaOf(const char* kernel, std::string* why) {
+    namespace fs = std::filesystem;
+    const fs::path helper = cajeta_self_exe().parent_path() / "cajeta_radv_isa";
+    if (!fs::exists(helper)) { *why = "no cajeta_radv_isa helper"; return ""; }
+    std::string icd;
+    for (const char* dir : {"/usr/share/vulkan/icd.d", "/etc/vulkan/icd.d"}) {
+        std::error_code ec;
+        for (auto& e : fs::directory_iterator(dir, ec))
+            if (e.path().filename().string().rfind("radeon_icd", 0) == 0) { icd = e.path().string(); break; }
+        if (!icd.empty()) break;
+    }
+    if (icd.empty()) { *why = "no radeon ICD (Mesa's RADV is not installed)"; return ""; }
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kAlignSource, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], kernel);
+    if (!k) { *why = "no kernel"; return ""; }
+    auto tm = createSpirvTargetMachine("vulkan1.3");
+    llvm::LLVMContext ctx;
+    llvm::Module m(std::string("xpu_radv_") + kernel, ctx);
+    configureDeviceModule(m, *tm);
+    lowerKernel(k, m);
+    std::vector<uint8_t> spirv = emitSpirv(m, *tm);
+    if (spirv.empty()) { *why = "no SPIR-V"; return ""; }
+    static std::mt19937_64 rng(std::random_device{}());
+    const fs::path tmp = fs::temp_directory_path() / ("cajeta_radv_" + std::to_string(rng()));
+    const fs::path spv = tmp.string() + ".spv", err = tmp.string() + ".isa";
+    {
+        std::ofstream out(spv, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(spirv.data()), (std::streamsize) spirv.size());
+    }
+    std::vector<std::string> envs = {"VK_DRIVER_FILES=" + icd, "VK_ICD_FILENAMES=" + icd,
+                                     "RADV_FORCE_FAMILY=gfx1151", "RADV_DEBUG=shaders,nocache",
+                                     "MESA_SHADER_CACHE_DISABLE=1"};
+    for (const char* keep : {"PATH", "HOME", "LD_LIBRARY_PATH"})
+        if (const char* v = std::getenv(keep)) envs.push_back(std::string(keep) + "=" + v);
+    llvm::SmallVector<llvm::StringRef, 8> env(envs.begin(), envs.end());
+    const std::string helperStr = helper.string(), spvStr = spv.string(), errStr = err.string();
+    llvm::SmallVector<llvm::StringRef, 2> args = {helperStr, spvStr};
+    std::optional<llvm::StringRef> redirects[] = {std::nullopt, llvm::StringRef(errStr), llvm::StringRef(errStr)};
+    const int rc = llvm::sys::ExecuteAndWait(helperStr, args, env, redirects, /*SecondsToWait=*/120);
+    std::ifstream in(err);
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    fs::remove(spv);
+    fs::remove(err);
+    if (rc != 0 || text.find("radv_isa: pipeline built") == std::string::npos
+        || text.find("RADV") == std::string::npos) {
+        *why = "RADV's null device did not build the pipeline (rc " + std::to_string(rc) + "):\n" + text;
+        return "";
+    }
+    return text;
+}
+
+size_t countOf(const std::string& text, const char* needle) {
+    size_t n = 0;
+    for (size_t at = text.find(needle); at != std::string::npos; at = text.find(needle, at + 1)) ++n;
+    return n;
+}
+}  // namespace
+
+// kernel-load-alignment 3.1.2 (spec 2.1): on RADV, a proven-aligned int8
+// vload<16> is one buffer_load_b128 with no v_alignbyte/v_perm realignment, for
+// a plain index (`i * 16`) and for one with a constant tail (`i * 32 + 16`).
+// The ISA is RADV's own, from its null device, so no GPU is used and the result
+// is the installed Mesa's: written against 25.2.8, where the first mask form
+// (`& -16` on a 64-bit index) left 10 v_alignbyte and 6 v_perm here.
+TEST(XpuVulkanEmitTests, onRadvAProvenInt8VloadIsOneWideLoadWithNoRealignment) {
+    for (const char* kernel : {"aligned", "offset"}) {
+        std::string why;
+        std::string isa = radvIsaOf(kernel, &why);
+        if (isa.empty()) GTEST_SKIP() << why;
+        EXPECT_EQ(countOf(isa, "buffer_load_b128"), 2u) << kernel << ": one per int8 vload\n" << isa;
+        EXPECT_EQ(countOf(isa, "v_alignbyte"), 0u) << kernel << "\n" << isa;
+        EXPECT_EQ(countOf(isa, "v_perm"), 0u) << kernel << "\n" << isa;
+    }
+}
+
+// The instrument fires: an index nothing proves keeps today's realigned form,
+// so a clean count above is the mask's doing and not a blind reader.
+TEST(XpuVulkanEmitTests, onRadvAnUnprovableVloadKeepsItsRealignment) {
+    std::string why;
+    std::string isa = radvIsaOf("loose", &why);
+    if (isa.empty()) GTEST_SKIP() << why;
+    EXPECT_GT(countOf(isa, "v_alignbyte"), 0u) << isa;
 }
 
 // Does not fire: nothing proves `i + off` aligned, so no mask is invented.

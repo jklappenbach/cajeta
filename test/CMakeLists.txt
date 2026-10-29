@@ -12,6 +12,8 @@ list(APPEND TEST_SOURCES ${TEST_C_SOURCES})
 # of the gtest binary (which would multiply-define main / g_optixFunctionTable). Keep
 # it in-tree for reproducibility but exclude it from the auto-glob.
 list(FILTER TEST_SOURCES EXCLUDE REGEX "xpu/optix/spike_optix_ll\\.cpp$")
+# test/tools/ holds standalone helpers with their own main(), built as their own targets below.
+list(FILTER TEST_SOURCES EXCLUDE REGEX "/test/tools/")
 message(STATUS "TEST_SOURCES: ${TEST_SOURCES}")
 
 cmake_policy(SET CMP0135 NEW)
@@ -233,4 +235,16 @@ else()
             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
             USES_TERMINAL
             COMMENT "Running cross-compilation release test subset")
+endif()
+
+# cajeta_radv_isa: builds one SPIR-V module on RADV's null device so a test can
+# read the ISA Mesa produces for it (kernel-load-alignment 3.1.2). Needs only the
+# Vulkan headers; libvulkan is loaded at run time, and the test skips when the
+# helper or Mesa's radeon driver is absent.
+include(CheckIncludeFile)
+check_include_file(vulkan/vulkan.h CAJETA_TEST_HAS_VULKAN_H)
+if(UNIX AND NOT APPLE AND CAJETA_TEST_HAS_VULKAN_H)
+    add_executable(cajeta_radv_isa tools/radv_isa.c)
+    target_link_libraries(cajeta_radv_isa PRIVATE ${CMAKE_DL_LIBS})
+    add_dependencies(${BINARY} cajeta_radv_isa)
 endif()
