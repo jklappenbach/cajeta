@@ -125,3 +125,9 @@ store lowering.
   mask. Either meets 2.1; the plan picks by measurement.
 - **Q6** Whether 5.1's refusal needs a per-launch cost check on Vulkan, where
   buffers come from the runtime's own allocator.
+  Settled 2026-10-28: the check stays at the launch. It costs 15 ns a buffer
+  (90 ns for a six-buffer launch, measured in place on Phoenix), which is
+  about 50 to 65 us on the 8B decode step's ~540 launches, 0.2 to 0.3% of
+  RADV's 24.8 ms 4-seq step even if none of it overlaps the device. That is
+  below what an interleaved decode A/B can resolve, so no check at view
+  creation is needed.
