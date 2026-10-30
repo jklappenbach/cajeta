@@ -89,10 +89,13 @@ chunk:
   threads that persists across calls. No thread is created per call.
 - **4.2** When the pool hands out one mat-vec, the overhead per call is at most
   10 µs on proton, so the ~225 mat-vecs of a decode step cost under 2.5 ms.
-- **4.3** When the thread count is not set, it is the number of hardware
-  threads (32 on proton). It can be set at engine start. Changed 2026-10-28
-  (Julian) from physical cores: on proton each CCD reads at most ~58 GB/s,
-  and 32 threads reach the ceiling (Q4_K 122 GB/s) where 16 do not (88-102).
+- **4.3** When the thread count is not set, it is the number of physical
+  cores (16 on proton), and pool workers spin before they sleep. It can be
+  set at engine start, above the physical count too. Changed 2026-10-29
+  (Julian, "Verify, then flip") from every hardware thread: end to end, 16
+  spinning workers decode 8B Q4_K_M at 19.5 tok/s against 15.6 for 32
+  sleeping ones, and spin with every hardware thread in the pool stalls woken
+  workers (plan 3.4.1).
 - **4.4** When the cpu XPU backend's own kernels run in the same step, the two
   pools do not oversubscribe the cores.
 - **4.5** When one mat-vec's output is split, the result is the same bit for
@@ -133,6 +136,9 @@ Settled with the approval, 2026-10-28:
 - **Q4** (2026-10-28, from Unit 2's measurement) The default thread count is
   every hardware thread (4.3). Not chosen: keep physical cores and close the
   gap in the kernels first; 32 now with 16-thread tuning filed for later.
+- **Q4b** (2026-10-29, from plan 3.4.1) The default is physical cores with
+  worker spin on, reversing Q4. Not chosen: spin as an llm opt-in only;
+  parking it for Unit 4.
 
 - **Q1** The pool is chosen by measuring per-call overhead against 4.2: the cpu
   XPU backend's native worker pool through a host entry, or a new pool in

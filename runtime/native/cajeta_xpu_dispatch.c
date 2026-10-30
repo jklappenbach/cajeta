@@ -599,6 +599,9 @@ static int caj_resolve_worker_cap(void);
 #if defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
 #endif
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+#endif
 /* The wave the compiler built this program's cpu kernels at, set by each cpu
  * kernel's registration constructor; 0 when none registered. Preferred over
  * the CPUID answer below, because the two disagree on an AVX-512 part tuned
@@ -690,7 +693,11 @@ static int64_t cajeta_xpu_host_available_bytes(void) {
 #endif
 }
 
+/* Online hardware threads, resolved once. */
 static int64_t cajeta_xpu_host_online_cores(void) {
+    static int64_t cached = 0;
+    int64_t c = __atomic_load_n(&cached, __ATOMIC_ACQUIRE);
+    if (c > 0) return c;
 #if defined(_WIN32)
     SYSTEM_INFO si;
     GetSystemInfo(&si);
@@ -698,7 +705,60 @@ static int64_t cajeta_xpu_host_online_cores(void) {
 #else
     long cores = sysconf(_SC_NPROCESSORS_ONLN);
 #endif
-    return cores < 1 ? 1 : (int64_t) cores;
+    c = cores < 1 ? 1 : (int64_t) cores;
+    __atomic_store_n(&cached, c, __ATOMIC_RELEASE);
+    return c;
+}
+
+/* Physical cores, resolved once; the online count where the OS cannot say. */
+static int64_t cajeta_xpu_host_physical_cores(void) {
+    static int64_t cached = 0;
+    int64_t c = __atomic_load_n(&cached, __ATOMIC_ACQUIRE);
+    if (c > 0) return c;
+    int64_t online = cajeta_xpu_host_online_cores();
+    c = 0;
+#if defined(_WIN32)
+    DWORD len = 0;
+    GetLogicalProcessorInformation(NULL, &len);
+    SYSTEM_LOGICAL_PROCESSOR_INFORMATION* info =
+        len ? (SYSTEM_LOGICAL_PROCESSOR_INFORMATION*) malloc(len) : NULL;
+    if (info && GetLogicalProcessorInformation(info, &len)) {
+        for (DWORD i = 0; i < len / sizeof(*info); ++i)
+            if (info[i].Relationship == RelationProcessorCore) ++c;
+    }
+    free(info);
+#elif defined(__APPLE__)
+    int n = 0;
+    size_t sz = sizeof(n);
+    if (sysctlbyname("hw.physicalcpu", &n, &sz, NULL, 0) == 0) c = n;
+#else
+    /* A cpu counts when it is the lowest-numbered of its SMT siblings. */
+    for (int cpu = 0; cpu < 4096; ++cpu) {
+        char path[96], line[64];
+        snprintf(path, sizeof path,
+                 "/sys/devices/system/cpu/cpu%d/topology/thread_siblings_list", cpu);
+        FILE* f = fopen(path, "r");
+        if (!f) {
+            if (cpu >= online + 64) break;
+            continue;
+        }
+        if (fgets(line, sizeof line, f) && atoi(line) == cpu) ++c;
+        fclose(f);
+    }
+#endif
+    if (c < 1 || c > online) c = online;
+    __atomic_store_n(&cached, c, __ATOMIC_RELEASE);
+    return c;
+}
+
+/* The CPU launch's worker count before nblocks: physical cores with no cap,
+ * else the cap up to the online hardware threads. */
+static int64_t cajeta_xpu_cpu_pool_workers(void) {
+    int cap = caj_resolve_worker_cap();
+    int64_t w = cap > 0 ? cajeta_xpu_host_online_cores() : cajeta_xpu_host_physical_cores();
+    if (cap > 0 && w > cap) w = cap;
+    if (w > CAJETA_XPU_CPU_MAX_WORKERS) w = CAJETA_XPU_CPU_MAX_WORKERS;
+    return w;
 }
 
 // The CPU backend runs its kernels on the HOST, so its geometry is the
@@ -711,13 +771,7 @@ static int64_t cajeta_xpu_host_online_cores(void) {
 // unknown, per the contract, rather than a number invented to look like a GPU.
 static int64_t cajeta_xpu_cpu_geometry(CajetaXpuGeometryKey key) {
     switch (key) {
-        case CAJETA_XPU_GEO_MP_COUNT: {
-            int64_t cores = cajeta_xpu_host_online_cores();
-            int cap = caj_resolve_worker_cap();
-            if (cap > 0 && cores > cap) cores = cap;
-            if (cores > CAJETA_XPU_CPU_MAX_WORKERS) cores = CAJETA_XPU_CPU_MAX_WORKERS;
-            return cores;
-        }
+        case CAJETA_XPU_GEO_MP_COUNT:              return cajeta_xpu_cpu_pool_workers();
         case CAJETA_XPU_GEO_SIMDS_PER_MP:          return 1;
         case CAJETA_XPU_GEO_WAVE_SIZE:
             return g_cpu_built_wave > 0 ? (int64_t) g_cpu_built_wave
@@ -1112,13 +1166,12 @@ static void* cajeta_xpu_cpu_worker(void* arg) {
 #define CAJETA_XPU_CPU_MAX_WORKERS 256
 #endif
 
-// Spin budgets before a futex sleep. JOIN spin is caller-side and safe; WORKER
-// spin trips a latent barrier-fission race, so it defaults to 0 (condvar).
+// Spin budgets in PAUSEs before a futex sleep (a PAUSE is ~13 ns on Zen 5).
 #ifndef CAJETA_XPU_CPU_JOIN_SPIN
 #define CAJETA_XPU_CPU_JOIN_SPIN 262144
 #endif
 #ifndef CAJETA_XPU_CPU_WORKER_SPIN
-#define CAJETA_XPU_CPU_WORKER_SPIN 0
+#define CAJETA_XPU_CPU_WORKER_SPIN 100000
 #endif
 #if defined(__x86_64__) || defined(__i386__)
 #define CAJ_CPU_PAUSE() __builtin_ia32_pause()
@@ -1436,19 +1489,8 @@ static void cajeta_xpu_launch_cpu(const char* name,
                         (int64_t) (blockY > 0 ? blockY : 1) *
                         (int64_t) (blockZ > 0 ? blockZ : 1);
     int64_t total = (int64_t) nblocks * blockSize;
-#if defined(_WIN32)
-    // sysconf(_SC_NPROCESSORS_ONLN) is POSIX; ask the Win32 API here.
-    SYSTEM_INFO cpu_si;
-    GetSystemInfo(&cpu_si);
-    long cores = (long) cpu_si.dwNumberOfProcessors;
-#else
-    long cores = sysconf(_SC_NPROCESSORS_ONLN);
-#endif
-    if (cores < 1) cores = 1;
-    int32_t nworkers = (int32_t) ((long) nblocks < cores ? (long) nblocks : cores);
-    if (nworkers > CAJETA_XPU_CPU_MAX_WORKERS) nworkers = CAJETA_XPU_CPU_MAX_WORKERS;
-    int wcap = caj_resolve_worker_cap();
-    if (wcap > 0 && nworkers > (int32_t) wcap) nworkers = (int32_t) wcap;
+    int64_t pool = cajeta_xpu_cpu_pool_workers();
+    int32_t nworkers = (int32_t) ((int64_t) nblocks < pool ? (int64_t) nblocks : pool);
 
     if (force_serial || nblocks <= 1 || nworkers <= 1 ||
         total < CAJETA_XPU_CPU_PARALLEL_THRESHOLD) {

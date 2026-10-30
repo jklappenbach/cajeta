@@ -4,14 +4,20 @@
 // SIMDs, wave 32, 64K registers -- so `Linear.launchTargetBlocks()` computed a
 // GPU-sized 256 for kernels that run on host threads, and `Autotune.deviceKey()`
 // embedded a card the tuning does not depend on. The cpu backend now reports
-// the host: its online cores (one block per worker), one scheduler per core,
+// the host: its physical cores (one block per worker), one scheduler per core,
 // a wave of the host's SIMD lanes, physical RAM, integrated. What the host has
 // no counterpart for answers 0 = unknown, never an invented GPU number.
 #include "gtest/gtest.h"
 #include <cstdint>
 #include <cstdlib>
+#include <fstream>
+#include <set>
+#include <string>
 #if !defined(_WIN32)
 #include <unistd.h>
+#endif
+#if defined(__linux__)
+#include <sched.h>
 #endif
 
 extern "C" {
@@ -45,6 +51,26 @@ int64_t hostCores() {
     return n < 1 ? 1 : n;
 #endif
 }
+
+// Physical cores from Linux topology, 0 elsewhere (asserted only where known).
+int64_t physicalCores() {
+#if defined(__linux__)
+    cpu_set_t mask;
+    if (sched_getaffinity(0, sizeof(mask), &mask) != 0) return 0;
+    std::set<std::string> cores;
+    for (int c = 0; c < CPU_SETSIZE; ++c) {
+        if (!CPU_ISSET(c, &mask)) continue;
+        std::ifstream f("/sys/devices/system/cpu/cpu" + std::to_string(c)
+                        + "/topology/thread_siblings_list");
+        std::string sib;
+        if (!std::getline(f, sib)) return 0;
+        cores.insert(sib);
+    }
+    return (int64_t) cores.size();
+#else
+    return 0;
+#endif
+}
 }  // namespace
 
 TEST(XpuDeviceGeometryCpu, theCpuBackendAnswersForTheHostNotTheCard) {
@@ -55,11 +81,11 @@ TEST(XpuDeviceGeometryCpu, theCpuBackendAnswersForTheHostNotTheCard) {
 
     int64_t mps = __cajeta_xpu_device_geometry(kMpCount);
     EXPECT_GE(mps, 1);
-    if (int64_t cores = hostCores()) {
-        int64_t want = cores;
-        if (cap > 0 && want > cap) want = cap;
-        if (want > 256) want = 256;
-        EXPECT_EQ(mps, want) << "one block per worker: online cores, capped";
+    const int64_t cores = hostCores();
+    const int64_t want = cap > 0 ? (cores && cores < cap ? cores : cap) : physicalCores();
+    if (want > 0) {
+        EXPECT_EQ(mps, want > 256 ? 256 : want)
+            << "one block per worker: physical cores, or the cap up to the online cores";
     }
     EXPECT_EQ(__cajeta_xpu_device_geometry(kSimdsPerMp), 1);
 

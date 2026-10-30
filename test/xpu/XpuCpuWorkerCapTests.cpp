@@ -24,9 +24,13 @@
 #include <filesystem>
 #include <fstream>
 #include <random>
+#include <set>
 #include <string>
 #include <thread>
 #include "../PortableEnv.h"
+#if defined(__linux__)
+#include <sched.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -146,10 +150,31 @@ public class W {
         // Back to unlimited, and it must recover -- a one-way cap would
         // silently pin every later launch in the process.
         System.stdout.println("again " + W.runAt(0, n));
+        System.stdout.println("mp " + Device.multiprocessorCount());
+        System.stdout.println("capbig " + W.runAt(1024, n));
+        Device.setCpuWorkerCap(0);
         return;
     }
 }
 )CJ";
+
+#if defined(__linux__)
+// Physical cores this process may run on: distinct sibling sets over the mask.
+int linuxPhysicalCores() {
+    cpu_set_t mask;
+    if (sched_getaffinity(0, sizeof(mask), &mask) != 0) return -1;
+    std::set<std::string> cores;
+    for (int c = 0; c < CPU_SETSIZE; ++c) {
+        if (!CPU_ISSET(c, &mask)) continue;
+        std::ifstream f("/sys/devices/system/cpu/cpu" + std::to_string(c)
+                        + "/topology/thread_siblings_list");
+        std::string sib;
+        if (!std::getline(f, sib)) return -1;
+        cores.insert(sib);
+    }
+    return (int) cores.size();
+}
+#endif
 
 int readLabelled(const std::string& out, const std::string& label) {
     const size_t p = out.find(label + " ");
@@ -191,4 +216,24 @@ TEST(XpuCpuWorkerCapTests, uncappedUsesMoreThanOneWorkerAndTheCapLifts) {
         << "setting the cap back to 0 did not restore unlimited workers, so "
            "the cap is one-way and every later launch in the process is "
            "silently pinned. Got: " << out;
+}
+
+// Spec llm-cpu-parity 4.3: with no cap the pool is one worker a physical core,
+// the geometry agrees, and a cap above that still reaches every hardware thread.
+TEST(XpuCpuWorkerCapTests, uncappedUsesOneWorkerAPhysicalCore) {
+#if !defined(__linux__)
+    GTEST_SKIP() << "the reference count reads Linux sysfs topology";
+#else
+    const int phys = linuxPhysicalCores();
+    const unsigned hw = std::thread::hardware_concurrency();
+    if (phys < 2 || (unsigned) phys == hw)
+        GTEST_SKIP() << "no SMT here (" << phys << " cores, " << hw
+                     << " threads): physical and hardware counts agree";
+
+    const std::string out = buildAndRun(SWEEP, "probe.W.run");
+    ASSERT_FALSE(out.empty()) << "probe failed to build";
+    EXPECT_EQ(readLabelled(out, "uncapped"), phys) << out;
+    EXPECT_EQ(readLabelled(out, "mp"), phys) << out;
+    EXPECT_EQ(readLabelled(out, "capbig"), (int) std::min(hw, 64u)) << out;
+#endif
 }
