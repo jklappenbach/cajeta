@@ -1,7 +1,8 @@
 # cajeta-cloud on Cloudflare: R2, Access, Queues and KV (spec)
 
-Status: **draft**, opened with Julian 2026-10-30 ("focus on cloudflare adaptors
-first, instead of AWS"; "go with a shared s3 lib").
+Status: **approved** by Julian 2026-10-30 ("Approve cloudflare spec"), opened
+the same day ("focus on cloudflare adaptors first, instead of AWS"; "go with a
+shared s3 lib"). Plan: `agents/cajeta-cloud-cloudflare-plan.md`.
 Parent specs: `cajeta-cloud-spec.md` (§1.2 families, §1.6 capability
 negotiation, §1.7 structure, §9 adapters, §10 conformance, §11 errors) and
 `archive/cajeta-cloud-identity-spec.md` (the identity port).
