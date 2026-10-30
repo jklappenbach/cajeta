@@ -572,8 +572,8 @@ const char* kViewSource =
     "            System.stderr.println(m);\n"
     "            r = 1;\n"
     "            if (m.contains(\"argument 1\")) { r = r + 2; }\n"
-    "            if (m.contains(\"offset 4\")) { r = r + 4; }\n"
-    "            if (m.contains(\"multiple of 16\")) { r = r + 8; }\n"
+    "            if (m.contains(\"offset 1,\")) { r = r + 4; }\n"
+    "            if (m.contains(\"only at a multiple of \")) { r = r + 8; }\n"
     "        }\n"
     "        return r;\n"
     "    }\n"
@@ -582,7 +582,8 @@ const char* kViewSource =
 }  // namespace
 
 // 6.1.1 (spec 5.1, 5.2), Vulkan: a view at an offset the device cannot bind is
-// refused naming the argument; one at an allowed offset runs.
+// refused naming the argument, the offset and the limit; one at an allowed
+// offset runs.
 TEST(KernelAlignment, aVulkanViewAtAnUnbindableOffsetIsRefusedByName) {
     CAJETA_SKIP_IF_NO_VULKAN();
     cajeta_test::CajetaJit::Options o;
@@ -592,6 +593,9 @@ TEST(KernelAlignment, aVulkanViewAtAnUnbindableOffsetIsRefusedByName) {
     auto run = jit->lookup<int32_t (*)(int64_t)>("run");
     ASSERT_NE(run, nullptr);
     EXPECT_EQ(run(16), 100 + (19 & 63));   // allowed: element 3 of the view is byte 19
-    EXPECT_EQ(run(4), 1 + 2 + 4 + 8);
+    // Byte 1 is unbindable on every device: the limit is a power of two of at
+    // least 4 in practice (RADV 4, llvmpipe and NVIDIA 16). Offset 4 was legal on
+    // RADV, so this test failed on proton (Proton, 2026-10-29).
+    EXPECT_EQ(run(1), 1 + 2 + 4 + 8);
     EXPECT_EQ(run(32), 100 + (35 & 63));   // and the next allowed one still runs
 }
