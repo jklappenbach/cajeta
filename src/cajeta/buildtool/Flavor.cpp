@@ -93,7 +93,7 @@ namespace cajeta::buildtool {
         // using it is rejected at lowering.
         static const std::vector<FlavorPropertySpec> v = {
             {"opt",             K::EnumString, {"O0", "O1", "O2", "O3", "Oz"}, "opt"},
-            {"cpu",             K::EnumString, {"native", "generic"},          "cpu"},
+            {"cpu",             K::EnumString, {"native", "generic", "portable"}, "cpu"},
             {"xpu-backend",     K::EnumStringCsv, {"none", "cpu", "vulkan", "nvptx", "amdgpu"}, "xpu-backend"},
             {"xpu-arch",        K::FreeString, {},                            "xpu-arch"},
             {"lto",             K::EnumString, {"off", "thin", "full"},        "lto"},

@@ -747,8 +747,13 @@ static int cajeta_xpu_registry_names(const char* (*out)[CAJETA_XPU_MAX_MODULES])
     int backend = cajeta_xpu_active_backend();
     int n = 0;
     if (backend == CAJ_XPU_CPU) {
-        for (int i = 0; i < g_cpu_kernel_count && n < CAJETA_XPU_MAX_MODULES; ++i)
-            if (g_cpu_kernels[i].name && g_cpu_kernels[i].fn) (*out)[n++] = g_cpu_kernels[i].name;
+        for (int i = 0; i < g_cpu_kernel_count && n < CAJETA_XPU_MAX_MODULES; ++i) {
+            if (!g_cpu_kernels[i].name || !g_cpu_kernels[i].fn) continue;
+            int dup = 0;   // a portable build registers a name once a level
+            for (int j = 0; j < n; ++j)
+                if (strcmp((*out)[j], g_cpu_kernels[i].name) == 0) { dup = 1; break; }
+            if (!dup) (*out)[n++] = g_cpu_kernels[i].name;
+        }
         return n;
     }
     pthread_mutex_lock(&g_xpu_cuda_lock);

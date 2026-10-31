@@ -223,9 +223,13 @@ namespace cajeta {
         // `native` is the DEFAULT, so it has to degrade: getHostCPUName() answers
         // an x86 cpu name whatever the triple says, so a cross-compile falls back
         // to generic unless the caller named a cpu explicitly.
-        if (cpu == "native"
+        if ((cpu == "native" || cpu == "portable")
                 && targetTriple != llvm::sys::getDefaultTargetTriple()) {
             effectiveCpu = "generic";
+        } else if (cpu == "portable") {
+            // cpu-isa-variants 2.1: the host module at the x86-64-v3 baseline;
+            // the cpu kernels are emitted per level by the registration.
+            effectiveCpu = triple.isX86() ? "x86-64-v3" : "generic";
         } else if (cpu == "native") {
             effectiveCpu = llvm::sys::getHostCPUName().str();
             llvm::SubtargetFeatures feats(features); // seed with any explicit --features
@@ -2790,6 +2794,14 @@ namespace cajeta {
             for (XpuBackend cb : xpuBackends) {
                 cajeta::xpu::Backend backend = toLayer(cb);
                 std::string arch = singleBackend ? xpuArch : defaultArch(cb);
+                if (cb == XpuBackend::Cpu && cpu == "portable") {
+                    // The cpu registration reads its level list from `arch`,
+                    // which the cpu backend otherwise ignores.
+                    std::vector<std::string> lv = cpuVariants;
+                    if (lv.empty()) lv = {"v3", "v3-vnni", "v4", "v4-amx"};
+                    arch = "levels:";
+                    for (size_t i = 0; i < lv.size(); ++i) arch += (i ? "," : "") + lv[i];
+                }
                 std::vector<cajeta::xpu::KernelManifest> manifests;
                 cajeta::xpu::emitKernelRegistration(
                     backend, kernels, *module->getLlvmModule(), arch,

@@ -195,7 +195,10 @@ void printUsage(const char* progname) {
               << "                                       transitively referenced by user / stdlib bitcode.\n"
               << "                                       Default on; --prune-uber=off bundles everything.\n"
               << "  --target=<triple>                    LLVM target triple. Default: host.\n"
-              << "  --cpu=<name>                         Target CPU. Default: native (host cpu + detected features).\n"
+              << "  --cpu=<name>                         Target CPU. Default: native (host cpu + detected features);\n"
+              << "                                       portable: an x86-64-v3 host module and every cpu kernel at\n"
+              << "                                       the levels v3, v3-vnni, v4, v4-amx, picked at startup.\n"
+              << "  --cpu-variants=<levels>              The levels a portable build emits (comma-separated).\n"
               << "                                       Pass a named cpu (or `generic`) for a portable binary; a .cja\n"
               << "                                       carries bitcode, so libraries stay portable either way.\n"
               << "  --features=<list>                    Comma-separated target features (e.g. +neon).\n"
@@ -713,6 +716,16 @@ int main(int argc, const char* argv[]) {
             compiler.setTargetTriple(value);
         } else if (match(arg, "cpu", value)) {
             compiler.setCpu(value);
+        } else if (match(arg, "cpu-variants", value)) {
+            std::vector<std::string> lv;
+            size_t p = 0;
+            while (p <= value.size()) {
+                size_t q = value.find(',', p);
+                if (q == std::string::npos) q = value.size();
+                if (q > p) lv.push_back(value.substr(p, q - p));
+                p = q + 1;
+            }
+            compiler.setCpuVariants(lv);
         } else if (match(arg, "features", value)) {
             compiler.setFeatures(value);
         } else if (match(arg, "profile", value)) {

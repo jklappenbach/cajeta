@@ -116,6 +116,7 @@ namespace cajeta {
         // Default target CPU; `native` is the host cpu name plus its detected features. A
         // .cja carries bitcode, so the cpu binds only at final --emit=exe/obj.
         string cpu = "native";
+        std::vector<string> cpuVariants;
         string features = "";
         llvm::TargetMachine* targetMachine;
         llvm::TargetOptions opt;
@@ -333,6 +334,10 @@ namespace cajeta {
             this->cpu = cpu;
             rebuildTargetMachine();
         }
+
+        /** The ISA levels a `--cpu=portable` build emits each cpu kernel at (cpu-isa-variants 2.2); empty = all four. */
+        void setCpuVariants(const std::vector<string>& levels) { cpuVariants = levels; }
+        const std::vector<string>& getCpuVariants() const { return cpuVariants; }
 
         const string& getFeatures() const {
             return features;

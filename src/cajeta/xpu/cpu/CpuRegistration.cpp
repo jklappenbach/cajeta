@@ -1275,7 +1275,7 @@ void foldWaveVariants(llvm::Function& f) {
 
     int emitKernelRegistration(const std::vector<MethodPtr>& kernels,
                                llvm::Module& hostModule,
-                               const std::string& /*arch*/,
+                               const std::string& arch,
                                std::vector<KernelManifest>* manifests) {
         if (kernels.empty()) return 0;
 
@@ -1293,9 +1293,32 @@ void foldWaveVariants(llvm::Function& f) {
         llvm::FunctionCallee setWaveFn = hostModule.getOrInsertFunction(
             "__cajeta_xpu_set_cpu_wave",
             llvm::FunctionType::get(voidTy, {llvm::Type::getInt32Ty(ctx)}, false));
+        // The per-level forms (cpu-isa-variants 2.1): register_cpu_kernel_at(name, level, fn),
+        // set_cpu_wave_at(level, lanes).
+        llvm::FunctionCallee regAtFn = hostModule.getOrInsertFunction(
+            "__cajeta_xpu_register_cpu_kernel_at",
+            llvm::FunctionType::get(voidTy, {ptrTy, llvm::Type::getInt32Ty(ctx), ptrTy}, false));
+        llvm::FunctionCallee setWaveAtFn = hostModule.getOrInsertFunction(
+            "__cajeta_xpu_set_cpu_wave_at",
+            llvm::FunctionType::get(voidTy, {llvm::Type::getInt32Ty(ctx), llvm::Type::getInt32Ty(ctx)}, false));
+        // `arch` names the levels of a portable build ("levels:v3,v4,..."); empty is
+        // today's one copy for the build host, written as level "host".
+        std::vector<std::string> levels;
+        if (arch.rfind("levels:", 0) == 0) {
+            std::string rest = arch.substr(7);
+            size_t p = 0;
+            while (p <= rest.size()) {
+                size_t q = rest.find(',', p);
+                if (q == std::string::npos) q = rest.size();
+                if (q > p) levels.push_back(rest.substr(p, q - p));
+                p = q + 1;
+            }
+        }
+        if (levels.empty()) levels.push_back("host");
 
-        // Host TargetMachine, for LoopVectorize's TTI. Null is tolerated.
-        std::unique_ptr<llvm::TargetMachine> hostTm = createCpuTargetMachine();
+        // The level's TargetMachine, for LoopVectorize's TTI and the integer-dot
+        // tier; the build host's for level "host". Null is tolerated. Set per level.
+        std::shared_ptr<llvm::TargetMachine> hostTm;
         // The host's own wave, for @Unlowered(hostWaveBelow = N) and for
         // Device.waveSize(): the native f32 vector width with no per-kernel
         // marker in play. The probe is TUNED LIKE A KERNEL WRAPPER
@@ -1308,7 +1331,8 @@ void foldWaveVariants(llvm::Function& f) {
         // twin refusal reports (cajeta-cabra CI 37495815557, 2026-10-06) and
         // which before it silently ran the wave ops at width 1.
         unsigned hostW = 0;
-        {
+        auto probeHostWave = [&]() {
+            hostW = 0;
             if (hostTm) {
                 llvm::Function* probe = llvm::Function::Create(
                     llvm::FunctionType::get(voidTy, false),
@@ -1318,7 +1342,7 @@ void foldWaveVariants(llvm::Function& f) {
                 probe->eraseFromParent();
             }
             setKernelGateHostWave(hostW);
-        }
+        };
 
         // The wrapper's 9 coordinate params; nctaid rides through for gridSize().
         const unsigned kNumBlockCoordParams = 9;
@@ -1353,10 +1377,28 @@ void foldWaveVariants(llvm::Function& f) {
         }
 
         int emitted = 0;
+        for (const std::string& level : levels) {
+        const bool leveled = level != "host";
+        const int levelIndex = leveled ? cpuLevelIndex(level) : -1;
+        if (leveled && levelIndex < 0) {
+            llvm::errs() << "cajeta.xpu.cpu: unknown ISA level '" << level << "'\n";
+            continue;
+        }
+        const std::string lvl = leveled ? "." + level : std::string();
+        hostTm = createCpuTargetMachine(level);
+        probeHostWave();
+        // Every function of a level's copy carries the level's target, so the
+        // host module's own baseline never reaches it and codegen picks the
+        // level's subtarget (cpu-isa-variants 2.1).
+        auto stampLevel = [&](llvm::Function* f) {
+            if (!leveled || !hostTm || !f) return;
+            f->addFnAttr("target-cpu", hostTm->getTargetCPU());
+            f->addFnAttr("target-features", hostTm->getTargetFeatureString());
+        };
         for (auto& method : kernels) {
             if (!method || !isKernel(*method)) continue;
             const std::string entryName = kernelRegistryName(method);
-            const std::string sym = "__cajeta_xpu_cpu." + symSuffix(method);
+            const std::string sym = "__cajeta_xpu_cpu." + symSuffix(method) + lvl;
 
             // hold = true: not attempted. The only lever for a kernel whose
             // lowering does not end (the vectorize deadline below names it);
@@ -1373,7 +1415,7 @@ void foldWaveVariants(llvm::Function& f) {
             mod->setTargetTriple(hostModule.getTargetTriple());
             llvm::Function* kfn = nullptr;
             try {
-                kfn = lowerKernel(method, *mod);
+                kfn = leveled ? lowerKernel(method, *mod, hostTm) : lowerKernel(method, *mod);
             } catch (cajeta::Exception& e) {
                 // A contradicted @Access is the author's error: a compile error.
                 if (e.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_CONTRADICTED"
@@ -1398,8 +1440,9 @@ void foldWaveVariants(llvm::Function& f) {
                 os.flush();
                 manifest.kernel = qualifiedKernelName(method);
                 manifest.block = method->pinnedLaunchBlock();
-                manifest.target = "cpu/" + (hostTm ? hostTm->getTargetCPU().str()
-                                                   : std::string("unknown"));
+                manifest.target = "cpu/" + (leveled ? level
+                                            : hostTm ? hostTm->getTargetCPU().str()
+                                                     : std::string("unknown"));
                 manifest.codeHash = sha256Hex(
                     reinterpret_cast<const uint8_t*>(ir.data()), ir.size());
                 manifest.compilerVersion = compilerVersionString();
@@ -1415,6 +1458,7 @@ void foldWaveVariants(llvm::Function& f) {
             llvm::Function* linked = hostModule.getFunction(sym);
             if (!linked) continue;
             linked->addFnAttr(llvm::Attribute::AlwaysInline);   // inline into loop
+            stampLevel(linked);
             neutralizeWaveStubs(hostModule);
 
             llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
@@ -1437,11 +1481,12 @@ void foldWaveVariants(llvm::Function& f) {
             llvm::Function* wrapper = llvm::Function::Create(
                 llvm::FunctionType::get(voidTy, wtys, false),
                 llvm::GlobalValue::ExternalLinkage,
-                "__cajeta_xpu_cpu_block." + symSuffix(method), hostModule);
+                "__cajeta_xpu_cpu_block." + symSuffix(method) + lvl, hostModule);
             // Tuned as generic x86-64 for codegen, ISA untouched: the host
             // machine's post-RA list scheduler is quadratic in the block the
             // fission wrappers become (6.4.12). CpuBackend.h says why.
             tuneKernelWrapper(*wrapper);
+            stampLevel(wrapper);
             // The trailing wrapper param is the dynamic shared byte count.
             llvm::Value* dynSharedBytes = wrapper->getArg(nReal + kNumBlockCoordParams);
 
@@ -1529,9 +1574,10 @@ void foldWaveVariants(llvm::Function& f) {
                             wrapper = llvm::Function::Create(
                                 llvm::FunctionType::get(voidTy, wtys, false),
                                 llvm::GlobalValue::ExternalLinkage,
-                                "__cajeta_xpu_cpu_block." + symSuffix(method),
+                                "__cajeta_xpu_cpu_block." + symSuffix(method) + lvl,
                                 hostModule);
                             tuneKernelWrapper(*wrapper);
+                            stampLevel(wrapper);
                             dynSharedBytes = wrapper->getArg(nReal + kNumBlockCoordParams);
                             ctaidX = wrapper->getArg(nReal + 0);
                             ctaidY = wrapper->getArg(nReal + 1);
@@ -1891,7 +1937,8 @@ void foldWaveVariants(llvm::Function& f) {
                 llvm::FunctionType::get(voidTy, {ptrTy, ptrTy}, false);
             llvm::Function* thunk = llvm::Function::Create(
                 thunkTy, llvm::GlobalValue::ExternalLinkage,
-                "__cajeta_xpu_cpu_launch." + symSuffix(method), hostModule);
+                "__cajeta_xpu_cpu_launch." + symSuffix(method) + lvl, hostModule);
+            stampLevel(thunk);
             thunk->getArg(0)->setName("argv");
             thunk->getArg(1)->setName("coord");
             llvm::Value* argvArg = thunk->getArg(0);
@@ -1934,12 +1981,17 @@ void foldWaveVariants(llvm::Function& f) {
             llvm::FunctionType* ctorTy = llvm::FunctionType::get(voidTy, false);
             llvm::Function* ctor = llvm::Function::Create(
                 ctorTy, llvm::GlobalValue::InternalLinkage,
-                "__cajeta_xpu_cpu_reg_ctor." + symSuffix(method), hostModule);
+                "__cajeta_xpu_cpu_reg_ctor." + symSuffix(method) + lvl, hostModule);
             llvm::BasicBlock* bb = llvm::BasicBlock::Create(ctx, "entry", ctor);
             b.SetInsertPoint(bb);
             llvm::Value* nameStr =
-                b.CreateGlobalString(entryName, "xpu.cpu.kname." + entryName);
-            b.CreateCall(regFn, {nameStr, thunk});
+                b.CreateGlobalString(entryName, "xpu.cpu.kname." + entryName + lvl);
+            if (leveled) {
+                b.CreateCall(regAtFn, {nameStr,
+                    llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), levelIndex), thunk});
+            } else {
+                b.CreateCall(regFn, {nameStr, thunk});
+            }
             // The parameter kinds and sizes, as nvptx, amdgpu and vulkan
             // register them. The cpu launch reads none of it; the launch
             // recorder (CAJETA_XPU_RECORD) needs it to tell a buffer argument
@@ -1981,9 +2033,14 @@ void foldWaveVariants(llvm::Function& f) {
             // They differ on an AVX-512 part tuned to prefer 256-bit vectors
             // (compiled 8, CPUID 16), and a launcher sizing geometry from the
             // runtime would map rows onto a wave that does not exist.
-            if (hostW > 0)
+            if (hostW > 0 && leveled) {
+                b.CreateCall(setWaveAtFn,
+                             {llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), levelIndex),
+                              llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), hostW)});
+            } else if (hostW > 0) {
                 b.CreateCall(setWaveFn,
                              {llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), hostW)});
+            }
             applyCost(manifest, method);
             emitManifestRegistration(hostModule, b, nameStr, /*CAJ_XPU_CPU=*/3,
                                      "", manifest);
@@ -1993,6 +2050,7 @@ void foldWaveVariants(llvm::Function& f) {
             if (manifests) manifests->push_back(manifest);
             noteKernelLowered(*method, entryName, "cpu");
             ++emitted;
+        }
         }
         return emitted;
     }

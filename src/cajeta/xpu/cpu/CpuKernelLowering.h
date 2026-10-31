@@ -5,6 +5,7 @@
 #pragma once
 
 #include <memory>
+namespace llvm { class TargetMachine; }
 
 namespace llvm {
     class Module;
@@ -28,6 +29,10 @@ namespace cpu {
     // Lower a @Kernel into `deviceModule`, returning the host function it made,
     // named for the method and carrying the coordinate params. Throws XPU-N01 on
     // an unsupported construct.
+    // `tm`: the level's TargetMachine for the integer-dot tier (cpu-isa-variants
+    // 2.1); null lowers for the build host, as before.
+    llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
+                                std::shared_ptr<llvm::TargetMachine> tm);
     llvm::Function* lowerKernel(const MethodPtr& method,
                                 llvm::Module& deviceModule);
 

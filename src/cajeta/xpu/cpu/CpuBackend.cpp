@@ -37,7 +37,21 @@ void ensureNativeTargetInitialized() {
 
 } // namespace
 
-std::unique_ptr<llvm::TargetMachine> createCpuTargetMachine() {
+bool cpuLevelTarget(const std::string& level, std::string* cpu, std::string* features) {
+    if (level == "v3")      { *cpu = "x86-64-v3"; *features = ""; return true; }
+    if (level == "v3-vnni") { *cpu = "x86-64-v3"; *features = "+avxvnni"; return true; }
+    if (level == "v4")      { *cpu = "x86-64-v4"; *features = "+avx512vnni"; return true; }
+    if (level == "v4-amx")  { *cpu = "x86-64-v4"; *features = "+avx512vnni,+amx-tile,+amx-int8"; return true; }
+    return false;
+}
+
+int cpuLevelIndex(const std::string& level) {
+    static const char* const names[4] = {"v3", "v3-vnni", "v4", "v4-amx"};
+    for (int i = 0; i < 4; ++i) if (level == names[i]) return i;
+    return -1;
+}
+
+std::unique_ptr<llvm::TargetMachine> createCpuTargetMachine(const std::string& level) {
     ensureNativeTargetInitialized();
     llvm::Triple triple(llvm::sys::getProcessTriple());
     std::string error;
@@ -61,6 +75,11 @@ std::unique_ptr<llvm::TargetMachine> createCpuTargetMachine() {
     // Debug overrides: reproduce another host's cost-model decisions on this box.
     if (const char* mcpu = std::getenv("CAJETA_XPU_CPU_MCPU")) cpu = mcpu;
     if (const char* mattr = std::getenv("CAJETA_XPU_CPU_MATTR")) features = mattr;
+    // A named level is exact: its cpu and features, nothing of the host's.
+    if (!level.empty() && level != "host" && !cpuLevelTarget(level, &cpu, &features)) {
+        llvm::errs() << "cajeta.xpu.cpu: unknown ISA level '" << level << "'\n";
+        return nullptr;
+    }
     llvm::TargetOptions opt;
     llvm::TargetMachine* tm = target->createTargetMachine(
         triple, cpu, features, opt, /*RM=*/llvm::Reloc::PIC_);

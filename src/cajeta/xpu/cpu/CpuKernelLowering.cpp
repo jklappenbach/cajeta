@@ -36,6 +36,7 @@ namespace {
 // coordinates arrive as the 12 trailing i32 kernel args the coord reads pull back.
 class CpuTarget : public LoweringTarget {
 public:
+    explicit CpuTarget(std::shared_ptr<llvm::TargetMachine> tm = nullptr) : levelTm(std::move(tm)) {}
     const char* name() const override { return "cpu"; }
     bool honorsStatedAlignment() const override { return false; }
     // The blocks run on host workers, so the record is the runtime's: the
@@ -93,8 +94,9 @@ public:
                                 llvm::Value* acc, bool wUnsigned) override {
         const char* fsd = std::getenv("CAJETA_SIMD_SCALAR_FALLBACK");
         if (fsd && fsd[0] && fsd[0] != '0') return nullptr;
-        static const std::unique_ptr<llvm::TargetMachine> tm =
+        static const std::unique_ptr<llvm::TargetMachine> hostTm =
             createCpuTargetMachine();
+        const llvm::TargetMachine* tm = levelTm ? levelTm.get() : hostTm.get();
         if (!tm || !tm->getTargetTriple().isX86()) return nullptr;
         const llvm::MCSubtargetInfo& sti = tm->getMCSubtargetInfo();
         if (!sti.checkFeatures("+avx512vnni") && !sti.checkFeatures("+avxvnni"))
@@ -119,6 +121,9 @@ public:
 
     // No native inline ray query: the noun is a software BVH, so RayQuery walks it.
     NounImpl accelImpl() const override { return NounImpl::SoftwareBvh; }
+
+private:
+    std::shared_ptr<llvm::TargetMachine> levelTm;   // null: the build host
 
     unsigned allocaAddressSpace() const override { return 0; }
     unsigned constantTableAddressSpace() const override { return 0; }
@@ -637,6 +642,12 @@ private:
 llvm::Function* lowerKernel(const MethodPtr& method,
                             llvm::Module& deviceModule) {
     CpuTarget target;
+    return cajeta::xpu::lowerKernel(method, deviceModule, target);
+}
+
+llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
+                            std::shared_ptr<llvm::TargetMachine> tm) {
+    CpuTarget target(std::move(tm));
     return cajeta::xpu::lowerKernel(method, deviceModule, target);
 }
 

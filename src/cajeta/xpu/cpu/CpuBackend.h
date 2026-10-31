@@ -20,7 +20,14 @@ namespace xpu {
 namespace cpu {
 
     // Host TargetMachine with generic CPU/features; null if the native target is not registered.
-    std::unique_ptr<llvm::TargetMachine> createCpuTargetMachine();
+    // The TargetMachine a cpu kernel is lowered and vectorized for. Empty or
+    // "host": the build host's cpu and features (today's one copy). A level of
+    // cpu-isa-variants 2.2 ("v3", "v3-vnni", "v4", "v4-amx"): that level's.
+    std::unique_ptr<llvm::TargetMachine> createCpuTargetMachine(const std::string& level = "");
+    // The level's LLVM cpu and feature string; false for an unknown level.
+    bool cpuLevelTarget(const std::string& level, std::string* cpu, std::string* features);
+    // The runtime's ordinal for a level name, -1 for none.
+    int cpuLevelIndex(const std::string& level);
 
     // Sets the host triple + DataLayout on `m` so the lowered IR is laid out for
     // native codegen or the JIT.
