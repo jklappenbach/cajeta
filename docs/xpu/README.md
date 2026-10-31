@@ -1,12 +1,13 @@
 # One kernel, any device
 
-A kernel in Cajeta is written once, in the same language as the program that
-launches it, and runs on NVIDIA through NVPTX, on AMD through AMDGPU, on any
-Vulkan device through SPIR-V, and on the host CPU. That much is a compiler
-feature. What this section documents is the harder half: how a kernel
-written against one part **finds its shape on a part nobody has measured**,
-without a table of devices, without a vendor branch in the source, and
-without silently running slower or wrong.
+A kernel in Cajeta is written once, in the language of the program that
+launches it, and the compiler lowers that one source to NVIDIA through
+NVPTX, to AMD through AMDGPU, to any Vulkan device through SPIR-V, and to
+the host CPU. Portability of that kind is the compiler's work, and the pages
+in this section take it as given. Their subject is the harder problem that
+follows from it: how a kernel written against one device **finds its right
+shape on a device nobody has measured**, with no table of devices, no vendor
+branch in the source, and no silent fall to a slower or a wrong result.
 
 ## The stack
 
