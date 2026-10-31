@@ -775,16 +775,18 @@ static int cajeta_xpu_registry_names(const char* (*out)[CAJETA_XPU_MAX_MODULES])
 static CajetaXpuRawDevice g_xpu_geo;
 static int g_xpu_geo_state = 0;   /* 0 untried, 1 valid, -1 unavailable */
 
+// The most pool workers a cpu launch fans out to; the pool's arrays are sized by it.
+#ifndef CAJETA_XPU_CPU_MAX_WORKERS
+#define CAJETA_XPU_CPU_MAX_WORKERS 256
+#endif
+static int caj_resolve_worker_cap(void);
+
 // The host's widest integer SIMD register in 32-bit lanes: what a CPU-backend
 // kernel that calls a wave op vectorizes at when compiled for this host
 // (CpuRegistration derives the same number from the target's register width).
 // 1 when the host has no usable vector unit, which is the scalar wave every
 // other CPU kernel already runs. Inline cpuid, so the runtime bitcode links
 // without a compiler support library.
-#ifndef CAJETA_XPU_CPU_MAX_WORKERS
-#define CAJETA_XPU_CPU_MAX_WORKERS 256
-#endif
-static int caj_resolve_worker_cap(void);
 
 #if defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
@@ -1364,9 +1366,6 @@ static void* cajeta_xpu_cpu_worker(void* arg) {
 // spawn, so it pays off well below the old figure. Overridable in the env.
 #ifndef CAJETA_XPU_CPU_PARALLEL_THRESHOLD
 #define CAJETA_XPU_CPU_PARALLEL_THRESHOLD 256   /* work-items */
-#endif
-#ifndef CAJETA_XPU_CPU_MAX_WORKERS
-#define CAJETA_XPU_CPU_MAX_WORKERS 256
 #endif
 
 // The floor as a knob: CAJETA_XPU_CPU_PARALLEL_MIN, or the setter; 0 is the default.
