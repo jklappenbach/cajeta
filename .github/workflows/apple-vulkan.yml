@@ -64,7 +64,7 @@ jobs:
   vulkan:
     name: macOS ${{ matrix.key }}
     needs: setup
-    runs-on: macos-14
+    runs-on: macos-15
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
