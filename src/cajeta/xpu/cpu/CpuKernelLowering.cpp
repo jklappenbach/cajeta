@@ -23,6 +23,7 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Support/KnownBits.h"
+#include <algorithm>
 #include "CpuBackend.h"
 #include "../../type/VectorOps.h"
 #include <cstdlib>
@@ -119,11 +120,74 @@ public:
         t.vnni = vnni;
         t.avx2 = !vnni && avx2;
         t.forceScalar = false;
-        if (t.avx2) {
-            llvm::KnownBits kb = llvm::computeKnownBits(throughSlot(w), m.getDataLayout());
-            t.saturatingOk = kb.getMaxValue().ule(128);
-        }
+        if (t.avx2) t.saturatingOk = byteBits(w, m.getDataLayout(), 0).Zero[7];
         return vecops::dotAccum(b, &m, w, a, acc, wUnsigned, t);
+    }
+
+    // What is known of EVERY BYTE of `v`: a Vector of bytes is lowered as words
+    // with bitcasts in between, and its subexpressions live in slots at lowering
+    // time, so this follows bitcasts and single-store slots (computeKnownBits does
+    // neither), with and/or/shifts/zext by hand and computeKnownBits as the floor.
+    static llvm::KnownBits byteBits(llvm::Value* v, const llvm::DataLayout& dl, int depth) {
+        llvm::KnownBits none(8);
+        v = throughSlot(v);
+        llvm::Type* ty = v->getType();
+        const unsigned width = ty->getScalarSizeInBits();
+        if (depth > 16 || width == 0 || (width % 8) != 0 || !ty->getScalarType()->isIntegerTy()) return none;
+        auto fromLane = [&](const llvm::KnownBits& kb) {
+            llvm::KnownBits r(8);
+            r.Zero.setAllBits(); r.One.setAllBits();
+            for (unsigned i = 0; i < kb.getBitWidth(); i += 8) {
+                r.Zero &= kb.Zero.extractBits(8, i);
+                r.One &= kb.One.extractBits(8, i);
+            }
+            return r;
+        };
+        auto shiftAmount = [&](llvm::Value* s, uint64_t& out) {
+            auto* c = llvm::dyn_cast<llvm::Constant>(s);
+            llvm::Constant* sp = c ? (c->getType()->isVectorTy() ? c->getSplatValue() : c) : nullptr;
+            if (auto* ci = llvm::dyn_cast_or_null<llvm::ConstantInt>(sp)) { out = ci->getZExtValue(); return true; }
+            return false;
+        };
+        if (auto* bc = llvm::dyn_cast<llvm::BitCastOperator>(v)) {
+            llvm::Type* st = bc->getSrcTy()->getScalarType();
+            if (st->isIntegerTy() && (st->getIntegerBitWidth() % 8) == 0) return byteBits(bc->getOperand(0), dl, depth + 1);
+            return none;
+        }
+        if (auto* bo = llvm::dyn_cast<llvm::BinaryOperator>(v)) {
+            uint64_t sh = 0;
+            switch (bo->getOpcode()) {
+            case llvm::Instruction::And:
+                return byteBits(bo->getOperand(0), dl, depth + 1) & byteBits(bo->getOperand(1), dl, depth + 1);
+            case llvm::Instruction::Or:
+                return byteBits(bo->getOperand(0), dl, depth + 1) | byteBits(bo->getOperand(1), dl, depth + 1);
+            case llvm::Instruction::Shl: {
+                if (!shiftAmount(bo->getOperand(1), sh) || sh >= 8) return none;
+                llvm::KnownBits k = byteBits(bo->getOperand(0), dl, depth + 1);
+                k.Zero = k.Zero.shl((unsigned) sh); k.One = k.One.shl((unsigned) sh);
+                // In a wider lane the low bits arrive from the byte below: unknown.
+                if (width != 8) { k.Zero.clearLowBits((unsigned) sh); k.One.clearLowBits((unsigned) sh); }
+                return k;
+            }
+            case llvm::Instruction::LShr: {
+                if (!shiftAmount(bo->getOperand(1), sh) || sh >= 8) return none;
+                llvm::KnownBits k = byteBits(bo->getOperand(0), dl, depth + 1);
+                k.Zero = k.Zero.lshr((unsigned) sh); k.One = k.One.lshr((unsigned) sh);
+                if (width != 8) {
+                    llvm::APInt hi = llvm::APInt::getHighBitsSet(8, (unsigned) sh);
+                    k.Zero &= ~hi; k.One &= ~hi;
+                }
+                return k;
+            }
+            default: break;
+            }
+        }
+        if (auto* z = llvm::dyn_cast<llvm::ZExtInst>(v)) {
+            llvm::KnownBits k = byteBits(z->getOperand(0), dl, depth + 1);
+            k.One.clearAllBits();   // the new bytes are zero: their known ones are none
+            return k;
+        }
+        return fromLane(llvm::computeKnownBits(v, dl));
     }
 
     // The value a load-of-single-store slot holds, through up to six hops: at

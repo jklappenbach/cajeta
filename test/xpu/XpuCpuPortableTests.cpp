@@ -49,6 +49,20 @@ public class P {
         }
     }
     @Kernel
+    public static void dot6(KernelBuffer<int32> out, KernelBuffer<int8> w, KernelBuffer<int8> x, uint32 n) {
+        uint32 g = KernelThread.globalIdX();
+        if (g < n) {
+            int64 o = (int64) g * 32L;
+            Vector<uint8,32> qa = w.vload<32>(o).asUnsigned();
+            Vector<uint8,32> qh = x.vload<32>(o).asUnsigned();
+            Vector<uint8,32> wv = (qa & 15) | ((qh & 3) << 4);
+            Vector<int8,32> xv = x.vload<32>(o);
+            Vector<int32,8> z = heap Vector<int32,8>(0, 0, 0, 0, 0, 0, 0, 0);
+            Vector<int32,8> acc = wv.dotAccum(xv, z);
+            out[g] = acc[0] + acc[1] + acc[2] + acc[3] + acc[4] + acc[5] + acc[6] + acc[7];
+        }
+    }
+    @Kernel
     public static void dotFull(KernelBuffer<int32> out, KernelBuffer<int8> w, KernelBuffer<int8> x, uint32 n) {
         uint32 g = KernelThread.globalIdX();
         if (g < n) {
@@ -92,6 +106,9 @@ public class P {
         dotFull.launch(s, grid: [n / 64], block: [64])(out, w, x, n);
         s.sync();
         System.stdout.println("checksum2 " + P.checksum(out, n));
+        dot6.launch(s, grid: [n / 64], block: [64])(out, w, x, n);
+        s.sync();
+        System.stdout.println("checksum3 " + P.checksum(out, n));
         System.stdout.println("level " + Device.cpuLevelName(Device.cpuLevel()));
         System.stdout.println("kernel " + Device.cpuLevelName(Device.cpuKernelLevel("dot")));
         System.stdout.println("wave " + Device.waveSize());
@@ -344,6 +361,8 @@ TEST(XpuCpuPortable, onePortableBinaryRunsAtEveryLevelWithTheSameBits) {
         EXPECT_EQ(field(out, "checksum"), sum) << "the " << lvl << " copy's bits differ: " << out;
         EXPECT_EQ(field(out, "checksum2"), field(plain, "checksum2"))
             << "the " << lvl << " copy's unbounded-weight bits differ (3.1.2): " << out;
+        EXPECT_EQ(field(out, "checksum3"), field(plain, "checksum3"))
+            << "the " << lvl << " copy's 6-bit-assembly bits differ (3.3.2): " << out;
         const std::string wave = field(out, "wave");
         if (want == "v3" || want == "v3-vnni") EXPECT_EQ(wave, "8") << out;
         else EXPECT_EQ(wave, "16") << out;
@@ -359,8 +378,13 @@ TEST(XpuCpuPortable, theV3CopyTakesTheAvx2TiersByWhatTheWeightsCanHold) {
     ASSERT_FALSE(ir.empty());
     const std::string masked = functionText(ir, "__cajeta_xpu_cpu_block.probe.P.dot.v3");
     const std::string full = functionText(ir, "__cajeta_xpu_cpu_block.probe.P.dotFull.v3");
+    const std::string six = functionText(ir, "__cajeta_xpu_cpu_block.probe.P.dot6.v3");
     ASSERT_FALSE(masked.empty());
     ASSERT_FALSE(full.empty());
+    ASSERT_FALSE(six.empty());
+    // 3.3.2: the Q6_K assembly `(qa & 15) | ((qh & 3) << 4)` is at most 63, through
+    // the slots each subexpression lives in at lowering time.
+    EXPECT_NE(six.find("llvm.x86.avx2.pmadd.ub.sw"), std::string::npos) << "a 6-bit assembly takes the 3-instruction form";
     EXPECT_NE(masked.find("llvm.x86.avx2.pmadd.ub.sw"), std::string::npos) << "masked nibbles take the 3-instruction form";
     EXPECT_EQ(full.find("llvm.x86.avx2.pmadd.ub.sw"), std::string::npos) << "unbounded weights must not saturate";
     EXPECT_NE(full.find("llvm.x86.avx2.pmadd.wd"), std::string::npos) << "unbounded weights take the exact form";
