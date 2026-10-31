@@ -2099,6 +2099,26 @@ int64_t __cajeta_xpu_buffer_alloc(void* self, uint64_t byteCount, int32_t kind) 
     if (h) caj_record_alloc(h, byteCount);
     return h;
 }
+// cpu "device" memory on a 64-byte boundary, so a 512-bit load never splits a
+// cache line; malloc hands a large block back 16 bytes past a page.
+static void* caj_cpu_buffer_alloc(size_t n) {
+    if (n == 0) n = 1;
+#ifdef _WIN32
+    return _aligned_malloc(n, 64);
+#else
+    void* p = NULL;
+    if (posix_memalign(&p, 64, n) != 0) return NULL;
+    return p;
+#endif
+}
+static void caj_cpu_buffer_free(void* p) {
+#ifdef _WIN32
+    _aligned_free(p);
+#else
+    free(p);
+#endif
+}
+
 static int64_t caj_buffer_alloc_raw(uint64_t byteCount, int32_t kind) {
     if (byteCount == 0) return 0;
     switch (cajeta_xpu_active_backend()) {
@@ -2139,7 +2159,7 @@ static int64_t caj_buffer_alloc_raw(uint64_t byteCount, int32_t kind) {
             return cajeta_xpu_vk_alloc(byteCount);
         case CAJ_XPU_CPU: {
             // CPU "device" memory = host; every kind is host-accessible already.
-            void* p = malloc((size_t) byteCount);
+            void* p = caj_cpu_buffer_alloc((size_t) byteCount);
             return (int64_t) (intptr_t) p;
         }
         default: return 0;   // none: diagnostic emitted
@@ -2792,7 +2812,7 @@ void __cajeta_xpu_buffer_free(void* self, int64_t handle, int32_t kind) {
                 g_xpu_hip.hipFree((void*) (intptr_t) handle);
             return;
         case CAJ_XPU_VULKAN: (void) kind; cajeta_xpu_vk_free(handle); return;
-        case CAJ_XPU_CPU:    (void) kind; free((void*) (intptr_t) handle); return;
+        case CAJ_XPU_CPU:    (void) kind; caj_cpu_buffer_free((void*) (intptr_t) handle); return;
         default: return;
     }
 }
