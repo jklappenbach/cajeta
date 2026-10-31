@@ -354,7 +354,10 @@ is honoured by fission of the loop into regions, with uniform loops
 scaffolded so the work-item loop stays innermost. Shared memory is a
 per-block array; blocks fan out across pthread workers, one a physical core
 by default (capped by `CAJETA_XPU_CPU_WORKERS` or `Device.setCpuWorkerCap`,
-which may go up to the hardware threads). A kernel whose loop the
+which may go up to the hardware threads); a launch under 256 work-items runs
+inline unless its kernel has measured over 20 µs inline twice, and
+`CAJETA_XPU_CPU_TRACE=1` accounts every launch's wall time per kernel
+(CajetaCPU.md §8). A kernel whose loop the
 vectoriser would leave scalar is refused at launch rather than run slowly
 (reason 3 of §2.4), and the manifest records the width it was built at, or 1
 for a kernel with no wave verb. The device-geometry surface on this backend
