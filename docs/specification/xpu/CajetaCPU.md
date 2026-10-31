@@ -839,3 +839,77 @@ the loop's last barrier, which fission cannot split across the back edge ("per-w
 code in the latch of a barrier loop"). The lowering instead puts the barrier at the end of
 every pass of the innermost loop, and before each `continue`.
 
+
+## 7. x86 ISA levels — one binary from AVX2 up (cpu-isa-variants, 2026-10-31)
+
+The cpu backend compiles every `@Kernel` for a target CPU. By default that is
+the build host (`--cpu=native`): one copy of each kernel, and a binary that runs
+only on hosts with every feature of the builder's. A **portable** build emits
+every kernel once per ISA level and picks the copy at startup.
+
+### Levels
+
+| level | ISA | hosts |
+|---|---|---|
+| `v3` | x86-64-v3: AVX2, FMA, F16C, BMI2 | Haswell and later, Zen 1 and later |
+| `v3-vnni` | v3 + AVX-VNNI | Alder Lake and later desktop, Zen 5 |
+| `v4` | x86-64-v4: AVX-512 F/BW/VL/DQ + VNNI | Skylake-X, Ice Lake, Zen 4, Zen 5, Sapphire Rapids |
+| `v4-amx` | v4 + AMX-TILE/INT8 | Sapphire Rapids and later |
+
+A host below `v3` (no AVX2) is refused at startup with the required level named.
+
+### Building
+
+- `--cpu=native` (default): one copy, the build host's CPU. Unchanged.
+- `--cpu=<name>`: one copy for that LLVM CPU name. Unchanged.
+- `--cpu=portable`: the host module at `x86-64-v3`; every kernel at every
+  level of the variant set, each copy with its own `target-cpu` and
+  `target-features`, registered under the kernel's name with its level.
+  `--cpu-variants=v3,v4` names a subset.
+
+The cost is code and build time. Measured on the 8B llm bench binary: 123.5 MB
+built in 2528 s portable, against 35.5 MB in 512 s native. The resolved run is
+within 2% of the native build on decode and the 4-sequence decode and 2.5% behind
+on single-sequence prefill (the host module runs at the baseline).
+
+### At startup
+
+The runtime detects the host's level once, from CPUID, XCR0 (the OS saves the
+ymm, zmm and tile state) and, for AMX on Linux, `arch_prctl(ARCH_REQ_XCOMP_PERM,
+XTILEDATA)`. Each kernel name resolves to the highest registered level the host
+supports; a name registered only above the host's level is refused by name with
+both levels in the message. The cpu wave (`Device.waveSize`) is the resolved
+level's: 8 at `v3` and `v3-vnni`, 16 at `v4` and `v4-amx`.
+
+- `CAJETA_XPU_CPU_LEVEL=<level>` forces a lower level, never a higher one, for
+  A/B runs and the per-level test legs.
+- `Device.cpuLevel()`, `Device.cpuLevelName(level)`, `Device.cpuKernelLevel(name)`
+  and `Device.setCpuLevelOverride(level)` are the cajeta-side view; the kernel
+  manifest records `cpu/<level>` per copy and a census can record the resolved
+  level.
+
+### The integer dot inside a kernel
+
+`Vector.dotAccum` lowers by what the copy's level has:
+
+| level | form | instructions a 32-pair dot |
+|---|---|---|
+| VNNI (`v3-vnni`, `v4`, `v4-amx`) | `vpdpbusd` | 1 |
+| `v3`, weights provably in 0..128 | `vpmaddubsw` + `vpmaddwd` + `vpaddd` | 3 |
+| `v3`, weights unbounded | widen, multiply, `vpmaddwd` | 15 |
+
+The bound is proven per byte at lowering time (`byteBits` in
+`CpuKernelLowering.cpp`), through the bitcasts a byte Vector lowers with and the
+slots its subexpressions sit in: a masked nibble, a Q6_K six-bit assembly and a
+zero-extended byte all qualify. Every form is bit-identical, so the cpu backend
+stays the GPU backends' oracle at every level. Measured on the 8B Q4_K_M bench
+forced to `v3`: prefill 0.44 and decode 0.94 of the `v4` run (before the tier,
+0.08 and 0.80).
+
+### AMX
+
+At `v4-amx`, with `CAJETA_XPU_CPU_AMX=1`, an int8 `CooperativeMatrix<int8,16,16>`
+takes the matrix unit: one tile a work item, `tileloadd`/`tdpb*d`/`tilestored`,
+B repacked to the VNNI 4 x 64 form through a stack scratch. Off by default: there
+is no AMX host here, and the tier is verified by IR shape and instruction
+selection only (spec cpu-isa-variants 5.4), never by a run.

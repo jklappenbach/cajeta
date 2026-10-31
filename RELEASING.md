@@ -388,6 +388,18 @@ publish the artifacts that built cleanly. To diagnose a failed job:
    :refs/tags/v<x.y.z>`) before the new push of the same tag
    re-triggers the workflow.
 
+## Programs shipped as binaries: `--cpu=portable`
+
+`--emit=exe` compiles the cpu backend's kernels for the build host by default
+(`--cpu=native`), so a binary built on one machine dies with an illegal
+instruction on a lesser one. A cajeta program that SHIPS as a binary (the
+cajeta-llm release binaries, a tool built on a Zen 5 runner and run on an Intel
+desktop) is built with `--cpu=portable`: the host module at x86-64-v3 and every
+kernel at each ISA level, chosen at startup. The compiler's own release is not
+affected (it is C++), and a program built where it runs keeps the default. The
+levels, the cost and the runtime's choice are in
+`docs/specification/xpu/CajetaCPU.md` §7.
+
 ## Local sanity check before tagging
 
 ```sh
