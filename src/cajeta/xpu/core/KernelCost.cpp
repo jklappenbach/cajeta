@@ -550,7 +550,7 @@ namespace {
 
         bool isAddressingCall(const std::shared_ptr<MethodCallExpression>& mc) {
             const std::string& nm = mc->getMethodCallName();
-            return nm == "vload" || nm == "vstore" || nm.rfind("atomic", 0) == 0
+            return nm == "vload" || nm == "vstore" || nm == "prefetch" || nm.rfind("atomic", 0) == 0
                 || nm == "load" || nm == "store";
         }
 

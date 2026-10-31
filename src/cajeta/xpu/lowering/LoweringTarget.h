@@ -293,6 +293,11 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* base,
             llvm::Type* elemTy, unsigned lanes, llvm::Value* index,
             llvm::Value* value, uint64_t statedAlign = 0);
+        // `prefetch(index)`: advice that element `index` of `base` is read soon.
+        // A cache-line prefetch where the target has one; nothing elsewhere.
+        virtual void prefetch(llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/,
+                              llvm::Value* /*base*/, llvm::Type* /*elemTy*/,
+                              llvm::Value* /*index*/) {}
         // Whether an `align:` statement reaches this target's loads. The cpu
         // backend accepts the statement and ignores it (spec 1.4): an aligned
         // x86 vector load of a misaligned address faults where the unaligned

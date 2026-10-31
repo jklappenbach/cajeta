@@ -44,6 +44,14 @@ public:
     explicit CpuTarget(std::shared_ptr<llvm::TargetMachine> tm = nullptr) : levelTm(std::move(tm)) {}
     const char* name() const override { return "cpu"; }
     bool honorsStatedAlignment() const override { return false; }
+    void prefetch(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* base,
+                  llvm::Type* elemTy, llvm::Value* index) override {
+        llvm::Value* ptr = bufferElementPtr(b, m, base, elemTy, index);
+        auto* i32 = llvm::Type::getInt32Ty(m.getContext());
+        b.CreateIntrinsic(llvm::Intrinsic::prefetch, {ptr->getType()},
+                          {ptr, llvm::ConstantInt::get(i32, 0), llvm::ConstantInt::get(i32, 3),
+                           llvm::ConstantInt::get(i32, 1)});
+    }
     // The blocks run on host workers, so the record is the runtime's: the
     // launcher reads it when the grid is done (kernel-load-alignment 5.1.1).
     void recordAlignFault(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* info,

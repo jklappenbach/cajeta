@@ -3438,6 +3438,18 @@ private:
         }
         const std::string& name = mc->getMethodCallName();
 
+        if (name == "prefetch" && bufferBases.count(recv) && bufferElems.count(recv)) {
+            const auto& params = mc->getParameters();
+            if (params.size() != 1 || !params[0].label.empty())
+                unsupported("prefetch at line " + std::to_string(mc->getSourceLine())
+                            + ": takes one argument, the element index");
+            llvm::Value* idx = lowerExpr(params[0].expression);
+            if (idx->getType() != llvm::Type::getInt64Ty(ctx))
+                idx = builder.CreateIntCast(idx, llvm::Type::getInt64Ty(ctx),
+                                            exprSigned(params[0].expression));
+            target.prefetch(builder, mod, bufferBase(recv), bufferElems[recv], idx);
+            return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
+        }
         if ((name == "vload" || name == "vstore")
                 && bufferBases.count(recv) && bufferElems.count(recv)) {
             llvm::Type* elemTy = bufferElems[recv];

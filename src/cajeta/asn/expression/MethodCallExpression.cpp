@@ -6847,7 +6847,7 @@ namespace cajeta {
             }
         }
 
-        if ((methodCallName == "vload" || methodCallName == "vstore")
+        if ((methodCallName == "vload" || methodCallName == "vstore" || methodCallName == "prefetch")
                 && targetClass->getQName()
                 && targetClass->getQName()->toCanonical().rfind(
                        "cajeta.xpu.KernelBuffer", 0) == 0) {

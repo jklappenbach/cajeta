@@ -108,7 +108,7 @@ answers for them.
 | `Group.width()`, `Group.laneId()`, `Wave.width()`, `Wave.laneId()`, `Wave.isFirstLane()` | the wave the kernel got (§3.2) |
 | `Wave.reduceSumF32/I64`, `reduceMaxF32`, `prefixSumI64`, `ballotSync`, `shuffleSync*`, the segmented reductions | wave verbs, exact at every width |
 | `Workgroup.reduce(GroupOp, v)`, `Workgroup.scan(GroupOp, v)` | barrier collectives across every wave of the workgroup, with no wave width or count in the source; partials combine from wave 0 upward, so the result is deterministic at a given width |
-| `Vector<T, N>`, `vload<N>`, `vstore`, `asWords`, `asBytes`, `lut4` | wide loads and stores; an aligned byte-vector load lowers to a word load |
+| `Vector<T, N>`, `vload<N>`, `vstore`, `prefetch`, `asWords`, `asBytes`, `lut4` | wide loads and stores; an aligned byte-vector load lowers to a word load |
 | `dotSum`, `dotAccum` | the integer dot products (`dp4a` and its equivalents) |
 | `CooperativeMatrix<T, 16, 16, Use>`, `load`, `store`, `mma`, `fromWords`, `splat`, `TileOps.scaledAccumI32`, `rank1Accum`, `scaledAccumInto(2)` | the matrix fragments and their epilogues (§3.3) |
 | `Tile<T, Rows, Cols>`, `Group.mac` | the role-free fragment form; roles inferred from position |
@@ -130,6 +130,14 @@ and the access is emitted at the larger of the proven and the stated
 alignment. A bad value fails the kernel naming the call and its line, and
 `align:` outside a kernel is the kernel-only error. The cpu backend and the
 reference interpreter accept a statement and read the same elements.
+
+**Prefetch.** `buf.prefetch(i)` asks for the cache line holding element `i`
+ahead of its use. It moves no bytes into the kernel and changes no result: the
+cpu backend emits a read prefetch into the data cache, the GPU backends and
+the reference interpreter do nothing, and an index past the buffer's end is
+not an access. A kernel that eats a cache line a load can outrun the hardware
+prefetchers; cajeta-llm's 16-row decode mat-vecs on a Zen 5 took a third of
+their lines on demand until they prefetched the block two ahead.
 
 A statement is a promise about the index. A build with `--ub-traps=on` (every
 debug build) tests each one the proof does not confirm: a violation is

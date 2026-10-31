@@ -753,7 +753,7 @@ bool isWaveVectorType(const CajetaTypePtr& t) {
 
 const std::map<LocalKind, std::set<std::string>>& memberBuiltins() {
     static const std::map<LocalKind, std::set<std::string>> m = {
-        {LocalKind::Buffer, {"vload", "vstore", "atomicAdd", "atomicSub", "atomicMin",
+        {LocalKind::Buffer, {"vload", "vstore", "prefetch", "atomicAdd", "atomicSub", "atomicMin",
                              "atomicMax", "atomicAnd", "atomicOr", "atomicXor",
                              "atomicExchange", "atomicCompareExchange"}},
         {LocalKind::Shared, {"vload", "vstore", "atomicAdd", "atomicSub", "atomicMin",
@@ -2268,6 +2268,10 @@ private:
             std::string lab = mc->getParameters().back().label;
             while (!lab.empty() && (lab.back() == ':' || lab.back() == ' ')) lab.pop_back();
             if (lab == "align") --positional;
+        }
+        if (nm == "prefetch") {
+            if (positional != 1) refuse("`prefetch` takes (index) (" + where + ")");
+            return Val();   // advice, not an access: nothing to bound or do
         }
         if (nm == "vload") {
             const auto& ta = mc->getExplicitMethodTypeArgs();

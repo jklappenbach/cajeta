@@ -1715,3 +1715,22 @@ TEST(XpuReferenceInterpreter, workgroupReduceCombinesFromWaveZeroUpward) {
     EXPECT_EQ(out[0], 1.0f) << "left to right from wave 0 gives 1, a pairwise tree gives 0";
     EXPECT_EQ(compareOn<float>(p, ins, 0, shape(1, 128)), "");
 }
+
+// A prefetch is advice: the result is the same with it on the cpu backend and
+// in the reference, and a prefetch past the buffer's end is not an access, so
+// nothing is refused (cpu-isa-variants 5.3.3.8).
+TEST(XpuReferenceInterpreter, aPrefetchChangesNothingAndMayReachPastTheEnd) {
+    Pair p(R"CJ(
+    @Kernel
+    public static void refPrefetch(KernelBuffer<float32> y, KernelBuffer<float32> x, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        x.prefetch((int64) i + 64L);
+        if (i < n) {
+            y[i] = x[i] * 2.0f;
+        }
+    }
+)CJ", "refPrefetch");
+    const uint32_t N = 256;
+    std::vector<In> ins = {buffer(ramp(N, 0.0f, 0.0f)), buffer(ramp(N, 0.5f, 1.0f)), u32(N)};
+    EXPECT_EQ(compareOn<float>(p, ins, 0, shape(4, 64)), "");
+}
