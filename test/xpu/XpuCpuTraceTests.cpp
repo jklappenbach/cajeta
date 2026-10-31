@@ -47,6 +47,8 @@ void __cajeta_xpu_cpu_trace_set(int32_t on);
 void __cajeta_xpu_cpu_trace_reset(void);
 int32_t __cajeta_xpu_cpu_trace_rows(void);
 int32_t __cajeta_xpu_cpu_trace_row(int32_t i, struct cajeta_cpu_trace_row* out);
+void __cajeta_xpu_cpu_set_parallel_min(int64_t workItems);
+int64_t __cajeta_xpu_cpu_parallel_min(void);
 }
 
 namespace {
@@ -168,4 +170,22 @@ TEST_F(XpuCpuTrace, offRecordsNothing) {
     __cajeta_xpu_cpu_trace_set(0);
     launch("cajeta.trace.even", 64, 64, 1000, -1);
     EXPECT_EQ(__cajeta_xpu_cpu_trace_rows(), 0);
+}
+
+// The parallel floor is a knob: a 64-work-item launch is serial at the default
+// floor and fans out once the floor is lowered; 0 restores the default.
+TEST_F(XpuCpuTrace, theParallelFloorIsAKnob) {
+    EXPECT_EQ(__cajeta_xpu_cpu_parallel_min(), 256);
+    launch("cajeta.trace.small", 4, 16, 100, -1);
+    cajeta_cpu_trace_row r{};
+    ASSERT_TRUE(rowNamed("cajeta.trace.small", &r));
+    EXPECT_EQ(r.serial, 1);
+    EXPECT_EQ(r.launches, 0);
+    __cajeta_xpu_cpu_set_parallel_min(1);
+    launch("cajeta.trace.small", 4, 16, 100, -1);
+    ASSERT_TRUE(rowNamed("cajeta.trace.small", &r));
+    EXPECT_EQ(r.serial, 1);
+    EXPECT_EQ(r.launches, 1);
+    __cajeta_xpu_cpu_set_parallel_min(0);
+    EXPECT_EQ(__cajeta_xpu_cpu_parallel_min(), 256);
 }

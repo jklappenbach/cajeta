@@ -1369,6 +1369,21 @@ static void* cajeta_xpu_cpu_worker(void* arg) {
 #define CAJETA_XPU_CPU_MAX_WORKERS 256
 #endif
 
+// The floor as a knob: CAJETA_XPU_CPU_PARALLEL_MIN, or the setter; 0 is the default.
+static int64_t g_cpu_parallel_min = -1;
+static int64_t caj_cpu_parallel_min(void) {
+    if (g_cpu_parallel_min < 0) {
+        const char* e = getenv("CAJETA_XPU_CPU_PARALLEL_MIN");
+        int64_t v = e ? atoll(e) : 0;
+        g_cpu_parallel_min = v > 0 ? v : CAJETA_XPU_CPU_PARALLEL_THRESHOLD;
+    }
+    return g_cpu_parallel_min;
+}
+void __cajeta_xpu_cpu_set_parallel_min(int64_t workItems) {
+    g_cpu_parallel_min = workItems > 0 ? workItems : CAJETA_XPU_CPU_PARALLEL_THRESHOLD;
+}
+int64_t __cajeta_xpu_cpu_parallel_min(void) { return caj_cpu_parallel_min(); }
+
 // Spin budgets in PAUSEs before a futex sleep (a PAUSE is ~13 ns on Zen 5).
 #ifndef CAJETA_XPU_CPU_JOIN_SPIN
 #define CAJETA_XPU_CPU_JOIN_SPIN 262144
@@ -1843,7 +1858,7 @@ static void cajeta_xpu_launch_cpu(const char* name,
     int32_t nworkers = (int32_t) ((int64_t) nblocks < pool ? (int64_t) nblocks : pool);
 
     if (force_serial || nblocks <= 1 || nworkers <= 1 ||
-        total < CAJETA_XPU_CPU_PARALLEL_THRESHOLD) {
+        total < caj_cpu_parallel_min()) {
         // Record 1, not nworkers: one thread ran the whole grid.
         __atomic_store_n(&caj_last_workers, 1, __ATOMIC_RELEASE);
         struct cajeta_cpu_grid_slice all = {fn, (void**) argv,
