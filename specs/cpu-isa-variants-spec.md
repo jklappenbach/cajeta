@@ -1,6 +1,6 @@
 # The cpu backend across x86 SIMD levels
 
-Status: **draft** 2026-10-30. Origin: llm-cpu-parity 4.3.1.7's ISA A/B and
+Status: **approved** 2026-10-30 (Julian). Origin: llm-cpu-parity 4.3.1.7's ISA A/B and
 Julian's ask that the cpu kernels adapt to Zen 3, Zen 5 and Intel.
 
 ## 1. Definition
@@ -141,15 +141,12 @@ Settled 2026-10-30 (Julian): scope is dispatch, the pre-VNNI tier, the
 Not chosen: dispatch and the tier alone; the tier alone with per-machine
 builds; the spec alone for now.
 
-Open:
+Settled 2026-10-30 (Julian), with the recommendation in each case:
 
-- **Q1** The baseline. x86-64-v3 (AVX2) as drafted, refusing older hosts;
-  or a `v2` (SSE4.2) variant too, as llama.cpp ships. Recommended: v3; a
-  2013-or-newer floor, and the kernels' 256-bit shapes assume it.
-- **Q2** `--emit=exe`'s default. `native` as drafted (fast builds; today's
-  behaviour), with `portable` chosen for a release; or `portable` by default.
-  Recommended: `native`, and the release workflow passes `portable`.
-- **Q3** Granularity. Every kernel at every level as drafted (simple, ~70 MB
-  more at four levels); or only kernels that use `dotAccum`, wide vectors or
-  cooperative matrices, the rest once at the baseline. Recommended: every
-  kernel, measured size first; narrow if it matters.
+- **Q1** The baseline is x86-64-v3 (AVX2); older hosts are refused at
+  startup. Not chosen: an SSE4.2 variant as llama.cpp ships.
+- **Q2** `--emit=exe` stays `native`; a release passes `--cpu=portable`.
+  Not chosen: portable by default.
+- **Q3** Every kernel at every level; the size is measured first and the set
+  narrowed only if it matters. Not chosen: variants only for kernels that use
+  wide SIMD.
