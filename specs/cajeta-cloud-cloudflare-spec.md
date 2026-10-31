@@ -296,6 +296,8 @@ declared.
 - **Q2** Should the queue and key-value ports ship in a `dev.cajeta.cloud`
   minor release (0.5.0) ahead of the adapters, or together with
   `cajeta-cloud-cloudflare` 0.1.0?
+  *(Resolved 2026-10-30, Julian: ports first. `dev.cajeta.cloud` 0.5.0 ships
+  at the end of Unit 2 and `cajeta-cloud-cloudflare` pins it.)*
 - **Q3** D1 next? It needs the SQL port, the parent's largest unspecified
   family. Only if a consumer needs relational storage on Cloudflare.
 - **Q4** The Cloudflare account: whose, and which secrets the live workflow
