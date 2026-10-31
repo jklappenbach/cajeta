@@ -1644,6 +1644,66 @@ static void cajeta_xpu_cpu_refuse_if_twin_ran(const char* name, int32_t before,
             "run the wave ops at width 1\n", name, blockX);
 }
 
+// --- Promotion by measured work. The floor judges a launch by its work-item
+// count, and a kernel whose work-item is a whole row group's dot ran inline for
+// tens of microseconds while the pool waited. An inline launch under the floor
+// is timed; a kernel over CAJETA_XPU_CPU_PROMOTE_NS twice fans out from then on.
+#ifndef CAJETA_XPU_CPU_PROMOTE_NS
+#define CAJETA_XPU_CPU_PROMOTE_NS 20000
+#endif
+#define CAJ_CPU_PROMOTE_SLOTS 1024
+struct caj_cpu_promote_slot { void* fn; int32_t strikes; int32_t promoted; };
+static struct caj_cpu_promote_slot g_cpu_promote[CAJ_CPU_PROMOTE_SLOTS];
+static int32_t g_cpu_promote_count = 0;     // slots published, RELEASE-stored
+static int32_t g_cpu_promoted_count = 0;
+static int64_t g_cpu_promote_ns = -1;
+static pthread_mutex_t g_cpu_promote_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static int64_t caj_cpu_promote_ns(void) {
+    if (g_cpu_promote_ns < 0) {
+        const char* e = getenv("CAJETA_XPU_CPU_PROMOTE_NS");
+        int64_t v = e ? atoll(e) : 0;
+        g_cpu_promote_ns = v > 0 ? v : CAJETA_XPU_CPU_PROMOTE_NS;
+    }
+    return g_cpu_promote_ns;
+}
+void __cajeta_xpu_cpu_set_promote_ns(int64_t ns) { g_cpu_promote_ns = ns > 0 ? ns : CAJETA_XPU_CPU_PROMOTE_NS; }
+int64_t __cajeta_xpu_cpu_promote_ns(void) { return caj_cpu_promote_ns(); }
+int32_t __cajeta_xpu_cpu_promoted_count(void) { return __atomic_load_n(&g_cpu_promoted_count, __ATOMIC_ACQUIRE); }
+void __cajeta_xpu_cpu_promote_reset(void) {
+    pthread_mutex_lock(&g_cpu_promote_mu);
+    __atomic_store_n(&g_cpu_promote_count, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_cpu_promoted_count, 0, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&g_cpu_promote_mu);
+}
+
+// Whether `fn` fans out regardless of the floor: a lock-free scan of the published slots.
+static int caj_cpu_promoted(void* fn) {
+    int32_t n = __atomic_load_n(&g_cpu_promote_count, __ATOMIC_ACQUIRE);
+    for (int32_t i = 0; i < n; ++i)
+        if (g_cpu_promote[i].fn == fn) return __atomic_load_n(&g_cpu_promote[i].promoted, __ATOMIC_ACQUIRE);
+    return 0;
+}
+
+// An inline launch of `fn` took `ns`; the second one over the threshold promotes it.
+static void caj_cpu_promote_strike(void* fn, int64_t ns) {
+    if (ns < caj_cpu_promote_ns()) return;
+    pthread_mutex_lock(&g_cpu_promote_mu);
+    int32_t n = g_cpu_promote_count;
+    struct caj_cpu_promote_slot* slot = NULL;
+    for (int32_t i = 0; i < n; ++i) if (g_cpu_promote[i].fn == fn) { slot = &g_cpu_promote[i]; break; }
+    if (!slot && n < CAJ_CPU_PROMOTE_SLOTS) {
+        slot = &g_cpu_promote[n];
+        slot->fn = fn; slot->strikes = 0; slot->promoted = 0;
+        __atomic_store_n(&g_cpu_promote_count, n + 1, __ATOMIC_RELEASE);
+    }
+    if (slot && !slot->promoted && ++slot->strikes >= 2) {
+        __atomic_store_n(&slot->promoted, 1, __ATOMIC_RELEASE);
+        __atomic_add_fetch(&g_cpu_promoted_count, 1, __ATOMIC_ACQ_REL);
+    }
+    pthread_mutex_unlock(&g_cpu_promote_mu);
+}
+
 // --- CAJETA_XPU_CPU_TRACE: where a parallel cpu launch's wall time goes, summed
 // per kernel name. wall: dispatch to join returned. critical: dispatch to the
 // last slice's end. idle: worker-ns at the barrier (last end minus each slice's
@@ -1770,10 +1830,10 @@ void __cajeta_xpu_cpu_trace_dump(void) {
     double workerMs = (double) t.criticalNs * avgW / 1e6;
     fprintf(stderr, "cajeta.xpu: cpu trace: %lld parallel launches (%lld serial, %.1f ms), wall %.1f ms, "
             "critical %.1f ms, idle %.1f worker-ms (%.1f%% of %.1f worker-ms inside launches), "
-            "lag %.1f worker-ms, host gap %.1f ms, caller late %.1f ms\n",
+            "lag %.1f worker-ms, host gap %.1f ms, caller late %.1f ms, %d kernels promoted\n",
             (long long) t.launches, (long long) t.serial, t.serialNs / 1e6, t.wallNs / 1e6,
             t.criticalNs / 1e6, t.idleNs / 1e6, workerMs > 0 ? 100.0 * t.idleNs / 1e6 / workerMs : 0.0,
-            workerMs, t.lagNs / 1e6, t.gapNs / 1e6, t.callerLateNs / 1e6);
+            workerMs, t.lagNs / 1e6, t.gapNs / 1e6, t.callerLateNs / 1e6, __cajeta_xpu_cpu_promoted_count());
     fprintf(stderr, "  %-60s %8s %10s %10s %12s %6s %10s %10s %10s %6s\n", "kernel", "launches",
             "wall ms", "crit ms", "idle wk-ms", "idle%", "lag wk-ms", "gap ms", "late ms", "wk");
     for (int32_t i = 0; i < n; ++i) {
@@ -1856,8 +1916,9 @@ static void cajeta_xpu_launch_cpu(const char* name,
     int64_t pool = cajeta_xpu_cpu_pool_workers();
     int32_t nworkers = (int32_t) ((int64_t) nblocks < pool ? (int64_t) nblocks : pool);
 
-    if (force_serial || nblocks <= 1 || nworkers <= 1 ||
-        total < caj_cpu_parallel_min()) {
+    const int inlineOnly = force_serial || nblocks <= 1 || nworkers <= 1;
+    const int underFloor = !inlineOnly && total < caj_cpu_parallel_min() && !caj_cpu_promoted(p);
+    if (inlineOnly || underFloor) {
         // Record 1, not nworkers: one thread ran the whole grid.
         __atomic_store_n(&caj_last_workers, 1, __ATOMIC_RELEASE);
         struct cajeta_cpu_grid_slice all = {fn, (void**) argv,
@@ -1865,7 +1926,9 @@ static void cajeta_xpu_launch_cpu(const char* name,
                                             gridX, gridY, gridZ,
                                             0, nblocks, sharedBytes,
                                             specCount, specValues, 0, 0, 0};
+        const int64_t tInline = underFloor ? caj_cpu_trace_now_ns() : 0;
         cajeta_xpu_cpu_run_slice(&all);
+        if (underFloor) caj_cpu_promote_strike(p, caj_cpu_trace_now_ns() - tInline);
         if (trace) caj_cpu_trace_serial(name, t0);
         cajeta_xpu_cpu_refuse_if_twin_ran(name, twinsBefore, blockX);
         cajeta_xpu_cpu_raise_align_fault(name);
