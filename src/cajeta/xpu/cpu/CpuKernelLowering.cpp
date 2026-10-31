@@ -21,6 +21,8 @@
 #include "llvm/Support/ModRef.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/Analysis/ValueTracking.h"
+#include "llvm/Support/KnownBits.h"
 #include "CpuBackend.h"
 #include "../../type/VectorOps.h"
 #include <cstdlib>
@@ -99,12 +101,10 @@ public:
         const llvm::TargetMachine* tm = levelTm ? levelTm.get() : hostTm.get();
         if (!tm || !tm->getTargetTriple().isX86()) return nullptr;
         const llvm::MCSubtargetInfo& sti = tm->getMCSubtargetInfo();
-        if (!sti.checkFeatures("+avx512vnni") && !sti.checkFeatures("+avxvnni"))
-            return nullptr;
+        const bool vnni = sti.checkFeatures("+avx512vnni") || sti.checkFeatures("+avxvnni");
+        const bool avx2 = sti.checkFeatures("+avx2");
+        if (!vnni && !avx2) return nullptr;
 
-        // VNNI only, shape checked here rather than left to dotAccum's tier order:
-        // its AVX2 tier saturates, and this backend is the GPU backends' bit-exact
-        // oracle. `vpdpbusd` never saturates.
         auto* wt = llvm::dyn_cast<llvm::FixedVectorType>(w->getType());
         auto* at = llvm::dyn_cast<llvm::FixedVectorType>(acc->getType());
         if (!wUnsigned || wt == nullptr || at == nullptr) return nullptr;
@@ -112,11 +112,39 @@ public:
         if (wt->getNumElements() != n * 4) return nullptr;
         if (n != 4 && n != 8 && n != 16) return nullptr;
 
+        // Without VNNI the AVX2 tiers (cpu-isa-variants 3.1, 3.2): the saturating
+        // 3-instruction form only where the weights provably hold 0..128, so this
+        // backend stays the GPU backends' bit-exact oracle; the exact form otherwise.
         vecops::DotAccumTargets t;
-        t.vnni = true;
-        t.avx2 = false;             // never reachable given the gate above
+        t.vnni = vnni;
+        t.avx2 = !vnni && avx2;
         t.forceScalar = false;
+        if (t.avx2) {
+            llvm::KnownBits kb = llvm::computeKnownBits(throughSlot(w), m.getDataLayout());
+            t.saturatingOk = kb.getMaxValue().ule(128);
+        }
         return vecops::dotAccum(b, &m, w, a, acc, wUnsigned, t);
+    }
+
+    // The value a load-of-single-store slot holds, through up to six hops: at
+    // lowering time a Vector lives in its alloca, and known bits stop at a load.
+    static llvm::Value* throughSlot(llvm::Value* v) {
+        for (int hop = 0; hop < 6; ++hop) {
+            auto* ld = llvm::dyn_cast<llvm::LoadInst>(v);
+            if (!ld) break;
+            auto* al = llvm::dyn_cast<llvm::AllocaInst>(ld->getPointerOperand());
+            if (!al) break;
+            llvm::StoreInst* only = nullptr;
+            bool multi = false;
+            for (llvm::User* u : al->users())
+                if (auto* st = llvm::dyn_cast<llvm::StoreInst>(u)) {
+                    if (only) multi = true;
+                    only = st;
+                }
+            if (!only || multi || only->getParent() != ld->getParent() || !only->comesBefore(ld)) break;
+            v = only->getValueOperand();
+        }
+        return v;
     }
 
     // No native inline ray query: the noun is a software BVH, so RayQuery walks it.

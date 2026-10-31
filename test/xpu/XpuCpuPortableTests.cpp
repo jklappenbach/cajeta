@@ -48,6 +48,26 @@ public class P {
             out[g] = acc[0] + acc[1] + acc[2] + acc[3] + acc[4] + acc[5] + acc[6] + acc[7];
         }
     }
+    @Kernel
+    public static void dotFull(KernelBuffer<int32> out, KernelBuffer<int8> w, KernelBuffer<int8> x, uint32 n) {
+        uint32 g = KernelThread.globalIdX();
+        if (g < n) {
+            int64 o = (int64) g * 32L;
+            Vector<uint8,32> wv = w.vload<32>(o).asUnsigned();
+            Vector<int8,32> xv = x.vload<32>(o);
+            Vector<int32,8> z = heap Vector<int32,8>(0, 0, 0, 0, 0, 0, 0, 0);
+            Vector<int32,8> acc = wv.dotAccum(xv, z);
+            out[g] = acc[0] + acc[1] + acc[2] + acc[3] + acc[4] + acc[5] + acc[6] + acc[7];
+        }
+    }
+    static int64 checksum(KernelBuffer<int32> out, uint32 n) {
+        int32[] ho #= heap int32[n];
+        out.download(ho);
+        int64 sum = 0;
+        uint32 k = 0;
+        while (k < n) { sum = sum * 31L + (int64) ho[k]; sum = sum % 1000000007L; k = k + 1; }
+        return sum;
+    }
     public static void run() {
         uint32 n = 2048;
         int8[] hw #= heap int8[n * 32];
@@ -56,6 +76,7 @@ public class P {
         while (i < (int64) (n * 32)) {
             hw[i] = (int8) ((i * 7L + 3L) % 256L - 128L);
             hx[i] = (int8) ((i * 13L + 5L) % 256L - 128L);
+            if (i % 97L == 0L) { hw[i] = (int8) -1; hx[i] = (int8) -128; }
             i = i + 1;
         }
         KernelBuffer<int8> w = heap KernelBuffer<int8>(n * 32);
@@ -66,12 +87,11 @@ public class P {
         KernelStream s #= KernelStream.current();
         dot.launch(s, grid: [n / 64], block: [64])(out, w, x, n);
         s.sync();
-        int32[] ho #= heap int32[n];
-        out.download(ho);
-        int64 sum = 0;
-        uint32 k = 0;
-        while (k < n) { sum = sum * 31L + (int64) ho[k]; sum = sum % 1000000007L; k = k + 1; }
+        int64 sum = P.checksum(out, n);
         System.stdout.println("checksum " + sum);
+        dotFull.launch(s, grid: [n / 64], block: [64])(out, w, x, n);
+        s.sync();
+        System.stdout.println("checksum2 " + P.checksum(out, n));
         System.stdout.println("level " + Device.cpuLevelName(Device.cpuLevel()));
         System.stdout.println("kernel " + Device.cpuLevelName(Device.cpuKernelLevel("dot")));
         System.stdout.println("wave " + Device.waveSize());
@@ -145,19 +165,20 @@ std::string field(const std::string& out, const std::string& label) {
 
 // `tcpu`, when given, receives the host module's effective target cpu: the codegen
 // default for every function without its own `target-cpu`.
-std::string irOf(const std::string& cpu, const std::vector<std::string>& variants, const char* tag,
-                 std::string* tcpu = nullptr) {
+std::string irOfSource(const char* source, const char* pkg, const char* file, const char* entry,
+                       const std::string& cpu, const std::vector<std::string>& variants, const char* tag,
+                       std::string* tcpu = nullptr) {
     auto base = freshDir(tag);
     auto src = base / "src";
-    fs::create_directories(src / "test");
+    fs::create_directories(src / pkg);
     fs::create_directories(base / "build");
-    std::ofstream(src / "test" / "M.cajeta") << kSaxpy;
+    std::ofstream(src / pkg / file) << source;
     Compiler compiler;
     compiler.setEmitMode(EmitMode::IR);
     compiler.setXpuBackend(XpuBackend::Cpu);
     compiler.setCpu(cpu);
     if (!variants.empty()) compiler.setCpuVariants(variants);
-    compiler.compile("test.M.saxpy", src.string(), (base / "build").string());
+    compiler.compile(entry, src.string(), (base / "build").string());
     if (tcpu && compiler.getTargetMachine()) *tcpu = compiler.getTargetMachine()->getTargetCPU().str();
     std::vector<fs::path> hits;
     for (auto& e : fs::recursive_directory_iterator(base / "build"))
@@ -173,6 +194,11 @@ std::string irOf(const std::string& cpu, const std::vector<std::string>& variant
     }
     fs::remove_all(base);
     return ir;
+}
+
+std::string irOf(const std::string& cpu, const std::vector<std::string>& variants, const char* tag,
+                 std::string* tcpu = nullptr) {
+    return irOfSource(kSaxpy, "test", "M.cajeta", "test.M.saxpy", cpu, variants, tag, tcpu);
 }
 
 // The text of the function `name` in `ir`, from its `define` to its closing brace.
@@ -316,9 +342,28 @@ TEST(XpuCpuPortable, onePortableBinaryRunsAtEveryLevelWithTheSameBits) {
         EXPECT_EQ(field(out, "level"), want) << out;
         EXPECT_EQ(field(out, "kernel"), want) << out;
         EXPECT_EQ(field(out, "checksum"), sum) << "the " << lvl << " copy's bits differ: " << out;
+        EXPECT_EQ(field(out, "checksum2"), field(plain, "checksum2"))
+            << "the " << lvl << " copy's unbounded-weight bits differ (3.1.2): " << out;
         const std::string wave = field(out, "wave");
         if (want == "v3" || want == "v3-vnni") EXPECT_EQ(wave, "8") << out;
         else EXPECT_EQ(wave, "16") << out;
     }
     fs::remove_all(base);
+}
+
+// Unit 3 (3.1.1): the v3 copy of a kernel takes dotAccum's AVX2 tiers, never the
+// per-lane form: `vpmaddubsw` where the weights are provably within 0..128 (masked
+// nibbles), the exact `vpmaddwd` form where they are not.
+TEST(XpuCpuPortable, theV3CopyTakesTheAvx2TiersByWhatTheWeightsCanHold) {
+    const std::string ir = irOfSource(kProbe, "probe", "P.cajeta", "probe.P.run", "portable", {"v3"}, "irtier");
+    ASSERT_FALSE(ir.empty());
+    const std::string masked = functionText(ir, "__cajeta_xpu_cpu_block.probe.P.dot.v3");
+    const std::string full = functionText(ir, "__cajeta_xpu_cpu_block.probe.P.dotFull.v3");
+    ASSERT_FALSE(masked.empty());
+    ASSERT_FALSE(full.empty());
+    EXPECT_NE(masked.find("llvm.x86.avx2.pmadd.ub.sw"), std::string::npos) << "masked nibbles take the 3-instruction form";
+    EXPECT_EQ(full.find("llvm.x86.avx2.pmadd.ub.sw"), std::string::npos) << "unbounded weights must not saturate";
+    EXPECT_NE(full.find("llvm.x86.avx2.pmadd.wd"), std::string::npos) << "unbounded weights take the exact form";
+    EXPECT_EQ(masked.find("vpdpbusd"), std::string::npos);
+    EXPECT_EQ(full.find("vpdpbusd"), std::string::npos);
 }

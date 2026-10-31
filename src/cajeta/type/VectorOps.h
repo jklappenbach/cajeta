@@ -337,6 +337,7 @@ namespace vecops {
         bool armDotProd  = false;   // AArch64 ARMv8.2 dotprod: sdot / udot
         bool armI8mm     = false;   // AArch64 i8mm: usdot, the mixed form
         bool forceScalar = false;   // CAJETA_SIMD_SCALAR_FALLBACK=1
+        bool saturatingOk = true;   // tier 1.5a allowed: the weights hold 0..128 (spec 4.8.1)
     };
 
     // dotAccum(w, a, acc) -> <N x i32>: four ADJACENT int8 products summed into
@@ -375,7 +376,7 @@ namespace vecops {
         // Tier 1.5a — pre-VNNI x86 (AVX2): vpmaddubsw + vpmaddwd + vpaddd. The ONE
         // tier that SATURATES, exact only while each adjacent pair holds
         // |w0*a0 + w1*a1| <= 32767: weights 0..128, i.e. every K-quant field.
-        if (!forceScalar && isX86 && !hasVnni && hasAvx2 && wUnsigned
+        if (!forceScalar && isX86 && !hasVnni && hasAvx2 && wUnsigned && tgt.saturatingOk
                 && lanes == n * 4 && (lanes % 32) == 0) {
             auto* i16Ty = llvm::Type::getInt16Ty(ctx);
             auto* v32i8 = llvm::FixedVectorType::get(
