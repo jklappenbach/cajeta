@@ -1304,6 +1304,8 @@ struct cajeta_cpu_grid_slice {
     int32_t dynShared;    // dynamic shared-memory byte count (coord[12])
     int32_t specCount;        // host spec-constant overrides (0 = none)
     const int32_t* specValues;  // slot-indexed raw words; lives for the launch
+    int32_t trace;            // stamp tBeg/tEnd for the launch trace
+    int64_t tBeg, tEnd;
 };
 
 // Host spec-constant overrides are READ at runtime, never recompiled. Thread-
@@ -1327,9 +1329,16 @@ float __cajeta_xpu_cpu_spec_f32(int32_t slot, float def) {
     return def;
 }
 
+static int64_t caj_cpu_trace_now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t) ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+
 // Run a contiguous slice of blocks. The thunk is the per-BLOCK wrapper (it loops
 // the work-items), so it runs once per block; the grid is linearized x-fastest.
 static void cajeta_xpu_cpu_run_slice(const struct cajeta_cpu_grid_slice* s) {
+    if (s->trace) ((struct cajeta_cpu_grid_slice*) s)->tBeg = caj_cpu_trace_now_ns();
     // Set every call, so a launch with no override still reads defaults.
     g_cpu_spec_count = s->specCount;
     g_cpu_spec_values = s->specValues;
@@ -1343,6 +1352,7 @@ static void cajeta_xpu_cpu_run_slice(const struct cajeta_cpu_grid_slice* s) {
         coord[5] = (int32_t) (lin / gxy);  // ctaid.z
         s->fn(s->argv, coord);   // per-block; the wrapper loops work-items
     }
+    if (s->trace) ((struct cajeta_cpu_grid_slice*) s)->tEnd = caj_cpu_trace_now_ns();
 }
 
 static void* cajeta_xpu_cpu_worker(void* arg) {
@@ -1620,6 +1630,151 @@ static void cajeta_xpu_cpu_refuse_if_twin_ran(const char* name, int32_t before,
             "run the wave ops at width 1\n", name, blockX);
 }
 
+// --- CAJETA_XPU_CPU_TRACE: where a parallel cpu launch's wall time goes, summed
+// per kernel name. wall: dispatch to join returned. critical: dispatch to the
+// last slice's end. idle: worker-ns at the barrier (last end minus each slice's
+// own end). lag: worker-ns from dispatch to each slice's start (sleepers waking).
+// gap: host-ns from the previous parallel launch's join to this dispatch.
+// callerLate: the caller's own slice past the last worker's end.
+struct cajeta_cpu_trace_row {
+    const char* name;
+    int64_t launches, serial, wallNs, criticalNs, idleNs, lagNs, gapNs, callerLateNs, serialNs, workers;
+};
+#define CAJ_CPU_TRACE_ROWS 512
+static struct cajeta_cpu_trace_row g_cpu_trace_rows[CAJ_CPU_TRACE_ROWS];
+static char g_cpu_trace_names[CAJ_CPU_TRACE_ROWS][128];
+static int32_t g_cpu_trace_count = 0;
+static int g_cpu_trace_on = -1;                 // -1: not yet read from the env
+static int g_cpu_trace_dump_armed = 0;
+static int64_t g_cpu_trace_prev_join = 0;
+static pthread_mutex_t g_cpu_trace_mu = PTHREAD_MUTEX_INITIALIZER;
+
+void __cajeta_xpu_cpu_trace_dump(void);
+
+static int caj_cpu_trace_enabled(void) {
+    if (g_cpu_trace_on < 0) {
+        const char* e = getenv("CAJETA_XPU_CPU_TRACE");
+        g_cpu_trace_on = (e && *e && strcmp(e, "0") != 0) ? 1 : 0;
+        if (g_cpu_trace_on && !g_cpu_trace_dump_armed) {
+            g_cpu_trace_dump_armed = 1;
+            atexit(__cajeta_xpu_cpu_trace_dump);
+        }
+    }
+    return g_cpu_trace_on;
+}
+
+// The row for `name`, made on first sight; NULL past the table. Caller holds mu.
+static struct cajeta_cpu_trace_row* caj_cpu_trace_row_for(const char* name) {
+    for (int32_t i = 0; i < g_cpu_trace_count; ++i)
+        if (strcmp(g_cpu_trace_names[i], name) == 0) return &g_cpu_trace_rows[i];
+    if (g_cpu_trace_count >= CAJ_CPU_TRACE_ROWS) return NULL;
+    int32_t i = g_cpu_trace_count++;
+    snprintf(g_cpu_trace_names[i], sizeof g_cpu_trace_names[i], "%s", name);
+    memset(&g_cpu_trace_rows[i], 0, sizeof g_cpu_trace_rows[i]);
+    g_cpu_trace_rows[i].name = g_cpu_trace_names[i];
+    return &g_cpu_trace_rows[i];
+}
+
+static void caj_cpu_trace_serial(const char* name, int64_t t0) {
+    int64_t t1 = caj_cpu_trace_now_ns();
+    pthread_mutex_lock(&g_cpu_trace_mu);
+    struct cajeta_cpu_trace_row* r = caj_cpu_trace_row_for(name);
+    if (r) { r->serial++; r->serialNs += t1 - t0; }
+    pthread_mutex_unlock(&g_cpu_trace_mu);
+}
+
+static void caj_cpu_trace_parallel(const char* name, const struct cajeta_cpu_grid_slice* slices,
+                                   int32_t nworkers, int64_t t0) {
+    int64_t t1 = caj_cpu_trace_now_ns();
+    int64_t maxEnd = t0, maxOther = t0, idle = 0, lag = 0;
+    for (int32_t i = 0; i < nworkers; ++i) {
+        if (slices[i].tEnd > maxEnd) maxEnd = slices[i].tEnd;
+        if (i != nworkers - 1 && slices[i].tEnd > maxOther) maxOther = slices[i].tEnd;
+    }
+    for (int32_t i = 0; i < nworkers; ++i) {
+        if (slices[i].tEnd > 0) idle += maxEnd - slices[i].tEnd;
+        if (slices[i].tBeg > t0) lag += slices[i].tBeg - t0;
+    }
+    int64_t callerEnd = slices[nworkers - 1].tEnd;
+    int64_t callerLate = callerEnd > maxOther ? callerEnd - maxOther : 0;
+    pthread_mutex_lock(&g_cpu_trace_mu);
+    int64_t gap = g_cpu_trace_prev_join > 0 && t0 > g_cpu_trace_prev_join ? t0 - g_cpu_trace_prev_join : 0;
+    g_cpu_trace_prev_join = t1;
+    struct cajeta_cpu_trace_row* r = caj_cpu_trace_row_for(name);
+    if (r) {
+        r->launches++;
+        r->wallNs += t1 - t0;
+        r->criticalNs += maxEnd - t0;
+        r->idleNs += idle;
+        r->lagNs += lag;
+        r->gapNs += gap;
+        r->callerLateNs += callerLate;
+        r->workers += nworkers;
+    }
+    pthread_mutex_unlock(&g_cpu_trace_mu);
+}
+
+void __cajeta_xpu_cpu_trace_set(int32_t on) { g_cpu_trace_on = on ? 1 : 0; }
+
+void __cajeta_xpu_cpu_trace_reset(void) {
+    pthread_mutex_lock(&g_cpu_trace_mu);
+    g_cpu_trace_count = 0;
+    g_cpu_trace_prev_join = 0;
+    pthread_mutex_unlock(&g_cpu_trace_mu);
+}
+
+int32_t __cajeta_xpu_cpu_trace_rows(void) { return g_cpu_trace_count; }
+
+int32_t __cajeta_xpu_cpu_trace_row(int32_t i, struct cajeta_cpu_trace_row* out) {
+    pthread_mutex_lock(&g_cpu_trace_mu);
+    int ok = i >= 0 && i < g_cpu_trace_count;
+    if (ok) *out = g_cpu_trace_rows[i];
+    pthread_mutex_unlock(&g_cpu_trace_mu);
+    return ok;
+}
+
+// The table to stderr, totals first, rows by wall time; at exit when the env set it.
+void __cajeta_xpu_cpu_trace_dump(void) {
+    pthread_mutex_lock(&g_cpu_trace_mu);
+    int32_t n = g_cpu_trace_count;
+    int32_t order[CAJ_CPU_TRACE_ROWS];
+    struct cajeta_cpu_trace_row t = {0};
+    for (int32_t i = 0; i < n; ++i) {
+        order[i] = i;
+        const struct cajeta_cpu_trace_row* r = &g_cpu_trace_rows[i];
+        t.launches += r->launches; t.serial += r->serial; t.wallNs += r->wallNs;
+        t.criticalNs += r->criticalNs; t.idleNs += r->idleNs; t.lagNs += r->lagNs;
+        t.gapNs += r->gapNs; t.callerLateNs += r->callerLateNs; t.serialNs += r->serialNs;
+        t.workers += r->workers;
+    }
+    for (int32_t i = 1; i < n; ++i) {
+        int32_t k = order[i], j = i;
+        while (j > 0 && g_cpu_trace_rows[order[j - 1]].wallNs < g_cpu_trace_rows[k].wallNs) { order[j] = order[j - 1]; --j; }
+        order[j] = k;
+    }
+    double avgW = t.launches > 0 ? (double) t.workers / (double) t.launches : 1.0;
+    double workerMs = (double) t.criticalNs * avgW / 1e6;
+    fprintf(stderr, "cajeta.xpu: cpu trace: %lld parallel launches (%lld serial, %.1f ms), wall %.1f ms, "
+            "critical %.1f ms, idle %.1f worker-ms (%.1f%% of %.1f worker-ms inside launches), "
+            "lag %.1f worker-ms, host gap %.1f ms, caller late %.1f ms\n",
+            (long long) t.launches, (long long) t.serial, t.serialNs / 1e6, t.wallNs / 1e6,
+            t.criticalNs / 1e6, t.idleNs / 1e6, workerMs > 0 ? 100.0 * t.idleNs / 1e6 / workerMs : 0.0,
+            workerMs, t.lagNs / 1e6, t.gapNs / 1e6, t.callerLateNs / 1e6);
+    fprintf(stderr, "  %-60s %8s %10s %10s %12s %6s %10s %10s %10s %6s\n", "kernel", "launches",
+            "wall ms", "crit ms", "idle wk-ms", "idle%", "lag wk-ms", "gap ms", "late ms", "wk");
+    for (int32_t i = 0; i < n; ++i) {
+        const struct cajeta_cpu_trace_row* r = &g_cpu_trace_rows[order[i]];
+        double w = r->launches > 0 ? (double) r->workers / (double) r->launches : 1.0;
+        double wk = (double) r->criticalNs * w;
+        fprintf(stderr, "  %-60s %8lld %10.1f %10.1f %12.1f %6.1f %10.1f %10.1f %10.1f %6.1f\n",
+                r->name, (long long) r->launches, r->wallNs / 1e6, r->criticalNs / 1e6, r->idleNs / 1e6,
+                wk > 0 ? 100.0 * (double) r->idleNs / wk : 0.0, r->lagNs / 1e6, r->gapNs / 1e6,
+                r->callerLateNs / 1e6, w);
+        if (r->serial) fprintf(stderr, "  %-60s %8lld serial launches, %.1f ms\n", "", (long long) r->serial, r->serialNs / 1e6);
+    }
+    pthread_mutex_unlock(&g_cpu_trace_mu);
+}
+
 // CPU launch: resolve the registered thunk and run the grid, chunked across
 // min(blocks, cores) workers — blocks fan out, never one block's work-items.
 static void cajeta_xpu_launch_cpu(const char* name,
@@ -1664,6 +1819,8 @@ static void cajeta_xpu_launch_cpu(const char* name,
 
     const int32_t twinsBefore = __cajeta_xpu_cpu_scalar_twin_hits();
     __atomic_store_n(&g_cpu_align_fault[0], (int64_t) 0, __ATOMIC_RELAXED);
+    const int trace = caj_cpu_trace_enabled();
+    const int64_t t0 = trace ? caj_cpu_trace_now_ns() : 0;
 
     // CAJETA_XPU_CPU_SERIAL forces single-threaded execution. Read once.
     static int force_serial = -1;
@@ -1693,8 +1850,9 @@ static void cajeta_xpu_launch_cpu(const char* name,
                                             blockX, blockY, blockZ,
                                             gridX, gridY, gridZ,
                                             0, nblocks, sharedBytes,
-                                            specCount, specValues};
+                                            specCount, specValues, 0, 0, 0};
         cajeta_xpu_cpu_run_slice(&all);
+        if (trace) caj_cpu_trace_serial(name, t0);
         cajeta_xpu_cpu_refuse_if_twin_ran(name, twinsBefore, blockX);
         cajeta_xpu_cpu_raise_align_fault(name);
         return;
@@ -1715,6 +1873,9 @@ static void cajeta_xpu_launch_cpu(const char* name,
         slices[i].dynShared = sharedBytes;
         slices[i].specCount = specCount;
         slices[i].specValues = specValues;
+        slices[i].trace = trace;
+        slices[i].tBeg = 0;
+        slices[i].tEnd = 0;
         cx += count;
     }
     caj_kpool_ensure(nworkers);
@@ -1727,6 +1888,7 @@ static void cajeta_xpu_launch_cpu(const char* name,
     for (int32_t i = njobs; i < nworkers - 1; ++i)
         cajeta_xpu_cpu_run_slice(&slices[i]);   // pool-short surplus, inline
     caj_kpool_join();
+    if (trace) caj_cpu_trace_parallel(name, slices, nworkers, t0);
     cajeta_xpu_cpu_refuse_if_twin_ran(name, twinsBefore, blockX);
     cajeta_xpu_cpu_raise_align_fault(name);
 }
