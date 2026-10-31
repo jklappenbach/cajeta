@@ -63,7 +63,8 @@ code, which is compiled once at the baseline; auto-vectorization changes.
   built at and the one it resolved to.
 - **2.8** The cost is code size: the cpu kernel code is 23 MB of the 34 MB
   llm bench binary (614 functions), so four levels add roughly 70 MB.
-  Measured, not estimated, at acceptance (7.4).
+  Measured at acceptance (7.4, 2026-10-30): 123.5 MB against 35.5 MB native,
+  built in 2528 s against 512 s.
 
 ## 3. The pre-VNNI integer tier inside kernels
 
