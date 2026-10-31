@@ -601,7 +601,7 @@ jobs:
           # openssl@3 dependency fails the install. Force that one link and retry.
           export HOMEBREW_NO_INSTALL_UPGRADE=1
           pkgs="cmake ninja antlr4-cpp-runtime googletest glog zstd zeromq \
-            xxhash vulkan-headers vulkan-loader"
+            xxhash vulkan-headers vulkan-loader openssl@3"
           if ! brew install $pkgs; then
             brew link --overwrite openssl@3
             brew install $pkgs
@@ -609,6 +609,11 @@ jobs:
           # Apple's system clang doesn't know about the brew llvm headers/libs
           # unless we point CMake at the brew prefix explicitly.
           echo "CMAKE_PREFIX_PATH=$(brew --prefix llvm)" >> "$GITHUB_ENV"
+          # The macos-15 image also carries openssl@4, which FindOpenSSL prefers
+          # by version; the Ed25519 release-metadata verification does not pass
+          # under OpenSSL 4 yet (MeltResolverTests, 2026-10-31), so the build
+          # stays on openssl@3, the library every release so far has linked.
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
 
       # ---- Fetch the prebuilt IDE plugin for embedding ------------------
       # The `plugin` job built Cajeta's IDEA plugin once; drop its zip where
