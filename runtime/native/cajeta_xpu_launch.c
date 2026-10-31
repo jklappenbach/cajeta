@@ -1660,6 +1660,9 @@ int64_t __cajeta_xpu_kernel_manifest_generation(void) {
     return (int64_t) __atomic_load_n(&g_xpu_manifest_gen, __ATOMIC_ACQUIRE);
 }
 
+int32_t __cajeta_xpu_cpu_kernel_level(const char* name);
+const char* __cajeta_xpu_cpu_level_name(int32_t level);
+
 // The active backend's manifest JSON as a fresh cajeta int8[] the caller owns, or NULL.
 // STATIC native (no `this`); `nameArr` is an int8[] whose payload starts at +8.
 void* __cajeta_xpu_kernel_manifest_json(void* nameArr, int64_t len) {
@@ -1684,8 +1687,21 @@ void* __cajeta_xpu_kernel_manifest_json(void* nameArr, int64_t len) {
     pthread_mutex_unlock(&g_xpu_cuda_lock);
     if (!pick) return NULL;
 
-    // The device's arch token may carry a suffix ("gfx1151:xnack-") — match a prefix.
-    if (candidates > 1) {
+    // Several cpu copies are one per ISA level: the resolved level's manifest is the kernel's.
+    if (candidates > 1 && backend == 3) {
+        const char* lvl = __cajeta_xpu_cpu_level_name(__cajeta_xpu_cpu_kernel_level(name));
+        pthread_mutex_lock(&g_xpu_cuda_lock);
+        for (i = 0; i < g_xpu_manifest_count; i++) {
+            struct cajeta_xpu_manifest* e = &g_xpu_manifests[i];
+            if (e->backend == backend && strncmp(e->name, name, sizeof(e->name)) == 0 &&
+                strncmp(e->arch, lvl, sizeof(e->arch)) == 0) {
+                pick = e;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&g_xpu_cuda_lock);
+    } else if (candidates > 1) {
+        // The device's arch token may carry a suffix ("gfx1151:xnack-") — match a prefix.
         CajetaXpuRawDevice dev;
         if (cajeta_xpu_query_raw_device(&dev) && dev.archName[0]) {
             pthread_mutex_lock(&g_xpu_cuda_lock);

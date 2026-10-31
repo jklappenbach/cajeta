@@ -2042,8 +2042,9 @@ void foldWaveVariants(llvm::Function& f) {
                              {llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), hostW)});
             }
             applyCost(manifest, method);
+            // A leveled copy registers under its level, so the resolved copy's manifest is found.
             emitManifestRegistration(hostModule, b, nameStr, /*CAJ_XPU_CPU=*/3,
-                                     "", manifest);
+                                     leveled ? level : "", manifest);
             b.CreateRetVoid();
 
             llvm::appendToGlobalCtors(hostModule, ctor, /*priority=*/65535);

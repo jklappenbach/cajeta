@@ -27,6 +27,9 @@ int32_t __cajeta_xpu_cpu_kernel_level(const char* name);
 int32_t __cajeta_xpu_cpu_resolved_level(void);
 void __cajeta_xpu_set_cpu_wave_at(int32_t level, int32_t lanes);
 const char* __cajeta_xpu_cpu_level_refusal(void);
+void __cajeta_xpu_register_kernel_manifest(const char* kernelName, int32_t backend, const char* arch,
+                                           const void* json, uint64_t len);
+void* __cajeta_xpu_kernel_manifest_json(void* nameArr, int64_t len);
 }
 
 namespace {
@@ -177,4 +180,34 @@ TEST(XpuCpuLevel, theWaveFollowsTheResolvedLevel) {
     // Leave the built wave as the host's for the tests after this one.
     __cajeta_xpu_set_cpu_wave_at(kV3, 0);
     __cajeta_xpu_set_cpu_wave_at(kV4, 0);
+}
+
+// 4.3.2: with one manifest per level copy, KernelManifest.of(name) answers the copy
+// the host resolved to, not the last one registered.
+TEST(XpuCpuLevel, theManifestIsTheResolvedCopys) {
+    ClearOverride c;
+    __cajeta_xpu_cpu_set_level_override(kClear);
+    const int32_t host = __cajeta_xpu_cpu_host_level();
+    if (host < kV4) GTEST_SKIP() << "needs a v4 host to resolve two levels";
+    __cajeta_xpu_register_backend(kBackendCpu);
+    __cajeta_xpu_force_backend(kBackendCpu);
+    __cajeta_xpu_register_cpu_kernel_at("lvl.t5", kV3, &fnA);
+    __cajeta_xpu_register_cpu_kernel_at("lvl.t5", kV4, &fnB);
+    static const char j8[] = "{\"waveWidth\":8}";
+    static const char j16[] = "{\"waveWidth\":16}";
+    __cajeta_xpu_register_kernel_manifest("lvl.t5", kBackendCpu, "v3", j8, sizeof(j8) - 1);
+    __cajeta_xpu_register_kernel_manifest("lvl.t5", kBackendCpu, "v4", j16, sizeof(j16) - 1);
+    char nameArr[8 + 8] = {};
+    memcpy(nameArr + 8, "lvl.t5", 6);
+    auto jsonOf = [&]() -> std::string {
+        void* hdr = __cajeta_xpu_kernel_manifest_json(nameArr, 6);
+        if (!hdr) return "";
+        const char* p = (const char*) hdr + 8;
+        std::string s(p, strnlen(p, 64));
+        return s;
+    };
+    EXPECT_EQ(jsonOf().rfind(j16, 0), 0u) << "resolved v4: " << jsonOf();
+    __cajeta_xpu_cpu_set_level_override(kV3);
+    EXPECT_EQ(jsonOf().rfind(j8, 0), 0u) << "forced v3: " << jsonOf();
+    __cajeta_xpu_cpu_set_level_override(kClear);
 }
