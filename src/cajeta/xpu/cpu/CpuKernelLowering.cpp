@@ -16,6 +16,8 @@
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/IntrinsicsX86.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/Support/ModRef.h"
@@ -97,9 +99,7 @@ public:
                                 llvm::Value* acc, bool wUnsigned) override {
         const char* fsd = std::getenv("CAJETA_SIMD_SCALAR_FALLBACK");
         if (fsd && fsd[0] && fsd[0] != '0') return nullptr;
-        static const std::unique_ptr<llvm::TargetMachine> hostTm =
-            createCpuTargetMachine();
-        const llvm::TargetMachine* tm = levelTm ? levelTm.get() : hostTm.get();
+        const llvm::TargetMachine* tm = tmHere();
         if (!tm || !tm->getTargetTriple().isX86()) return nullptr;
         const llvm::MCSubtargetInfo& sti = tm->getMCSubtargetInfo();
         const bool vnni = sti.checkFeatures("+avx512vnni") || sti.checkFeatures("+avxvnni");
@@ -209,6 +209,223 @@ public:
             v = only->getValueOperand();
         }
         return v;
+    }
+
+    // The TargetMachine this copy is built for: its level's, or the build host's.
+    const llvm::TargetMachine* tmHere() const {
+        static const std::unique_ptr<llvm::TargetMachine> hostTm = createCpuTargetMachine();
+        return levelTm ? levelTm.get() : hostTm.get();
+    }
+
+    // --- AMX (cpu-isa-variants Unit 6) --------------------------------------
+    // One int8 16x16 tile a work item on the matrix unit, held off behind
+    // CAJETA_XPU_CPU_AMX=1 until measured on hardware (spec 5.4). Tiles in memory
+    // are <256 x i32>; A is 16 rows x 16 bytes, B the VNNI 4 x 64, C 16 x 64.
+    bool amxHere() const {
+        const char* on = std::getenv("CAJETA_XPU_CPU_AMX");
+        if (!on || !*on || *on == '0') return false;
+        const llvm::TargetMachine* tm = tmHere();
+        if (!tm || !tm->getTargetTriple().isX86()) return false;
+        const llvm::MCSubtargetInfo& sti = tm->getMCSubtargetInfo();
+        return sti.checkFeatures("+amx-tile") && sti.checkFeatures("+amx-int8");
+    }
+
+    ImplTier coopMatrixTier(llvm::Type* elem, uint32_t rows, uint32_t cols,
+                            uint32_t use) override {
+        if (!amxHere() || rows != 16 || cols != 16) return ImplTier::Portable;
+        if (use == 2) return elem->isIntegerTy(32) ? ImplTier::Native : ImplTier::Portable;
+        return elem->isIntegerTy(8) ? ImplTier::Native : ImplTier::Portable;
+    }
+
+    llvm::Type* coopMatrixType(llvm::Module& m, llvm::Type*, uint32_t, uint32_t, uint32_t) override {
+        return llvm::FixedVectorType::get(llvm::Type::getInt32Ty(m.getContext()), 256);
+    }
+
+    // The tile is opaque to per-element access and the fused epilogues: a kernel
+    // using them demotes to the portable tile, as on SPIR-V.
+    unsigned coopMatrixElementCount(llvm::Type*) override { return 0; }
+
+    static llvm::Value* amxI16(llvm::Module& m, unsigned v) {
+        return llvm::ConstantInt::get(llvm::Type::getInt16Ty(m.getContext()), v);
+    }
+    static llvm::Type* amxTileTy(llvm::Module& m) { return llvm::Type::getX86_AMXTy(m.getContext()); }
+    static llvm::Value* amxToTile(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* vec) {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::x86_cast_vector_to_tile, {vec->getType()});
+        return b.CreateCall(f, {vec}, "amx.tile");
+    }
+    static llvm::Value* amxToVector(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* tile) {
+        llvm::Type* vt = llvm::FixedVectorType::get(llvm::Type::getInt32Ty(m.getContext()), 256);
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::x86_cast_tile_to_vector, {vt});
+        return b.CreateCall(f, {tile}, "amx.vec");
+    }
+    // A 64-byte-aligned scratch in the entry block, `bytes` long.
+    static llvm::Value* amxScratch(llvm::IRBuilderBase& b, llvm::Module& m, unsigned bytes, const char* nm) {
+        llvm::Function* fn = b.GetInsertBlock()->getParent();
+        llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+        auto* al = eb.CreateAlloca(llvm::ArrayType::get(llvm::Type::getInt8Ty(m.getContext()), bytes), nullptr, nm);
+        al->setAlignment(llvm::Align(64));
+        return al;
+    }
+    static llvm::Value* amxTileLoad(llvm::IRBuilderBase& b, llvm::Module& m, unsigned rows, unsigned colsb,
+                                    llvm::Value* ptr, llvm::Value* strideBytes) {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(&m, llvm::Intrinsic::x86_tileloadd64_internal);
+        return b.CreateCall(f, {amxI16(m, rows), amxI16(m, colsb), ptr, strideBytes}, "amx.load");
+    }
+    static uint32_t amxConstLayout(llvm::Value* layout, const char* what) {
+        auto* c = llvm::dyn_cast<llvm::ConstantInt>(layout);
+        if (!c) throw cajeta::Exception(std::string("AMX ") + what + " needs a constant layout", "XPU-N03");
+        return (uint32_t) c->getZExtValue();
+    }
+
+    llvm::Value* coopMatrixLoad(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
+                                llvm::Value* layout, llvm::Value* stride, llvm::Type*,
+                                uint32_t, uint32_t, uint32_t use, uint32_t swz = 0,
+                                LdsBlockPad blk = {}) override {
+        if (swz || blk.period)
+            throw cajeta::Exception("AMX tile load takes no swizzle or block pad", "XPU-N03");
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* i8 = llvm::Type::getInt8Ty(ctx);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+        const uint32_t lay = amxConstLayout(layout, "tile load");
+        llvm::Value* s64 = b.CreateZExtOrTrunc(stride, i64, "amx.stride");
+        auto rowPtr = [&](llvm::Value* base, llvm::Value* row, unsigned elemBytes) {
+            llvm::Value* off = b.CreateMul(row, llvm::ConstantInt::get(i64, elemBytes));
+            return b.CreateGEP(i8, base, b.CreateMul(off, s64));
+        };
+        auto at = [&](llvm::Value* base, unsigned bytes) { return b.CreateGEP(i8, base, llvm::ConstantInt::get(i64, bytes)); };
+        llvm::Value* tile = nullptr;
+        if (use == 0) {
+            if (lay == 0) {
+                tile = amxTileLoad(b, m, 16, 16, ptr, s64);
+            } else {
+                // Column-major A: column k holds the 16 rows; transpose 16x16 bytes.
+                llvm::Value* sc = amxScratch(b, m, 256, "amx.a");
+                llvm::Value* cols[16];
+                for (unsigned k = 0; k < 16; ++k)
+                    cols[k] = b.CreateAlignedLoad(llvm::FixedVectorType::get(i8, 16),
+                                                  rowPtr(ptr, llvm::ConstantInt::get(i64, k), 1), llvm::Align(1));
+                for (unsigned r = 0; r < 16; ++r) {
+                    llvm::Value* row = llvm::UndefValue::get(llvm::FixedVectorType::get(i8, 16));
+                    for (unsigned k = 0; k < 16; ++k)
+                        row = b.CreateInsertElement(row, b.CreateExtractElement(cols[k], r), k);
+                    b.CreateAlignedStore(row, at(sc, r * 16), llvm::Align(16));
+                }
+                tile = amxTileLoad(b, m, 16, 16, sc, llvm::ConstantInt::get(i64, 16));
+            }
+        } else if (use == 1) {
+            // B in the VNNI form: row k4 holds, per column n, the bytes B[4k4..4k4+3][n].
+            llvm::Value* sc = amxScratch(b, m, 256, "amx.b");
+            if (lay == 0) {
+                for (unsigned k4 = 0; k4 < 4; ++k4) {
+                    llvm::Value* r[4];
+                    for (unsigned j = 0; j < 4; ++j)
+                        r[j] = b.CreateAlignedLoad(llvm::FixedVectorType::get(i8, 16),
+                                                   rowPtr(ptr, llvm::ConstantInt::get(i64, 4 * k4 + j), 1), llvm::Align(1));
+                    llvm::SmallVector<int, 32> cat;
+                    for (int i = 0; i < 32; ++i) cat.push_back(i);
+                    llvm::Value* lo = b.CreateShuffleVector(r[0], r[1], cat);
+                    llvm::Value* hi = b.CreateShuffleVector(r[2], r[3], cat);
+                    llvm::SmallVector<int, 64> il;
+                    for (int n = 0; n < 16; ++n)
+                        for (int j = 0; j < 4; ++j) il.push_back(j * 16 + n);
+                    llvm::Value* v = b.CreateShuffleVector(lo, hi, il, "amx.vnni");
+                    b.CreateAlignedStore(v, at(sc, k4 * 64), llvm::Align(64));
+                }
+            } else {
+                // Column-major B: column n's 16 K-bytes are 4 VNNI dwords, one per row k4.
+                llvm::Value* cols[16];
+                for (unsigned n = 0; n < 16; ++n)
+                    cols[n] = b.CreateAlignedLoad(llvm::FixedVectorType::get(i32, 4),
+                                                  rowPtr(ptr, llvm::ConstantInt::get(i64, n), 1), llvm::Align(1));
+                for (unsigned k4 = 0; k4 < 4; ++k4) {
+                    llvm::Value* row = llvm::UndefValue::get(llvm::FixedVectorType::get(i32, 16));
+                    for (unsigned n = 0; n < 16; ++n)
+                        row = b.CreateInsertElement(row, b.CreateExtractElement(cols[n], k4), n);
+                    b.CreateAlignedStore(row, at(sc, k4 * 64), llvm::Align(64));
+                }
+            }
+            tile = amxTileLoad(b, m, 4, 64, sc, llvm::ConstantInt::get(i64, 64));
+        } else {
+            if (lay == 0) {
+                tile = amxTileLoad(b, m, 16, 64, ptr, b.CreateMul(s64, llvm::ConstantInt::get(i64, 4)));
+            } else {
+                llvm::Value* sc = amxScratch(b, m, 1024, "amx.c");
+                llvm::Value* cols[16];
+                for (unsigned c = 0; c < 16; ++c)
+                    cols[c] = b.CreateAlignedLoad(llvm::FixedVectorType::get(i32, 16),
+                                                  rowPtr(ptr, llvm::ConstantInt::get(i64, c), 4), llvm::Align(4));
+                for (unsigned r = 0; r < 16; ++r) {
+                    llvm::Value* row = llvm::UndefValue::get(llvm::FixedVectorType::get(i32, 16));
+                    for (unsigned c = 0; c < 16; ++c)
+                        row = b.CreateInsertElement(row, b.CreateExtractElement(cols[c], r), c);
+                    b.CreateAlignedStore(row, at(sc, r * 64), llvm::Align(64));
+                }
+                tile = amxTileLoad(b, m, 16, 64, sc, llvm::ConstantInt::get(i64, 64));
+            }
+        }
+        return amxToVector(b, m, tile);
+    }
+
+    void coopMatrixStore(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
+                         llvm::Value* matrixVal, llvm::Value* layout, llvm::Value* stride,
+                         uint32_t, uint32_t, uint32_t use, uint32_t swz = 0,
+                         LdsBlockPad blk = {}) override {
+        if (swz || blk.period || use != 2)
+            throw cajeta::Exception("AMX stores the accumulator tile only, without swizzle or block pad", "XPU-N03");
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* i8 = llvm::Type::getInt8Ty(ctx);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+        const uint32_t lay = amxConstLayout(layout, "tile store");
+        llvm::Value* s64 = b.CreateZExtOrTrunc(stride, i64, "amx.stride");
+        llvm::Value* tile = amxToTile(b, m, matrixVal);
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(&m, llvm::Intrinsic::x86_tilestored64_internal);
+        if (lay == 0) {
+            b.CreateCall(f, {amxI16(m, 16), amxI16(m, 64), ptr, b.CreateMul(s64, llvm::ConstantInt::get(i64, 4)), tile});
+            return;
+        }
+        // Column-major: store row-major to scratch, then column c of the result is row c of a transpose.
+        llvm::Value* sc = amxScratch(b, m, 1024, "amx.cs");
+        b.CreateCall(f, {amxI16(m, 16), amxI16(m, 64), sc, llvm::ConstantInt::get(i64, 64), tile});
+        llvm::Value* rows[16];
+        for (unsigned r = 0; r < 16; ++r)
+            rows[r] = b.CreateAlignedLoad(llvm::FixedVectorType::get(i32, 16),
+                                          b.CreateGEP(i8, sc, llvm::ConstantInt::get(i64, r * 64)), llvm::Align(64));
+        for (unsigned c = 0; c < 16; ++c) {
+            llvm::Value* col = llvm::UndefValue::get(llvm::FixedVectorType::get(i32, 16));
+            for (unsigned r = 0; r < 16; ++r)
+                col = b.CreateInsertElement(col, b.CreateExtractElement(rows[r], c), r);
+            llvm::Value* dst = b.CreateGEP(i8, ptr, b.CreateMul(llvm::ConstantInt::get(i64, c * 4), s64));
+            b.CreateAlignedStore(col, dst, llvm::Align(4));
+        }
+    }
+
+    llvm::Value* coopMatrixMulAdd(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* a,
+                                  llvm::Value* bMat, llvm::Value* c, llvm::Type*,
+                                  uint32_t signFlags, uint32_t = 0, uint32_t = 0) override {
+        const bool aSigned = (signFlags & 0x1u) != 0, bSigned = (signFlags & 0x2u) != 0;
+        llvm::Intrinsic::ID id = aSigned ? (bSigned ? llvm::Intrinsic::x86_tdpbssd_internal
+                                                    : llvm::Intrinsic::x86_tdpbsud_internal)
+                                         : (bSigned ? llvm::Intrinsic::x86_tdpbusd_internal
+                                                    : llvm::Intrinsic::x86_tdpbuud_internal);
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(&m, id);
+        // M = 16 rows, N = 64 bytes of C a row, K = 16 bytes of A a row.
+        llvm::Value* d = b.CreateCall(f, {amxI16(m, 16), amxI16(m, 64), amxI16(m, 16),
+                                          amxToTile(b, m, c), amxToTile(b, m, a), amxToTile(b, m, bMat)}, "amx.dp");
+        return amxToVector(b, m, d);
+    }
+
+    llvm::Value* coopMatrixSplat(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* value,
+                                 llvm::Type* matrixType) override {
+        auto* vt = llvm::cast<llvm::FixedVectorType>(matrixType);
+        if (auto* ci = llvm::dyn_cast<llvm::ConstantInt>(value); ci && ci->isZero()) {
+            llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(&m, llvm::Intrinsic::x86_tilezero_internal);
+            return amxToVector(b, m, b.CreateCall(f, {amxI16(m, 16), amxI16(m, 64)}, "amx.zero"));
+        }
+        return b.CreateVectorSplat(vt->getNumElements(), b.CreateZExtOrTrunc(value, vt->getElementType()));
     }
 
     // No native inline ray query: the noun is a software BVH, so RayQuery walks it.
