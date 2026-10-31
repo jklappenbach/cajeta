@@ -2099,6 +2099,9 @@ int64_t __cajeta_xpu_buffer_alloc(void* self, uint64_t byteCount, int32_t kind) 
     if (h) caj_record_alloc(h, byteCount);
     return h;
 }
+#ifdef _WIN32
+#include <malloc.h>   // _aligned_malloc
+#endif
 // cpu "device" memory on a 64-byte boundary, so a 512-bit load never splits a
 // cache line; malloc hands a large block back 16 bytes past a page.
 static void* caj_cpu_buffer_alloc(size_t n) {
