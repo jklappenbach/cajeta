@@ -1,13 +1,13 @@
 # One kernel, any device
 
 A kernel in Cajeta is written once, in the language of the program that
-launches it, and the compiler lowers that one source to NVIDIA through
-NVPTX, to AMD through AMDGPU, to any Vulkan device through SPIR-V, and to
-the host CPU. Portability of that kind is the compiler's work, and the pages
-in this section take it as given. Their subject is the harder problem that
-follows from it: how a kernel written against one device **finds its right
-shape on a device nobody has measured**, with no table of devices, no vendor
-branch in the source, and no silent fall to a slower or a wrong result.
+launches it. The compiler lowers one source to all major GPUs and CPUs by
+directly supporting native drivers, Vulkan, and CPU virtualization.
+Furthermore, Cajeta features a variety of run-time profiling and
+optimization heuristics that can help your code run optimally on untested
+architectures.
+
+The goal is to truly write once, run everywhere.
 
 ## The stack
 
