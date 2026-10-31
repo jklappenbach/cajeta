@@ -1,49 +1,50 @@
 # One model, start to last token
 
-How `dev.cajeta.llm` turns a prompt into tokens, as an algorithm: the steps
-in order, the kernels each step launches, the decision each step makes and
-the signal it reads, and what changes when the model is a different
-architecture or the device a different backend. Each phase below opens with
-an outline and a diagram; the prose under them says why the step is shaped
-that way. The pieces have their own pages (the
-[kernels](kernels-llm.md), the [engine](llm/README.md), the
-[substrate](README.md)); this page is the thread through them.
+This page follows `dev.cajeta.llm` from a prompt to the last generated
+token. Each phase opens with the algorithm as a numbered list and a diagram.
+The text under them names the kernels that run, the decision each step
+makes and the signal it reads, and what changes when the model is a
+different architecture or the device a different backend. The pieces have
+their own pages, the [kernels](kernels-llm.md), the [engine](llm/README.md)
+and the [substrate](README.md), and this page is the thread through them.
 
-The reference run is **Meta-Llama-3.1-8B-Instruct at Q4_K_M**: a 512-token
-prompt, 128 generated tokens, four sequences at once, the shape every number
-on the [benchmarks](../../bench/llm/README.md) is read at. The
-mixture-of-experts sections follow **Qwen3-Coder-30B-A3B at Q5_K_M**, the
-other measured model. Code references are to `dev.cajeta.llm` at `59ef166`
-(2026-10-29) on cajeta 0.48.0, with the file and line in parentheses; the
-machines are Phoenix (RTX 4090, `sm_89`, CUDA under WSL2) and Proton
-(Radeon 8060S, `gfx1151`, ROCm, and the same part under Vulkan).
+The reference run is Meta-Llama-3.1-8B-Instruct at Q4_K_M with a 512-token
+prompt, 128 generated tokens and four sequences at once, which is the shape
+every number on the [benchmarks](../../bench/llm/README.md) is read at. The
+mixture-of-experts sections follow Qwen3-Coder-30B-A3B at Q5_K_M, the other
+measured model. Code references name `dev.cajeta.llm` at `59ef166`
+(2026-10-29) on cajeta 0.48.0, with the file and line in parentheses. The
+machines are Phoenix, an RTX 4090 (`sm_89`) under CUDA on WSL2, and Proton,
+a Radeon 8060S (`gfx1151`) under ROCm and again under Vulkan.
 
-Two facts about the workload shape everything. **Decode is a bandwidth
-problem**: one token reads every weight byte once (4.58 GiB a step for this
-model) and does almost nothing with it, so a decode kernel's figure of merit
-is bytes per second against the memory bus, and the engine's job is to leave
-no gap between kernels. **Prefill is a compute problem**: a prompt multiplies
-every weight by hundreds of rows, so the engine's job is to feed the matrix
-units and to pick, per weight tensor, the GEMM that feeds them best here.
+Two facts about the workload shape everything on this page. Decode is a
+bandwidth problem. One token reads every weight byte once, 4.58 GiB a step
+for this model, and does almost nothing with it, so a decode kernel is
+judged on bytes per second against the memory bus, and the engine's job is
+to leave no gap between kernels. Prefill is a compute problem. A prompt
+multiplies every weight by hundreds of rows, so the engine's job is to feed
+the matrix units and to pick, per weight tensor, the GEMM that feeds them
+best on this device.
 
 ## 0. The whole path
 
-1. A caller submits a prompt (`LlmEngine.submitText`): tokens, a sampler, a
-   token sink. The request waits.
-2. Each **scheduler step** admits what fits, grows the K/V pool, and gives
-   every running request one chunk of work: a prefilling request a chunk of
-   prompt tokens, a decoding request exactly one token. Decode is the
-   one-token chunk of the same model step (`stepSeq`), which is the identity
-   the scheduler is built on (`Scheduler.cajeta:21-43`).
-3. A **prefill chunk** embeds its tokens on the device, runs the layer stack
+1. A caller submits a prompt through `LlmEngine.submitText`, with a sampler
+   and a token sink. The request waits.
+2. Each scheduler step admits the requests that fit, grows the K/V pool, and
+   gives every running request one chunk of work. A prefilling request gets
+   a chunk of prompt tokens and a decoding request gets exactly one token.
+   Decode is the one-token chunk of the same model step, `stepSeq`, and the
+   scheduler is built on that identity (`Scheduler.cajeta:21-43`).
+3. A prefill chunk embeds its tokens on the device, runs the layer stack
    once over all its rows, writes K/V for every position, and, on the last
-   chunk, runs the tail for the last row: the first generated token.
-4. From then on each **decode step** runs the stack for one new row per
-   sequence, alone through the pipelined path or several sequences through
-   the batched path, and the tail's argmax is the next token.
-5. A token goes to the sink, the stop rules run, and a finished request
-   frees its slot and K/V blocks, which admits the next waiting request in
-   the same step.
+   chunk, runs the tail for the last row. That produces the first generated
+   token.
+4. Each decode step after that runs the stack for one new row per sequence,
+   alone through the pipelined path or together through the batched path,
+   and the tail's argmax is the next token.
+5. The token goes to the sink and the stop rules run. A finished request
+   frees its slot and its K/V blocks, which admits the next waiting request
+   in the same step.
 
 <figure class="diagram">
 <svg viewBox="0 0 1000 340" role="img" aria-label="The whole path: a request enters the scheduler; each step admits, reserves K/V and hands every running request one chunk; prefill chunks run embedding, the layer stack and, on the last chunk, the tail; decode steps run one row per sequence through the pipelined or the batched path; tokens go to the sink and the stop rules; a finished request frees its slot, which admits the next waiting request." style="max-width:100%;height:auto;font-family:var(--font-ui);font-size:11px">
@@ -102,97 +103,105 @@ units and to pick, per weight tensor, the GEMM that feeds them best here.
     <text x="700" y="246">the next token feeds the next decode step</text>
   </g>
 </svg>
-<figcaption>The path and its loops. The outer loop is the scheduler step; inside it every running request advances by one chunk through the same model step; inside that the layer stack runs once over the chunk's rows and the tail reads one integer per sequence back.</figcaption>
+<figcaption>The path and its loops. The scheduler step is the outer loop; inside it every running request advances by one chunk through the same model step; inside that the layer stack runs once over the chunk's rows and the tail reads one integer per sequence back.</figcaption>
 </figure>
 
-## 1. Load: making every later decision before the first request
+## 1. Load
 
-1. **Choose the device** (`LlmEngine.cajeta:108-109`). An option forces a
-   backend; otherwise the first device touch picks one in the fixed order
-   CUDA, HIP, Vulkan, CPU. The choice is per process. Nothing in the engine
-   reads the vendor's name after this except one guard (§5.3).
-2. **Resolve the tune directory** (`:76-101`) and hand it to every kernel
-   store before any kernel is bound (`:114-120`): the option, else
-   `CAJETA_LLM_TUNE_DIR`, else the platform cache directory. No probe runs
-   without a place to remember its answer.
-3. **Open the checkpoint and read the configuration** (`:175-193`): a GGUF's
+Load makes every decision it can before the first request arrives, so no
+user pays for a probe. In order (`LlmEngine.cajeta`):
+
+1. Choose the device (`:108-109`). An option can force a backend. Otherwise
+   the first device touch picks one in the fixed order CUDA, HIP, Vulkan,
+   CPU, and the choice holds for the process. After this point the engine
+   reads the vendor's name in one place only (§5.3).
+2. Resolve the tune directory (`:76-101`) and hand it to every kernel store
+   before any kernel is bound (`:114-120`). The directory is the option,
+   else `CAJETA_LLM_TUNE_DIR`, else the platform cache directory. No probe
+   runs without a place to remember its answer.
+3. Open the checkpoint and read the configuration (`:175-193`). A GGUF's
    `general.architecture` and its arch-prefixed keys fill `ModelConfig`
-   (`ModelConfig.cajeta:167-199`), with the tokenizer and the end-of-generation
-   set from the same file; a safetensors load takes a `config.json`.
-4. **Build and bind the model by tensor name** (`:197-199`): 32
+   (`ModelConfig.cajeta:167-199`), and the tokenizer and the end-of-generation
+   set come from the same file. A safetensors load takes a `config.json`.
+4. Build the model and bind it by tensor name (`:197-199`). The model is 32
    `DecoderLayer`s, each an `Attention` with four `Linear` projections and an
-   `Mlp` (or `MoeFfn`) with three, plus the embedding, the final norm and the
+   `Mlp` or `MoeFfn` with three, plus the embedding, the final norm and the
    output head. Hugging Face names are translated to ggml names at the load
-   seam (`Checkpoint.cajeta:34-38, 74-135`); a tensor the layout does not
-   expect is an error, not a guess.
-5. **Make the model resident.** Each `Linear` keeps its weight packed when
-   the format has device kernels (`Linear.cajeta:891-914`), uploads it, and
-   performs the relayouts those kernels want: a Q6_K weight split into a scale
-   prefix and 208-byte bodies for aligned loads, a Q4_K slab viewed as 32-bit
-   words. Under the `auto` prefill-weight policy, the formats whose int8
-   widen route still pays get a resident int8 copy inside the widen budget
+   seam (`Checkpoint.cajeta:34-38, 74-135`). A tensor the layout does not
+   expect raises an error rather than being guessed at.
+5. Make the model resident. Each `Linear` keeps its weight packed when the
+   format has device kernels (`Linear.cajeta:891-914`), uploads it, and
+   performs the relayouts those kernels want. A Q6_K weight is split into a
+   scale prefix and 208-byte bodies so the tile kernels read it with aligned
+   loads, and a Q4_K slab is viewed as 32-bit words. Under the `auto`
+   prefill-weight policy, the formats whose int8 widen route still pays also
+   get a resident int8 copy inside the widen budget
    (`WidenBudget.cajeta:9-43`). Decode always reads the packed bytes.
-6. **Allocate the K/V cache** (§2.5): the paged host cache in 16-token
-   blocks, and on the device one f16 K plane and one V plane per layer in a
-   pool that every sequence's slot shares.
-7. **Run every probe that needs no prompt** (`:208-263`): the tile member per
-   prefill shape the engine will meet (`prewarmBatchShapes(maxSeqs × chunk)`),
-   the Cols verdicts per format and batch width, the mat-vec variant per
-   weight shape, then one throwaway chunk-sized prefill and one decode step
-   (which settle `matrixCoresPay`, `tileBeatsDeq` and the attention tile
-   probe), then the fused q|k|v and gate|up A/B on the real batched step.
-   Mixture-of-experts tile trials are held during the warm-up so the first
+6. Allocate the K/V cache (§2.5). The host cache is paged in 16-token
+   blocks. On the device, each layer has one f16 K plane and one V plane in
+   a pool that every sequence's slot shares.
+7. Run every probe that needs no prompt (`:208-263`). The tile member is
+   settled for each prefill shape the engine will meet
+   (`prewarmBatchShapes(maxSeqs × chunk)`), the Cols verdicts for each format
+   and batch width, and the mat-vec variant for each weight shape. Then one
+   throwaway chunk-sized prefill and one decode step run, which settle
+   `matrixCoresPay`, `tileBeatsDeq` and the attention tile probe, and the
+   fused q|k|v and gate|up A/B runs on the real batched step. The
+   mixture-of-experts tile trials are held during the warm-up so the first
    real prefill runs an untimed choice.
-8. **Build the scheduler** (`:275`) with the 150 ms chunk budget; attach the
-   tokenizer and, if configured, the block store.
+8. Build the scheduler (`:275`) with the 150 ms chunk budget, attach the
+   tokenizer and, if configured, open the block store.
 
-Load is where the tune store fills. After it, the directory holds for this
-device key the tile member per shape, whether the Cols kernel pays per
-format at the batch width, the fused-segment verdicts and the mat-vec
-variant per weight shape, each written against the build id of the kernels
-it measured; a second load on the same machine reads them back and runs no
-probe. §4 says when each decision is made and what it reads.
+Load is where the tune store fills. When it is done, the directory holds,
+for this device, the tile member per shape, whether the Cols kernel pays
+per format at the batch width, the fused-segment verdicts and the mat-vec
+variant per weight shape. Each entry is written against the build id of the
+kernels it measured. A second load on the same machine reads them back and
+runs no probe. §4 says when each decision is made and what it may read.
 
 ## 2. Prefill
 
 ### 2.1 The algorithm
 
-1. **Admit** (`Scheduler.cajeta:1010-1077`). A request is admitted when a
-   slot is free and the free K/V blocks cover its whole uncached suffix plus
-   one block per unwindowed layer of decode headroom. Resumed requests go
-   first, in order of preemption; then waiting requests, first in first out.
-   A prefix the block store already holds is adopted block by block, always
-   leaving at least one token to compute so the newest logits are real
+1. Admit (`Scheduler.cajeta:1010-1077`). A request is admitted when a slot
+   is free and the free K/V blocks cover its whole uncached suffix plus one
+   block per unwindowed layer of decode headroom. Resumed requests go first,
+   in order of preemption, and then waiting requests in arrival order. A
+   prefix the block store already holds is adopted block by block, and at
+   least one token is always left to compute so the newest logits are real
    (`:1091-1150`).
-2. **Choose the chunk** (`ChunkPolicy.cajeta:68-104`). Sizes are 32 to 512.
-   With nothing decoding, the policy learns the best measured rows per
-   nanosecond and probes one size up; with a decode loaded, it takes the
-   largest size predicted to fit the 150 ms pause budget shared across the
-   prompts, so sequences already generating never stall for a long prompt.
-3. **Batch across requests** (`:487-497, 730-776`). Every running greedy
-   request with a chunk pending is collected into one pass over all their
-   rows (2048 rows for the measured run). Only greedy requests batch: the
-   pass keeps one set of logits. A sampled request prefills alone.
-4. **Carve one arena** for the chunk (`CausalLM.cajeta:707-720`): the hidden
-   state and every intermediate as borrowed slices of one buffer sized to
+2. Choose the chunk (`ChunkPolicy.cajeta:68-104`). Sizes run from 32 to 512.
+   With nothing decoding, the policy learns the size with the best measured
+   rows per nanosecond and probes one size up. With a decode loaded, it
+   takes the largest size predicted to fit the 150 ms pause budget shared
+   across the prompts, so sequences already generating never stall for a
+   long prompt.
+3. Batch across requests (`:487-497, 730-776`). Every running greedy request
+   with a chunk pending is collected into one pass over all their rows,
+   which is 2048 rows for the measured run. Only greedy requests batch,
+   because the pass keeps one set of logits. A sampled request prefills
+   alone.
+4. Carve one arena for the chunk (`CausalLM.cajeta:707-720`). The hidden
+   state and every intermediate are borrowed slices of one buffer sized to
    the rows. Nothing survives the call, so peak activation memory is one
    layer's at any depth.
-5. **Embed on the device** (`:731-752`, `EmbedKernel.cajeta:11-33`). Only the
-   int32 token ids go up; one workgroup per token gathers and dequantizes
+5. Embed on the device (`:731-752`, `EmbedKernel.cajeta:11-33`). Only the
+   int32 token ids go up. One workgroup per token gathers and dequantizes
    its row of the packed table into the hidden state. The host decode of
-   every row plus the upload it replaced cost 45 ms of a 118 ms prefill.
-6. **Run the layer stack** over the rows (§2.2), the hidden state resident on
-   the device for the whole stack and crossing the bus twice
+   every row plus the upload it replaced had cost 45 ms of a 118 ms prefill.
+6. Run the layer stack over the rows (§2.2). The hidden state stays resident
+   on the device for the whole stack and crosses the bus twice
    (`:2722-2727`).
-7. **Run the tail** for the last row of each sequence (`:3238-3296`): slice
-   the row, final norm, stage, the output head as one mat-vec,
-   `argmaxRowKernel`, one stream synchronization, one integer down. The
-   logits themselves are fetched only when a sampler needs them (`:641-648`).
+7. Run the tail for the last row of each sequence (`:3238-3296`). The engine
+   slices the row, applies the final norm, stages it, runs the output head as
+   one mat-vec and `argmaxRowKernel`, synchronizes the stream once and reads
+   one integer down. The logits themselves are fetched only when a sampler
+   needs them (`:641-648`).
 
-The whole chunk, about 678 launches for this model, is queued by the host in
-under a millisecond and submitted at the tail's synchronization as one
-recording on CUDA (§3.4); a mid-prefill flush exists and is off because it
-measured as not paying (`:3191-3203`).
+The whole chunk is about 678 launches for this model. The host queues them
+in under a millisecond, and on CUDA they are submitted at the tail's
+synchronization as one recording (§3.4). A mid-prefill flush exists and is
+off, because it measured as not paying (`:3191-3203`).
 
 ### 2.2 One layer, many rows
 
@@ -262,51 +271,54 @@ measured as not paying (`:3191-3203`).
     <text x="240" y="326">to the next layer's norm + pack</text>
   </g>
 </svg>
-<figcaption>One layer of the prefill as the device runs it. The colored boxes are the GEMMs, each on the route §2.3 chooses for that tensor; everything between them is a fusion chosen by design: norm with pack, rotary with the K/V write, GLU with the next pack, the residual add in a tile's epilogue. The dashed box is the alternative body of a mixture-of-experts layer; a family's extra blocks (QK-norm before the rotary embedding, sub-norms) sit between these without changing the routes (§5.1).</figcaption>
+<figcaption>One layer of the prefill as the device runs it. The colored boxes are the GEMMs, each on the route §2.3 chooses for its tensor. Everything between them is a fusion the design chose, so the norm travels with the pack, the rotary embedding with the K/V write, the GLU with the next pack, and the residual add rides in a tile's epilogue. The dashed box is the body of a mixture-of-experts layer. A family's extra blocks, QK-norm before the rotary embedding or sub-norms, sit between these without changing the routes (§5.1).</figcaption>
 </figure>
 
 Per layer, in order, for `rows` rows (`CausalLM.cajeta:2716-3203`):
 
-1. **Norm and pack in one launch** (`rmsnormPackRowF32`, one workgroup per
-   row) when the hidden width is a multiple of 256, else norm then pack
-   (`:1718-1737`). Activations become 256-value q8_K blocks (one scale,
-   eight sub-block sums) so the integer dot product does the arithmetic on
-   every route below.
-2. **Query, key and value projections**, each a `[rows × hidden] · Wᵀ` GEMM on
-   the route §2.3 picks for that tensor; when all three are Q4_K they can
-   run as one fused widened launch split three ways (`Linear.cajeta:3852-3893`).
-3. **QK-norm** per head, where the family has it (Qwen3), before the rotary
+1. Norm and pack in one launch. When the hidden width is a multiple of 256,
+   `rmsnormPackRowF32` runs one workgroup per row and writes q8_K blocks
+   directly; otherwise the norm and the pack are two launches
+   (`:1718-1737`). Activations become 256-value q8_K blocks, one scale and
+   eight sub-block sums each, so the integer dot product does the arithmetic
+   on every route below.
+2. Query, key and value projections. Each is a `[rows × hidden] · Wᵀ` GEMM on
+   the route §2.3 picks for that tensor. When all three are Q4_K they can run
+   as one fused widened launch split three ways (`Linear.cajeta:3852-3893`).
+3. QK-norm per head, where the family has it (Qwen3), before the rotary
    embedding (`:2847-2862`).
-4. **Rotary embedding folded into the K/V append** (`ropeAppendRowsKernel`,
-   `:2863-2877`): keys and values go into the layer's f16 planes at the
-   sequence's slot as they are rotated; no separate pass over K.
-5. **Flash attention over the sequence so far** (§2.3, attention): one
-   workgroup per 64 (query, head) pairs on one K/V head, keys and values
-   staged through shared memory in 64-key blocks, the softmax kept running
-   and the output rescaled in place (`AttnKernel.cajeta:2447-2466`).
-6. **Output projection accumulated into the residual** in the tile's
-   epilogue when the rows are a multiple of 128 and the tensor has no bias
-   or scale epilogue (`Linear.cajeta:3799-3819`); else the GEMM and a
-   separate add.
-7. **Norm and pack** again.
-8. **Gate and up as one fused tile pair** for any two tensors of the same
-   format (the concatenated payload read as one taller tensor,
-   `:3572-3587, 3771-3789`), else the Q4_K-only fused widened launch, else
-   two GEMMs.
-9. **GLU fused with the next pack** (`gluFusedPackF32` writes the q8_K stage
-   directly, `CausalLM.cajeta:3133-3137`).
-10. **Down projection accumulated into the residual** (`:3178-3186`). A
+4. Rotary embedding folded into the K/V append. `ropeAppendRowsKernel`
+   (`:2863-2877`) rotates keys and values and writes them into the layer's
+   f16 planes at the sequence's slot in the same pass, so there is no
+   separate pass over K.
+5. Flash attention over the sequence so far (§2.3). One workgroup handles 64
+   (query, head) pairs on one K/V head, keys and values are staged through
+   shared memory in 64-key blocks, and the softmax is kept running with the
+   output rescaled in place (`AttnKernel.cajeta:2447-2466`).
+6. Output projection accumulated into the residual. When the rows are a
+   multiple of 128 and the tensor has no bias or scale epilogue, the tile's
+   epilogue does the add (`Linear.cajeta:3799-3819`); otherwise the GEMM and
+   a separate add run.
+7. Norm and pack again.
+8. Gate and up as one fused tile pair. Any two tensors of the same format
+   run as one GEMM over the concatenated payload read as one taller tensor
+   (`:3572-3587, 3771-3789`). Failing that, the Q4_K-only fused widened
+   launch runs, and failing that, two GEMMs.
+9. GLU fused with the next pack. `gluFusedPackF32` writes the q8_K stage
+   directly (`CausalLM.cajeta:3133-3137`).
+10. Down projection accumulated into the residual (`:3178-3186`). A
     mixture-of-experts layer replaces steps 8 to 10 with §2.4.
 
 ### 2.3 How a projection chooses its GEMM
 
-`Linear.batchRefusal(rows)` (`Linear.cajeta:2273-2366`) runs first and
-answers with the gate that refused, or null: the weight quantized, routing
-on, a batch GEMM kernel for the format on this backend, the shape divisible
-as the route needs. An admitted projection then tries the arms of
-`matmulBatchKeep` in order (`:2753-3290`), each gated by a capability the
-device answered, a measurement, or a fit; the arm taken is announced once per
-route as a `batch-route` record.
+`Linear.batchRefusal(rows)` (`Linear.cajeta:2273-2366`) runs first. It
+checks that the weight is quantized, that routing is on, that a batch GEMM
+kernel for the format exists on this backend, and that the shape divides as
+the route needs, and it answers with the gate that refused, or null. An
+admitted projection then tries the arms of `matmulBatchKeep` in order
+(`:2753-3290`). Each arm is gated by a capability the device answered, a
+measurement, or a fit, and the arm taken is announced once per route as a
+`batch-route` record.
 
 <figure class="diagram">
 <svg viewBox="0 0 940 400" role="img" aria-label="The route a projection takes by row count and signals: one row goes to the integer wave mat-vec (else the f16 or f32 wave, else the host); two to eight rows go to the Cols kernel when the Cols probe says it pays, else single-row launches; a chunk goes, on Vulkan, to the f16 cooperative GEMM or the dp4a mmq tile; elsewhere to the tensor-core tile when the matrix cores pay, the tile is preferred over the widen route and a member fits; else the widened int8 WMMA GEMM when the widen budget admitted the copy; else the packed WMMA GEMM for Q4_K and Q6_K; else the f16 cooperative GEMM; else the dot-product floor." style="max-width:100%;height:auto;font-family:var(--font-ui);font-size:11px">
@@ -376,7 +388,7 @@ route as a `batch-route` record.
     <text x="708" y="322">refused: the next arm</text>
   </g>
 </svg>
-<figcaption>Where a projection's work goes. The colored boxes are the integer routes the engine prefers; each arrow out of a box is a gate the device answered (a kernel registered here), a measurement (the matrix cores pay, the Cols kernel pays, the tile beats the widen route) or a fit (rows and widths on the grain). A refused arm says so once with every gate's value; nothing falls to a slower arm silently.</figcaption>
+<figcaption>Where a projection's work goes. The colored boxes are the integer routes the engine prefers. Each arrow out of a box is a gate the device answered (a kernel registered here), a measurement (the matrix cores pay, the Cols kernel pays, the tile beats the widen route) or a fit (rows and widths on the grain). A refused arm says so once with every gate's value, so a route that fell to a slower arm is never silent.</figcaption>
 </figure>
 
 The arms of the chunk route, in the order tried, and what admits each:
@@ -391,69 +403,75 @@ The arms of the chunk route, in the order tried, and what admits each:
 | dot-product batch GEMM | the floor | |
 
 Three signals carry most of the weight. `matrixCoresPay()` (`:2456-2497`) is
-measured once per process, a matrix-core GEMM against the dot-product kernel
-on a synthetic 4096² Q4_K problem, kept under a build id; `sm_89` pays, the
-CPU backend's software tiles do not. `tileBeatsDeq()` (`:2538-2558`) decides
-the tile against the widened int8 route at a 512-row gate shape; the widen
-copies are made only where it says the widen still pays. `WidenBudget`
-(`WidenBudget.cajeta:9-43`) admits each copy against live available memory,
-not capacity, and a refusal is sticky. Split-K adds workgroups along the
-reduction when a problem does not fill the device (the smallest divisor of
-the block count up to 8 that does, `TcTile.cajeta:597-625`) and a fixup
-launch sums the partials.
+measured once per process by timing a matrix-core GEMM against the
+dot-product kernel on a synthetic 4096² Q4_K problem, and the answer is kept
+under a build id. The 4090 pays and the CPU backend's software tiles do not.
+`tileBeatsDeq()` (`:2538-2558`) times the tile against the widened int8 route
+at a 512-row gate shape, and the widen copies are made only where it says
+the widen still pays. `WidenBudget` (`WidenBudget.cajeta:9-43`) admits each
+copy against live available memory rather than capacity, and a refusal is
+sticky. When a problem does not fill the device, split-K adds workgroups
+along the reduction, choosing the smallest divisor of the block count up to
+8 that fills it (`TcTile.cajeta:597-625`), and a fixup launch sums the
+partials.
 
-**Attention** has its own ordered route (`AttnKernel.cajeta:3360-3445`):
+Attention has its own ordered route (`AttnKernel.cajeta:3360-3445`):
 
-1. the single-pass online-softmax tile, the f16 variant
-   `attnFlashPrefillF16Kernel` first where it is registered (45 KB of shared
-   memory, two workgroups an SM), else `attnFlashPrefillOnlineKernel` (88 KB,
-   the same tile carrying a residual pair); both need head dimension 128 and
-   a grouped-query ratio dividing 64, and `prefillTilePays`, a once-per-process
-   probe at 128 rows against the wave kernels (`:3080-3095`);
-2. the two-pass tile `attnFlashPrefillTileKernel`;
-3. the wave kernels, `attnFlashPrefillGqa4Kernel` for ratio 4 (one wave
-   reading each K/V block once for the four heads that share it) or
-   `attnFlashPrefillKernel`;
-4. the score and combine pair.
+1. The single-pass online-softmax tile. The f16 variant
+   `attnFlashPrefillF16Kernel` goes first where it is registered, since it
+   takes 45 KB of shared memory and two workgroups share a multiprocessor;
+   otherwise `attnFlashPrefillOnlineKernel`, the same tile carrying a
+   residual pair at 88 KB. Both need head dimension 128 and a grouped-query
+   ratio dividing 64, and both need `prefillTilePays`, a once-per-process
+   probe at 128 rows against the wave kernels (`:3080-3095`).
+2. The two-pass tile `attnFlashPrefillTileKernel`.
+3. The wave kernels. `attnFlashPrefillGqa4Kernel` serves ratio 4, with one
+   wave reading each K/V block once for the four heads that share it, and
+   `attnFlashPrefillKernel` serves the rest.
+4. The score and combine pair.
 
 When the online tile serves, the scores buffer that the two-pass route needs
-is allocated as one float; it was 268 MB a slot on an 8B at context 4096
-(`DeviceKv.cajeta:385-394`).
+is allocated as one float. It had been 268 MB a slot on an 8B at context
+4096 (`DeviceKv.cajeta:385-394`).
 
 ### 2.4 A mixture-of-experts layer in prefill
 
-For Qwen3-Coder-30B-A3B, 128 experts with 8 active, the dense feed-forward
-is replaced by a routed one (`MoeFfn.cajeta:2175-2330`). The zero-sync route,
-taken when the matrix-core routes are on, the backend is not Vulkan, and the
-three expert banks have a servable indexed GEMM (`mwServable`, `:2022-2026`):
+Qwen3-Coder-30B-A3B has 128 experts with 8 active, and its feed-forward is
+routed (`MoeFfn.cajeta:2175-2330`). The zero-sync route is taken when the
+matrix-core routes are on, the backend is not Vulkan, and the three expert
+banks have a servable indexed GEMM (`mwServable`, `:2022-2026`). It runs in
+six steps:
 
-1. **Router** as one GEMM over all rows (`routerRowsF32`), then **top-k** per
-   row (`moeTopKBatch`): each row's eight experts and their weights.
-2. **Grouping sort** (`moeGroupWaveKernel`, `QuantKernel.cajeta:20116-20131`):
-   a counting sort by expert in one 256-thread workgroup, eight ballots
-   covering up to 256 experts, writing the row order, the weights, and
-   64-row and 128-row **chunk maps** with a count. It replaced a serial
+1. The router runs as one GEMM over all rows (`routerRowsF32`), and then
+   top-k runs per row (`moeTopKBatch`), giving each row its eight experts and
+   their weights.
+2. The grouping sort (`moeGroupWaveKernel`, `QuantKernel.cajeta:20116-20131`)
+   is a counting sort by expert in one 256-thread workgroup, with eight
+   ballots covering up to 256 experts. It writes the row order, the weights,
+   and 64-row and 128-row chunk maps with a count. It replaced a serial
    kernel that took 251 µs a layer against llama.cpp's 40.
-3. **Gather and pack**: the selected rows gathered in expert order
-   (`gatherRowsF32`) and packed to q8_K.
-4. **Gate and up as indexed GEMMs** (`idGemm`): every chunk-map entry names
-   an expert and a run of rows; a workgroup computes one row chunk against a
-   tile of that expert's weights (`IdTile.cajeta:1-16`). The expert banks are
-   one packed slab each, experts as offset views (`ExpertBank.cajeta:21-31`).
-5. **GLU**, then **pack** with each row's slot on a block boundary.
-6. **Down as an indexed GEMM**, then **scatter-combine** back into the rows
-   with their routing weights (`moeScatterCombine`), then the shared expert
+3. The selected rows are gathered in expert order (`gatherRowsF32`) and
+   packed to q8_K.
+4. Gate and up run as indexed GEMMs (`idGemm`). Every chunk-map entry names
+   an expert and a run of rows, and a workgroup computes one row chunk
+   against a tile of that expert's weights (`IdTile.cajeta:1-16`). Each
+   expert bank is one packed slab, with the experts as offset views into it
+   (`ExpertBank.cajeta:21-31`).
+5. The GLU runs, and the result is packed with each row's slot on a block
+   boundary.
+6. Down runs as an indexed GEMM, `moeScatterCombine` adds the results back
+   into the rows with their routing weights, and the shared expert runs
    where the family has one.
 
-No synchronization and no download happens between the router and the
-combine. The indexed GEMM itself is chosen per bank (`zeroSyncIdGemm`,
-`:2031-2052`): the format's Id tile family first (`IdTile` 128×128 and 64×128
-for Q4_K, `Q5IdTile` and `Q6IdTile` for the others), timed **in place** on
-real tokens across the live layers rather than on a synthetic launch
-(`IdTrial.cajeta:56-99`); then the wide 128-row-map GEMM over widened
-weights; then the 64-row-map multi-wave kernel. Where none serves, the
-grouped fallback (`:2338-2548`) downloads the selection, sorts on the host,
-and runs a GEMM per expert group.
+Nothing synchronizes and nothing is downloaded between the router and the
+combine. The indexed GEMM is chosen per bank (`zeroSyncIdGemm`,
+`:2031-2052`). The format's Id tile family comes first (`IdTile` at 128×128
+and 64×128 for Q4_K, `Q5IdTile` and `Q6IdTile` for the others), and it is
+timed in place on real tokens across the live layers rather than on a
+synthetic launch (`IdTrial.cajeta:56-99`). Then comes the wide 128-row-map
+GEMM over widened weights, and then the 64-row-map multi-wave kernel. Where
+none serves, the grouped fallback (`:2338-2548`) downloads the selection,
+sorts on the host, and runs a GEMM per expert group.
 
 <figure class="diagram">
 <svg viewBox="0 0 940 270" role="img" aria-label="A mixture-of-experts layer in prefill, zero-sync: router GEMM over all rows, top-k per row, the wave counting sort producing row order, weights and chunk maps, gather and pack in expert order, indexed GEMMs for gate and up reading one packed slab per bank through the chunk map, GLU and pack, indexed GEMM down, scatter-combine with the routing weights, the shared expert." style="max-width:100%;height:auto;font-family:var(--font-ui);font-size:11px">
@@ -509,77 +527,81 @@ and runs a GEMM per expert group.
     <text x="400" y="96">the chunk maps feed every id GEMM</text>
   </g>
 </svg>
-<figcaption>The routed feed-forward over a chunk, zero-sync. The sort turns per-row choices into per-expert runs so that each expert's weights are read once per chunk; the indexed GEMMs then follow the chunk map into one slab per bank.</figcaption>
+<figcaption>The routed feed-forward over a chunk, with no synchronization. The sort turns per-row choices into per-expert runs so that each expert's weights are read once per chunk, and the indexed GEMMs follow the chunk map into one slab per bank.</figcaption>
 </figure>
 
 ### 2.5 The K/V cache during prefill
 
-- On the device, `DeviceKv` holds flat f16 K and V planes per layer, position
-  `t` at `t × kvDim`, in a `KvPool` whose slot `s` sits at `s × plane` so one
-  batched attention launch can reach every sequence (`DeviceKv.cajeta:1-30`,
-  `KvPool.cajeta:9-13`). Rotary and the append are one launch.
-- The host `PagedKvCache` (16-token blocks, reference-counted, copy-on-write,
-  rings for windowed layers) is deliberately left behind during a resident
-  pass and caught up lazily (`adoptLazy`, `CausalLM.cajeta:3361-3381`); a
-  host-path reader writes back first. Decode inherits the planes, so the
-  first decode step reads what prefill wrote with no copy.
-- The **block store** is a file-backed prefix cache keyed by a chained XXH3
-  hash of the prefix, every extent checksummed on read, coldest-first
-  eviction (`BlockStore.cajeta:1-24`). Admission adopts stored blocks up to
-  the first miss on any layer; finish and preemption save full blocks.
+On the device, `DeviceKv` holds flat f16 K and V planes per layer, with
+position `t` at `t × kvDim`, inside a `KvPool` whose slot `s` sits at
+`s × plane`, so one batched attention launch can reach every sequence
+(`DeviceKv.cajeta:1-30`, `KvPool.cajeta:9-13`). Rotary and the append are one
+launch.
+
+The host `PagedKvCache` uses 16-token blocks that are reference-counted and
+copied on write, with rings for windowed layers. During a resident pass it
+is deliberately left behind and caught up lazily (`adoptLazy`,
+`CausalLM.cajeta:3361-3381`), and a host-path reader writes back first.
+Decode inherits the planes, so the first decode step reads what prefill
+wrote without a copy.
+
+The block store is a file-backed prefix cache keyed by a chained XXH3 hash
+of the prefix. Every extent is checksummed on read and eviction is coldest
+first (`BlockStore.cajeta:1-24`). Admission adopts stored blocks up to the
+first miss on any layer, and finish and preemption save full blocks.
 
 ## 3. Decode
 
 ### 3.1 The step, and who runs it
 
-Per scheduler step (`Scheduler.cajeta:357-548`), for the running requests
-with one token left to consume:
-
-1. exactly one greedy request, and the model's pipeline is ready: the
-   **pipelined** single-sequence decode (§3.2);
-2. two or more greedy requests and the batch is admitted: the **batched**
-   decode, up to eight rows a step, itself one step ahead (§3.3);
-3. otherwise the plain step: a sampled request, or a model whose batch
-   refusal was recorded, decodes one row with a synchronization.
+Each scheduler step (`Scheduler.cajeta:357-548`) looks at the running
+requests with one token left to consume and takes one of three paths. When
+exactly one greedy request is running and the model's pipeline is ready, it
+runs the pipelined single-sequence decode (§3.2). When two or more greedy
+requests are running and the batch is admitted, it runs the batched decode,
+up to eight rows a step and itself one step ahead (§3.3). Otherwise it runs
+the plain step with a synchronization, which serves a sampled request or a
+model whose batch refusal was recorded.
 
 Admission to the batch is latched once per model (`decodeBatchReady`,
-`CausalLM.cajeta:3800-3823`): the K/V cache resident, the attention kernels
-usable, head dimension at most 128, hidden and query widths multiples of
-256, every projection and the output head with a Cols kernel for its format.
-A refusal is recorded with its reason and the sequences decode singly.
+`CausalLM.cajeta:3800-3823`). The K/V cache must be resident, the attention
+kernels usable, the head dimension at most 128, the hidden and query widths
+multiples of 256, and every projection and the output head must have a Cols
+kernel for its format. A refusal is recorded with its reason and the
+sequences decode singly.
 
 ### 3.2 One sequence: the pipelined decode
 
-The host queues step N+1 before it has read step N's token (`stepPipelined`,
-`Scheduler.cajeta:555-626`; `queueStep`, `CausalLM.cajeta:1074-1147`):
+The host queues step N+1 before it has read step N's token
+(`stepPipelined`, `Scheduler.cajeta:555-626`; `queueStep`,
+`CausalLM.cajeta:1074-1147`):
 
-1. **Seed.** The prompt's last argmax is written into pinned device token
-   slot 0 and step 0 → 1 is queued.
-2. **Embed from the slot** (`embedRowLaunchNoSync` reading the token id on the
-   device, `:1097-1104`); the host never learns a token before the step that
-   consumes it is queued.
-3. **Thirty-two resident layers** (`residentLayer`, `:3476-3775`), the
-   residual never leaving the device:
-   - norm and q8_K pack staged in one launch;
-   - the three attention projections as **one fused wave mat-vec**
-     (`qkvWaveMatVecKernel`) where the load-time A/B said it pays, else three
-     wave mat-vecs; the prefetching twin where the variant probe chose it;
-   - `DeviceKv.prep`: QK-norm, rotary and the K/V append in one launch
-     (`DeviceKv.cajeta:289-308`);
-   - attention **split across the context**: `attnFlashDecodeGqa4Kernel`
-     writes partials over `ceil(waves per CU × CUs / nKv)` splits, up to 64
-     (`AttnKernel.cajeta:3316-3340`); `attnReducePackQ8Kernel` reduces them
-     and re-quantizes the result to q8_K in the same launch;
-   - the output projection **accumulated into the residual** by the mat-vec
-     itself (`Linear.cajeta:4649-4687`);
-   - norm and pack; gate and up; GLU fused with the pack; down accumulated.
-4. **The fused tail**: final norm, the output head as one wave mat-vec over
-   128256 rows, `argmaxRowKernel` writing the token into the other pinned
-   slot; an event recorded, the stream flushed, not synchronized
-   (`:1522-1541`).
-5. **Await the previous step's event** and read one integer; the next step
-   is already queued. A stop the host could not foresee costs one drained
-   step (`:619-626`).
+1. Seed. The prompt's last argmax is written into pinned device token slot
+   0 and step 0 → 1 is queued.
+2. Embed from the slot. `embedRowLaunchNoSync` reads the token id on the
+   device (`:1097-1104`), so the host never learns a token before the step
+   that consumes it is queued.
+3. Run thirty-two resident layers (`residentLayer`, `:3476-3775`) with the
+   residual never leaving the device. Each layer stages the norm and the
+   q8_K pack in one launch; runs the three attention projections as one
+   fused wave mat-vec (`qkvWaveMatVecKernel`) where the load-time A/B said it
+   pays, else as three wave mat-vecs, with the prefetching twin where the
+   variant probe chose it; runs `DeviceKv.prep`, which is QK-norm, rotary
+   and the K/V append in one launch (`DeviceKv.cajeta:289-308`); splits
+   attention across the context, with `attnFlashDecodeGqa4Kernel` writing
+   partials over up to 64 splits sized to the device (`AttnKernel.cajeta:3316-3340`)
+   and `attnReducePackQ8Kernel` reducing them and re-quantizing the result
+   to q8_K in the same launch; accumulates the output projection into the
+   residual inside the mat-vec itself (`Linear.cajeta:4649-4687`); and
+   finishes with the norm and pack, gate and up, the GLU fused with the pack,
+   and down accumulated.
+4. Run the fused tail. The final norm, the output head as one wave mat-vec
+   over 128256 rows, and `argmaxRowKernel` writing the token into the other
+   pinned slot. An event is recorded and the stream is flushed rather than
+   synchronized (`:1522-1541`).
+5. Await the previous step's event and read one integer. The next step is
+   already queued. A stop the host could not foresee costs one drained step
+   (`:619-626`).
 
 <figure class="diagram">
 <svg viewBox="0 0 920 310" role="img" aria-label="The pipelined decode as a timeline: on the host row, queue step N+1 (about a millisecond), wait on step N's event, read one integer, deliver the token, repeat; on the device row, step N and step N+1 back to back, each embedding from a pinned slot, 32 resident layers, the fused tail writing the argmax to the other slot and recording an event; two pinned slots alternate between steps; on CUDA each step's launch sequence is one graph replay." style="max-width:100%;height:auto;font-family:var(--font-ui);font-size:11px">
@@ -636,57 +658,58 @@ The host queues step N+1 before it has read step N's token (`stepPipelined`,
     <text x="550" y="240">slot B feeds step N+1</text>
   </g>
 </svg>
-<figcaption>The pipelined single-sequence decode. The device is never idle between steps and the host's only wait is on the previous step's event; two pinned token slots alternate so that each step reads its input where the previous step wrote its argmax. On CUDA the step's launch sequence is replayed as a captured graph (§3.4).</figcaption>
+<figcaption>The pipelined single-sequence decode. The device is never idle between steps, and the host's only wait is on the previous step's event. Two pinned token slots alternate so that each step reads its input where the previous step wrote its argmax. On CUDA the step's launch sequence is replayed as a captured graph (§3.4).</figcaption>
 </figure>
 
 Pipelining needs the fused tail, a device argmax, a device-routed output
 head and a device embedding decoder for the table's format
-(`pipelineReady`, `:1010-1016`); where any is missing, the step runs plainly
+(`pipelineReady`, `:1010-1016`). Where any is missing, the step runs plainly
 with a synchronization. Every choice the step takes was made before the
-first token: the wave kernel per weight latched at bind (the integer wave
-when the kernel is here, the activations q8_K packed and the width a
-multiple of 256; else the f16 or f32 wave; else the host,
-`Linear.cajeta:5185-5280`), the prefetching variant per weight shape from the
-tune store, the fused q|k|v from the load-time A/B. Nothing is timed during
-decode. The measured standing on the 4090 is at or above llama.cpp's
-single-sequence rate at every quantization from Q2_K to Q8_0: the kernels
-were at the bus, and the gaps between them were the host, which the pipeline
-removed.
+first token. The wave kernel per weight is latched at bind: the integer wave
+when the kernel is here, the activations are q8_K packed and the width is a
+multiple of 256, else the f16 or f32 wave, else the host
+(`Linear.cajeta:5185-5280`). The prefetching variant per weight shape comes
+from the tune store and the fused q|k|v from the load-time A/B. Nothing is
+timed during decode. On the 4090 the single-sequence rate stands at or
+above llama.cpp's at every quantization from Q2_K to Q8_0. The kernels were
+already at the bus, and the gaps between them were the host, which the
+pipeline removed.
 
 ### 3.3 Several sequences: the batched decode
 
-One pass over a weight row serves every decoding sequence
-(`decodeBatchRows`, `CausalLM.cajeta:3930-4087`):
+In the batched decode one pass over a weight row serves every decoding
+sequence (`decodeBatchRows`, `CausalLM.cajeta:3930-4087`):
 
-1. **Embed every row from the device token buffer** (the previous step's
-   argmaxes), norm and pack each row in one workgroup.
-2. **Each projection as one Cols launch** over the batch's activation
-   columns: one wave owns one weight row, decodes each block once and dots it
-   against every column (`q4kQ8WaveMatVecColsKernel`,
-   `QuantKernel.cajeta:13845-13853`); q|k|v and gate|up fused into one launch
-   where all are Q4_K and the segment A/B said so (`Linear.cajeta:4452-4501`).
-   Per launch, `ColsProbe.pays(format, width)` decides between the Cols
-   kernel and that many single-row launches (`:4372-4420`): on the 4090 the
-   Q4_K column kernel at eight columns once tied eight single rows, and a
-   four-sequence decode ran 768 single-row launches a step until the probe
-   existed (`ColsProbe.cajeta:49-56`).
-3. **Attention in three launches for all rows** (`AttnKernel.cajeta:4653-4701`):
-   `qkPrepBatchKernel`, then `attnFlashDecodeGqa8BatchKernel` (or the ratio-4
-   twin) over the whole `KvPool` buffer guided by a device **row table** of
-   `[slotBase, position, count, splits]` per row, then
+1. Every row is embedded from the device token buffer, which holds the
+   previous step's argmaxes, and each row is normed and packed in one
+   workgroup.
+2. Each projection runs as one Cols launch over the batch's activation
+   columns. One wave owns one weight row, decodes each block once and dots
+   it against every column (`q4kQ8WaveMatVecColsKernel`,
+   `QuantKernel.cajeta:13845-13853`). The q|k|v and gate|up projections are
+   fused into one launch where all are Q4_K and the segment A/B said so
+   (`Linear.cajeta:4452-4501`). Per launch, `ColsProbe.pays(format, width)`
+   decides between the Cols kernel and that many single-row launches
+   (`:4372-4420`). On the 4090 the Q4_K column kernel at eight columns once
+   tied eight single rows, and a four-sequence decode ran 768 single-row
+   launches a step until the probe existed (`ColsProbe.cajeta:49-56`).
+3. Attention runs in three launches for all rows (`AttnKernel.cajeta:4653-4701`).
+   `qkPrepBatchKernel` runs first, then `attnFlashDecodeGqa8BatchKernel` (or
+   the ratio-4 twin) over the whole `KvPool` buffer, guided by a device row
+   table of `[slotBase, position, count, splits]` per row, then
    `attnReducePackQ8BatchKernel`. The 30B's decode batch attends in three
    launches a layer where it took twelve.
-4. The output projection as a Cols launch accumulating into the residual;
-   norm and pack; the dense feed-forward as Cols launches with the GLU and
-   pack fused, or the routed feed-forward of §3.5.
-5. **The tail per row**: final norm and pack, the output head as a Cols
-   launch into the logits buffer, one `argmaxRowKernel` per row writing
+4. The output projection runs as a Cols launch accumulating into the
+   residual, then the norm and pack, then the dense feed-forward as Cols
+   launches with the GLU and pack fused, or the routed feed-forward of §3.5.
+5. The tail runs per row. The final norm and pack, the output head as a Cols
+   launch into the logits buffer, and one `argmaxRowKernel` per row writing
    `tok[row]` into the device token buffer.
 
-The batched step is itself pipelined (`BatchPipe.cajeta:16-52`): two pinned
+The batched step is itself pipelined (`BatchPipe.cajeta:16-52`). Two pinned
 token buffers, two events and two row tables alternate so that a host write
-never lands in the step in flight; a change to the set (a finish, an
-admission) lands the in-flight step first (`Scheduler.cajeta:915-922`). A
+never lands in the step in flight, and a change to the set, a finish or an
+admission, lands the in-flight step first (`Scheduler.cajeta:915-922`). A
 sampled request forces the synchronous form, which downloads the logits for
 the host sampler (`:930-936`).
 
@@ -747,54 +770,56 @@ the host sampler (`:930-936`).
     <text x="300" y="182">next step: embed every row from tok[] on the device</text>
   </g>
 </svg>
-<figcaption>The batched decode. Four sequences cost close to one in weight traffic because every wave reads its weight row once and serves every column; attention reaches every sequence's cache in one launch through the pool; the tokens never leave the device between steps.</figcaption>
+<figcaption>The batched decode. Four sequences cost close to one in weight traffic, because every wave reads its weight row once and serves every column. Attention reaches every sequence's cache in one launch through the pool, and the tokens never leave the device between steps.</figcaption>
 </figure>
 
 ### 3.4 Where the launch overhead went
 
 A decode step is about 1,360 launches of a few microseconds each. The
-engine's one stream is **deferred** (`QuantKernel.cajeta:56-75`,
-`KernelStream.cajeta:101-131` in the runtime): launches are queued and
-submitted together at a synchronization, host transfer, event or explicit
-flush; a queue whose kernel sequence was seen before is replayed as one
-recording (a CUDA graph on NVPTX) with only the changed grids and arguments
-patched into the nodes. The pipelined tail flushes rather than synchronizes,
-so the host returns to queue the next step while the device runs this one.
-Deferral is a no-op on HIP and Vulkan, so there the host pays for every
-launch and the pipelining matters more, not less; `CAJETA_XPU_DEFER=0` is
-the A/B control. Every fusion in §3.2 and §3.3 exists for the same reason:
-one launch fewer, and one pass over the activations fewer.
+engine's one stream is deferred (`QuantKernel.cajeta:56-75`, and
+`KernelStream.cajeta:101-131` in the runtime). Launches are queued and
+submitted together at a synchronization, a host transfer, an event or an
+explicit flush, and a queue whose kernel sequence was seen before is
+replayed as one recording, a CUDA graph on NVPTX, with only the changed
+grids and arguments patched into the nodes. The pipelined tail flushes
+rather than synchronizes, so the host returns to queue the next step while
+the device runs this one. Deferral is a no-op on HIP and Vulkan, so there the
+host pays for every launch and the pipelining matters more. The A/B control
+is `CAJETA_XPU_DEFER=0`. Every fusion in §3.2 and §3.3 exists for the same
+reason, since each one saves a launch and a pass over the activations.
 
 ### 3.5 A mixture-of-experts layer in decode
 
-One row (`forwardRowZeroSync`, `MoeFfn.cajeta:1631-1764`): the norm, pack,
-router and top-k in one launch (`rmsnormRouterTopKKernel`, for hidden widths
-to 2048 and up to 128 experts); gate and up with the GLU and the pack as
-fused indexed launches when both banks are Q4_K slabs; the down projection
-fused with the combine onto the residual **and the next layer's input norm
-and pack** in its tail (`idDownCombineTail`, `:1736-1744`).
+For one row (`forwardRowZeroSync`, `MoeFfn.cajeta:1631-1764`), the norm, the
+pack, the router and top-k run in one launch (`rmsnormRouterTopKKernel`,
+for hidden widths to 2048 and up to 128 experts). Gate and up, with the GLU
+and the pack, run as fused indexed launches when both banks are Q4_K slabs.
+The down projection is fused with the combine onto the residual and with
+the next layer's input norm and pack in its tail (`idDownCombineTail`,
+`:1736-1744`).
 
-Several rows (`forwardRowsZeroSync`, `:1504-1546`): nine launches a layer
-regardless of the row count: the router as one block per expert over all
-rows (the expert's weights read once, then from L1), top-k one wave per row,
-each row's packed activation replicated once per selected expert, one
-**indexed mat-vec per bank** over all `rows × k` selections (gate, up), GLU,
-pack, down, and a combine-add. The 30B's four-sequence decode went from
-twelve attention launches and a launch per expert to this.
+For several rows (`forwardRowsZeroSync`, `:1504-1546`), a layer takes nine
+launches regardless of the row count. The router runs as one block per
+expert over all rows, so the expert's weights are read once and then served
+from L1; top-k runs one wave per row; each row's packed activation is
+replicated once per selected expert; gate and up each run as one indexed
+mat-vec per bank over all `rows × k` selections; then the GLU, the pack,
+down, and a combine-add. The 30B's four-sequence decode went from twelve
+attention launches and a launch per expert to this.
 
 ### 3.6 Tokens out
 
-Greedy sampling is the default and happens on the device: the argmax kernel
+Greedy sampling is the default and happens on the device. The argmax kernel
 (`QuantKernel.cajeta:20357-20456`) reduces 1024 elements a workgroup, the
-last group reduces the partials, and ties keep the smaller index so that it
-equals the host's. A sampled request runs the host sampler on the logits
-(`Sampler.cajeta:60-203`): the repetition penalty over emitted tokens,
-temperature, a heapsort top-k, a stable softmax, top-p, one xorshift draw,
-zero allocations a token. The sink is called before the next step; the stop
-rules are a stop token, stop strings searched in the decode of a rolling
-16-token tail, and the budget (`Scheduler.cajeta:960-1005`). A finished
-request releases its slot (draining a speculative step first) and saves its
-full blocks to the store.
+last group reduces the partials, and ties keep the smaller index so that the
+result equals the host's. A sampled request runs the host sampler on the
+logits (`Sampler.cajeta:60-203`), which applies the repetition penalty over
+emitted tokens, temperature, a heapsort top-k, a stable softmax and top-p,
+and takes one xorshift draw, with zero allocations a token. The sink is
+called before the next step. The stop rules are a stop token, stop strings
+searched in the decode of a rolling 16-token tail, and the budget
+(`Scheduler.cajeta:960-1005`). A finished request drains any speculative
+step, releases its slot and saves its full blocks to the store.
 
 ## 4. The optimizer, kernel by kernel
 
@@ -858,7 +883,7 @@ what it may read.
     <text x="10" y="224">The store keys every entry by device geometry and build id: a store copied between machines, or a rebuilt kernel, re-measures rather than believes.</text>
   </g>
 </svg>
-<figcaption>Four moments, four kinds of evidence. Nothing is decided from a vendor's name: the compiler records what it built, the driver reports what the part is, the clock says what is faster here, and the launch reads the answers.</figcaption>
+<figcaption>Four moments, four kinds of evidence. Nothing is decided from a vendor's name. The compiler records what it built, the driver reports what the part is, the clock says what is faster here, and the launch reads the answers.</figcaption>
 </figure>
 
 | kernel or decision | compile time | bind | load or first use | per launch |
@@ -870,42 +895,45 @@ what it may read.
 | the Cols kernels and their fused segments | | `colsReady` per projection, latched once | the Cols probe per format and width 2 to 8 (`colsPays-…`), each candidate first checked against the host mat-vec | one Cols launch or single rows |
 | the decode attention kernels and their `Batch` twins | specialized at ratios 4 and 8, head dimension 128; a batched twin held byte-equal to the per-row kernel by a test | `KernelCap.usable` | | the split count follows the context |
 | the prefill attention tiles | the f16 online tile at 45 KB of shared memory against the residual tile's 88 KB | the f16 kernel first where registered, so a test can withhold either | `prefillTilePays` once per process at 128 rows | |
-| the Id GEMM families | the same adaptor as the dense tiles | the same filter | timed **in place** on real tokens, one layer a sample, trials held during warm-up | the chunk map |
-| the fusions (`qkPrep`, `gluFusedPack`, `rmsnormPack`, `attnReducePackQ8`, `idDownCombineTail`) | chosen by design: one launch and one activation pass fewer each | | | |
-| the device embedding and argmax | | `pipelineReady`: what makes the pipeline legal | | |
-| every kernel | a spill or an unlowered backend fails the build by name | the registry answers absent, never falls through | an answer is kept only against the build that measured it; one taken under foreign load is used and not stored | the launch is checked after every submission |
+| the Id GEMM families | the same adaptor as the dense tiles | the same filter | timed in place on real tokens, one layer a sample, trials held during warm-up | the chunk map |
+| the fusions (`qkPrep`, `gluFusedPack`, `rmsnormPack`, `attnReducePackQ8`, `idDownCombineTail`) | chosen by design; each saves one launch and one activation pass | | | |
+| the device embedding and argmax | | `pipelineReady`, which makes the pipeline legal | | |
+| every kernel | a spill or an unlowered backend fails the build by name | the registry answers absent and nothing falls through | an answer is kept only against the build that measured it; one taken under foreign load is used and not stored | the launch is checked after every submission |
 
-The CPU backend runs the same catalog as a target, not an emulator: the
-work-item loop vectorizes at the host's SIMD width and the wave verbs become
-vector reductions and shuffles. It reports no register or spill count, so
-the filter prunes nothing there and what differs is which members are fast:
-`matrixCoresPay` answers no (its software tiles run 11 to 21 times slower)
-and the dot-product floor serves the prefill (`Linear.cajeta:2825-2830`).
+The CPU backend runs the same catalog as a real target. The work-item loop
+vectorizes at the host's SIMD width and the wave verbs become vector
+reductions and shuffles. The backend reports no register or spill count, so
+the filter prunes nothing there, and what differs is which members are
+fast. `matrixCoresPay` answers no, since its software tiles run 11 to 21
+times slower, and the dot-product floor serves the prefill
+(`Linear.cajeta:2825-2830`).
 
 ## 5. What changes with the architecture
 
 ### 5.1 Model families
 
-The family decides the **shape of a layer** and nothing about kernels. From a
+The family decides the shape of a layer and nothing about kernels. From a
 GGUF's `general.architecture` (`ModelConfig.cajeta:167-199`):
 
 | family | what it switches on |
 |---|---|
-| `llama` | the base layer: RMSNorm, grouped-query attention, rotary embedding, SwiGLU; Llama 2 and 3.x, Mistral; **Mixtral and every Llama-shaped mixture** is this family with `expert_count > 0`, not a name (`:246-251`) |
+| `llama` | the base layer: RMSNorm, grouped-query attention, rotary embedding, SwiGLU. Llama 2 and 3.x, Mistral, and Mixtral, which is this family with `expert_count > 0` rather than a name of its own (`:246-251`) |
 | `qwen2`, `qwen2vl` | the text stack of Qwen2 |
-| `qwen2moe` | routed experts with a **shared expert** and its gate, top-k weights not renormalized |
-| `qwen3`, `qwen3moe` | **QK-norm** per head before the rotary embedding (`:240-242`); top-k weights renormalized |
-| `bitnet` | ternary weights with **sub-norms** inside the blocks (`:347`) |
+| `qwen2moe` | routed experts with a shared expert and its gate; the top-k weights are not renormalized |
+| `qwen3`, `qwen3moe` | QK-norm per head before the rotary embedding (`:240-242`); the top-k weights are renormalized |
+| `bitnet` | ternary weights with sub-norms inside the blocks (`:347`) |
 
-From a Hugging Face `config.json`: `LlamaForCausalLM` and `BitnetForCausalLM`
-(`:338-344`). Every knob is read from the configuration, never assumed from a
-name: head counts and `head_dim`, the norm epsilon, the rotary base and its
-scaling (linear, NTK, YaRN, llama3, with the Llama-3.1 frequency table read
-from `rope_freqs.weight`), sliding and per-layer windows (`layer_types`),
-tied word embeddings (the absence of `output.weight`), the expert count, the
-active count, the gating function and whether the weights renormalize, the
-shared expert. The plumbing for Gemma's `(1 + w)` norm, four norms a layer
-and GeGLU exists and is dormant: no architecture string sets it yet.
+From a Hugging Face `config.json`, the engine accepts `LlamaForCausalLM` and
+`BitnetForCausalLM` (`:338-344`). Every knob is read from the configuration
+and none is assumed from a name. The knobs are the head counts and
+`head_dim`, the norm epsilon, the rotary base and its scaling (linear, NTK,
+YaRN or llama3, with the Llama-3.1 frequency table read from
+`rope_freqs.weight`), sliding and per-layer windows from `layer_types`, tied
+word embeddings read from the absence of `output.weight`, the expert count,
+the active count, the gating function and whether the weights renormalize,
+and the shared expert. The plumbing for Gemma's `(1 + w)` norm, four norms a
+layer and GeGLU exists and is dormant, since no architecture string sets it
+yet.
 
 <figure class="diagram">
 <svg viewBox="0 0 1060 270" role="img" aria-label="One layer with its optional blocks by family: the base path is norm, q k v, rope, attention, o-proj, norm, gate up GLU down; qwen3 inserts QK-norm between the projections and rope; bitnet adds sub-norms inside the attention and feed-forward blocks; a mixture family replaces the feed-forward with router, top-k, experts and, for qwen2moe, a shared expert; windowed layers attend over a ring; tied embeddings reuse the table as the output head." style="max-width:100%;height:auto;font-family:var(--font-ui);font-size:11px">
@@ -964,51 +992,59 @@ and GeGLU exists and is dormant: no architecture string sets it yet.
     <text x="10" y="264">Checkpoint's name table, DecoderLayer / Attention / MoeFfn for a new block shape, CausalLM for a new branch, and the census and oracle files for a new kernel.</text>
   </g>
 </svg>
-<figcaption>What a model family changes. Every family runs the same kernels on the same routes; it differs in which blocks a layer has and which configuration keys fill them.</figcaption>
+<figcaption>What a model family changes. Every family runs the same kernels on the same routes. The families differ in which blocks a layer has and which configuration keys fill them.</figcaption>
 </figure>
 
 ### 5.2 Weight formats
 
-A checkpoint mixes formats (the Q4_K_M recipe is Q4_K with Q6_K in the value
-and down projections of half the layers and the output head), and every
-decision in §2.3 is made **per tensor** from its format (`packedTy`): whether
-the weight stays packed (`Linear.packedSupported`, `Linear.cajeta:891-914`),
-which kernel ids exist for it (`KernelCap.waveMatVecId`, `f32WaveId`,
-`batchGemmId`, `KernelCap.cajeta:335-376`), which tile family serves it
-(`TcTile.cajeta:76-116`) and whether a Cols kernel exists (Q4_K, Q6_K, Q5_K,
-Q8_0, Q2_K, Q3_K). Every format has a host implementation, so a model whose
-format no device kernel serves still runs. The IQ codebooks are ggml's grids
-byte for byte, uploaded once per process (`IqGrid.cajeta`,
-`QuantKernel.cajeta:7101-7111`). A format gains a prefill family by one
-`*Tile` class implementing the tile shape, two instantiations in the family
-accessor, an availability latch and a route predicate in `Linear`
-(`:1491-1523, 2146-2163`); the [models page](llm/models.md) has the
-format-by-regime table and the [catalog](catalog-llm.md) every kernel.
+A checkpoint mixes formats. The Q4_K_M recipe is Q4_K with Q6_K in the value
+and down projections of half the layers and in the output head, and every
+decision in §2.3 is made per tensor from its format, `packedTy`. The format
+decides whether the weight stays packed (`Linear.packedSupported`,
+`Linear.cajeta:891-914`), which kernel ids exist for it
+(`KernelCap.waveMatVecId`, `f32WaveId`, `batchGemmId`,
+`KernelCap.cajeta:335-376`), which tile family serves it
+(`TcTile.cajeta:76-116`) and whether a Cols kernel exists, which today
+covers Q4_K, Q6_K, Q5_K, Q8_0, Q2_K and Q3_K. Every format has a host
+implementation, so a model whose format no device kernel serves still runs.
+The IQ codebooks are ggml's grids byte for byte, uploaded once per process
+(`IqGrid.cajeta`, `QuantKernel.cajeta:7101-7111`). A format gains a prefill
+family through one `*Tile` class implementing the tile shape, two
+instantiations in the family accessor, and an availability latch and a
+route predicate in `Linear` (`:1491-1523, 2146-2163`). The
+[models page](llm/models.md) has the format-by-regime table and the
+[catalog](catalog-llm.md) lists every kernel.
 
 ### 5.3 Backends
 
-One source serves CUDA, HIP, Vulkan and the CPU. The code never branches on
-a vendor's name, with one exception; it asks three kinds of question:
+One source serves CUDA, HIP, Vulkan and the CPU. With one exception, the
+code never branches on a vendor's name. It asks three kinds of question
+instead.
 
-- **Is the kernel here?** `KernelCap.usable(name)` is the registry (does this
-  backend hold device code for the kernel whose shared memory fits this
-  part) and the library's own defect list keyed `backend:kernel`
-  (`KernelCap.cajeta:161-217, 265-271`). A kernel the compiler could not lower
-  for a backend is declared `@Unlowered` at build, is absent from the
-  registry, and nothing falls through to it. On Vulkan that is every WMMA,
-  tile and Id kernel (`QkTile.cajeta:84`, `IdTile.cajeta:94`,
-  `WmmaKernel.cajeta:958`); on AMDGPU the one flash kernel over 88 KB of
-  shared memory (`AttnKernel.cajeta:2467`); on the CPU the flash attention
-  and, by the defect list, the per-format tiles and fused Cols kernels.
-- **What does the device report?** `DeviceFacts.current()`: the shared-memory
-  limit per block with and without opt-in, registers and threads per
-  multiprocessor, the wave size, free memory, what other processes hold.
-  This is what prunes the 128×128 tile on gfx1151 (64 KB a block, no opt-in)
-  and keeps it on the 4090 (99 KB with opt-in).
-- **What is faster here?** `matrixCoresPay`, `tileBeatsDeq`, `prefillTilePays`,
-  the Cols probe, the variant probe: measured, remembered per device key.
+Is the kernel here? `KernelCap.usable(name)` combines the registry, which
+says whether this backend holds device code for the kernel and whether its
+shared memory fits this part, with the library's own defect list keyed
+`backend:kernel` (`KernelCap.cajeta:161-217, 265-271`). A kernel the compiler
+could not lower for a backend is declared `@Unlowered` at build, is absent
+from the registry, and nothing falls through to it. On Vulkan that is every
+WMMA, tile and Id kernel (`QkTile.cajeta:84`, `IdTile.cajeta:94`,
+`WmmaKernel.cajeta:958`). On AMDGPU it is the one flash kernel over 88 KB of
+shared memory (`AttnKernel.cajeta:2467`). On the CPU it is the flash
+attention and, through the defect list, the per-format tiles and fused Cols
+kernels.
 
-The exception is `backendIsVulkan()` (`Linear.cajeta:2795-2805`): under RADV
+What does the device report? `DeviceFacts.current()` gives the shared-memory
+limit per block with and without opt-in, the registers and threads per
+multiprocessor, the wave size, the free memory, and what other processes
+hold. This is what prunes the 128×128 tile on gfx1151, which allows 64 KB a
+block with no opt-in, and keeps it on the 4090, which allows 99 KB with
+opt-in.
+
+What is faster here? `matrixCoresPay`, `tileBeatsDeq`, `prefillTilePays`, the
+Cols probe and the variant probe are measured and remembered per device
+key.
+
+The exception is `backendIsVulkan()` (`Linear.cajeta:2795-2805`). Under RADV
 the WMMA epilogue demotes to a software tile that trips the display ring's
 watchdog, so Vulkan turns the WMMA, tile and widen routes off and batches
 through the f16 cooperative GEMM, the `mmq` tile or the floor.
@@ -1084,32 +1120,33 @@ through the f16 cooperative GEMM, the `mmq` tile or the floor.
     <text x="10" y="320">on gfx1151 under Vulkan, four-sequence decode at 0.98 of llama.cpp's Vulkan.</text>
   </g>
 </svg>
-<figcaption>Where the backends part for this model. The source is one on every row; what differs is a fact the device reported (the shared-memory limit, the wave), a tier the compiler recorded, or a mechanism one backend has and another lacks (graph replay, the event clock).</figcaption>
+<figcaption>Where the backends part for this model. The source is one on every row. What differs is a fact the device reported (the shared-memory limit, the wave), a tier the compiler recorded, or a mechanism one backend has and another lacks (graph replay, the event clock).</figcaption>
 </figure>
 
-What keeps the four honest is the **kernel census**
-(`selftest/KernelCensus.cajeta:320-434`): after the suite, every kernel
+The kernel census keeps the four backends honest
+(`selftest/KernelCensus.cajeta:320-434`). After the suite, every kernel
 registered on the active backend must be checked by a test, tracked as a
-probe or a plan item, or declared external, and every shipped kernel needs a
-row in the oracle map naming its llama.cpp counterpart. A new `@Kernel`
-registers itself wherever it lowers and fails both gates until a test checks
-its values; a new backend reruns the same gate keyed by its name.
+probe or a plan item, or declared external, and every shipped kernel needs
+a row in the oracle map naming its llama.cpp counterpart. A new `@Kernel`
+registers itself wherever it lowers and fails both gates until a test
+checks its values, and a new backend reruns the same gate under its own
+name.
 
 ## 6. Reading a run
 
-`--verbose` registers a diagnostic callback and every decision on this page
-announces itself once through it (`Diag.cajeta`): `prefill-mode` and
-`decode-mode`, `batch-route` and `batch-refused` per projection,
-`tile-choice`, `cols-probe`, `mc-probe`, `mv-probe`, `kernel-avail`,
-`widen-budget`, `kv-ceiling`, `load-phase`, `sched-phase` and
-`decode-batch-phase`. `CAJETA_PROFILER=1` writes a trace that shows the load
-as its phases, each prefill chunk as the per-layer sequence of §2.2 with the
-tiles the longest spans, and each decode step as a dense run of launches
-with the two events per step and the host's wait on the previous event as
-its only gap (an armed profiler keeps every launch direct, so the graph
-replay is off while tracing). [Measuring](llm/measuring.md) says how a
-number is read against llama.cpp and the [benchmarks](../../bench/llm/README.md)
-hold the numbers.
+`--verbose` registers a diagnostic callback, and every decision on this page
+announces itself once through it (`Diag.cajeta`). The records include
+`prefill-mode` and `decode-mode`, `batch-route` and `batch-refused` per
+projection, `tile-choice`, `cols-probe`, `mc-probe`, `mv-probe`,
+`kernel-avail`, `widen-budget`, `kv-ceiling`, `load-phase`, `sched-phase`
+and `decode-batch-phase`. `CAJETA_PROFILER=1` writes a trace that shows the
+load as its phases, each prefill chunk as the per-layer sequence of §2.2
+with the tiles as the longest spans, and each decode step as a dense run of
+launches with the two events per step and the host's wait on the previous
+event as its only gap. An armed profiler keeps every launch direct, so the
+graph replay is off while tracing. [Measuring](llm/measuring.md) says how a
+number is read against llama.cpp, and the
+[benchmarks](../../bench/llm/README.md) hold the numbers.
 
 ## Where to go from here
 
