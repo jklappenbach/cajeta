@@ -614,6 +614,12 @@ jobs:
           # under OpenSSL 4 yet (MeltResolverTests, 2026-10-31), so the build
           # stays on openssl@3, the library every release so far has linked.
           echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          # The signing fixtures (OrgKeyFixture) run the `openssl` CLI on PATH;
+          # it must be the same OpenSSL the verifier links, or a key or
+          # signature format the other does not read fails MeltResolverTests.
+          echo "$(brew --prefix openssl@3)/bin" >> "$GITHUB_PATH"
+          "$(brew --prefix openssl@3)/bin/openssl" version
+          echo "system openssl: $(/usr/bin/openssl version 2>/dev/null)"
 
       # ---- Fetch the prebuilt IDE plugin for embedding ------------------
       # The `plugin` job built Cajeta's IDEA plugin once; drop its zip where
