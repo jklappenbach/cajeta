@@ -1,7 +1,7 @@
 # 23 — Profiling
 
 Cajeta ships a sampling profiler in the runtime. It needs no rebuild, no
-recompile, and no agent: set one environment variable and run the binary you
+recompile, and no agent. Set one environment variable and run the binary you
 already have.
 
 ```bash
@@ -9,29 +9,30 @@ $ CAJETA_PROFILER=1 ./build/exe/myapp
 $ # -> ./cajeta.pftrace, in the current directory
 ```
 
-Open the result at [ui.perfetto.dev](https://ui.perfetto.dev) — drag the file
-in. Nothing is uploaded; the UI runs the trace processor in your browser.
+Open the result at [ui.perfetto.dev](https://ui.perfetto.dev) by dragging
+the file in. Nothing is uploaded, since the UI runs the trace processor in
+your browser.
 
 ## Why no rebuild is needed
 
-Every Cajeta build already carries **per-call line-info probes**: runtime calls at
-each method prologue and statement boundary that maintain a shadow stack. They
-are what produces a semantic stack trace from a `Throwable`, and they are what
-the debugger reads. The profiler samples that same shadow stack from a
+Every Cajeta build already carries per-call line-info probes, which are
+runtime calls at each method prologue and statement boundary that maintain a
+shadow stack. They produce the semantic stack trace from a `Throwable`, and
+the debugger reads them. The profiler samples that same shadow stack from a
 background thread.
 
-So the frames are already there — profiling just starts reading them. With
+So the frames are already there, and profiling starts reading them. With
 `CAJETA_PROFILER` unset, nothing is armed, no thread starts, and the cost is
 exactly zero.
 
-The one build flag that matters is the one that takes the probes *away*:
+The one build flag that matters is the one that takes the probes away:
 
 ```bash
 $ cajeta build --debug-info=off     # no shadow stack -> nothing to sample
 ```
 
-A binary built that way refuses to profile, loudly, rather than producing an
-empty trace:
+A binary built that way refuses to profile and says so, instead of producing
+an empty trace:
 
 ```
 cajeta.profiler: refusing to arm — this binary was built with --debug-info=off,
@@ -46,71 +47,71 @@ profile, or --debug-info=full to also get exact line numbers.
 | `CAJETA_PROFILER` | unset | Set to anything to profile the run. Unset = off. |
 | `CAJETA_PROFILER_HZ` | `1000` | Samples per second. |
 | `CAJETA_PROFILER_RING` | `4096` | Samples buffered between the sampler and the writer. |
-| `CAJETA_PROFILER_GPU_RING` | capture default (`8192`) | **Device** records buffered between the GPU capture layer and the writer. Separate ring, separate limit: a busy kernel loop overflows this long before the sampler's. |
-| `CAJETA_PROFILER_GPU_PENDING` | `262144` launches | How many launches may wait for their device record at once. The table grows with what is parked, so the default is a bound, not a size; a launch past it keeps its host bracket and is counted in `gpu_pending_overflow`. |
+| `CAJETA_PROFILER_GPU_RING` | capture default (`8192`) | Device records buffered between the GPU capture layer and the writer. It is a separate ring with a separate limit, and a busy kernel loop overflows it long before the sampler's. |
+| `CAJETA_PROFILER_GPU_PENDING` | `262144` launches | How many launches may wait for their device record at once. The table grows with what is parked, so the default is a bound rather than an allocated size. A launch past it keeps its host bracket and is counted in `gpu_pending_overflow`. |
 | `CAJETA_PROFILER_OUT` | `cajeta.pftrace` | Where to write the trace. |
-| `CAJETA_PROFILER_GPU` | unset | `0` leaves device capture unarmed: host sampling only. Device capture attributes every launch as it is submitted, which turns a deferred stream (`KernelStream.setDeferred`) back into one submission per launch, so a host profile of a program that defers is only honest with capture off. |
+| `CAJETA_PROFILER_GPU` | unset | `0` leaves device capture unarmed, for host sampling only. Device capture attributes every launch as it is submitted, which turns a deferred stream (`KernelStream.setDeferred`) back into one submission per launch, so a host profile of a program that defers is only honest with capture off. |
 
 The trace is written when `main` returns, and also when a program ends through
-`System.exit`. A run killed part-way still leaves a **readable** trace of
-everything up to the moment it died — every packet carries its own length, so a
+`System.exit`. A run killed part-way still leaves a readable trace of
+everything up to the moment it died. Every packet carries its own length, so a
 truncated file is a short trace rather than a corrupt one.
 
 ## Reading the trace
 
 Each host thread and each fiber is its own track, named `cajeta.thread.N` and
-`cajeta.fiber.N`. A fiber's number is its **debugger** id, so a profile and a
+`cajeta.fiber.N`. A fiber's number is its debugger id, so a profile and a
 debug session call the same fiber the same thing.
 
-Slices carry their source position: click one and the file (and, under
-`--debug-info=full`, the line) are in the
-argument panel.
+Slices carry their source position. Click one and the file (and, under
+`--debug-info=full`, the line) are in the argument panel.
 
 ### Check the drop count first
 
 The trace opens with an instant on a `cajeta.profiler` track holding the run's
-own configuration — sample rate, ring capacity, samples taken, **samples
-dropped**, and `dropped_per_mille`.
+own configuration, which covers the sample rate, ring capacity, samples taken,
+samples dropped, and `dropped_per_mille`.
 
 Read that before trusting the shape. The sampler drops samples when the ring
 fills rather than blocking, because blocking would perturb the very program it
-is measuring — but a profile that lost a third of its samples looks exactly as
+is measuring. A profile that lost a third of its samples looks exactly as
 authoritative as a complete one. If `dropped_per_mille` is not near zero, raise
 `CAJETA_PROFILER_RING` or lower `CAJETA_PROFILER_HZ` and run again.
 
-A program that keeps a GPU busy needs a bigger ring than the default: a tight
-kernel loop measured **40% sample drops** at `4096`, and `CAJETA_PROFILER_RING=65536`
+A program that keeps a GPU busy needs a bigger ring than the default. A tight
+kernel loop measured 40% sample drops at `4096`, and `CAJETA_PROFILER_RING=65536`
 brought it to nothing.
 
 ### Device records drop separately
 
-The run record carries a second set for the device side — **`gpu_records_dropped`**,
+The run record carries a second set for the device side, `gpu_records_dropped`,
 `gpu_records_kept`, and `gpu_dropped_per_mille`. They count what the GPU capture
-ring lost, which is a *different* ring from the sampler's and fills far faster:
-one kernel launch is one record, so a loop issuing tens of thousands of launches
-overruns the `8192` default while `samples_dropped` stays at zero. A run that
-kept 8,192 of 56,843 launches is not a quiet profile — it is a profile missing
-six launches in seven.
+ring lost. That is a different ring from the sampler's, and it fills far
+faster. One kernel launch is one record, so a loop issuing tens of thousands of
+launches overruns the `8192` default while `samples_dropped` stays at zero. A
+run that kept 8,192 of 56,843 launches is a profile missing six launches in
+seven.
 
-The capture ring **overwrites**, so what survives is the *most recent* records
-and what is lost is the oldest — a truncated profile of the end of the run, not
-a thinned sample of all of it. Raise `CAJETA_PROFILER_GPU_RING` until
-`gpu_dropped_per_mille` reads zero; it costs one `CajetaGpuEvent` per slot and
-nothing at all when the profiler is off.
+The capture ring overwrites, so what survives is the most recent records and
+what is lost is the oldest. The result is a truncated profile of the end of
+the run rather than a thinned sample of all of it. Raise
+`CAJETA_PROFILER_GPU_RING` until `gpu_dropped_per_mille` reads zero. It costs
+one `CajetaGpuEvent` per slot and nothing at all when the profiler is off.
 
-A launch waits for its device record in a *pending table*, and a host that
-never syncs runs whole steps ahead of those records — a decode step is some
-hundreds of launches, a run over a hundred thousand. The table grows to hold
-what is parked (it was a fixed 16,384 slots, and a four-sequence decode run
-overflowed it with 96,750 launches), bounded by `CAJETA_PROFILER_GPU_PENDING`.
-`gpu_pending_overflow` counts launches refused at that bound, and
-`gpu_pending_unclaimed` launches whose record never arrived; both carry host
-brackets rather than device spans, and the summary says so.
+A launch waits for its device record in a pending table, and a host that
+never syncs runs whole steps ahead of those records. A decode step is some
+hundreds of launches, and a run is over a hundred thousand. The table grows to
+hold what is parked, bounded by `CAJETA_PROFILER_GPU_PENDING`. It was a fixed
+16,384 slots, and a four-sequence decode run overflowed it with 96,750
+launches. `gpu_pending_overflow` counts launches refused at that bound, and
+`gpu_pending_unclaimed` counts launches whose record never arrived. Both carry
+host brackets rather than device spans, and the summary says so.
 
 ### A per-kernel table without opening the IDE
 
-The common question about a GPU run — *which kernel cost what* — is a query, not
-a picture. `cajeta profile summary` answers it from the trace:
+The common question about a GPU run is which kernel cost what, and that is a
+query rather than a picture. `cajeta profile summary` answers it from the
+trace:
 
 ```
 $ cajeta profile summary cajeta.pftrace
@@ -122,16 +123,16 @@ scale        48    547.19 us    547.19 us     11.40 us     16.71 us   27.1%
 144 slice(s) over 2 track(s); self 2.02 ms, wall 29.31 ms
 ```
 
-Rows are ordered by **self** time, so the answer to "where did the time go" is
+Rows are ordered by self time, so the answer to "where did the time go" is
 the first one.
 
 | option | |
 |---|---|
-| `--from=<dur>`, `--to=<dur>` | Window, **relative to the first slice**. Absolute timestamps are host-clock nanoseconds and differ every run, so a relative window is the only one reusable between two runs of the same program. |
+| `--from=<dur>`, `--to=<dur>` | Window, relative to the first slice. Absolute timestamps are host-clock nanoseconds and differ every run, so a relative window is the only one reusable between two runs of the same program. |
 | `--host` | Total host frames instead of device kernels. |
 | `--csv` | Machine-readable output. |
 
-`<dur>` is nanoseconds unless suffixed: `500us`, `20ms`, `1s`.
+`<dur>` is nanoseconds unless suffixed, as in `500us`, `20ms`, `1s`.
 
 ```
 $ cajeta profile summary cajeta.pftrace --to=5ms --csv
@@ -143,8 +144,8 @@ scale,24,271832,271832,11326,15669
 
 #### self vs total
 
-**`self` is the frame's own work; `total` includes its children.** They differ
-only where frames nest, which on a device queue is never — a kernel slice
+`self` is the frame's own work, and `total` includes its children. They differ
+only where frames nest, which on a device queue is never. A kernel slice
 contains nothing, so its `self` equals its `total`, and the two columns above
 agree on every row.
 
@@ -160,51 +161,53 @@ kernelprofile.KernelProfile.run              1      3.16 ms    275.90 ms     1.1
 11 slice(s) over 2 track(s); self 275.90 ms, wall 275.90 ms
 ```
 
-`run` spans the whole program, so its **total** is the entire 275.90 ms — but
-almost all of that is its children, and its own work is 3.16 ms. Reading the
+`run` spans the whole program, so its total is the entire 275.90 ms. Almost
+all of that is its children, and its own work is 3.16 ms. Reading the
 inclusive column as cost would put `run` at the top of the table and blame the
 entry point for the program. Ordering and `share` therefore use `self`.
 
-The footer is the check on this: **self 275.90 ms against a wall of 275.90 ms**.
-Exclusive times partition the run — every nanosecond lands in exactly one frame
-— so they sum to the wall clock, while the inclusive column for the same run
-sums to 563 ms. Self time can still exceed the wall span when several threads
-or queues are genuinely busy at once; that is real concurrency, not
-double-counting, and is why no single "utilisation" percentage is offered.
+The footer is the check on this, with self 275.90 ms against a wall of
+275.90 ms. Exclusive times partition the run, since every nanosecond lands in
+exactly one frame, so they sum to the wall clock, while the inclusive column
+for the same run sums to 563 ms. Self time can still exceed the wall span when
+several threads or queues are genuinely busy at once. That is real
+concurrency, and nothing is double-counted. It is also the reason no single
+"utilisation" percentage is offered.
 
-Two outcomes that are not the same thing, and are not reported as one:
+Two outcomes are distinct, and they are not reported as one:
 
-- **No device queue in the trace** — a run that never touched an accelerator.
-- **Tracks present, but the window excluded every slice** — a bad window.
+- **No device queue in the trace**. The run never touched an accelerator.
+- **Tracks present, but the window excluded every slice**. The window is bad.
 
-Neither prints an empty table; both exit non-zero.
+Neither prints an empty table, and both exit non-zero.
 
 ### What sampling can and cannot tell you
 
-A sampling profiler answers *where did the time go*, not *how many times was
-this called*. Every slice boundary lands on a sample tick, so a slice's
-duration is "this frame was on the stack across these ticks" — not a
-measurement of one call. Two consequences worth internalizing:
+A sampling profiler answers where the time went. It does not answer how many
+times something was called. Every slice boundary lands on a sample tick, so a
+slice's duration means this frame was on the stack across these ticks, and it
+measures no single call. Two consequences are worth internalizing:
 
 - **Durations are statistical.** A function that appears for 30 ms was on the
   stack for about 30 ms worth of samples. It is not 30 ms of one invocation.
 - **Short calls may not appear at all.** Anything that never happens to be on
-  the stack at a tick is invisible. Raising `CAJETA_PROFILER_HZ` narrows the
-  gap; it does not close it.
+    the stack at a tick is invisible. Raising `CAJETA_PROFILER_HZ` narrows the
+  gap without closing it.
 
-Exact call counts are what the instrumentation tier is for; it is a build-time
+Exact call counts are what the instrumentation tier is for. It is a build-time
 mode, because it changes what codegen emits.
 
 ## Optimized builds still show your source
 
-Attribution follows the program's **source** structure, not its machine frames:
+Attribution follows the program's source structure. Machine frames play no
+part in it:
 
 ```bash
 $ cajeta --emit=exe --opt=O3 -o myapp com.example.Main::main src arch
 $ CAJETA_PROFILER=1 ./myapp
 ```
 
-Optimization level and line-info are independent: `--opt` does not turn the
+Optimization level and line-info are independent. `--opt` does not turn the
 probes off, and the release flavors leave `--debug-info=line` (the default) in
 place. Only `--debug-info=off` removes them.
 
@@ -214,11 +217,11 @@ place. Only `--debug-info=off` removes them.
 `Type.method` and `File.cajeta`. Exact line numbers come from a second probe at
 every STATEMENT, and that one is emitted only under `--debug-info=full`.
 
-The split is a measurement, not a preference. At `-O3`, per-call probes are at
-parity with an uninstrumented build; adding the per-statement probe costs
-**3.5x on ordinary code and up to 9.4x on call-dense code** — and not because
-the probe does much work. Emptying its body changes nothing: an opaque call at
-every statement boundary is what forbids inlining and folding.
+The split comes from a measurement. At `-O3`, per-call probes are at parity
+with an uninstrumented build, and adding the per-statement probe costs 3.5x on
+ordinary code and up to 9.4x on call-dense code. The probe itself does little
+work. Emptying its body changes nothing, because an opaque call at every
+statement boundary is what forbids inlining and folding.
 
 So a default profile tells you which METHOD is hot, for free. When you need the
 line, rebuild that run with `--debug-info=full` and accept the slowdown for the
@@ -230,20 +233,20 @@ $ CAJETA_PROFILER=1 ./build/exe/myapp
 ```
 
 Note this makes the profile less representative of production, which is the
-usual bargain with instrumentation — the hot method is the reliable answer, the
-hot line is the expensive one.
+usual bargain with instrumentation. The hot method is the reliable answer, and
+the hot line is the expensive one.
 
 A one-line forwarder that `-O3` inlines out of existence still appears in the
-profile, because the probes are calls with side effects — inlining carries them
-into the caller rather than deleting them. A profiler reading DWARF or frame
-pointers loses that function; this one keeps it.
+profile, because the probes are calls with side effects, and inlining carries
+them into the caller rather than deleting them. A profiler reading DWARF or
+frame pointers loses that function, and this one keeps it.
 
 `tools/profiler/attribution-check.sh` re-checks this end to end against a built
 toolchain.
 
 ## Exact counts: `--profiler=instrument`
 
-Sampling answers *where does wall time go*. It cannot answer *how many times* —
+Sampling answers where wall time goes. It cannot answer how many times, since
 a method called four million times for a nanosecond each may not appear in a
 single sample. When that is the question, build with instrumentation:
 
@@ -254,19 +257,19 @@ $ # -> ./cajeta.pftrace, with a cajeta.instrumentation track
 ```
 
 Each selected method gets an enter/exit probe pair, and the trace carries its
-exact entry count and inclusive time. This is a **separate tier**, not a better
-sampler: the two coexist in one trace and stay distinguishable — sampling as
-nested slices on per-thread tracks, instrumentation as records on
+exact entry count and inclusive time. This is a separate tier beside the
+sampler. The two coexist in one trace and stay distinguishable, with sampling
+as nested slices on per-thread tracks and instrumentation as records on
 `cajeta.instrumentation`, each stating `source` outright.
 
-Unlike sampling, this **needs a rebuild** and it is not free. That is the
-trade: the probe is inside the callee's body, so it counts calls the machine
-actually made — including calls into methods the optimizer inlined away, which
-a profiler reading DWARF or frame pointers cannot see at all.
+Unlike sampling, this needs a rebuild and it is not free. That is the trade.
+The probe is inside the callee's body, so it counts calls the machine actually
+made, including calls into methods the optimizer inlined away, which a
+profiler reading DWARF or frame pointers cannot see at all.
 
 The run reports what it cost itself. `instr_probe_ns` on the run record is the
-per-pair cost **measured on the machine that ran**, and `instr_overhead_ns` is
-that times the number of pairs — so you can judge how much the measurement
+per-pair cost measured on the machine that ran, and `instr_overhead_ns` is
+that times the number of pairs. So you can judge how much the measurement
 distorted what it measured instead of guessing.
 
 ### What it costs
@@ -277,8 +280,8 @@ Measured 2026-08-22, `-O3` native build, 20 M calls:
 |---|---|---|
 | tight loop over a one-line callee | 0.06 s | 1.18 s |
 
-The useful form of that number is not the ratio. **A probe pair costs a fixed
-~57 ns per call**, so the overhead is entirely a function of how often you call,
+The ratio is the less useful form of that number. A probe pair costs a fixed
+~57 ns per call, so the overhead is entirely a function of how often you call,
 and nothing else:
 
 | calls/second in the hot path | added wall time |
@@ -287,28 +290,28 @@ and nothing else:
 | 1 M | 6 % |
 | 10 M | 57 % |
 
-Pick the tier from that table, not from a rule of thumb. The 19x above is what
-20 M calls/second of a method that does almost nothing looks like; a method
-doing a microsecond of real work pays 6 % at the same call count.
+Pick the tier from that table. The 19x above is what 20 M calls/second of a
+method that does almost nothing looks like, and a method doing a microsecond
+of real work pays 6 % at the same call count.
 
-Two independent measurements agree on the 57 ns, which is why it is quoted
-rather than estimated: the run's own `instr_probe_ns` self-calibration reported
-57, and timing the same program with and against the flag gave 56.
+Two independent measurements agree on the 57 ns, so it is quoted rather than
+estimated. The run's own `instr_probe_ns` self-calibration reported 57, and
+timing the same program with and against the flag gave 56.
 
-About three quarters of it is the two timestamps — `clock_gettime(CLOCK_MONOTONIC)`
-measures 21 ns/call on this machine, and a span needs one at each end. The rest
-is two relaxed atomic adds and the calls themselves. So if you need counts and
-not durations, that is where the saving would come from; today the tier always
-measures both.
+About three quarters of it is the two timestamps.
+`clock_gettime(CLOCK_MONOTONIC)` measures 21 ns/call on this machine, and a
+span needs one at each end. The rest is two relaxed atomic adds and the calls
+themselves. So if you need counts without durations, that is where the saving
+would come from. Today the tier always measures both.
 
-The direct lever is `--profiler-select`: probes are emitted only for selected
+The direct lever is `--profiler-select`. Probes are emitted only for selected
 code, so narrowing the selection removes the cost rather than hiding it.
 
 ### Instrument part of a program
 
 Probes are emitted only for selected code. This is a compile-time decision, so
-unselected code carries nothing to skip — a narrow selection is a real
-reduction in overhead, not a display filter.
+unselected code carries nothing to skip, and a narrow selection is a real
+reduction in overhead.
 
 ```console
 $ cat prof.select
@@ -319,11 +322,11 @@ exclude dev.myapp.codec.Trace
 $ cajeta build --profiler=instrument --profiler-select=prof.select
 ```
 
-`**` crosses package boundaries, `*` stays within one name. Include defines the
-universe (no `include` lines means everything) and `exclude` subtracts from it.
-That is the whole rule — membership never depends on line order or on which
-pattern is more specific, so a file can be read in any order and mean the same
-thing.
+`**` crosses package boundaries, and `*` stays within one name. Include
+defines the universe (no `include` lines means everything) and `exclude`
+subtracts from it. That is the whole rule. Membership never depends on line
+order or on which pattern is more specific, so a file can be read in any order
+and mean the same thing.
 
 Two things the trace records so you do not have to remember them:
 
@@ -332,41 +335,41 @@ Two things the trace records so you do not have to remember them:
 - **The optimization level the build used.** `--profiler=instrument` pins no
   level, so the level is part of what every number means.
 
-A method entered with no probed frame beneath it — called from excluded code,
-or from the runtime at the program's root — records that as
-`outside_selection_calls` rather than being attributed to the nearest probed
-ancestor, which would draw a call edge that never happened.
+A method entered with no probed frame beneath it, whether called from
+excluded code or from the runtime at the program's root, records that as
+`outside_selection_calls`. Attributing it to the nearest probed ancestor would
+draw a call edge that never happened.
 
 ## GPU work
 
 When a program dispatches kernels, each device, context, and queue is its own
 track, and an arrow runs from the host call site that launched a kernel to the
-kernel's execution on the device — click through to see which line started
+kernel's execution on the device. Click through to see which line started
 which piece of GPU work.
 
 Where the numbers come from depends on the backend. On AMD, kernel spans come
-from rocprofiler's own dispatch records — the device saying what it did. On
-Vulkan, they come from timestamp queries bracketing each dispatch — real
-device time, one step coarser. When neither mechanism is available the span
-is the host's submit-to-complete window, which is true and about a wider
-thing than the kernel. Every span is annotated with the **tier** that
-measured it, the **confidence** of the clock correlation behind it, and any
-**integrity flags** the runtime raised (a timestamp register that reset on a
-low-power transition, a span outside its own launch-to-resolution bracket) —
-so a degraded or untrustworthy measurement renders as one instead of
+from rocprofiler's own dispatch records, which is the device saying what it
+did. On Vulkan, they come from timestamp queries bracketing each dispatch,
+which is real device time, one step coarser. When neither mechanism is
+available the span is the host's submit-to-complete window, which is true and
+about a wider thing than the kernel. Every span is annotated with the tier
+that measured it, the confidence of the clock correlation behind it, and any
+integrity flags the runtime raised, such as a timestamp register that reset
+on a low-power transition or a span outside its own launch-to-resolution
+bracket. So a degraded or untrustworthy measurement renders as one instead of
 blending in.
 
 Device timing degrades rather than disappearing when a vendor profiler is
-absent: a run whose rocprofiler is missing, whose Vulkan queue family cannot
-timestamp, or whose driver refuses calibration still profiles — the tier
+absent. A run whose rocprofiler is missing, whose Vulkan queue family cannot
+timestamp, or whose driver refuses calibration still profiles, and the tier
 says what each number actually is.
 
-On the Vulkan backend, each dispatch also emits an explicit **"host blocked
-on GPU"** span for the time the host spent waiting on the queue. That wait is
+On the Vulkan backend, each dispatch also emits an explicit "host blocked
+on GPU" span for the time the host spent waiting on the queue. That wait is
 the backend's current per-dispatch cost, and the labelled span is there so it
 reads as what it is rather than as an unexplained gap.
 
 ## See also
 
-- [05 Debugging](05-debugging.md) — the shadow stack this reads, from the other side.
-- `specs/cajeta-profiler-spec.md` — the requirements this implements.
+- [05 Debugging](05-debugging.md), the shadow stack this reads, from the other side.
+- `specs/cajeta-profiler-spec.md`, the requirements this implements.

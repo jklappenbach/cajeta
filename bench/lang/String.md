@@ -1,6 +1,6 @@
 # String
 
-`cajeta.lang.String` — immutable UTF-8 text, the single string type. Four rows date from the first suite and are kept as they were; the new rows walk codepoints, scan bytes, split and compare, which is where a UTF-8 string with byte-offset indexing differs from a UTF-16 one.
+`cajeta.lang.String` is immutable UTF-8 text, the single string type. Four rows date from the first suite and are kept as they were. The new rows walk codepoints, scan bytes, split and compare, which is where a UTF-8 string with byte-offset indexing differs from a UTF-16 one.
 
 ## Benchmarks
 
@@ -15,11 +15,11 @@
 | `lang/string-split` | split 1 MB on commas with `indexOfFrom` and `substringView`, 1e2 times (`String` has no `split`) | same libraries | piece count |
 | `lang/string-compare` | 1e7 comparisons of 32-byte strings, half equal | same libraries | equal count |
 
-`count()` is codepoints; `indexOf`, `substring` and `byteAt` take byte offsets. The rows name which they use.
+`count()` is codepoints, while `indexOf`, `substring` and `byteAt` take byte offsets. The rows name which they use.
 
 ## Results
 
-One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
+Each benchmark has one chart, drawn for the machine selected at the top of the page. Languages are the bars, best first. Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
 
 ```bench
 id: lang/string-build-concat
@@ -69,7 +69,7 @@ cd bench
 ./bench.sh --bench string-build-concat --competitors # every pinned competitor
 ```
 
-Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+Every row records the compiler and competitor versions, flags, machine, OS and driver. [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
 
 ## See also
 

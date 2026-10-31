@@ -1,6 +1,6 @@
 # cajeta.reflect
 
-Runtime type information.
+This section measures runtime type information.
 
 | Page | |
 |---|---|

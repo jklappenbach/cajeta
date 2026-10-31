@@ -1,6 +1,6 @@
 # Loops
 
-The language's loops, measured bare: a counted `for`, the same loop with bounds checks off, nested loops, `foreach` over an array and over an `ArrayList`, a range, a loop-carried reduction and an early exit. These are the floors every other number on this site stands on. Each loop consumes its result through the harness sink so the optimizer cannot delete it, and the smoke test greps the release IR to confirm the loop survived.
+This page measures the language's loops bare. The rows are a counted `for`, the same loop with bounds checks off, nested loops, `foreach` over an array and over an `ArrayList`, a range, a loop-carried reduction and an early exit. These are the floors every other number on this site stands on. Each loop consumes its result through the harness sink so the optimizer cannot delete it, and the smoke test greps the release IR to confirm the loop survived.
 
 ## Benchmarks
 
@@ -19,7 +19,7 @@ The language has no loop construct a competitor lacks, so every row is the same 
 
 ## Results
 
-One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
+Each benchmark has one chart, drawn for the machine selected at the top of the page. Languages are the bars, best first. Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
 
 ```bench
 id: lang/loop-counted
@@ -69,7 +69,7 @@ cd bench
 ./bench.sh --bench loop-counted --competitors # every pinned competitor
 ```
 
-Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+Every row records the compiler and competitor versions, flags, machine, OS and driver. [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
 
 ## See also
 

@@ -1,16 +1,16 @@
 # 16 — Concurrency
 
-This chapter defines the concurrency model: `async` functions running as fibers, structured `scope` blocks that own the tasks spawned inside them, `spawn`, the ownership rules that make data races unrepresentable by construction, and the synchronization primitives whose critical sections are closures. There is no `synchronized`, no `volatile`, and no `ThreadLocal` (§16.7).
+This chapter defines the concurrency model. It covers `async` functions running as fibers, structured `scope` blocks that own the tasks spawned inside them, `spawn`, the ownership rules that make data races unrepresentable by construction, and the synchronization primitives whose critical sections are closures. There is no `synchronized`, no `volatile`, and no `ThreadLocal` (§16.7).
 
 ## 16.1 `async` Functions and `await`
 
 `async` is a method modifier. An `async` method may suspend, and runs as a fiber on the runtime's carrier pool. `await expr` on an async call suspends the awaiting fiber until the result is ready and yields the value. An exception in the awaited task re-raises in the awaiter's frame.
 
-Ordinary (non-`async`) methods never suspend at the language level — when one blocks on a synchronization primitive (§16.5), the runtime parks the calling fiber under the hood, and the method's signature stays synchronous.
+Ordinary (non-`async`) methods never suspend at the language level. When one blocks on a synchronization primitive (§16.5), the runtime parks the calling fiber under the hood, and the method's signature stays synchronous.
 
 ## 16.2 `scope` — Structured Concurrency
 
-`scope { … }` is a block that owns the lifetime of every task spawned inside it: control does not leave the block until every child has finished or been cancelled. Joining is implicit at the closing brace.
+`scope { … }` is a block that owns the lifetime of every task spawned inside it. Control does not leave the block until every child has finished or been cancelled. Joining is implicit at the closing brace.
 
 **Example 16.2-1.** Spawned children joined by scope exit, and a guarded counter.
 
@@ -111,14 +111,14 @@ public final class C {
 }
 ```
 
-> *Discussion.* As of 0.27.0 `spawn` accepts a bare class-method invocation only — an instance-method spawn is rejected with `CAJETA_ERROR_ASYNC_R3A`. Cancellation semantics are implemented in stages. The running status is recorded in the internal concurrency status document, and this section binds them when they settle.
+> *Discussion.* As of 0.27.0 `spawn` accepts a bare class-method invocation only, and an instance-method spawn is rejected with `CAJETA_ERROR_ASYNC_R3A`. Cancellation semantics are implemented in stages. The running status is recorded in the internal concurrency status document, and this section binds them when they settle.
 
 ## 16.4 Ownership Across Task Boundaries
 
 What may cross into a task follows from the ownership model, with no separate `Send`/`Sync` vocabulary:
 
-- A value **borrowed** into a scoped task is sound: the borrow's lifetime is the scope's lifetime, and the scope blocks until the task finishes, so the source outlives every use.
-- A value handed to a **detached** task, or stored anywhere that outlives the spawning frame, must be **transferred** (`#`) — the task becomes the owner and drops it.
+- A value borrowed into a scoped task is sound. The borrow's lifetime is the scope's lifetime, and the scope blocks until the task finishes, so the source outlives every use.
+- A value handed to a detached task, or stored anywhere that outlives the spawning frame, must be transferred (`#`). The task becomes the owner and drops it.
 
 **Example 16.4-1.** Both rules in one frame. The scoped task borrows, and the detached task takes the title.
 
@@ -142,7 +142,7 @@ The last-use advisory (Ownership §5.10) exists for exactly this boundary. A len
 
 ## 16.5 Synchronization Primitives
 
-The primitives live in `cajeta.concurrent`. The data-owning ones expose no acquire/release API — the critical section is a closure, the protected value never escapes it, and the lock releases when the closure returns *or unwinds*.
+The primitives live in `cajeta.concurrent`. The data-owning ones expose no acquire/release API. The critical section is a closure, the protected value never escapes it, and the lock releases when the closure returns or unwinds.
 
 **`Mutex<T>`** owns the protected value. `withLock((T) -> #T)` runs the closure with the current value and stores back what it returns. `get()` snapshots the value under the lock.
 
@@ -159,7 +159,7 @@ public final class C {
 }
 ```
 
-**Wait-for-condition.** There is no standalone condition variable. `Mutex<T>.withLockWhen(predicate, body)` parks the caller until the predicate holds, re-checking it on every wake — the spurious-wakeup defense — and any `withLock` store wakes the waiters. The predicate must be free of side effects, since it is re-evaluated on every wake.
+**Wait-for-condition.** There is no standalone condition variable. `Mutex<T>.withLockWhen(predicate, body)` parks the caller until the predicate holds, and any `withLock` store wakes the waiters. The predicate is re-checked on every wake, which is the defense against spurious wakeups. The predicate must be free of side effects, since it is re-evaluated on every wake.
 
 **Example 16.5-2.** A consumer parks until a producer pushes, then takes one.
 
@@ -234,7 +234,7 @@ public final class C {
 }
 ```
 
-Acquisition methods are ordinary, non-`async` calls. A fiber that finds the lock held parks and yields its carrier, and a main-thread caller blocks. No signature changes color because a lock is involved.
+Acquisition methods are ordinary, non-`async` calls. A fiber that finds the lock held parks and yields its carrier, and a main-thread caller blocks. A method's signature does not change because a lock is involved.
 
 ## 16.6 Channels, Atomics, and Fiber-Local State
 
@@ -260,7 +260,7 @@ public final class C {
 }
 ```
 
-**`AtomicInt32` / `AtomicInt64`** are single-word atomics — `load`, `store`, `fetchAdd`, and `compareAndSet`.
+**`AtomicInt32` / `AtomicInt64`** are single-word atomics with `load`, `store`, `fetchAdd`, and `compareAndSet`.
 
 **Example 16.6-2.** A counter without a lock.
 
@@ -276,7 +276,7 @@ public final class C {
 }
 ```
 
-**`FiberLocal<T>`** is ambient per-fiber state, the sound replacement for the `ThreadLocal` pattern — per-request context and the like. `where(value, body)` binds for the dynamic extent of `body` and restores the prior binding when it returns or throws. `get()` on an unbound fiber throws, so `orElse` and `isBound` are the safe readers.
+**`FiberLocal<T>`** is ambient per-fiber state, and it is the sound replacement for the `ThreadLocal` pattern, such as per-request context. `where(value, body)` binds for the dynamic extent of `body` and restores the prior binding when it returns or throws. `get()` on an unbound fiber throws, so `orElse` and `isBound` are the safe readers.
 
 **Example 16.6-3.** A binding that exists only inside its `where` body.
 
@@ -291,12 +291,12 @@ public final class C {
 }
 ```
 
-The full API surface of the package is the Stdlib Reference's. The semantics stated in this chapter — closure scoping, release-on-unwind, park-not-block — are language guarantees.
+The full API surface of the package is documented in the Stdlib Reference. The semantics stated in this chapter are language guarantees. They are closure scoping, release on unwind, and parking in place of blocking.
 
 ## 16.7 Absent Constructs
 
-Cajeta has no `synchronized` method or block, no `volatile` fields, and no `ThreadLocal`. Each exists in Java to manage mutable state shared across threads by default. Cajeta's ownership model makes that sharing the explicit, unusual case, and the closure-scoped primitives above are the sanctioned form. Locks that could be acquired and forgotten are unrepresentable — only `Lock` yields a guard object at all, and its release is a drop.
+Cajeta has no `synchronized` method or block, no `volatile` fields, and no `ThreadLocal`. Each exists in Java to manage mutable state shared across threads by default. Cajeta's ownership model makes that sharing the explicit, unusual case, and the closure-scoped primitives above are the sanctioned form. Locks that could be acquired and forgotten are unrepresentable. Only `Lock` yields a guard object at all, and its release is a drop.
 
 ## 16.8 Memory Model
 
-> *Discussion.* The cross-thread memory-model protocol (a Send/Sync-style discipline for types) is deferred. Today's guarantees are structural — scope-bounded borrows, transfer-for-detach, and the primitives of §16.5. The scheduler runs a multi-carrier work-stealing pool by default (`CAJETA_CARRIERS` overrides the count, and `1` gives deterministic single-carrier execution). A fiber is pinned to the carrier that first ran it, so parallelism comes from fanning out across distinct fibers. These are implementation properties recorded here for orientation, not yet normative guarantees.
+> *Discussion.* The cross-thread memory-model protocol (a Send/Sync-style discipline for types) is deferred. Today's guarantees are structural. They are scope-bounded borrows, transfer for detach, and the primitives of §16.5. The scheduler runs a multi-carrier work-stealing pool by default (`CAJETA_CARRIERS` overrides the count, and `1` gives deterministic single-carrier execution). A fiber is pinned to the carrier that first ran it, so parallelism comes from fanning out across distinct fibers. These are implementation properties recorded here for orientation, and they are not yet normative guarantees.

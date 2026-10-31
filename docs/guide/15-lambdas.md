@@ -1,18 +1,18 @@
 # 15 — Lambdas & captures
 
-Function types are primitive type-formers: `(int32, int32) -> int32` is a
+Function types are primitive type-formers. `(int32, int32) -> int32` is a
 type, and a value of that type is callable. There is no `Runnable` or
 `@FunctionalInterface` indirection, and primitives flow through without
-boxing. Tour demo:
-[LambdasDemo](../../samples/tour/src/main/cajeta/tour/lang/LambdasDemo.cajeta);
-spec: [Lambdas.md](../specification/lang/Lambdas.md).
+boxing. The tour demo is
+[LambdasDemo](../../samples/tour/src/main/cajeta/tour/lang/LambdasDemo.cajeta),
+and the spec is [Lambdas.md](../specification/lang/Lambdas.md).
 
 ## Syntax and parameter inference
 
 A lambda is `(params) -> body`, where the body is an expression or a block.
-Parameter types may be written explicitly, or omitted when the surrounding
-context — the variable's declared type, or the parameter slot the lambda is
-passed to — pins the function type:
+Parameter types may be written explicitly. They may be omitted when the
+surrounding context pins the function type, either through the variable's
+declared type or through the parameter slot the lambda is passed to:
 
 ```cajeta
 (int32, int32) -> int32 add = (a, b) -> a + b;
@@ -21,9 +21,9 @@ int32 five = add(2, 3);
 ```
 
 A lambda whose parameter types are neither written nor inferable from context
-is a compile error. Method references are sugar for lambdas: `MathUtil::abs`
-for a static method, `obj::method` for a bound instance method (which
-captures `obj`).
+is a compile error. Method references are sugar for lambdas. `MathUtil::abs`
+names a static method, and `obj::method` names a bound instance method,
+which captures `obj`.
 
 ## Primitives capture by value
 
@@ -37,8 +37,8 @@ k = 20;
 int32 fifty = mul(5);
 ```
 
-Writing *to* a value-captured primitive inside the lambda is a compile error —
-the write would only touch the closure's private copy, so the compiler rejects
+Writing to a value-captured primitive inside the lambda is a compile error.
+The write would only touch the closure's private copy, so the compiler rejects
 it rather than let it silently do nothing:
 
 <!-- snippet: skip -->
@@ -54,7 +54,7 @@ capture.
 ## Heap values capture by borrow
 
 Class instances, arrays, and strings capture by borrow. The closure sees live
-state through the borrow; the original local still owns the value:
+state through the borrow, and the original local still owns the value:
 
 ```cajeta
 public class Tally {
@@ -72,14 +72,14 @@ xs.stream().forEach((x) -> t.bumpBy(x));
 int32 sum = t.value();
 ```
 
-This is the shape for inline consumption — the closure is used and dropped
-while the borrowed value is still in scope.
+This is the shape for inline consumption, where the closure is used and
+dropped while the borrowed value is still in scope.
 
 ## `#` transfers ownership into the closure
 
 A closure that must outlive its captures' scope takes ownership instead, with
 the same `#` marker used everywhere else in the language. Here the returned
-closure owns the `Cell`; it survives the factory's return and keeps state
+closure owns the `Cell`. It survives the factory's return and keeps state
 across calls:
 
 ```cajeta
@@ -102,7 +102,7 @@ int32 one = fn();
 int32 two = fn();
 ```
 
-After the transfer, `c` is moved — the factory body can't touch it again.
+After the transfer, `c` is moved, and the factory body can't touch it again.
 When the closure drops, the captured `Cell` drops with it, through the normal
 drop chain.
 

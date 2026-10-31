@@ -1,6 +1,6 @@
 # cajeta.nucleo
 
-The dataframe and the autodiff and fusion intrinsics, against pandas, polars and DuckDB, and against PyTorch and JAX for the transforms.
+This section measures the dataframe and the autodiff and fusion intrinsics, against pandas, polars and DuckDB, and against PyTorch and JAX for the transforms.
 
 | Page | |
 |---|---|

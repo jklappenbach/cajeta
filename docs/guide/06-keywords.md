@@ -1,15 +1,16 @@
 # 06 — Keywords
 
-Every reserved word in Cajeta. The authoritative list is the lexer,
-[`antlr4/CajetaLexer.g4`](../../antlr4/CajetaLexer.g4); this table matches it
-exactly. A reserved word cannot name a variable, method, or type, except where
-a note says it is contextual.
+This chapter lists every reserved word in Cajeta. The authoritative list is
+the lexer, [`antlr4/CajetaLexer.g4`](../../antlr4/CajetaLexer.g4), and this
+table matches it exactly. A reserved word cannot name a variable, method, or
+type, except where a note says it is contextual.
 
 Two familiar words are missing on purpose:
 
-- There is no `new`. Construction names a storage class instead — `heap
-  Circle(2.0)` or `stack Circle(2.0)`. See [chapter 10](10-allocation.md).
-- `true`, `false`, and `null` are literals, not keywords.
+- There is no `new`. Construction names a storage class instead, as in
+  `heap Circle(2.0)` or `stack Circle(2.0)`. See
+  [chapter 10](10-allocation.md).
+- `true`, `false`, and `null` are literals. The lexer does not reserve them.
 
 ## Primitive type names
 
@@ -23,8 +24,8 @@ Two familiar words are missing on purpose:
 | `float4e2m1` `float6e2m3` `float6e3m2` `float8e4m3` `float8e5m2` `float8e4m3fnuz` `float8e5m2fnuz` | OCP microscaling floats, storage-only |
 
 [Chapter 08](08-native-types.md) covers all of these. `bfloat16` and `pointer`
-are also native types, but they are type *names* resolved like any other, not
-reserved words.
+are also native types, but they are type names resolved like any other. The
+lexer does not reserve them.
 
 ## Declarations
 
@@ -77,8 +78,8 @@ reserved words.
 
 ## Modules (reserved)
 
-`pModule` `open` `requires` `exports` `opens` `to` `uses` `provides` `with`
-`transitive` — reserved by the lexer for a future module system. The parser
+The lexer reserves `pModule` `open` `requires` `exports` `opens` `to` `uses`
+`provides` `with` `transitive` for a future module system. The parser
 accepts every one of them as an ordinary identifier today, so methods named
 `open` or `requires` keep parsing. Note the placeholder spelling `pModule`.
 

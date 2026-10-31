@@ -1,6 +1,6 @@
 # cajeta.io
 
-Buffers, files and sockets. Network rows run over loopback with the peer in-process.
+This section measures buffers, files and sockets. Network rows run over loopback with the peer in-process.
 
 | Page | |
 |---|---|

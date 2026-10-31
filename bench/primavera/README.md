@@ -1,6 +1,6 @@
 # primavera against Spring Boot and its peers
 
-The register-user service shape, templated pages, start-up and footprint, build time and the DI graph, against Spring Boot, Quarkus, Micronaut, ASP.NET Core and FastAPI.
+This section measures the register-user service shape, templated pages, start-up and footprint, build time and the DI graph, against Spring Boot, Quarkus, Micronaut, ASP.NET Core and FastAPI.
 
 | Page | |
 |---|---|

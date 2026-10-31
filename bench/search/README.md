@@ -1,6 +1,6 @@
 # cajeta.search
 
-Edit distance, fuzzy matching and n-gram indexing.
+This section measures edit distance, fuzzy matching and n-gram indexing.
 
 | Page | |
 |---|---|

@@ -1,6 +1,6 @@
 # cajeta.process
 
-Spawning children and piping through them.
+This section measures spawning children and piping through them.
 
 | Page | |
 |---|---|

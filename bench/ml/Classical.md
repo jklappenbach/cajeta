@@ -1,6 +1,6 @@
 # Classical models
 
-`dev.cajeta.ml` — the scikit-learn role over `Tensor<float64>`: fit and predict for the estimators a data scientist reaches for first, on synthetic data at 1e5 × 100 and on the sklearn digits and California housing sets. Each row's metric is checked against scikit-learn's on the same data within a recorded tolerance.
+`dev.cajeta.ml` fills the scikit-learn role over `Tensor<float64>`. The rows are fit and predict for the estimators a data scientist reaches for first, on synthetic data at 1e5 × 100 and on the sklearn digits and California housing sets. Each row's metric is checked against scikit-learn's on the same data within a recorded tolerance.
 
 ## Benchmarks
 
@@ -15,7 +15,7 @@
 
 ## Results
 
-One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
+Each benchmark has one chart, drawn for the machine selected at the top of the page. Languages are the bars, best first. Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
 
 ```bench
 id: ml/linear-regression
@@ -55,7 +55,7 @@ cd bench
 ./bench.sh --bench linear-regression --competitors # every pinned competitor
 ```
 
-Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+Every row records the compiler and competitor versions, flags, machine, OS and driver. [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
 
 ## See also
 

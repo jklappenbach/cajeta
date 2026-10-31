@@ -1,6 +1,6 @@
 # cajeta.math
 
-Tensors, linear algebra, FFT, random numbers, NumPy interchange and the small geometry types, against NumPy and SciPy first and the native libraries second.
+This section measures tensors, linear algebra, FFT, random numbers, NumPy interchange and the small geometry types, against NumPy and SciPy first and the native libraries second.
 
 | Page | |
 |---|---|

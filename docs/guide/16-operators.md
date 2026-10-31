@@ -1,21 +1,21 @@
 # 16 — Operator overloading
 
 Two rules carry the whole design. Binary operators and non-mutating unaries
-are `public static`: both operands are explicit parameters, nothing mutates,
-and the result is a fresh value. Mutating unaries (`++`, `--`) and indexed
-access (`[]`, `[]=`) are instance methods: the receiver *is* the target, and
-the call site needs a mutable borrow. Tour demo:
-[OperatorOverloadDemo](../../samples/tour/src/main/cajeta/tour/lang/OperatorOverloadDemo.cajeta);
-spec: [OperatorOverloading.md](../specification/lang/OperatorOverloading.md).
+are `public static`, so both operands are explicit parameters, nothing
+mutates, and the result is a fresh value. Mutating unaries (`++`, `--`) and
+indexed access (`[]`, `[]=`) are instance methods, so the receiver is the
+target, and the call site needs a mutable borrow. The tour demo is
+[OperatorOverloadDemo](../../samples/tour/src/main/cajeta/tour/lang/OperatorOverloadDemo.cajeta),
+and the spec is [OperatorOverloading.md](../specification/lang/OperatorOverloading.md).
 
-Overloadable today: arithmetic `+ - * / %`, bitwise `& | ^ << >>`,
-comparisons `== != < > <= >=`, unary `-` and `+`, instance `++ --`, and
-`[]` / `[]=`. Boolean `&&` / `||` are deliberately not overloadable — a
-function call can't preserve short-circuit evaluation. Unary `!` and `~`
-are specified but do not compile yet (roadmap).
+The operators you can overload today are arithmetic `+ - * / %`, bitwise
+`& | ^ << >>`, comparisons `== != < > <= >=`, unary `-` and `+`, instance
+`++ --`, and `[]` / `[]=`. Boolean `&&` / `||` are deliberately not
+overloadable, because a function call can't preserve short-circuit
+evaluation. Unary `!` and `~` are specified but do not compile yet (roadmap).
 
-`String` defines `==` by content and `< > <= >=` by `compareTo`, bytewise
-UTF-8 order with null first. So ordered code written with `<`, such as
+`String` defines `==` by content and `< > <= >=` by `compareTo`, which is
+bytewise UTF-8 order with null first. So ordered code written with `<`, such as
 `Sort.sort<T>` or `RedBlackTree<K, V>`, takes String keys as it takes
 primitives.
 
@@ -51,20 +51,19 @@ Vec2 neg = -a;
 boolean same = a == b;
 ```
 
-`a + b` lowers to `Vec2.operator+(a, b)`; no operand is mutated. Unary and
-binary `-` are distinguished by arity. Dispatch is on the static type of the
-LHS only, and it is not virtual — so `v * 2` needs an overload on `Vec2`, and
-the reversed `2 * v` would need one on `int32`, which primitives can't
+`a + b` lowers to `Vec2.operator+(a, b)`, and no operand is mutated. Unary
+and binary `-` are distinguished by arity. Dispatch is on the static type of
+the LHS only, and it is not virtual. So `v * 2` needs an overload on `Vec2`,
+and the reversed `2 * v` would need one on `int32`, which primitives can't
 declare. One direction is the practical scope.
 
 ## Derived operators
 
 Declare `==` and the compiler derives `!=` as its negation. Declare `<` and
-`<=`, `>`, `>=` come free. Compound assignment derives from the binary form:
-`a += b`
-rewrites to `a = Vec2.operator+(a, b)` with no `operator+=` declared. When an
-explicit instance `operator+=` *is* declared, it wins — useful when in-place
-mutation beats allocate-and-reassign:
+`<=`, `>`, `>=` come free. Compound assignment derives from the binary form,
+so `a += b` rewrites to `a = Vec2.operator+(a, b)` with no `operator+=`
+declared. When an explicit instance `operator+=` is declared, it wins. That
+is useful when in-place mutation beats allocate-and-reassign:
 
 ```cajeta
 public class Acc {
@@ -77,18 +76,19 @@ public class Acc {
 ## The `==` / `hash()` pairing rule
 
 A class that defines structural `operator==` must also make `hash()`
-structural, or `HashMap<K, V>` mis-keys: two `==`-equal instances with
-identity hashes land in different buckets. The compiler enforces the pairing
+structural, or `HashMap<K, V>` mis-keys, because two `==`-equal instances
+with identity hashes land in different buckets. The compiler enforces the pairing
 with `CAJETA_WARN_HASH_EQUALS_MISMATCH` when `operator==` appears without a
 `hash()` override. `@AutoHash` (on `Vec2` above) synthesizes a structural
 `hash()` from the fields, keeping it consistent with `==` automatically.
 
 ## Instance operators
 
-`++` and `--` mutate the receiver: no parameters, `void` return. Both `t++`
-and `++t` lower to `t.operator++()`. Subscripts read and write through a pair
-of instance methods — `g[i]` lowers to `g.operator[](i)`, and `g[i] = v` to
-`g.operator[]=(i, v)`. Subscript expressions hand the index over as `int64`.
+`++` and `--` mutate the receiver. They take no parameters and return
+`void`. Both `t++` and `++t` lower to `t.operator++()`. Subscripts read and
+write through a pair of instance methods. `g[i]` lowers to
+`g.operator[](i)`, and `g[i] = v` to `g.operator[]=(i, v)`. Subscript
+expressions hand the index over as `int64`.
 
 ```cajeta
 public class Ticker {
@@ -118,7 +118,7 @@ g[i] = 20;
 int32 read = g[i];
 ```
 
-The stdlib's `HashMap` exposes the same subscript pair — `m[k]` is this
-mechanism, not special-cased syntax.
+The stdlib's `HashMap` exposes the same subscript pair. `m[k]` goes through
+this mechanism, and there is no special-cased syntax behind it.
 
 Next: [17 — Inheritance](17-inheritance.md).

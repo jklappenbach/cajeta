@@ -1,6 +1,6 @@
 # Start-up and footprint
 
-`primavera` — cold start to the first response, and resident memory idle and under load. Compile-time injection should show here first.
+This page measures `primavera` on cold start to the first response, and on resident memory idle and under load. Compile-time injection should show here first.
 
 ## Benchmarks
 
@@ -12,7 +12,7 @@
 
 ## Results
 
-One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
+Each benchmark has one chart, drawn for the machine selected at the top of the page. Languages are the bars, best first. Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
 
 ```bench
 id: primavera/cold-start
@@ -37,7 +37,7 @@ cd bench
 ./bench.sh --bench cold-start --competitors # every pinned competitor
 ```
 
-Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+Every row records the compiler and competitor versions, flags, machine, OS and driver. [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
 
 ## See also
 

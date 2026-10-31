@@ -1,6 +1,6 @@
 # REST endpoint
 
-`primavera` — the `register-user` shape: a JSON `POST /users` through dependency injection, a request-scoped principal from an authentication stage, a singleton service, and validation, answered with JSON. Nothing is stored (there is no data layer yet; the id is minted from the body), so the same request can be sent under load. Every competitor implements the same contract and is byte-compared before load. Until the optimized-build link defect is fixed, primavera's server row is built at O0 and its `flags` column says so.
+This page measures `primavera` on the `register-user` shape. The shape is a JSON `POST /users` through dependency injection, a request-scoped principal from an authentication stage, a singleton service, and validation, answered with JSON. Nothing is stored, since there is no data layer yet and the id is minted from the body, so the same request can be sent under load. Every competitor implements the same contract and is byte-compared before load. Until the optimized-build link defect is fixed, primavera's server row is built at O0 and its `flags` column says so.
 
 ## Benchmarks
 
@@ -10,7 +10,7 @@
 
 ## Results
 
-One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
+Each benchmark has one chart, drawn for the machine selected at the top of the page. Languages are the bars, best first. Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
 
 ```bench
 id: primavera/register-user-json
@@ -25,7 +25,7 @@ cd bench
 ./bench.sh --bench register-user-json --competitors # every pinned competitor
 ```
 
-Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+Every row records the compiler and competitor versions, flags, machine, OS and driver. [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
 
 ## See also
 

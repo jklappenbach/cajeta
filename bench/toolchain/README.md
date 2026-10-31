@@ -1,6 +1,6 @@
 # Toolchain
 
-Compile time, start-up, binary size, the build tool, the notebook kernel and the debugger, against the toolchains of five languages.
+This section measures compile time, start-up, binary size, the build tool, the notebook kernel and the debugger, against the toolchains of five languages.
 
 | Page | |
 |---|---|

@@ -1,6 +1,6 @@
 # Encoder
 
-`cajeta.wire.Encoder` — the bidirectional wire codec protocol for a `T`, and the zero-copy `struct` view that reads a wire record without decoding it. `cajeta.wire` ships the interfaces; the measured codec is a generated protobuf-wire-format implementation whose byte count equals protobuf's own, produced from the same record description every competitor uses.
+`cajeta.wire.Encoder` is the bidirectional wire codec protocol for a `T`. This page also measures the zero-copy `struct` view that reads a wire record without decoding it. `cajeta.wire` ships the interfaces. The measured codec is a generated protobuf-wire-format implementation whose byte count equals protobuf's own, produced from the same record description every competitor uses.
 
 ## Benchmarks
 
@@ -12,7 +12,7 @@
 
 ## Results
 
-One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
+Each benchmark has one chart, drawn for the machine selected at the top of the page. Languages are the bars, best first. Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
 
 ```bench
 id: wire/encoder-encode
@@ -37,7 +37,7 @@ cd bench
 ./bench.sh --bench encoder-encode --competitors # every pinned competitor
 ```
 
-Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+Every row records the compiler and competitor versions, flags, machine, OS and driver. [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
 
 ## See also
 

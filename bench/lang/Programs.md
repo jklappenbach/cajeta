@@ -1,6 +1,6 @@
 # Whole programs: the Benchmarks Game
 
-Three Computer Language Benchmarks Game problems at their canonical sizes, with the published checksums verified: mandelbrot, fannkuch-redux and spectral-norm. These are the rows a reader can cross-check against the public tables.
+This page runs three Computer Language Benchmarks Game problems at their canonical sizes, with the published checksums verified. They are mandelbrot, fannkuch-redux and spectral-norm. These are the rows you can cross-check against the public tables.
 
 ## Benchmarks
 
@@ -10,11 +10,11 @@ Three Computer Language Benchmarks Game problems at their canonical sizes, with 
 | `lang/clbg-fannkuch-redux` | fannkuch-redux at N = 12 | same | checksum and max flips |
 | `lang/clbg-spectral-norm` | spectral-norm at N = 5500 | same | value to 9 digits |
 
-Sources and sizes follow the Benchmarks Game's problem pages; the competitor programs are the game's own entries, built with the flags the game records.
+Sources and sizes follow the Benchmarks Game's problem pages. The competitor programs are the game's own entries, built with the flags the game records.
 
 ## Results
 
-One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
+Each benchmark has one chart, drawn for the machine selected at the top of the page. Languages are the bars, best first. Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
 
 ```bench
 id: lang/clbg-mandelbrot
@@ -39,7 +39,7 @@ cd bench
 ./bench.sh --bench clbg-mandelbrot --competitors # every pinned competitor
 ```
 
-Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+Every row records the compiler and competitor versions, flags, machine, OS and driver. [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
 
 ## See also
 

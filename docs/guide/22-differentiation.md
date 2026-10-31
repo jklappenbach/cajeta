@@ -2,19 +2,20 @@
 
 Cajeta differentiates functions two ways, both applying the same rules:
 
-- **Compiled** — `Grad(f)` transforms a statically-known function at compile
-  time. Fast, fusable, batchable; the gradient code is ordinary IR.
-- **Eager** — a runtime `Tape` records ops as they execute and replays them
-  in reverse. Slower per op, but it differentiates *dynamic* control flow the
-  compiled path cannot specialize.
+- **Compiled**. `Grad(f)` transforms a statically-known function at compile
+  time. It is fast, fusable and batchable, and the gradient code is ordinary
+  IR.
+- **Eager**. A runtime `Tape` records ops as they execute and replays them
+  in reverse. It is slower per op, and it differentiates dynamic control flow
+  the compiled path cannot specialize.
 
-Gradients are always **explicit return values**. There is no `requires_grad`
+Gradients are always explicit return values. There is no `requires_grad`
 flag, no global `.grad` accumulator, and no `zero_grad` ceremony.
 
 ## Compiled: Grad, and the value_and_grad shape
 
 `Grad(f)` for a scalar-valued `f` returns a function yielding
-`GradResult<V, G>` — the forward value and the gradient together:
+`GradResult<V, G>`, which holds the forward value and the gradient together:
 
 ```cajeta
 import cajeta.nucleo.transform.GradResult;
@@ -25,16 +26,17 @@ GradResult<float32,float32> r = g(3.0f);
 ```
 
 `Grad<N>(f)` differentiates with respect to argument `N`. Tensor inputs work
-the same — reduce to a scalar first (`Tensor.sum` / `Tensor.mean`), and the
+the same. Reduce to a scalar first (`Tensor.sum` / `Tensor.mean`), and the
 gradient comes back tensor-shaped.
 
-The differentiable set: `+ - * /`, unary `-`, `Math.exp/log/sqrt`, and the
+The differentiable set is `+ - * /`, unary `-`, `Math.exp/log/sqrt`, and the
 `Tensor` elementwise/reduction/matmul statics. Anything else is a named,
-located compile error — a gradient is never silently wrong or silently zero.
+located compile error, so a gradient is never silently wrong or silently
+zero.
 
-`Grad` differentiates *through* same-class static helpers. Mark a helper
-`@NoGrad` to make it a constant: its value flows, its gradient is statically
-zero — the disciplined stop-gradient.
+`Grad` differentiates through same-class static helpers. Mark a helper
+`@NoGrad` to make it a constant. Its value flows, and its gradient is
+statically zero, which is the disciplined stop-gradient.
 
 ## Batching and fusion: Vmap and Jit
 
@@ -47,11 +49,11 @@ float32[] xs = [1.0f, 2.0f, 3.0f];
 GradResult<float32,float32>[] rs = g(xs);   // per-example grads {2,4,6}, fused
 ```
 
-`Vmap` lifts a per-example function over a leading batch axis; `Jit` fuses a
-body without changing its signature.
+`Vmap` lifts a per-example function over a leading batch axis, and `Jit`
+fuses a body without changing its signature.
 
-The annotation stack is sugar for exactly this nesting — nearest the
-declaration applies first:
+The annotation stack is sugar for exactly this nesting, and the annotation
+nearest the declaration applies first:
 
 ```cajeta
 @Jit @Vmap @Grad
@@ -62,9 +64,9 @@ public static float32 sq(float32 x) { return x * x; }
 ## Fusing tensor expressions: Fuse
 
 NumPy evaluates `(t*t + t) - t` one operator at a time, allocating a fresh
-tensor per op. `Fuse` collapses an elementwise tensor expression into **one
-loop** that allocates only the result — and `@Fuse` on a method is the
-everyday shape:
+tensor per op. `Fuse` collapses an elementwise tensor expression into one
+loop that allocates only the result. `@Fuse` on a method is the everyday
+shape:
 
 ```cajeta
 import cajeta.math.Tensor;
@@ -76,8 +78,8 @@ public static Tensor<float32> activate(Tensor<float32> t) {
 // calls run one fused pass; only the result tensor is allocated
 ```
 
-The explicit form yields a reusable compiled function; building it runs
-nothing — the call is the force point:
+The explicit form yields a reusable compiled function. Building it runs
+nothing, and the call is the force point:
 
 ```cajeta
 import cajeta.math.Tensor;
@@ -92,13 +94,13 @@ Reductions (`Tensor.sum` / `mean` / `std`) stage as their own pass and the
 elementwise tail fuses against their result, so the standardize shape
 `(t - mean(t)) / std(t)` runs as its reduction stages plus one fused loop.
 
-Fusion meets differentiation through one seam: `Grad(Fuse(f))` — or the
-`@Grad @Fuse` stack — differentiates the fused expression. Both transforms
+Fusion meets differentiation through one seam. `Grad(Fuse(f))`, or the
+`@Grad @Fuse` stack, differentiates the fused expression. Both transforms
 walk the same expression DAG, so the gradient is identical to the unfused
 form's, the backward is ordinary IR (`Jit` fuses it like any other function),
 and an expression that is never differentiated carries no autograd machinery
 at all. A body that cannot fuse is a named, located compile error
-(`CAJETA_ERROR_TRANSFORM_NOT_FUSIBLE`), never a silent eager fallback.
+(`CAJETA_ERROR_TRANSFORM_NOT_FUSIBLE`). There is no silent eager fallback.
 
 ## Eager: the Tape
 
@@ -122,10 +124,10 @@ float32 dPow(int32 n) {        // n arrives at runtime
 }
 ```
 
-One `backward` per tape (a second call throws); record a fresh tape per
-step. `t.stopGrad(v)` is the tape's `@NoGrad`. The two drivers agree wherever
-both apply — moving a function from tape to `Grad` changes performance, not
-gradients.
+There is one `backward` per tape, and a second call throws, so record a
+fresh tape per step. `t.stopGrad(v)` is the tape's `@NoGrad`. The two drivers
+agree wherever both apply, so moving a function from tape to `Grad` changes
+performance and leaves the gradients the same.
 
 ## Choosing a driver
 
@@ -136,5 +138,5 @@ gradients.
 | Batching | `Vmap` | — |
 | Use for | hot training steps, kernels | prototypes, dynamic models, debugging |
 
-Reference: [Transforms](../stdlib/nucleo/Transforms.md),
-[Fuse](../stdlib/nucleo/Fuse.md), [Tape](../stdlib/nucleo/Tape.md).
+The references are [Transforms](../stdlib/nucleo/Transforms.md),
+[Fuse](../stdlib/nucleo/Fuse.md) and [Tape](../stdlib/nucleo/Tape.md).

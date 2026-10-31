@@ -1,6 +1,6 @@
 # Debugger
 
-Time to a first breakpoint under the debug adapter. `cajeta dap` has no `attach` request on v0.46.3 (the debugging guide lists one; only launch is handled, filed), so the Cajeta row launches the tour against a warm JIT cache and stops at one breakpoint, while the competitors attach to a running process.
+This page measures the time to a first breakpoint under the debug adapter. `cajeta dap` has no `attach` request on v0.46.3, although the debugging guide lists one, and the gap is filed. Only launch is handled, so the Cajeta row launches the tour against a warm JIT cache and stops at one breakpoint, while the competitors attach to a running process.
 
 ## Benchmarks
 
@@ -10,7 +10,7 @@ Time to a first breakpoint under the debug adapter. `cajeta dap` has no `attach`
 
 ## Results
 
-One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
+Each benchmark has one chart, drawn for the machine selected at the top of the page. Languages are the bars, best first. Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
 
 ```bench
 id: toolchain/debugger-attach
@@ -25,7 +25,7 @@ cd bench
 ./bench.sh --bench debugger-attach --competitors # every pinned competitor
 ```
 
-Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+Every row records the compiler and competitor versions, flags, machine, OS and driver. [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
 
 ## See also
 

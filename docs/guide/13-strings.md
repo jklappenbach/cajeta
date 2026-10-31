@@ -1,10 +1,10 @@
 # 13 — Strings & formatting
 
-`String` (in `cajeta.lang`) is a class, not a primitive: immutable UTF-8
-text. Every transformation returns a fresh `String`; nothing mutates in
+`String` (in `cajeta.lang`) is a class. It holds immutable UTF-8 text.
+Every transformation returns a fresh `String`, and nothing mutates in
 place. Equality is content-based. Like every collection, a `String` reports
-its element count with `count()` — codepoints here — while `size()` is the
-byte length.
+its element count with `count()`, which counts codepoints here, while
+`size()` is the byte length.
 
 ```cajeta
 String s = "  Hello, Cajeta!  ";
@@ -23,35 +23,36 @@ Run it: [StringDemo](../../samples/tour/src/main/cajeta/tour/lang/StringDemo.caj
 
 ## Literals, owned strings, and windows
 
-One type, three storage shapes underneath:
+One type has three storage shapes underneath it:
 
-- A **literal** is a view of the program's static data — no allocation,
-  never freed.
-- A string a method **builds** — `replace()`, `toUpperCase()`, a `+`
-  concatenation, `StringBuilder.toString()` — owns a heap buffer. Building
-  from your own bytes works too: `heap String(#buf, n)` takes ownership of
-  the buffer (the `#` transfers it; the String's drop frees it).
-- `substring()` and `trim()` are **zero-copy**: the result is a windowed
-  view sharing the source's root buffer — no byte copy, whatever the length.
-  Small-string-optimized sources are the exception; a window into an inline
-  buffer would dangle, so those materialize a copy.
+- A **literal** is a view of the program's static data. It allocates
+  nothing and is never freed.
+- A string that a method builds, such as `replace()`, `toUpperCase()`, a `+`
+  concatenation or `StringBuilder.toString()`, owns a heap buffer. Building
+  from your own bytes works too. `heap String(#buf, n)` takes ownership of
+  the buffer, the `#` transfers it, and the String's drop frees it.
+- `substring()` and `trim()` are zero-copy. The result is a windowed view
+  that shares the source's root buffer, and no byte is copied whatever the
+  length. Small-string-optimized sources are the exception. A window into an
+  inline buffer would dangle, so those materialize a copy.
 
-Transforming methods are declared `#String` (they transfer ownership,
-[chapter 11](11-ownership.md)), so receive the result with `#=` —
-`String trimmed #= s.trim();` — and the drop chain reclaims it at scope exit.
-The `#` goes on the store, never on the local's type; a plain `=` on a
-`#String` result is `CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER`. Windows follow
-the slice rules from
-chapter 11: a window that escapes its scope keeps the root buffer alive —
-the root is promoted to the `shared` state and freed when the last view
-drops. You never free a string in any of the three shapes.
+Transforming methods are declared `#String`, which means they transfer
+ownership ([chapter 11](11-ownership.md)). Receive the result with `#=`, as
+in `String trimmed #= s.trim();`, and the drop chain reclaims it at scope
+exit. The `#` goes on the store and never on the local's type. A plain `=`
+on a `#String` result is `CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER`. Windows
+follow the slice rules from chapter 11. A window that escapes its scope keeps
+the root buffer alive, since the root is promoted to the `shared` state and
+freed when the last view drops. You never free a string in any of the three
+shapes.
 
-`substring(begin, end)` is byte-indexed and half-open; indices clamp to the
-valid range. Full method list: [String reference](../stdlib/lang/String.md).
+`substring(begin, end)` is byte-indexed and half-open, and indices clamp to
+the valid range. The full method list is in the
+[String reference](../stdlib/lang/String.md).
 
 ## Concatenation with `+`
 
-`+` concatenates and stringifies its operands — numbers, booleans, and class
+`+` concatenates and stringifies its operands. Numbers, booleans, and class
 values (via `toString()`) all work:
 
 ```cajeta
@@ -65,9 +66,9 @@ instead.
 
 ## StringBuilder
 
-A growable byte buffer that materializes once. Short builds (up to 64 bytes)
-stay in an inline buffer — a `stack StringBuilder()` build that small does no
-heap allocation at all until `toString()`:
+A `StringBuilder` is a growable byte buffer that materializes once. Short
+builds (up to 64 bytes) stay in an inline buffer, so a `stack StringBuilder()`
+build that small does no heap allocation at all until `toString()`:
 
 ```cajeta
 StringBuilder sb = stack StringBuilder();
@@ -80,9 +81,9 @@ String built #= sb.toString();      // owned #String
 ## Format templates in println
 
 `System.stdout.println(fmt, args...)` treats `{}` in the format string as a
-placeholder; each one consumes the next argument in order. Arguments dispatch
-through a per-type formatter — integers, floats, `String`, and class values
-via `toString()`:
+placeholder, and each one consumes the next argument in order. Arguments
+dispatch through a per-type formatter, which covers integers, floats,
+`String`, and class values via `toString()`:
 
 ```cajeta
 String name = "Cajeta";
@@ -93,6 +94,6 @@ System.stdout.println("{} + {} = {}, pi ~ {}", 2, 3, 2 + 3, pi);
 ```
 
 Run it: [FormatStringDemo](../../samples/tour/src/main/cajeta/tour/lang/FormatStringDemo.cajeta).
-Full string design: [String spec](../specification/lang/String.md).
+The full string design is in the [String spec](../specification/lang/String.md).
 
 Next: [Templates](14-templates.md).

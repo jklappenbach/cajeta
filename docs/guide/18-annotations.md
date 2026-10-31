@@ -1,9 +1,9 @@
 # 18 — Annotations & synthesis
 
-An annotation is `@Name` before a declaration, optionally with arguments:
-`@Order(2)`, `@Component(name = "primary")`, `@Labels({"hot", "live"})`.
+An annotation is `@Name` before a declaration, optionally with arguments, as
+in `@Order(2)`, `@Component(name = "primary")` or `@Labels({"hot", "live"})`.
 Any identifier is a valid annotation. One the compiler doesn't recognize is
-inert — no code generated, no overhead — until an aspect pointcut
+inert, with no code generated and no overhead, until an aspect pointcut
 ([chapter 19](19-di-aspects.md)) or reflection ([chapter 21](21-reflection.md))
 reads it back.
 
@@ -12,9 +12,9 @@ Tour demo: [AnnotationsDemo](../../samples/tour/src/main/cajeta/tour/lang/Annota
 ## The synthesis family
 
 A Lombok-style family of annotations makes the compiler write the boilerplate.
-Each synthesized method is an ordinary method: visible to reflection,
-debuggable, and skipped if you declare the same signature by hand — your
-version wins.
+Each synthesized method is an ordinary method. It is visible to reflection
+and debuggable, and it is skipped if you declare the same signature by hand,
+so your version wins.
 
 | Annotation | Synthesizes |
 |---|---|
@@ -28,7 +28,7 @@ version wins.
 | `@Data` | Bundle: getters, setters, `toString`, hash, required-args ctor |
 | `@Value` | Immutable bundle: getters, `toString`, hash, all-args ctor — no setters |
 
-`@Cleanup` (Lombok's scoped close) is planned but not implemented; the drop
+`@Cleanup` (Lombok's scoped close) is planned but not implemented. The drop
 chain already releases owned locals at scope exit ([chapter 20](20-error-handling.md)).
 
 ## @Builder
@@ -92,11 +92,12 @@ public class PaymentService {
 ```
 
 `@Traced` here does nothing by itself. It becomes load-bearing as an aspect
-pointcut (an `@Before(Traced.class)` advice fires on every `@Traced` method —
-next chapter) or through reflection (`method.hasAnnotation(...)`,
-[chapter 21](21-reflection.md)). Annotations can carry arguments — scalars,
-strings, class literals, lists — and reflection reads the values back.
+pointcut, where an `@Before(Traced.class)` advice fires on every `@Traced`
+method (next chapter), or through reflection with `method.hasAnnotation(...)`
+([chapter 21](21-reflection.md)). Annotations can carry arguments, such as
+scalars, strings, class literals and lists, and reflection reads the values
+back.
 
-Full surface: [the annotations specification](../specification/reflect/Annotations.md).
+The full surface is in [the annotations specification](../specification/reflect/Annotations.md).
 
 Next: [DI & aspects](19-di-aspects.md).

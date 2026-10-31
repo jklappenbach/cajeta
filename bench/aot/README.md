@@ -1,6 +1,6 @@
 # cajeta.aot
 
-The compile-time dependency-injection graph.
+This section measures the compile-time dependency-injection graph.
 
 | Page | |
 |---|---|

@@ -1,10 +1,10 @@
 # Catalog: every cajeta-llm kernel
 
-Generated from the sources, `census/oracle-map.tsv` and the committed census tables of `dev.cajeta.llm` on 2026-10-26 by `tools/catalog/gen-catalog.py`. One entry per kernel registered in the test binary on any backend: the kernel's name, linked to its source line, the llama.cpp counterpart the parity harness compares it against (NONE where llama.cpp has no twin and the roofline judges it), the census class on `cuda`, `cpu` and `hip` (CHECKED: a test credited its values against a host or oracle answer; RAN-UNCHECKED and SKIP: excused against a named plan item; DECLINED: the compiler produced no device code there; blank: not registered on that backend), and under it the kernel's role from its own documentation. The families and routes are described in [Language models on the device](kernels-llm.md); the adaptation machinery in [One kernel, any device](README.md).
+This catalog was generated from the sources, `census/oracle-map.tsv` and the committed census tables of `dev.cajeta.llm` on 2026-10-26 by `tools/catalog/gen-catalog.py`. There is one entry per kernel registered in the test binary on any backend. Each entry gives the kernel's name, linked to its source line, the llama.cpp counterpart the parity harness compares it against (NONE where llama.cpp has no twin and the roofline judges it), the census class on `cuda`, `cpu` and `hip`, and under it the kernel's role from its own documentation. CHECKED means a test credited its values against a host or oracle answer. RAN-UNCHECKED and SKIP mean the kernel is excused against a named plan item. DECLINED means the compiler produced no device code there. A blank means the kernel is not registered on that backend. The families and routes are described in [Language models on the device](kernels-llm.md), and the adaptation machinery in [One kernel, any device](README.md).
 
-274 library kernels, plus the probe, external and fixture kernels the binary also registers (listed last).
+There are 274 library kernels, plus the probe, external and fixture kernels the binary also registers, which are listed last.
 
-Census marks, one per backend (hover a mark for its class): ✓ CHECKED, ○ RAN-UNCHECKED, – SKIP, ✗ DECLINED, blank: not registered on that backend. Each kernel's name links to its source line; the line under it is its role.
+The census marks are one per backend, and hovering a mark shows its class: ✓ CHECKED, ○ RAN-UNCHECKED, – SKIP, ✗ DECLINED, and blank for not registered on that backend. Each kernel's name links to its source line, and the line under it is its role.
 
 
 ## Wave mat-vecs: decode, one row per wave (llama.cpp mmvq) (56)
@@ -597,7 +597,7 @@ Census marks, one per backend (hover a mark for its class): ✓ CHECKED, ○ RAN
 
 ## Bench probes (22)
 
-Kernels of the `bench` package and the in-tree probes, built into probe binaries to measure a mechanism (an LDS layout, a read pattern, a fragment load); never on a model's route. The census classes them PROBE.
+These are the kernels of the `bench` package and the in-tree probes, built into probe binaries to measure a mechanism such as an LDS layout, a read pattern or a fragment load. They are never on a model's route. The census classes them PROBE.
 
 <table class="kernel-catalog">
 <thead><tr><th>kernel</th></tr></thead>
@@ -651,7 +651,7 @@ Kernels of the `bench` package and the in-tree probes, built into probe binaries
 
 ## Standard-library kernels the binary registers (27)
 
-Tensor kernels of the Cajeta standard library (`cajeta.ml`), linked into every program that uses it: element-wise arithmetic, reductions, matmuls, padding and cropping, bitonic sort and scan steps. The library does not launch them on a model's route; the census classes them EXTERNAL and the standard library's own suites hold them.
+These are the tensor kernels of the Cajeta standard library (`cajeta.ml`), linked into every program that uses it. They cover element-wise arithmetic, reductions, matmuls, padding and cropping, bitonic sort and scan steps. The library does not launch them on a model's route. The census classes them EXTERNAL, and the standard library's own suites hold them.
 
 `arithBf16`, `arithF16`, `arithF32`, `bincountI32`, `bitonicStepF32`, `copyRangeF32`, `cropBf16`, `cropF32`, `gatherF32`, `matmulBf16`, `matmulBf16Wide`, `matmulF16`, `matmulF32`, `matmulF64`, `matmulI8`, `narrowF32ToBf16`, `padBf16`, `padF16`, `padF32`, `reduceMaxF32`, `reduceMinF32`, `reduceSumBf16`, `reduceSumF16`, `reduceSumF32`, `reduceSumSqF32`, `scanStepF32`, `scatterF32`
 

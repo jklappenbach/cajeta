@@ -1,6 +1,6 @@
 # 9 — Interfaces
 
-This chapter defines interfaces: contracts of abstract methods that classes implement, with virtual dispatch through interface-typed references. Interfaces carry no state and no method bodies — concrete reuse is what multiple inheritance of behavior is for (Classes §8.4).
+This chapter defines interfaces. An interface is a contract of abstract methods that classes implement, with virtual dispatch through interface-typed references. Interfaces carry no state and no method bodies. Concrete reuse is the job of multiple inheritance of behavior (Classes §8.4).
 
 ## 9.1 Interface Declarations
 
@@ -10,7 +10,7 @@ interfaceDeclaration
     ;
 ```
 
-An interface declares abstract methods: a signature and no body. An interface has no fields, no constructors, and no default method bodies, by design — a type that wants to hand implementations down the hierarchy is a class, and multiple inheritance of behavior covers the reuse case that default methods patch over in single-inheritance languages.
+An interface declares abstract methods, each a signature with no body. An interface has no fields, no constructors, and no default method bodies, by design. A type that wants to hand implementations down the hierarchy is a class, and multiple inheritance of behavior covers the reuse case that default methods patch over in single-inheritance languages.
 
 An interface may extend one or more interfaces. The extending interface's contract is the union of its own methods and everything inherited.
 
@@ -18,11 +18,11 @@ An interface may extend one or more interfaces. The extending interface's contra
 
 ## 9.2 Implementing Classes
 
-An interface is inherited: every descendant of `C` is assignable to `I` and `J`, and a call through the interface reaches the descendant's most-derived implementation, whether it overrides the method, inherits it, or sits several bases below the `implements`.
+An interface is inherited. Every descendant of `C` is assignable to `I` and `J`, and a call through the interface reaches the descendant's most-derived implementation, whether it overrides the method, inherits it, or sits several bases below the `implements`.
 
 `class C implements I, J` obligates `C` to a concrete, accessible implementation of every method in each listed interface's contract, including inherited ones. Leaving any method unimplemented in a non-`abstract` class is a compile-time error, `CAJETA_ERROR_INTERFACE_NOT_IMPLEMENTED`. An `abstract` class may leave part of a contract unimplemented and pass the obligation to its descendants, and a call through the interface reaches the descendant's implementation (Classes §8.5, Example 8.5-5).
 
-**Example 9.2-1.** A rejected program: an unimplemented contract.
+**Example 9.2-1.** A rejected program with an unimplemented contract.
 
 <!-- snippet: skip -->
 ```cajeta
@@ -36,7 +36,7 @@ A class may both extend classes and implement interfaces. A method inherited fro
 
 ## 9.3 Interface Types
 
-An interface name is a reference type. A reference to an instance of any implementing class converts to it implicitly, and calls through it dispatch virtually to the receiver's most-derived implementation — including methods the interface inherited from its superinterfaces.
+An interface name is a reference type. A reference to an instance of any implementing class converts to it implicitly, and calls through it dispatch virtually to the receiver's most-derived implementation, including methods the interface inherited from its superinterfaces.
 
 **Example 9.3-1.** Dispatch through an interface, and through an inherited contract method.
 
@@ -57,8 +57,8 @@ public final class C {
 C.run();
 ```
 
-> *Discussion.* One conversion shape is broken as of 0.27.0: assigning an interface-typed *value* to a variable of its superinterface type (`Ider i = n;` where `n` is `Named`) compiles but dispatches incorrectly at run time. Until fixed, re-derive the narrower view from the class-typed reference. Interface-typed references also carry open ownership gaps at session scope (Script Units §18).
+> *Discussion.* One conversion shape is broken as of 0.27.0. Assigning an interface-typed value to a variable of its superinterface type (`Ider i = n;` where `n` is `Named`) compiles but dispatches incorrectly at run time. Until fixed, re-derive the narrower view from the class-typed reference. Interface-typed references also carry open ownership gaps at session scope (Script Units §18).
 
 ## 9.4 Choosing Interfaces or Behavior Bases
 
-An interface says *what* a type can do and holds nothing. A behavior base (Classes §8.4) brings a concrete implementation and possibly state. Declare an interface when independent implementations must be substitutable behind one contract. Extend a behavior base when the point is sharing one implementation. The two compose — a class may extend bases for its machinery and implement interfaces for its contracts.
+An interface says *what* a type can do and holds nothing. A behavior base (Classes §8.4) brings a concrete implementation and possibly state. Declare an interface when independent implementations must be substitutable behind one contract. Extend a behavior base when the goal is to share one implementation. The two compose, so a class may extend bases for its machinery and implement interfaces for its contracts.

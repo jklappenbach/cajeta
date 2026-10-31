@@ -1,7 +1,7 @@
 # The engine API
 
-The public surface of `dev.cajeta.llm`. Everything the command line and cabra
-do, they do through this; there is no privileged path.
+This page is the public surface of `dev.cajeta.llm`. Everything the command
+line and cabra do, they do through this API. There is no privileged path.
 
 ## 1. `LlmEngine`
 
@@ -26,14 +26,15 @@ caller leaves them null.
 
 ## 2. `EngineOptions`
 
-Constructed with the model path; every other field has a default.
-[Configuration §1](configuration.md) is the full table. The ones most
-programs touch: `ctx`, `maxSeqs`, `device`, `tuneDir`, `kvStore`, and for a
-safetensors model `config`.
+It is constructed with the model path, and every other field has a default.
+[Configuration §1](configuration.md) is the full table. The fields most
+programs touch are `ctx`, `maxSeqs`, `device`, `tuneDir`, `kvStore`, and for
+a safetensors model `config`.
 
 ## 3. `SampleParams`
 
-One instance per request; each sequence in a batch samples with its own.
+There is one instance per request, and each sequence in a batch samples with
+its own.
 
 | field | default | meaning |
 |---|---|---|
@@ -54,8 +55,8 @@ One instance per request; each sequence in a batch samples with its own.
 | `finishReason()` | `FINISH_EOS` (an end-of-generation token), `FINISH_BUDGET` (`maxNew` reached), `FINISH_STOP` (a stop string), `FINISH_CANCEL`, or `FINISH_NONE` while running |
 
 A request is WAITING until admitted, RUNNING while it holds a scheduler
-slot, PREEMPTED when its K/V blocks were taken for an older request (it
-resumes ahead of new admissions), and DONE.
+slot, PREEMPTED when its K/V blocks were taken for an older request, and
+DONE. A preempted request resumes ahead of new admissions.
 
 ## 5. `TokenSink`
 
@@ -63,9 +64,9 @@ resumes ahead of new admissions), and DONE.
 public interface TokenSink { void onToken(int32 reqId, int32 token); }
 ```
 
-Called inside the scheduler step that produced the token, before the next
-step begins, for every request of the engine. One sink serves the batch;
-dispatch on `reqId`. Keep it cheap.
+The sink is called inside the scheduler step that produced the token, before
+the next step begins, for every request of the engine. One sink serves the
+batch, so dispatch on `reqId`. Keep it cheap.
 
 ## 6. `Tokenizer`
 
@@ -78,38 +79,39 @@ dispatch on `reqId`. Keep it cheap.
 
 One pipeline (normaliser, pre-tokeniser, BPE, decoder) serves the Llama and
 Qwen families, from the GGUF's embedded vocabulary or a Hugging Face
-`tokenizer.json`; SentencePiece `tokenizer.model` files are read directly.
+`tokenizer.json`. SentencePiece `tokenizer.model` files are read directly.
 
 ## 7. `ChatTemplate`
 
 `ChatTemplate.fromString(template, name, bosToken, eosToken)` interprets the
-model's own template through the `dev.cajeta.jinja` engine; `render` and
+model's own template through the `dev.cajeta.jinja` engine. `render` and
 `renderJson` produce the prompt text from a message list. The template text
 is read from the GGUF (`GgufFile.chatTemplate()`) or `tokenizer_config.json`.
-The engine does not expose the GGUF's template itself; the command line and
+The engine does not expose the GGUF's template itself. The command line and
 cabra open the file for it, which is an API gap worth knowing.
 
 ## 8. Diagnostics
 
 The engine records routing and scheduling decisions as `DiagRecord`s
 (category, session, name, six typed values) and hands each to the callback
-registered with `Diag.register(DiagCallback)`; `Diag.register(null)` turns
-recording off, and with nothing registered nothing is built. The callback runs
-on the engine's thread mid-generation, the record is valid only during the
-call, and a callback that throws is swallowed. The engine formats nothing,
-buffers nothing and chooses no logging backend; the command line and cabra
-bridge records onto `dev.cajeta.logging`.
+registered with `Diag.register(DiagCallback)`. `Diag.register(null)` turns
+recording off, and with nothing registered nothing is built. The callback
+runs on the engine's thread mid-generation, the record is valid only during
+the call, and a callback that throws is swallowed. The engine formats
+nothing, buffers nothing and chooses no logging backend. The command line
+and cabra bridge records onto `dev.cajeta.logging`.
 
-Categories a consumer sees: `batch-route` and `route` (which kernel served
-a projection), `tile-choice`, `prefill-mode`, `batch-refused`,
+The categories a consumer sees are `batch-route` and `route` (which kernel
+served a projection), `tile-choice`, `prefill-mode`, `batch-refused`,
 `decode-batch` and `decode-batch-phase`, `sched-step`, `sched-admit`,
 `sched-phase`, `kv-ceiling`, `moe-rows`, `expert-cache`, `widen-budget`,
-`moe-budget`, `tune-dir`, `kernel-avail`, `launch-failure`, `load-phase`.
+`moe-budget`, `tune-dir`, `kernel-avail`, `launch-failure` and `load-phase`.
 
 ## 9. Exceptions
 
-`LlmException` is thrown for a user-facing fault: an invalid option, an
-unsupported architecture or format (the message lists the supported ones), a
-model with no tokenizer or no chat template where one is needed, a readiness
-promise a route did not keep. A device launch refused by the runtime surfaces
-as `XpuLaunchException` with the refusal's reason.
+`LlmException` is thrown for a user-facing fault. The faults are an invalid
+option, an unsupported architecture or format (the message lists the
+supported ones), a model with no tokenizer or no chat template where one is
+needed, and a readiness promise a route did not keep. A device launch
+refused by the runtime surfaces as `XpuLaunchException` with the refusal's
+reason.

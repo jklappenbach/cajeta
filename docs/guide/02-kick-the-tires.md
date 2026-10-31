@@ -1,7 +1,7 @@
 # 02 — Kick the tires
 
-Four steps to prove the install works: check the version, scaffold hello
-world, compile it to an executable, run it.
+Four steps prove the install works. Check the version, scaffold hello world,
+compile it to an executable, and run it.
 
 ## 1. Check the install
 
@@ -40,8 +40,8 @@ $ ./build/exe/com.example.basic
 hello from com.example.basic
 ```
 
-That's the whole loop: `init` → `build` → run. Everything else — what the
-manifest means, the other project types, the rest of the `cajeta` command —
-comes next.
+That is the whole loop. You run `init`, then `build`, then the binary.
+Everything else comes next, including what the manifest means, the other
+project types, and the rest of the `cajeta` command.
 
 Next: [Your first project](03-your-first-project.md).

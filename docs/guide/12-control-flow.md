@@ -1,6 +1,6 @@
 # 12 — Control flow
 
-The grammar is C-family. Conditions are parenthesized; bodies use braces.
+The grammar is C-family. Conditions are parenthesized, and bodies use braces.
 Run the examples:
 [ControlFlowDemo](../../samples/tour/src/main/cajeta/tour/lang/ControlFlowDemo.cajeta)
 and
@@ -44,7 +44,7 @@ for (int32 x : xs) {          // x is a per-iteration borrow
 
 ## break and continue
 
-Both work unlabeled and labeled; a labeled `break` exits the named loop.
+Both work unlabeled and labeled, and a labeled `break` exits the named loop.
 
 ```cajeta
 int32 sum = 0;
@@ -63,7 +63,7 @@ outer: for (int32 a = 0; a < 3; a = a + 1) {
 
 ## switch — statement and expression
 
-The classic statement form falls through unless you `break`; stacked labels
+The classic statement form falls through unless you `break`. Stacked labels
 (`case 2: case 3:`) share one arm.
 
 ```cajeta
@@ -82,7 +82,7 @@ switch (day) {
 }
 ```
 
-The arrow form is an expression: each arm is a single expression, there is no
+The arrow form is an expression. Each arm is a single expression, there is no
 fall-through, and the whole switch can be assigned, returned, or embedded.
 
 ```cajeta
@@ -100,8 +100,8 @@ int32 sum = 1000 + switch (code) {
 
 ## Ternary and instanceof
 
-`cond ? a : b` evaluates only the selected branch; mixed-type branches widen
-to the larger type (`int32` vs `float64` below).
+`cond ? a : b` evaluates only the selected branch. Mixed-type branches widen
+to the larger type, as `int32` and `float64` do below.
 
 ```cajeta
 int32 a = 5;
@@ -113,7 +113,7 @@ boolean isInt = a instanceof int32;
 String tag = mixed instanceof float64 ? "f64" : "other";
 ```
 
-`instanceof` currently matches against the operand's *static* type; it does
-not yet walk the runtime class hierarchy for class types.
+`instanceof` currently matches against the operand's static type. It does not
+yet walk the runtime class hierarchy for class types.
 
 Next: [Strings & formatting](13-strings.md).

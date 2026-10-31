@@ -1,6 +1,6 @@
 # Kernel parity
 
-`dev.cajeta.llm` — the parity legs: one matrix-multiply shape per row, device-timed on each side's own stream, joined under the five rules the parity harness enforces (same op, type and shape; the engine labelled with its build; the same residency; the device timer tier; a calibration row that reproduced a recorded number).
+This page holds the parity legs of `dev.cajeta.llm`. Each row is one matrix-multiply shape, device-timed on each side's own stream. The rows are joined under the five rules the parity harness enforces: the same op, type and shape; the engine labelled with its build; the same residency; the device timer tier; and a calibration row that reproduced a recorded number.
 
 ## Benchmarks
 
@@ -10,7 +10,7 @@
 
 ## Results
 
-One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
+Each benchmark has one chart, drawn for the machine selected at the top of the page. Languages are the bars, best first. Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
 
 ```bench
 id: llm/kernel-parity
@@ -25,7 +25,7 @@ cd bench
 ./bench.sh --bench kernel-parity --competitors # every pinned competitor
 ```
 
-Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+Every row records the compiler and competitor versions, flags, machine, OS and driver. [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
 
 ## See also
 

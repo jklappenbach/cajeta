@@ -1,6 +1,6 @@
 # Compile time
 
-How long the compiler takes: the tour cold and warm, a synthetic 10k-line program generated in six languages from one description, and the link-time-optimization modes. The tour has no counterpart in other languages, so its competitor rows compile the synthetic program, the closest in size (9.8k lines against 10k). The tour builds with the debug flavor because no optimized flavor links it on v0.46.3 (the filed drop-symbol link defect).
+This page measures how long the compiler takes on the tour cold and warm, on a synthetic 10k-line program generated in six languages from one description, and under the link-time-optimization modes. The tour has no counterpart in other languages, so its competitor rows compile the synthetic program, which is the closest in size at 9.8k lines against 10k. The tour builds with the debug flavor because no optimized flavor links it on v0.46.3, the filed drop-symbol link defect.
 
 ## Benchmarks
 
@@ -13,7 +13,7 @@ How long the compiler takes: the tour cold and warm, a synthetic 10k-line progra
 
 ## Results
 
-One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
+Each benchmark has one chart, drawn for the machine selected at the top of the page. Languages are the bars, best first. Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
 
 ```bench
 id: toolchain/compile-tour-cold
@@ -43,7 +43,7 @@ cd bench
 ./bench.sh --bench compile-tour-cold --competitors # every pinned competitor
 ```
 
-Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+Every row records the compiler and competitor versions, flags, machine, OS and driver. [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
 
 ## See also
 

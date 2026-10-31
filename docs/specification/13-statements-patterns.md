@@ -1,14 +1,14 @@
 # 13 — Statements & Patterns
 
-This chapter defines the statement forms: blocks and local declarations, conditionals and patterns, `switch` in both of its forms, loops with labels, `try`/`catch`/`finally`, and `return`. Statements carry ownership obligations — arming drop entries, bounding borrows — that this chapter names and Ownership §5 governs.
+This chapter defines the statement forms. They are blocks and local declarations, conditionals and patterns, `switch` in both of its forms, loops with labels, `try`/`catch`/`finally`, and `return`. Statements carry ownership obligations, such as arming drop entries and bounding borrows, that this chapter names and Ownership §5 governs.
 
 ## 13.1 Blocks and Local Declarations
 
-A block is a brace-enclosed statement sequence. Declaring an owning local arms a drop entry that fires at the block's closing brace (Allocation §4). A block-nested declaration may shadow an enclosing name (Names §7.1). A live borrow into a value blocks mutation through that value's path for the borrow's extent, and iteration is a borrow construct: mutating a collection inside its own `for`-each body is a compile-time error (Ownership §5.2).
+A block is a brace-enclosed statement sequence. Declaring an owning local arms a drop entry that fires at the block's closing brace (Allocation §4). A block-nested declaration may shadow an enclosing name (Names §7.1). A live borrow into a value blocks mutation through that value's path for the borrow's extent, and iteration is a borrow construct, so mutating a collection inside its own `for`-each body is a compile-time error (Ownership §5.2).
 
 ## 13.2 `if` and Pattern `instanceof`
 
-`if (cond) stmt else stmt` selects on a `boolean`. The condition may be a **type pattern**: `expr instanceof T name` tests the dynamic type and, on success, binds `name` as a `T`-typed borrow of the same instance, in scope where the test is true.
+`if (cond) stmt else stmt` selects on a `boolean`. The condition may be a type pattern. `expr instanceof T name` tests the dynamic type and, on success, binds `name` as a `T`-typed borrow of the same instance, in scope where the test is true.
 
 **Example 13.2-1.** A pattern binding.
 
@@ -60,7 +60,7 @@ public final class C {
 System.stdout.println(C.pick(2));    // 200
 ```
 
-> *Discussion.* Two switch surfaces are in the grammar but not usable as of 0.27.0: a block body with `yield` in an arrow arm crashes the compiler, and guarded patterns in `case` labels are unspecified. Both are bound here when they land.
+> *Discussion.* Two switch surfaces are in the grammar but not usable as of 0.27.0. A block body with `yield` in an arrow arm crashes the compiler, and guarded patterns in `case` labels are unspecified. Both are bound here when they land.
 
 ## 13.4 Loops
 
@@ -80,9 +80,9 @@ Labeled `break`/`continue` are also part of the kernel device subset (Accelerate
 
 ## 13.5 `try`, `catch`, `finally`
 
-`try` guards a block. A `throw` inside it unwinds to the nearest frame whose `catch` clause matches the thrown type (selection is Errors §15.2), dropping every owning local between the throw and the handler on the way (Allocation §4). A `finally` block runs on every exit from the `try` — normal completion, a `return` out of the block, a matched throw, or a throw that passes through unhandled. A `try` may carry a `finally` with no `catch`. Drop order, and a throw raised inside a `finally`, are Errors §15.3.
+`try` guards a block. A `throw` inside it unwinds to the nearest frame whose `catch` clause matches the thrown type (selection is Errors §15.2), dropping every owning local between the throw and the handler on the way (Allocation §4). A `finally` block runs on every exit from the `try`, whether normal completion, a `return` out of the block, a matched throw, or a throw that passes through unhandled. A `try` may carry a `finally` with no `catch`. Drop order, and a throw raised inside a `finally`, are Errors §15.3.
 
-There is no try-with-resources form: destructors already guarantee deterministic release at the declaring block's closing brace, in LIFO order, on the exceptional path included. Declaring the resource is the pattern.
+There is no try-with-resources form, because destructors already guarantee deterministic release at the declaring block's closing brace, in LIFO order, on the exceptional path included. Declaring the resource is the pattern.
 
 ## 13.6 `return`
 

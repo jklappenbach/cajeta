@@ -1,6 +1,6 @@
 # Device
 
-`cajeta.xpu.Device` — the active device and the kernels that run on it. BabelStream gives sustained bandwidth, mixbench the roofline, the GEMM rows the matrix cores through `CooperativeMatrix`, and the last row is the one no other suite has: one `@Kernel` source run on CUDA, HIP, Vulkan and the CPU with a consistency check. Device rows are measured in interleaved rounds because GPU clocks are bimodal.
+`cajeta.xpu.Device` is the active device and the kernels that run on it. BabelStream gives sustained bandwidth, mixbench gives the roofline, and the GEMM rows exercise the matrix cores through `CooperativeMatrix`. The last row is the one no other suite has. It runs one `@Kernel` source on CUDA, HIP, Vulkan and the CPU with a consistency check. Device rows are measured in interleaved rounds because GPU clocks are bimodal.
 
 ## Benchmarks
 
@@ -23,11 +23,11 @@
 | `xpu/launch-overhead` | 1e4 trivial dispatches; the row is the time for all 1e4 (divide by 1e4 for a launch) | CUDA and HIP empty kernels, Vulkan compute | count |
 | `xpu/cross-backend-showcase` | the saxpy, reduce and GEMM kernels from one source on every backend present; variants cuda, hip, vulkan, cpu | Cajeta's own backends | bit-exact where exact, epsilon where not |
 
-Rows record the backend and driver; CUDA and Vulkan rows come from Phoenix, HIP and Vulkan rows from Proton. Compiler manifests on v0.46.3: bf16 is native matrix-core on NVPTX and the software tier on Vulkan, f32 the software tier on NVPTX and native on Vulkan, f16 native on both; no kernel spills. The CUDA competitor is one `devserver` program (cuBLAS, CUB, texture objects), which also builds with hipcc on a ROCm machine.
+Rows record the backend and driver. CUDA and Vulkan rows come from Phoenix, and HIP and Vulkan rows from Proton. The compiler manifests on v0.46.3 report that bf16 is native matrix-core on NVPTX and the software tier on Vulkan, f32 is the software tier on NVPTX and native on Vulkan, and f16 is native on both, with no kernel spills. The CUDA competitor is one `devserver` program with cuBLAS, CUB and texture objects, and it also builds with hipcc on a ROCm machine.
 
 ## Results
 
-One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
+Each benchmark has one chart, drawn for the machine selected at the top of the page. Languages are the bars, best first. Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
 
 ```bench
 id: xpu/babelstream-copy
@@ -117,7 +117,7 @@ cd bench
 ./bench.sh --bench babelstream-copy --competitors # every pinned competitor
 ```
 
-Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+Every row records the compiler and competitor versions, flags, machine, OS and driver. [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
 
 ## See also
 

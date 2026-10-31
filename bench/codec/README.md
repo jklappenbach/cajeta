@@ -1,6 +1,6 @@
 # cajeta.codec and dev.cajeta.codec
 
-JSON on the nativejson-benchmark corpus, CSV, Base64 and Base32, and DEFLATE from the codec library.
+This section measures JSON on the nativejson-benchmark corpus, CSV, Base64 and Base32, and DEFLATE from the codec library.
 
 | Page | |
 |---|---|

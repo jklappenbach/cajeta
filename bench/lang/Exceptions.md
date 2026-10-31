@@ -1,6 +1,6 @@
 # Exceptions
 
-What a `try` costs when nothing is thrown, what a throw costs when it is caught one frame up, and how that scales through ten and a hundred frames. `RecoverableException` and `UnrecoverableException` are measured separately, and one row throws inside a fiber. Rust and Go have no exceptions, so their rows propagate a `Result` or an `error` through the same call depth and say so in the row's notes.
+This page measures what a `try` costs when nothing is thrown, what a throw costs when it is caught one frame up, and how that scales through ten and a hundred frames. `RecoverableException` and `UnrecoverableException` are measured separately, and one row throws inside a fiber. Rust and Go have no exceptions, so their rows propagate a `Result` or an `error` through the same call depth and say so in the row's notes.
 
 ## Benchmarks
 
@@ -17,7 +17,7 @@ The error model is documented in the guide's [error handling](../../docs/guide/2
 
 ## Results
 
-One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
+Each benchmark has one chart, drawn for the machine selected at the top of the page. Languages are the bars, best first. Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
 
 ```bench
 id: lang/try-no-throw
@@ -57,7 +57,7 @@ cd bench
 ./bench.sh --bench try-no-throw --competitors # every pinned competitor
 ```
 
-Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+Every row records the compiler and competitor versions, flags, machine, OS and driver. [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
 
 ## See also
 

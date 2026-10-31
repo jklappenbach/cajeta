@@ -1,8 +1,9 @@
 # 10 — Allocation
 
-Every class instance is created with an explicit placement prefix: `stack` or
-`heap`. There is no `new`. Omitting the prefix at a constructor call is a
-compile error — placement is always visible at the allocation site.
+Every class instance is created with an explicit placement prefix, either
+`stack` or `heap`. There is no `new`. Omitting the prefix at a constructor
+call is a compile error, so placement is always visible at the allocation
+site.
 
 ```cajeta
 public class Point {
@@ -31,8 +32,8 @@ Run it: [AllocationDemo](../../samples/tour/src/main/cajeta/tour/lang/Allocation
 ## One type, either storage
 
 `Point` is the same type wherever it lives. The storage mode is a property of
-the value, not the type — the borrow checker tracks lifetime as metadata.
-A method that takes `Point` accepts both:
+the value, and the borrow checker tracks lifetime as metadata. The type does
+not change with the storage mode. A method that takes `Point` accepts both:
 
 ```cajeta
 public class Meter {
@@ -49,22 +50,23 @@ public class Meter {
 }
 ```
 
-There is no separate pointer or value flavor of a class, and no slicing:
-class instances always pass and return by reference.
+There is no separate pointer or value flavor of a class, and there is no
+slicing. Class instances always pass and return by reference.
 
 ## When to pick which
 
 - **`stack`** when the value lives and dies inside the current method or
-  block. No allocation call; the instance drops at the closing `}`.
-- **`heap`** when the value must outlive the frame: it is returned to the
-  caller, stored in a field or collection, or handed to another owner with
+  block. There is no allocation call, and the instance drops at the closing
+  `}`.
+- **`heap`** when the value must outlive the frame, because it is returned to
+  the caller, stored in a field or collection, or handed to another owner with
   `#` (next chapter). The heap block is freed automatically when its owner
-  goes out of scope — there is no `delete`. A heap local kept in a field is
+  goes out of scope, and there is no `delete`. A heap local kept in a field is
   stored with `#=` ([chapter 11](11-ownership.md#keeping-a-value-in-a-field)).
 
 The compiler enforces the boundary. Returning a stack-allocated local from a
-method is a compile error — the frame it lives in is gone before the caller
-can look at it:
+method is a compile error, because the frame it lives in is gone before the
+caller can look at it:
 
 <!-- snippet: skip -->
 ```cajeta
@@ -74,12 +76,12 @@ public Point make() {
 }
 ```
 
-Heap values never leak either way: if nothing transfers ownership out, the
+Heap values never leak either way. If nothing transfers ownership out, the
 drop chain reclaims the block at the owner's scope exit. Cleanup on both the
 normal and the exception path is covered in chapter 11.
 
 A third placement, `shared`, exists inside GPU kernels for workgroup-shared
-memory; it is covered with the compute material. Full semantics:
+memory, and it is covered with the compute material. The full semantics are in
 [MemoryModel](../specification/lang/MemoryModel.md) and
 [UnifiedClasses](../specification/lang/UnifiedClasses.md).
 

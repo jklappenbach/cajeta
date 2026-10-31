@@ -1,6 +1,6 @@
 # Components
 
-`cajeta.aot` — the compile-time dependency-injection graph. Resolving a hundred components at start-up is the cost a service pays before its first request; the competitors resolve the same graph at runtime.
+`cajeta.aot` is the compile-time dependency-injection graph. Resolving a hundred components at start-up is the cost a service pays before its first request. The competitors resolve the same graph at runtime.
 
 ## Benchmarks
 
@@ -10,7 +10,7 @@
 
 ## Results
 
-One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
+Each benchmark has one chart, drawn for the machine selected at the top of the page. Languages are the bars, best first. Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
 
 ```bench
 id: aot/di-graph-100-startup
@@ -25,7 +25,7 @@ cd bench
 ./bench.sh --bench di-graph-100-startup --competitors # every pinned competitor
 ```
 
-Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+Every row records the compiler and competitor versions, flags, machine, OS and driver. [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
 
 ## See also
 

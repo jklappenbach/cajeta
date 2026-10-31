@@ -1,6 +1,6 @@
 # HashMap
 
-`cajeta.collection.HashMap` — the SwissTable-backed map over a dense entry array. Integer and string keys are measured separately because the string rows pay for hashing and comparison and the integer rows do not; the methodology follows Martin Ankerl's hashmap suite.
+`cajeta.collection.HashMap` is the SwissTable-backed map over a dense entry array. Integer and string keys are measured separately because the string rows pay for hashing and comparison and the integer rows do not. The methodology follows Martin Ankerl's hashmap suite.
 
 ## Benchmarks
 
@@ -14,7 +14,7 @@
 
 ## Results
 
-One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
+Each benchmark has one chart, drawn for the machine selected at the top of the page. Languages are the bars, best first. Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
 
 ```bench
 id: collection/hashmap-int
@@ -49,7 +49,7 @@ cd bench
 ./bench.sh --bench hashmap-int --competitors # every pinned competitor
 ```
 
-Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+Every row records the compiler and competitor versions, flags, machine, OS and driver. [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
 
 ## See also
 

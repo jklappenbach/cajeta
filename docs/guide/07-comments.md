@@ -5,7 +5,7 @@ Cajeta has two comment forms, plus a documentation flavor of the second.
 ## Regular comments
 
 `//` runs to end of line. `/* ... */` spans lines. Both are implementation
-notes for whoever reads the source; the documentation tool ignores them.
+notes for whoever reads the source, and the documentation tool ignores them.
 
 ```cajeta
 // implementation note — invisible to the doc tool
@@ -15,12 +15,13 @@ int32 cached = -1;      /* block comments work too */
 ## Doc comments
 
 A block comment that opens with `/**` documents the declaration that follows
-it — a class, interface, enum, view, method, constructor, field, or annotation
-type. The leading `*` on continuation lines is optional but conventional.
+it. That declaration can be a class, interface, enum, view, method,
+constructor, field, or annotation type. The leading `*` on continuation lines
+is optional but conventional.
 
-The body is CommonMark Markdown: paragraphs, **bold**, lists, tables, inline
-code, fenced code blocks, and `[Foo]` / `[Foo.method]` cross-reference links
-that resolve against the declaration's import scope.
+The body is CommonMark Markdown. It supports paragraphs, bold, lists, tables,
+inline code, fenced code blocks, and `[Foo]` / `[Foo.method]` cross-reference
+links that resolve against the declaration's import scope.
 
 ```cajeta
 /**
@@ -45,14 +46,14 @@ public class FeeSchedule {
 
 ## The `@`-tag system
 
-Tags follow the JavaDoc tradition, spelled in CamelCase. Body first, then all
-tags in a trailing block. Shipped today: `@Param`, `@Return`, `@Throws` (or
-`@Exception`), `@See`, `@Since`, `@Author`, `@Version`, `@SerialField`. Tag
-bodies are Markdown too.
+Tags follow the JavaDoc tradition, spelled in CamelCase. The body comes first,
+and all tags follow in a trailing block. The tags shipped today are `@Param`,
+`@Return`, `@Throws` (or `@Exception`), `@See`, `@Since`, `@Author`,
+`@Version`, and `@SerialField`. Tag bodies are Markdown too.
 
-A richer set of Cajeta-specific structured tags — `@Owns` / `@Moves` /
-`@Borrows` for ownership, `@FiberSafe` / `@Blocks` for concurrency,
-`@Complexity`, `@EntryPoint` — is specified but not all wired up yet. The
+A richer set of Cajeta-specific structured tags is specified but not all wired
+up yet. It includes `@Owns` / `@Moves` / `@Borrows` for ownership,
+`@FiberSafe` / `@Blocks` for concurrency, `@Complexity`, and `@EntryPoint`. The
 full tag reference, shipped and planned, is in
 [Documentation.md](../specification/buildtool/Documentation.md).
 

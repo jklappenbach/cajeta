@@ -2,11 +2,11 @@
 
 ## Single inheritance
 
-`extends` names the parent. Dispatch is virtual by default: a parent-typed
+`extends` names the parent. Dispatch is virtual by default, so a parent-typed
 reference to a child instance calls the child's override through the vtable,
 whether the receiver lives on the stack or the heap. Overriding is by
-signature — re-declare the method; there is no `override` keyword
-(`@Override` is accepted as optional documentation). `super.method()` reaches
+signature, so you re-declare the method. There is no `override` keyword, and
+`@Override` is accepted as optional documentation. `super.method()` reaches
 the parent's implementation, and `abstract` methods are obligations the first
 concrete subclass must meet. Tour demo:
 [InheritanceDemo](../../samples/tour/src/main/cajeta/tour/lang/InheritanceDemo.cajeta).
@@ -34,7 +34,7 @@ descendant must implement it, or compilation fails with
 `CAJETA_ERROR_ABSTRACT_NOT_IMPLEMENTED`. A class that declares an abstract
 method must itself be declared `abstract`, and an abstract class cannot be
 allocated, only its descendants can. The class keyword also lets a class stay
-incomplete on purpose: an intermediate abstract class can add fields and
+incomplete on purpose. An intermediate abstract class can add fields and
 behavior and leave its parent's abstract methods to the leaves, without
 restating them. Tour demo:
 [AbstractClassesDemo](../../samples/tour/src/main/cajeta/tour/lang/AbstractClassesDemo.cajeta).
@@ -63,20 +63,20 @@ Polygon p = heap Quad(3);
 int32 four = p.sideCount();
 ```
 
-A missing body is not a way to spell `abstract`. A method with no body must
-say `abstract`, or carry an annotation that supplies one such as `@Native`.
+A method with no body must say `abstract`, or carry an annotation that
+supplies one such as `@Native`.
 An abstract method with a body, a `static` or `private` abstract method, and
 an `abstract final` class are each rejected by name. A class declared
 `abstract` with every method implemented is legal and still not allocatable,
 which is the way to say "extend me, do not construct me". The specification
-has the full rule set: [Classes §8.5](../specification/08-classes.md).
+has the full rule set in [Classes §8.5](../specification/08-classes.md).
 
 ## Multiple inheritance
 
 A class may extend several bases and inherit concrete behavior from all of
-them — state is per-base, behavior composes. Tour demo:
-[MultiInheritanceDemo](../../samples/tour/src/main/cajeta/tour/lang/MultiInheritanceDemo.cajeta);
-design: [MultiClassing.md](../specification/lang/MultiClassing.md).
+them. State is per-base, and behavior composes. The tour demo is
+[MultiInheritanceDemo](../../samples/tour/src/main/cajeta/tour/lang/MultiInheritanceDemo.cajeta),
+and the design is in [MultiClassing.md](../specification/lang/MultiClassing.md).
 
 When two parents declare the same method, the child resolves the collision by
 overriding and selecting a parent explicitly with `super<Base>`:
@@ -96,14 +96,15 @@ public class DualView extends HtmlView, TextView {
 }
 ```
 
-One caveat today: an *unqualified* call to a colliding inherited method (no
-override in the child) silently picks one parent. The intended rule makes
-that a compile error; until it lands, resolve collisions with an override.
+There is one caveat today. An unqualified call to a colliding inherited
+method, with no override in the child, silently picks one parent. The
+intended rule makes that a compile error. Until it lands, resolve collisions
+with an override.
 
 ### Diamonds share the ancestor
 
 When two parents descend from the same ancestor, the child holds one shared
-ancestor subobject — a write through one path is visible through the other:
+ancestor subobject, so a write through one path is visible through the other:
 
 ```cajeta
 public class Meta {
@@ -126,20 +127,20 @@ int32 seven = b.getViaRight();
 ```
 
 Unrelated parents that merely happen to declare same-named fields keep
-separate slots — sharing applies only to a genuine common ancestor.
+separate slots. Sharing applies only to a genuine common ancestor.
 
 ### Template mixins
 
-Templates and multiple inheritance compose: a generic class inherits behavior
-mixins once and carries them across every instantiation. See `Crate<T>
-extends Identified, Versioned` in the
-[tour demo](../../samples/tour/src/main/cajeta/tour/lang/MultiInheritanceDemo.cajeta)
-— `Crate<int32>` and `Crate<String>` both get the mixin methods for free.
+Templates and multiple inheritance compose. A class template inherits
+behavior mixins once and carries them across every instantiation. See
+`Crate<T> extends Identified, Versioned` in the
+[tour demo](../../samples/tour/src/main/cajeta/tour/lang/MultiInheritanceDemo.cajeta),
+where `Crate<int32>` and `Crate<String>` both get the mixin methods for free.
 
 ## Interfaces
 
-`interface` declares a pure contract — method signatures, no bodies, no
-default methods. A class lists its interfaces after `implements`, and an
+`interface` declares a pure contract of method signatures, with no bodies
+and no default methods. A class lists its interfaces after `implements`, and an
 interface-typed reference dispatches to the implementing class:
 
 ```cajeta
@@ -163,13 +164,13 @@ most-derived implementation. The tour's
 [InterfacesDemo](../../samples/tour/src/main/cajeta/tour/lang/InterfacesDemo.cajeta)
 walks all three.
 
-Interfaces can be templated, and `extends` and `implements` combine — the
+Interfaces can be templated, and `extends` and `implements` combine. The
 stdlib's `ArrayStream<T> extends Stream<T> implements Splittable<T>` is the
 canonical shape. Since Cajeta has multiple inheritance of concrete behavior,
-interfaces are for contracts, not for smuggling implementation.
+interfaces are for contracts only.
 
 An interface that extends another converts to it implicitly. The other
-direction is a cast, checked at run time as in Java: `(Wide) b` finds the
+direction is a cast, checked at run time as in Java. `(Wide) b` finds the
 instance's class's `Wide` implementation, and throws
 `cajeta.error.ClassCastException` when the class does not implement `Wide`.
 A null value casts to null.

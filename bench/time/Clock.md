@@ -1,6 +1,6 @@
 # Clock
 
-`cajeta.time.Clock` — the static what-time-is-it surface. `Clock.now()` is wall-clock time at millisecond resolution; the competitors read monotonic nanosecond clocks, so this row compares a different call and says so.
+`cajeta.time.Clock` is the static what-time-is-it surface. `Clock.now()` is wall-clock time at millisecond resolution. The competitors read monotonic nanosecond clocks, so this row compares a different call and says so.
 
 ## Benchmarks
 
@@ -10,7 +10,7 @@
 
 ## Results
 
-One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
+Each benchmark has one chart, drawn for the machine selected at the top of the page. Languages are the bars, best first. Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
 
 ```bench
 id: time/clock-now
@@ -25,7 +25,7 @@ cd bench
 ./bench.sh --bench clock-now --competitors # every pinned competitor
 ```
 
-Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+Every row records the compiler and competitor versions, flags, machine, OS and driver. [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
 
 ## See also
 

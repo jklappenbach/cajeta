@@ -1,6 +1,6 @@
 # 20 — Execution & Program Lifecycle
 
-This chapter defines a program's lifecycle — startup, initialization, execution, exit — and the rule that gives the rest of this specification its footing across deployment forms: **a Cajeta program's meaning is independent of its shape**. An archive under the JIT and a native binary are two lowerings of the same defined behavior.
+This chapter defines a program's lifecycle, from startup and initialization through execution and exit. It also states the rule that gives the rest of this specification its footing across deployment forms. A Cajeta program's meaning is independent of its shape. An archive under the JIT and a native binary are two lowerings of the same defined behavior.
 
 ## 20.1 Program Shapes
 
@@ -12,17 +12,17 @@ A program ships and runs in three shapes:
 
 A conforming implementation gives an accepted program identical observable behavior in every shape. This specification defines no way for a program to detect its shape, and programs must not rely on incidental differences. Any future shape-detection surface would be specified here first.
 
-> *Discussion.* Two shape-adjacent behaviors are implementation properties, not semantics: *when* the JIT materializes a method's machine code (caching makes it early on a warm start), and *which* runtime and stdlib code is linked — linking is lazy, materializing only what the program references, and a program cannot observe the difference because linking has no side effects. Programs must not depend on compilation timing.
+> *Discussion.* Two shape-adjacent behaviors are implementation properties outside the semantics. The first is when the JIT materializes a method's machine code, and caching makes it early on a warm start. The second is which runtime and stdlib code is linked. Linking is lazy and materializes only what the program references, and a program cannot observe the difference because linking has no side effects. Programs must not depend on compilation timing.
 
 ## 20.2 Startup and Initialization
 
-Execution begins at the entry point: `static int32 main(String[] args)` (or `main()`) in a class program, or the synthesized entry of a script unit (Script Units §18). The argument store is installed by the host before entry — `System.args` and a `main` parameter read the same store (Script Units §18.3) — and the environment is reachable through `System.env`.
+Execution begins at the entry point. That is `static int32 main(String[] args)` (or `main()`) in a class program, or the synthesized entry of a script unit (Script Units §18). The argument store is installed by the host before entry, and `System.args` and a `main` parameter read the same store (Script Units §18.3). The environment is reachable through `System.env`.
 
-Static initializers run at program start, before the entry point's first statement, not lazily on first use of the class.
+Static initializers run at program start, before the entry point's first statement. They do not run lazily on first use of the class.
 
 ## 20.3 Exit
 
-A program exits when the entry point returns — the return value is the exit code, and `void` and script units without a top-level `return` exit 0 — or when an `UnrecoverableException` terminates it (Errors §15.2), or abnormally when the runtime detects a fatal condition.
+A program exits when the entry point returns, when an `UnrecoverableException` terminates it (Errors §15.2), or abnormally when the runtime detects a fatal condition. On return, the return value is the exit code, and `void` and script units without a top-level `return` exit 0.
 
 Drop guarantees at the end of life:
 
@@ -31,4 +31,4 @@ Drop guarantees at the end of life:
 
 ## 20.4 Execution Environments
 
-The three shapes are joined by two interactive hosts over the same JIT: `cajeta run` for script units (Script Units §18) and the notebook kernel (Notebook Kernel §19). Program semantics in every host are as this specification defines. Hosts differ only in entry synthesis, argument installation, and session lifetime, each specified in its own chapter.
+The three shapes are joined by two interactive hosts over the same JIT, `cajeta run` for script units (Script Units §18) and the notebook kernel (Notebook Kernel §19). Program semantics in every host are as this specification defines. Hosts differ only in entry synthesis, argument installation, and session lifetime, each specified in its own chapter.

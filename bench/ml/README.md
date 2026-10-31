@@ -1,6 +1,6 @@
 # dev.cajeta.ml and dev.cajeta.xgboost
 
-Classical estimators against scikit-learn, neural models against PyTorch, gradient-boosted trees against upstream XGBoost.
+This section measures classical estimators against scikit-learn, neural models against PyTorch, and gradient-boosted trees against upstream XGBoost.
 
 | Page | |
 |---|---|

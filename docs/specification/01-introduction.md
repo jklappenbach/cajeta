@@ -1,24 +1,24 @@
 # 1 — Introduction
 
-This specification defines the Cajeta programming language: which programs are legal, which are rejected and with what diagnostic, and what legal programs mean. It is the normative reference for the language. A construct's behavior is what this document says it is.
+This specification defines the Cajeta programming language. It states which programs are legal, which are rejected and with what diagnostic, and what legal programs mean. It is the normative reference for the language. A construct's behavior is what this document says it is.
 
 ## 1.1 Scope
 
-This specification defines the language itself — its capabilities and features: lexical structure, types, allocation and ownership, declarations and names, statements and expressions, errors, concurrency, accelerated compute, script units, the notebook execution model, and program lifecycle. It defines the requirements a program must meet to compile and the behavior a compiled program exhibits.
+This specification defines the language itself, meaning its capabilities and features. It covers lexical structure, types, allocation and ownership, declarations and names, statements and expressions, errors, concurrency, accelerated compute, script units, the notebook execution model, and program lifecycle. It defines the requirements a program must meet to compile and the behavior a compiled program exhibits.
 
-Coverage of the standard library and of external libraries built as part of cajeta.dev is out of scope. They are documented in their own references. Where a library type carries a language-level guarantee — `Mutex<T>`'s critical-section scoping (Concurrency §16), `Tile`'s role inference (Accelerated Compute §17) — this specification defines the guarantee, and the library reference defines the API.
+The standard library and the external libraries built as part of cajeta.dev are out of scope. They are documented in their own references. Some library types carry a language-level guarantee, such as `Mutex<T>`'s critical-section scoping (Concurrency §16) and `Tile`'s role inference (Accelerated Compute §17). For those types this specification defines the guarantee, and the library reference defines the API.
 
-> *Discussion.* The subdirectories of this documentation tree (`lang/`, `xpu/`, `concurrent/`, …) hold the internal design documents these chapters are distilled from. They record decisions and implementation detail, they remain reachable by direct link, and they are not normative: where an internal document and a chapter disagree, the chapter governs. The Runtime & ABI companion and the Stdlib Reference are being assembled from the same material.
+> *Discussion.* The subdirectories of this documentation tree (`lang/`, `xpu/`, `concurrent/`, …) hold the internal design documents these chapters are distilled from. They record decisions and implementation detail, and they remain reachable by direct link. They are not normative. Where an internal document and a chapter disagree, the chapter governs. The Runtime & ABI companion and the Stdlib Reference are being assembled from the same material.
 
 ## 1.2 Organization
 
-Chapters 2 through 14 define the core language: grammar and lexical structure, types, allocation, ownership, conversions, names and scopes, classes, interfaces, annotations and aspects, templates, arrays and views, statements, and expressions. Chapters 15 through 20 define errors, concurrency, accelerated compute, script units, the notebook kernel, and program lifecycle. Chapter 21 collects the complete grammar.
+Chapters 2 through 14 define the core language. They cover grammar and lexical structure, types, allocation, ownership, conversions, names and scopes, classes, interfaces, annotations and aspects, templates, arrays and views, statements, and expressions. Chapters 15 through 20 define errors, concurrency, accelerated compute, script units, the notebook kernel, and program lifecycle. Chapter 21 collects the complete grammar.
 
 ## 1.3 Notation
 
 ### 1.3.1 Reading conventions
 
-A plain paragraph is normative: it states a requirement or a defined behavior of the shipped language. A tinted panel — a quoted block opening with *Discussion.* — is informative: it motivates, compares, or records status, and imposes no requirement. A feature that is designed but not yet implemented appears only in a panel and is identified there as unimplemented. A bold phrase opening a paragraph names the rule that paragraph states.
+A plain paragraph is normative. It states a requirement or a defined behavior of the shipped language. A tinted panel, which is a quoted block opening with *Discussion.*, is informative. It motivates, compares, or records status, and it imposes no requirement. A feature that is designed but not yet implemented appears only in a panel and is identified there as unimplemented. A bold phrase opening a paragraph names the rule that paragraph states.
 
 ### 1.3.2 Compile-time errors and diagnostic codes
 
@@ -38,15 +38,15 @@ A term is defined at first use and used identically thereafter. Five terms recur
 
 - **title** — the ownership stake in a value (Ownership §5).
 - **borrow** — a non-owning reference. `=` always produces one (Ownership §5).
-- **passthrough** — what `#=` does: it hands along whatever title the source holds — a transfer when the source owns, a borrow otherwise (Ownership §5).
+- **passthrough** — the behavior of `#=`. It hands along whatever title the source holds, which is a transfer when the source owns and a borrow otherwise (Ownership §5).
 - **drop** — the reclamation of an owned value at scope exit or claim time (Allocation §4).
 - **formal** — a declared parameter whose ownership mode is fixed at the call site (Ownership §5).
 
 ## 1.4 Example Programs
 
-Examples are numbered within a section — `Example 1.4-1` is the first example of §1.4 — and appear immediately after the rule they illustrate. Unless a class context is required, examples are written as script units (Script Units §18): loose statements, with method and type declarations as needed.
+Examples are numbered within a section, so `Example 1.4-1` is the first example of §1.4. Each example appears immediately after the rule it illustrates. Unless a class context is required, examples are written as script units (Script Units §18). They are loose statements, with method and type declarations as needed.
 
-An example compiles and runs as presented unless it is a rejected program. A rejected program is an example too: it is shown with the exact diagnostic code it produces, on the line that produces it.
+An example compiles and runs as presented unless it is a rejected program. A rejected program is an example too. It is shown with the exact diagnostic code it produces, on the line that produces it.
 
 **Example 1.4-1.** An accepted program.
 

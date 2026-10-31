@@ -1,6 +1,6 @@
 # dev.cajeta.llm against llama.cpp
 
-Prefill and decode tokens per second, keyed by operating system, driver, model and platform. The matrix below is the page to read; the others are its cuts. Method: [measuring](../../docs/xpu/llm/measuring.md).
+This section publishes prefill and decode tokens per second, keyed by operating system, driver, model and platform. The matrix below is the page to read, and the other pages are its cuts. The method is [measuring](../../docs/xpu/llm/measuring.md).
 
 | Page | |
 |---|---|
@@ -13,7 +13,7 @@ Prefill and decode tokens per second, keyed by operating system, driver, model a
 
 ## The matrix
 
-One block per model. Rows are operating system × driver × backend; the two column groups are prefill and decode tokens per second; each cell holds cajeta-llm beside llama.cpp with the ratio printed. A row is published only when both platforms ran in the same interleaved session on the same model file and the greedy-agreement gate passed.
+There is one block per model. Rows are operating system × driver × backend. The two column groups are prefill and decode tokens per second, and each cell holds cajeta-llm beside llama.cpp with the ratio printed. A row is published only when both platforms ran in the same interleaved session on the same model file and the greedy-agreement gate passed.
 
 ```bench-matrix
 keys: os, driver, backend
@@ -21,7 +21,7 @@ measures: prefill, decode
 ids: llm/prefill-512, llm/decode-1seq, llm/decode-4seq
 ```
 
-Legend. **OS**: `Ubuntu 26.04` (Proton, native), `Ubuntu 24.04 / WSL2` (Phoenix), `Windows 11` (Phoenix, native, when both engines' Windows builds are green). **Driver**: the NVIDIA driver with its CUDA version, the ROCm version, or the Vulkan driver (RADV, or the vendor ICD) as reported at run time. **Model**: name, parameters, quantization and file checksum. **Platform**: `cajeta-llm <version> <backend>` or `llama.cpp <commit> <backend>`.
+The legend follows. OS is `Ubuntu 26.04` (Proton, native), `Ubuntu 24.04 / WSL2` (Phoenix), or `Windows 11` (Phoenix, native). The Windows row appears when both engines' Windows builds are green. Driver is the NVIDIA driver with its CUDA version, the ROCm version, or the Vulkan driver (RADV, or the vendor ICD) as reported at run time. Model is the name, parameters, quantization and file checksum. Platform is `cajeta-llm <version> <backend>` or `llama.cpp <commit> <backend>`.
 
 ## Standing
 

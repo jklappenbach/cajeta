@@ -1,26 +1,26 @@
 # Measuring, and where it stands
 
-How the engine's speed and correctness are measured against llama.cpp, the
-rules a number must satisfy before it is believed, and the standing on the
-reference hardware.
+This page describes how the engine's speed and correctness are measured
+against llama.cpp, the rules a number must satisfy before it is believed,
+and the standing on the reference hardware.
 
 ## 1. Two gates before a number
 
-**Correctness first.** A route change passes only when `GreedyVsLlama` agrees
-with llama.cpp's greedy walk on the same prompt ids: 64 tokens, an agreement
-rate at or above 0.99, and every divergence at a position where llama.cpp's
-own top-2 logit gap is under 1e-3 (a near tie, where the two implementations
-may legitimately differ). The reference walk comes from `llama-greedy`, a
-small program built against the llama.cpp build on the box that records the
-walk with its gaps.
+Correctness comes first. A route change passes only when `GreedyVsLlama`
+agrees with llama.cpp's greedy walk on the same prompt ids. The walk is 64
+tokens, the agreement rate must be at or above 0.99, and every divergence
+must fall at a position where llama.cpp's own top-2 logit gap is under 1e-3,
+which is a near tie where the two implementations may legitimately differ.
+The reference walk comes from `llama-greedy`, a small program built against
+the llama.cpp build on the box that records the walk with its gaps.
 
-**Read the tokens with the throughput.** The benchmark prints every generated
-token; a batched throughput figure is read only beside them, compared token
-for token with the single-sequence walk of the same run. A stream that is one
-real token and then zeros is NaN logits, not a measurement. Four quant formats
-once decoded garbage at full speed for a morning because the batched route's
-dispatcher knew two kernels while its admission knew six; the test that caught
-it goes through the route, not the kernels.
+Read the tokens with the throughput. The benchmark prints every generated
+token, and a batched throughput figure is read only beside them, compared
+token for token with the single-sequence walk of the same run. A stream that
+is one real token and then zeros is NaN logits, and it is no measurement.
+Four quant formats once decoded garbage at full speed for a morning because
+the batched route's dispatcher knew two kernels while its admission knew
+six. The test that caught it goes through the whole route.
 
 ## 2. The instruments
 
@@ -35,16 +35,17 @@ it goes through the route, not the kernels.
 | `CAJETA_PROFILER=1` | the whole-run profile, host and device, with the device spans at their tier |
 
 A measurement is taken in interleaved rounds, ours then llama.cpp, in the
-same minute, and the median is read; a single pair is never believed. On the
-30B a prefill is read only after the tune store has settled (its first two
-prefills on a fresh store carry the Id family's in-place trial). The
-attribution rule that found every lever this autumn: tally first, then read
-the kernel.
+same minute, and the median is read. A single pair is never believed. On the
+30B a prefill is read only after the tune store has settled, because its
+first two prefills on a fresh store carry the Id family's in-place trial.
+The attribution rule that found every lever this autumn is to tally first
+and then read the kernel.
 
 ## 3. Where it stands
 
-RTX 4090 under WSL2, llama.cpp built for CUDA, same minute, 2026-10-24.
-Ratios are ours over llama.cpp; 1.0 is parity.
+The reference box is an RTX 4090 under WSL2, with llama.cpp built for CUDA,
+measured in the same minute on 2026-10-24. Ratios are ours over llama.cpp,
+and 1.0 is parity.
 
 **Llama-3.1-8B-Instruct**, prompt 512, 128 generated:
 
@@ -64,10 +65,11 @@ active, Q5_K_M), prompt 512, context 1024 a sequence:
 | prefill, four sequences | 2963–3315 tok/s | 4755–7210 | 0.46–0.69 |
 
 The single-sequence prefill of the 30B swings 1.75x between runs a minute
-apart on this box (the GPU clock), so it is read at four sequences.
+apart on this box, because of the GPU clock, so it is read at four
+sequences.
 
-Where the remaining gaps are, kernel by kernel, is the subject of
-[Language models on the device](../kernels-llm.md): the 8B's Q2_K, Q3_K and
+[Language models on the device](../kernels-llm.md) covers where the
+remaining gaps are, kernel by kernel. They are the 8B's Q2_K, Q3_K and
 Q5_K prefill routes, the 30B's grouping sort (12 ms against llama.cpp's 2 in
 a 512-token prefill), its Q6_K expert banks still on the older id GEMM, and
 the mixture-of-experts single-sequence decode.
@@ -76,9 +78,10 @@ the mixture-of-experts single-sequence decode.
 
 `run-tests.sh` builds the library and the test binary for one backend
 (`XPU_BACKEND=nvptx|amdgpu|vulkan|cpu`, `CAJETA=` the compiler, `CUDA_PATH`
-for the assembler) and runs the suite: on 2026-10-24 the nvptx leg is 849
-tests in eight minutes, the cpu leg about 80 minutes and needs a quiet box.
-After the suite the kernel census requires every registered kernel to have
-been value-checked or excused by name, and the oracle-map test requires every
-shipped kernel to have a row. `CAJETA_UNIT_FILTER=Name,Name` runs a subset
-while iterating, without the census; a filtered run is never the leg.
+for the assembler) and runs the suite. On 2026-10-24 the nvptx leg is 849
+tests in eight minutes, and the cpu leg is about 80 minutes and needs a
+quiet box. After the suite the kernel census requires every registered
+kernel to have been value-checked or excused by name, and the oracle-map
+test requires every shipped kernel to have a row. `CAJETA_UNIT_FILTER=Name,Name`
+runs a subset while iterating, without the census. A filtered run is never
+the leg.

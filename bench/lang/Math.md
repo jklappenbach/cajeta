@@ -1,6 +1,6 @@
 # Math and SIMD
 
-`cajeta.lang.Math` — numeric utilities on the host, plus the `Vector<T,N>` SIMD type the two oldest rows use. The transcendental loop is the libm comparison; `saxpy` and `dot-product` are the portable-SIMD comparison against Highway and Rust portable-simd.
+`cajeta.lang.Math` holds the numeric utilities on the host. This page also covers the `Vector<T,N>` SIMD type the two oldest rows use. The transcendental loop is the libm comparison. `saxpy` and `dot-product` are the portable-SIMD comparison against Highway and Rust portable-simd.
 
 ## Benchmarks
 
@@ -14,7 +14,7 @@
 
 ## Results
 
-One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
+Each benchmark has one chart, drawn for the machine selected at the top of the page. Languages are the bars, best first. Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
 
 ```bench
 id: lang/math-transcendental
@@ -49,7 +49,7 @@ cd bench
 ./bench.sh --bench math-transcendental --competitors # every pinned competitor
 ```
 
-Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+Every row records the compiler and competitor versions, flags, machine, OS and driver. [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
 
 ## See also
 

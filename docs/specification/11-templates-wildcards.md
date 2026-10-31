@@ -1,10 +1,10 @@
 # 11 — Templates & Wildcards
 
-This chapter defines Cajeta's template model. Templates are monomorphized: each distinct type argument produces a distinct compiled instantiation with its own layout, vtable, and drop function. There is no erasure on the instantiation path. The erased view exists only where the program asks for it, through wildcards (§11.3).
+This chapter defines Cajeta's template model. Templates are monomorphized, so each distinct type argument produces a distinct compiled instantiation with its own layout, vtable, and drop function. There is no erasure on the instantiation path. The erased view exists only where the program asks for it, through wildcards (§11.3).
 
 ## 11.1 The Template Model
 
-A class or method may declare type parameters in angle brackets. Instantiating a template with a type argument compiles a version of it specialized to that argument. Primitive types are valid type arguments and instantiate without boxing — `Box<int32>` stores an `int32`, not a wrapper.
+A class or method may declare type parameters in angle brackets. Instantiating a template with a type argument compiles a version of it specialized to that argument. Primitive types are valid type arguments and instantiate without boxing. `Box<int32>` stores an `int32` directly.
 
 **Example 11.1-1.** A user template over a primitive and a library template.
 
@@ -25,15 +25,15 @@ Boxed wrappers (Types §3.1) exist only for the boundary where a template slot r
 
 ## 11.2 Template Declarations
 
-Type parameters appear on class declarations (`class Box<T>`) and on methods. A template's type parameters are in scope throughout the declaring body, in field types, method signatures, and ownership spellings (`#T` formals and returns work per Ownership §5.5). At a template method's call site, type arguments are spelled explicitly in angle brackets — `stream.map<int32>((pt) -> pt.dist2())`.
+Type parameters appear on class declarations (`class Box<T>`) and on methods. A template's type parameters are in scope throughout the declaring body, in field types, method signatures, and ownership spellings (`#T` formals and returns work per Ownership §5.5). At a template method's call site, type arguments are spelled explicitly in angle brackets, as in `stream.map<int32>((pt) -> pt.dist2())`.
 
-> *Discussion.* Call-site deduction of method type arguments from argument types, and an explicit specialization syntax (a user-provided body for a particular instantiation), are not yet specified here.
+> *Discussion.* Call-site deduction of method type arguments from argument types, and an explicit specialization syntax that supplies a user-provided body for a particular instantiation, are not yet specified here.
 
 ## 11.3 Wildcards
 
-A wildcard type argument stands for an unknown but tracked argument: `T<?>` (unbounded), `T<? extends Bound>` (some subtype of `Bound`), `T<? super Bound>` (some supertype). A wildcard type is usable wherever a type is: parameters, locals, fields.
+A wildcard type argument stands for an unknown but tracked argument. The forms are `T<?>` (unbounded), `T<? extends Bound>` (some subtype of `Bound`), and `T<? super Bound>` (some supertype). A wildcard type is usable wherever a type is, including parameters, locals, and fields.
 
-Soundness follows producer/consumer polarity: a `? extends` view can be read at its bound but not written through — the unknown argument could be any subtype, so no written value is safe. A `? super` view can be written at the bound but reads only at `Object`. Writing through a `? extends` view is a compile-time error.
+Soundness follows producer/consumer polarity. A `? extends` view can be read at its bound but not written through, because the unknown argument could be any subtype and no written value is safe. A `? super` view can be written at the bound but reads only at `Object`. Writing through a `? extends` view is a compile-time error.
 
 **Example 11.3-1.** One method over every instantiation.
 
@@ -49,7 +49,7 @@ s.add("x");
 System.stdout.println("" + C.count(a) + C.count(s));    // 21
 ```
 
-**Example 11.3-2.** A rejected program: writing through a `? extends` view.
+**Example 11.3-2.** A rejected program that writes through a `? extends` view.
 
 <!-- snippet: skip -->
 ```cajeta
@@ -64,7 +64,7 @@ public final class C {
 
 Two wildcard occurrences are not assumed to be the same unknown type. Identity is tracked through capture types where the language must reason about "the same unknown `T`".
 
-> *Discussion.* A lint flags wildcard-typed access in hot loops, where the erased view defeats monomorphized code paths. Suppress it per rule with `@SuppressLint` (Annotations §10.3) when the erased view is the point. The migration from the current receiver-identity heuristic to first-class capture identity is in flight.
+> *Discussion.* A lint flags wildcard-typed access in hot loops, where the erased view defeats monomorphized code paths. Suppress it per rule with `@SuppressLint` (Annotations §10.3) when the erased view is intended. The migration from the current receiver-identity heuristic to first-class capture identity is in flight.
 
 ## 11.4 Instantiation Across Archives
 

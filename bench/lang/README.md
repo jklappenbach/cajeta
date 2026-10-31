@@ -1,6 +1,6 @@
 # Language and cajeta.lang
 
-The language itself, measured bare, then the classes of `cajeta.lang`. Loops, exceptions, allocation and dispatch are the floors; everything else on this site is built on them.
+This section measures the language itself bare, then the classes of `cajeta.lang`. Loops, exceptions, allocation and dispatch are the floors, and everything else on this site is built on them.
 
 | Page | |
 |---|---|

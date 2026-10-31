@@ -1,6 +1,6 @@
 # 3 — Types, Values & Variables
 
-This chapter defines Cajeta's types — the fixed set of explicit-width primitives and the reference types built from classes, interfaces, and arrays — together with the kinds of variables that hold values and the definite-assignment rule that governs reading them.
+This chapter defines Cajeta's types, the kinds of variables that hold values, and the definite-assignment rule that governs reading them. The types are the fixed set of explicit-width primitives and the reference types built from classes, interfaces, and arrays.
 
 ## 3.1 Primitive Types
 
@@ -34,7 +34,7 @@ System.stdout.println("codepoint: " + (int32) cp);    // 233
 
 ## 3.2 Vectors
 
-`Vector<T, N>` is a fixed-width numeric vector — `N` lanes of element type `T`. It is a value type with no fields and no methods. Every operation on it lowers to a machine vector instruction, and the same lowering serves host code and kernel code, so a vector expression means the same thing in both (Accelerated Compute §17).
+`Vector<T, N>` is a fixed-width numeric vector of `N` lanes of element type `T`. It is a value type with no fields and no methods. Every operation on it lowers to a machine vector instruction, and the same lowering serves host code and kernel code, so a vector expression means the same thing in both (Accelerated Compute §17).
 
 `T` must be a numeric primitive other than `boolean`. Anything else is a compile-time error, `CAJETA_ERROR_VECTOR_ELEMENT_TYPE`. `N` is a non-type type argument and must be a positive integer constant, `CAJETA_ERROR_VECTOR_LENGTH`.
 
@@ -71,13 +71,13 @@ A vector is a value type, so it is a legal record field (Arrays, Views, Slices &
 
 The reference types are classes (Classes §8), interfaces (Interfaces §9), and arrays (Arrays, Views, Slices & Records §12). A `view` declaration also introduces a type (Arrays, Views, Slices & Records §12).
 
-A class is one type regardless of where its instances are placed: `stack MyClass()` and `heap MyClass()` produce values of the same type `MyClass`, and placement is chosen at the allocation site, not in the declaration (Allocation §4). The borrow checker tracks lifetime, and the type system does not.
+A class is one type regardless of where its instances are placed. `stack MyClass()` and `heap MyClass()` produce values of the same type `MyClass`, and placement is chosen at the allocation site rather than in the declaration (Allocation §4). The borrow checker tracks lifetime, and the type system does not.
 
-Class instances always pass and return by pointer, never by value — there is no object slicing, no implicit copy construction, and no implicit boxing. A stack-allocated instance returned by value travels through a caller-allocated slot (Allocation §4).
+Class instances always pass and return by pointer. Nothing passes by value, so there is no object slicing, no implicit copy construction, and no implicit boxing. A stack-allocated instance returned by value travels through a caller-allocated slot (Allocation §4).
 
 ## 3.4 Kinds of Variables and Scope
 
-A **scope** is the region of a program a variable lives in. For a local variable it is a method invocation, or a scope block (`{ … }`) inside a method: the scope runs from the declaration to the closing brace of the declaring block, and one invocation of a method is one instance of every scope in its body. A static variable is scoped for the lifetime of the application, from program start to exit (Execution §20). A session binding is scoped to the session (Script Units §18). Reaching the end of a scope is what triggers a drop (Allocation §4). Name resolution and shadowing within scopes are Names §7.
+A **scope** is the region of a program a variable lives in. For a local variable it is a method invocation, or a scope block (`{ … }`) inside a method. The scope runs from the declaration to the closing brace of the declaring block, and one invocation of a method is one instance of every scope in its body. A static variable is scoped for the lifetime of the application, from program start to exit (Execution §20). A session binding is scoped to the session (Script Units §18). Reaching the end of a scope is what triggers a drop (Allocation §4). Name resolution and shadowing within scopes are Names §7.
 
 - **Local variables** — declared in a block, and dropped at the closing brace of the declaring block when they own (Allocation §4).
 - **Fields** — instance and static members of a class (Classes §8). A field's ownership status is resolved at drop time (Ownership §5.8).
@@ -87,9 +87,9 @@ A **scope** is the region of a program a variable lives in. For a local variable
 
 ## 3.5 Definite Assignment
 
-A local variable may be declared without an initializer. Reading it before every path to the read assigns it is a compile-time error, `CAJETA_ERROR_VARIABLE_NOT_ASSIGNED`. The rule is the same for primitive-typed and reference-typed locals: an unassigned reference is not observable as a null — the read is rejected.
+A local variable may be declared without an initializer. Reading it before every path to the read assigns it is a compile-time error, `CAJETA_ERROR_VARIABLE_NOT_ASSIGNED`. The rule is the same for primitive-typed and reference-typed locals. An unassigned reference is never observable as a null, because the read is rejected.
 
-**Example 3.5-1.** A rejected program: a read before assignment.
+**Example 3.5-1.** A rejected program that reads before assignment.
 
 <!-- snippet: skip -->
 ```cajeta
@@ -105,6 +105,6 @@ public final class C {
 
 ## 3.6 Type Parameters and Wildcards
 
-A class or method may declare type parameters. Parameterized classes are not genericized, and there is no run-time type erasure. As in C++, each parameterized type declaration generates a distinct type in the language that can then be inspected at run time through reflection, or leveraged by AoT compilation. `Box<int32>` and `Box<float64>` are two types, each with its own generated code and layout, and neither is assignable to the other. A wildcard `?` may stand for an unknown type argument at a use site. The full rules — declaration, bounds, deduction, specialization, and instantiation across archive boundaries — are Templates & Wildcards §11.
+A class or method may declare type parameters. Parameterized classes are not genericized, and there is no run-time type erasure. As in C++, each parameterized type declaration generates a distinct type in the language that can then be inspected at run time through reflection, or leveraged by AoT compilation. `Box<int32>` and `Box<float64>` are two types, each with its own generated code and layout, and neither is assignable to the other. A wildcard `?` may stand for an unknown type argument at a use site. The full rules for declaration, bounds, deduction, specialization, and instantiation across archive boundaries are Templates & Wildcards §11.
 
-> *Discussion.* As of 0.27.0 the local-declaration path does not yet enforce initializer compatibility between distinct reference types — a cross-parameterization assignment such as `Box<float64> b = a` with `a : Box<int32>` compiles, and reading through it reinterprets the source's layout (the distinct layouts are why the read is wrong). Static-field initializers already reject this as `CAJETA_ERROR_INITIALIZER_TYPE_MISMATCH`. The gap is recorded as disabled pinning tests in `test/type/AssignmentCompatibilityTests.cpp`.
+> *Discussion.* As of 0.27.0 the local-declaration path does not yet enforce initializer compatibility between distinct reference types. A cross-parameterization assignment such as `Box<float64> b = a` with `a : Box<int32>` compiles, and reading through it reinterprets the source's layout. The read is wrong because the two layouts are distinct. Static-field initializers already reject this as `CAJETA_ERROR_INITIALIZER_TYPE_MISMATCH`. The gap is recorded as disabled pinning tests in `test/type/AssignmentCompatibilityTests.cpp`.

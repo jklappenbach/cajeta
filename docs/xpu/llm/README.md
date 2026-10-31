@@ -1,12 +1,12 @@
 # Language models
 
 `dev.cajeta.llm` is a decoder-only language-model inference engine written
-in Cajeta: it loads open weights from GGUF or Hugging Face safetensors, runs
+in Cajeta. It loads open weights from GGUF or Hugging Face safetensors, runs
 KV-cached incremental decode with continuous batching on any XPU backend
 (NVIDIA, AMD, Vulkan or the host CPU), samples, and detokenises. llama.cpp
-supplies the architecture reference and the parity target; none of its code
-is used. The engine is a library with a function-call API and no wire
-protocol; a command line ships with it, and **cabra** is the serving harness
+supplies the architecture reference and the parity target, and none of its
+code is used. The engine is a library with a function-call API and no wire
+protocol. A command line ships with it, and cabra is the serving harness
 that keeps a model loaded and serves conversations over stdio or WebSocket.
 
 | page | what it answers |
@@ -44,13 +44,14 @@ The library is `dev.cajeta.llm` 0.1.5 on Olla; cabra is `dev.cajeta.cabra`
   model's own chat template; per-request sampling; structured diagnostics
   through a callback.
 - **Backends.** CUDA, HIP, Vulkan and CPU from one source. The CUDA backend on
-  an RTX 4090 is the measured reference: single-sequence decode at or above
-  llama.cpp on every Llama-3.1-8B quantisation, four-sequence decode at 0.89
-  to 0.97, Q4_K and Q6_K prefill at 1.1 to 1.2, with the remaining prefill
-  routes and the mixture-of-experts prefill behind ([Measuring](measuring.md)).
-  The Vulkan decode on gfx1151 sits at 0.98 of llama.cpp's Vulkan at four
-  sequences after the batch-cadence work of the same day.
+  an RTX 4090 is the measured reference. Single-sequence decode is at or above
+  llama.cpp on every Llama-3.1-8B quantisation, four-sequence decode is at
+  0.89 to 0.97, and Q4_K and Q6_K prefill is at 1.1 to 1.2. The remaining
+  prefill routes and the mixture-of-experts prefill are behind
+  ([Measuring](measuring.md)). The Vulkan decode on gfx1151 sits at 0.98 of
+  llama.cpp's Vulkan at four sequences after the batch-cadence work of the
+  same day.
 
-Open items are tracked in the project plan: the Vulkan and CPU parity gates,
-long-context attention, resident memory against llama.cpp on the
-unified-memory parts, and the XDNA NPU as a backend.
+Open items are tracked in the project plan. They are the Vulkan and CPU
+parity gates, long-context attention, resident memory against llama.cpp on
+the unified-memory parts, and the XDNA NPU as a backend.

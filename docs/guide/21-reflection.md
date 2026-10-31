@@ -1,8 +1,9 @@
 # 21 — Reflection
 
-Every class carries fixed-layout RTTI: name, fields, methods, constructors,
-parameters, annotations. `cajeta.reflect` reads it at runtime. Access is
-data-driven — classes you never reflect over pay no per-class codegen tax.
+Every class carries fixed-layout RTTI, which covers its name, fields,
+methods, constructors, parameters and annotations. `cajeta.reflect` reads it
+at runtime. Access is data-driven, so classes you never reflect over pay no
+per-class codegen tax.
 
 Tour demo: [ReflectionDemo](../../samples/tour/src/main/cajeta/tour/lang/ReflectionDemo.cajeta).
 
@@ -47,7 +48,7 @@ The registry also answers bulk queries: `Class.allClasses()`,
 ## Members, instantiation, invocation
 
 `Class` hands out `Field`, `Method`, `Constructor`, and `Parameter` objects.
-Constructing reflectively is always heap — the type isn't known at the call
+Constructing reflectively is always heap. The type isn't known at the call
 site, so no stack allocation is possible:
 
 ```cajeta
@@ -76,8 +77,8 @@ public class Cloner {
 ```
 
 Methods invoke through packed scalar arguments (`m.invokeScalar(obj, args)`
-with an `int64[]`), and every annotatable owner — class, field, method,
-constructor, parameter — reports its annotations, including argument values
+with an `int64[]`), and every annotatable owner (class, field, method,
+constructor, parameter) reports its annotations, including argument values
 (`a.getInt("value")`, `a.getString("value")`, list elements). The
 [tour demo](../../samples/tour/src/main/cajeta/tour/lang/ReflectionDemo.cajeta)
 walks all of it.
@@ -85,16 +86,16 @@ walks all of it.
 ## Reflection and lean linking
 
 The default executable link (`--link-mode=lean`) strips classes nothing
-references. Reflection sites are roots in that analysis: the compiler builds
+references. Reflection sites are roots in that analysis. The compiler builds
 an embedded keep-set from them, so `Class.forName("app.Plugin")` with a
 string literal keeps `app.Plugin` alive, `classesInPackage(...)` keeps the
 package, `classesAnnotated(...)` keeps the annotated classes, and
 `subtypes(bound)` keeps the bound's subtype closure. `@Retained` pins a class
-unconditionally. A selector the compiler can't narrow (a computed `forName`
-string, say) forces keep-all, with a warning pointing at the site.
+unconditionally. A selector the compiler can't narrow, such as a computed
+`forName` string, forces keep-all, with a warning pointing at the site.
 
-When you're unsure why a class survived — or why `forName` can't find it —
-ask the linker:
+When you're unsure why a class survived, or why `forName` can't find it, ask
+the linker:
 
 ```bash
 $ cajeta --emit=exe --why-kept=app.Plugin app.Main.run src/ out/
@@ -103,7 +104,7 @@ why-kept: app.Plugin — kept by forName("app.Plugin")
 
 `--keepset-json=<path>` dumps the whole keep-set with per-class provenance.
 
-Full surface: [the reflection specification](../specification/reflect/Reflection.md)
+The full surface is in [the reflection specification](../specification/reflect/Reflection.md)
 and [annotations](../specification/reflect/Annotations.md).
 
-Next: Part III — the standard library. See the [guide index](README.md).
+Next: Part III, the standard library. See the [guide index](README.md).

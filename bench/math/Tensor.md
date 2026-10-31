@@ -1,6 +1,6 @@
 # Tensor
 
-`cajeta.math.Tensor` — the keystone n-dimensional array. Element access is the row the tensor-element-access work targeted at 1.5 ns in release; the elementwise, broadcast, reduce and transpose rows are the operations every model is made of; matmul on the CPU is the kernel-pool path.
+`cajeta.math.Tensor` is the keystone n-dimensional array. Element access is the row the tensor-element-access work targeted at 1.5 ns in release. The elementwise, broadcast, reduce and transpose rows are the operations every model is made of. Matmul on the CPU is the kernel-pool path.
 
 ## Benchmarks
 
@@ -17,7 +17,7 @@
 
 ## Results
 
-One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
+Each benchmark has one chart, drawn for the machine selected at the top of the page. Languages are the bars, best first. Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
 
 ```bench
 id: math/tensor-element-get
@@ -67,7 +67,7 @@ cd bench
 ./bench.sh --bench tensor-element-get --competitors # every pinned competitor
 ```
 
-Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+Every row records the compiler and competitor versions, flags, machine, OS and driver. [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
 
 ## See also
 

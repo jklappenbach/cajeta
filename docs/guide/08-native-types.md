@@ -1,9 +1,9 @@
 # 08 — Native types
 
-Every numeric type has an explicit width — there is no `int`, `long`,
-`float`, or `double`. There is no implicit widening either: every cross-width
-conversion is an explicit cast. And there is no `byte` type; a byte buffer is
-`int8[]` or `uint8[]`.
+Every numeric type has an explicit width, so there is no `int`, `long`,
+`float`, or `double`. There is no implicit widening either, and every
+cross-width conversion is an explicit cast. There is no `byte` type, and a
+byte buffer is `int8[]` or `uint8[]`.
 
 | Family | Types |
 |---|---|
@@ -18,8 +18,9 @@ conversion is an explicit cast. And there is no `byte` type; a byte buffer is
 
 ## Integers and their literals
 
-Decimal, hex (`0x`), octal (leading `0`), and binary (`0b`) literals, with
-`_` separators anywhere inside and an `L` suffix for 64-bit values.
+Literals come in decimal, hex (`0x`), octal (leading `0`), and binary (`0b`)
+forms, with `_` separators anywhere inside and an `L` suffix for 64-bit
+values.
 
 ```cajeta
 int8   tiny  = 7;
@@ -42,7 +43,7 @@ int128  sum   = wide + wide;
 
 ## Floats
 
-`f` (or `F`) suffixes a single-precision literal; unsuffixed decimal literals
+`f` (or `F`) suffixes a single-precision literal. Unsuffixed decimal literals
 are `float64`.
 
 ```cajeta
@@ -53,9 +54,9 @@ float128 q = 2.75;
 bfloat16 b = 1.25f;
 ```
 
-The seven microscaling formats (OCP MX: FP8, FP6, FP4) are storage-only
-today — declare them, put them in buffers, move them around. Conversion and
-arithmetic helpers are future work; see
+The seven microscaling formats (OCP MX: FP8, FP6, FP4) are storage-only today.
+You can declare them, put them in buffers, and move them around. Conversion
+and arithmetic helpers are future work. See
 [Primitives.md](../specification/lang/Primitives.md).
 
 ```cajeta
@@ -66,8 +67,8 @@ float4e2m1 weight;
 
 ## boolean and char
 
-`char` is a 32-bit Unicode codepoint — Go's `rune`, not C's byte. Character
-literals take any single codepoint or an escape.
+`char` is a 32-bit Unicode codepoint, like Go's `rune`. It differs from C's
+one-byte `char`. Character literals take any single codepoint or an escape.
 
 ```cajeta
 boolean ready  = true;
@@ -91,7 +92,7 @@ int8    s = (int8) n;            // narrow, top bits dropped
 ```
 
 Boxed wrappers (`Int32`, `Float64`, `UInt8`, …) live in `cajeta.lang` for
-storing primitives in templated collections; see
+storing primitives in templated collections. See
 [Primitives.md](../specification/lang/Primitives.md).
 
 Runnable tour:

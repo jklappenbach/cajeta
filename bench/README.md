@@ -1,14 +1,15 @@
 # Benchmarks
 
-How Cajeta performs, measured against the languages it competes with and
-the systems its libraries take on, laid out the way the
-[stdlib reference](../docs/stdlib/README.md) is: one page per package, one
-page per class or capability that can be measured. Each page says what is
-measured, against what, how it is checked, and shows the chart of the last
-published run for the machine selected at the top of the page.
+These pages show how Cajeta performs, measured against the languages it
+competes with and the systems its libraries take on. They are laid out the
+way the [stdlib reference](../docs/stdlib/README.md) is, with one page per
+package and one page per class or capability that can be measured. Each page
+says what is measured, against what, and how it is checked, and it shows the
+chart of the last published run for the machine selected at the top of the
+page.
 
-**Status.** The catalog, the harness and the competitor programs are in
-place; the first published run waits for a quiet box. Until then every
+The catalog, the harness and the competitor programs are in place, and the
+first published run waits for a quiet box. Until then every
 chart says "not yet measured" and no page carries a standing. The numbers
 will arrive as one commit of CSV files per machine.
 
@@ -28,9 +29,9 @@ and why.
 ```bench-standings
 ```
 
-Per package, the geometric mean of Cajeta's time against the best competitor
-over the package's benchmarks, with wins, losses and skips counted. Written
-up after the first run.
+Each package shows the geometric mean of Cajeta's time against the best
+competitor over the package's benchmarks, with wins, losses and skips
+counted. It is written up after the first run.
 
 ## The language and the stdlib
 
@@ -65,10 +66,11 @@ up after the first run.
 
 ## Machines
 
-Phoenix: Ryzen 9 3950X, RTX 4090, 94 GB, Ubuntu 24.04 under WSL2 (CUDA and
-Vulkan). Proton: Ryzen AI MAX+ 395 with the Radeon 8060S, 64 GB, Ubuntu
-26.04 (HIP and Vulkan). CPU and language rows default to Proton; the
-selector at the top of every page switches.
+Phoenix is a Ryzen 9 3950X with an RTX 4090 and 94 GB, on Ubuntu 24.04
+under WSL2, with CUDA and Vulkan. Proton is a Ryzen AI MAX+ 395 with the
+Radeon 8060S and 64 GB, on Ubuntu 26.04, with HIP and Vulkan. CPU and
+language rows default to Proton, and the selector at the top of every page
+switches.
 
 ## Running it
 
@@ -80,7 +82,7 @@ cd bench
 ./bench.sh --competitors ...      # the same, every pinned competitor too
 ```
 
-The harness is the library `dev.cajeta.bench`; each ecosystem library has
+The harness is the library `dev.cajeta.bench`. Each ecosystem library has
 its own `bench/` on the same harness and the same CSV schema, and its rows
 are copied here at publish time. Competitor toolchains are provisioned by
 `competitors/setup.sh`.

@@ -1,11 +1,12 @@
 # 11 — Ownership & borrowing
 
-Every heap value has exactly one owner at any time. `=` is always a borrow —
-ownership stays with the right-hand side. The `#` operator is a passthrough of
-whatever the source holds: a transfer when the source owns, a borrow handed
-along when it doesn't. The spelling rules are checked at compile time. Whether
-a call or a return carries a title can be decided at run time, so a few
-ownership bits travel with the value.
+Every heap value has exactly one owner at any time. `=` is always a borrow,
+and ownership stays with the right-hand side. The `#` operator is a
+passthrough of whatever the source holds. It is a transfer when the source
+owns, and it is a borrow handed along when the source does not own. The
+spelling rules are checked at compile time. Whether a call or a return carries
+a title can be decided at run time, so a few ownership bits travel with the
+value.
 
 ```cajeta
 public class Point {
@@ -32,8 +33,8 @@ Point c #= a;                 // passthrough — a owns here, so the title moves
 int32 d = c.distSq();
 ```
 
-After the transfer, `a` is demoted to a borrow of the same live instance —
-reading it is still legal, but transferring it again is a compile error:
+After the transfer, `a` is demoted to a borrow of the same live instance.
+Reading it is still legal, but transferring it again is a compile error:
 
 <!-- snippet: skip -->
 ```cajeta
@@ -47,34 +48,36 @@ Point r #= p;     // ERROR — CAJETA_ERROR_MOVE_OF_BORROW
 
 `#` marks where a title changes hands. It appears in exactly four places:
 
-- **A store** — `Point c #= a`, `this.held #= v`, `this.data[i] #= v`. The
-  destination records the source's mode. It takes the title when the source
-  owns one, and it records a borrow when the source was lent. `#=` is one
-  token: an ownership store cannot be half-written. From a conditional,
+- **A store**, as in `Point c #= a`, `this.held #= v`, or `this.data[i] #= v`.
+  The destination records the source's mode. It takes the title when the
+  source owns one, and it records a borrow when the source was lent. `#=` is
+  one token, so an ownership store cannot be half-written. From a conditional,
   `this.data[i] #= lt ? a : b` acts on the arm that runs. That arm's title
   moves, a lent arm records a borrow, and the other arm keeps its title.
-- **A move expression** — `this.consume(#a)`, `return #a`, `#this.data[i]`.
-  The source is moved; its drop entry is deactivated. This is the spelling at
-  call arguments, returns, and slot extractions — none of which are
-  assignments.
-- **A parameter type** — `void consume(#Point p)`. The callee demands
-  ownership; a caller that passes plain `x` gets
+- **A move expression**, as in `this.consume(#a)`, `return #a`, or
+  `#this.data[i]`. The source is moved, and its drop entry is deactivated.
+  This is the spelling at call arguments, returns, and slot extractions, and
+  none of those are assignments.
+- **A parameter type**, as in `void consume(#Point p)`. The callee demands
+  ownership, and a caller that passes plain `x` gets
   `CAJETA_ERROR_TRANSFER_REQUIRED`. Its opposite is `void watch(^Point p)`,
-  which only ever borrows (see [Keeping a value in a field](#keeping-a-value-in-a-field)).
-- **A return type** — `#Point make()`. The callee hands ownership to the
+  which only ever borrows (see
+  [Keeping a value in a field](#keeping-a-value-in-a-field)).
+- **A return type**, as in `#Point make()`. The callee hands ownership to the
   caller.
 
-The first two split by position, and the split is the whole rule: **a store
-uses `#=`; everything else uses `#v`.**
+The first two split by position, and the split is the whole rule. A store uses
+`#=`, and everything else uses `#v`.
 
-It **never** goes in the receiving local's *type* — `#Point q = …` is
+It never goes in the receiving local's type. `#Point q = …` is
 `CAJETA_ERROR_TYPE_TRANSFER_RETIRED` ("a local's role comes from its
-initializer"). The **binding** does carry a marker when the callee declares a
-transfer: a `#T` result must be received with `#=` — `Point q #= this.make();`
-— because that is what makes the acquisition visible without opening the
-callee. A plain `=` there is `CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER`
-(spec §4.6). A plain-`T` result still binds with a plain `=`, since it carries
-whatever mode the callee's frame held.
+initializer"). The binding does carry a marker when the callee declares a
+transfer. A `#T` result must be received with `#=`, as in
+`Point q #= this.make();`, because that is what makes the acquisition visible
+without opening the callee. A plain `=` there is
+`CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER` (spec §4.6). A plain-`T` result
+still binds with a plain `=`, since it carries whatever mode the callee's
+frame held.
 
 > **Deprecated:** stores were once spelled `dst = #v`. That still compiles and
 > still transfers, but warns and becomes an error in a later release. Write
@@ -99,21 +102,21 @@ public class Owners {
 }
 ```
 
-A plain `T` parameter can also *accept* an offered `#x` — the caller
-surrenders ownership and the value drops in the callee's frame. The tour's
+A plain `T` parameter can also accept an offered `#x`. The caller surrenders
+ownership, and the value drops in the callee's frame. The tour's
 [OwnershipDemo](../../samples/tour/src/main/cajeta/tour/lang/OwnershipDemo.cajeta)
 uses exactly that shape.
 
 ## `#` forwards the arrived mode
 
 Because `#` is a passthrough, wrappers forward ownership without knowing which
-mode they were handed. A plain formal's ownership is decided at the **call
-site** — `f(x)` lends, `f(#x)` transfers — and inside the callee, `#p` (or
-`this.f #= p`) hands along whichever mode actually arrived: a lent value stays
-lent, an owned one transfers. Only a value the compiler can see is purely a
-borrow — a local borrowing another local, or a borrow returned by a plain
-method — refuses the `#` with `CAJETA_ERROR_MOVE_OF_BORROW`: that surrender
-would be a lie.
+mode they were handed. A plain formal's ownership is decided at the call site,
+where `f(x)` lends and `f(#x)` transfers. Inside the callee, `#p` (or
+`this.f #= p`) hands along whichever mode actually arrived. A lent value stays
+lent, and an owned one transfers. The only value that refuses `#` is one the
+compiler can see is purely a borrow, such as a local borrowing another local
+or a borrow returned by a plain method. That refusal is
+`CAJETA_ERROR_MOVE_OF_BORROW`, because the surrender would be a lie.
 
 ## Keeping a value in a field
 
@@ -201,14 +204,13 @@ public class Chain {
 ```
 
 Strings follow the same spellings. A `#=` of an owned window, such as a
-`substring` result, moves the window and its shared stake on the root. A lent window
-stored with `#=` resolves. It becomes a copy up to 256 bytes and a shared
-stake on the root above that. Bytes from the frame arena always copy when
-they escape. A String `=` into a field is a plain borrow and makes no
-copy. To keep your own String past its source, write
-`this.v #= o.v.clone()`. A String array slot follows the same rule: each
-slot carries its own title, so `a[i] = s` borrows and `a[i] #= s` takes
-the title or resolves a lent source.
+`substring` result, moves the window and its shared stake on the root. A lent
+window stored with `#=` resolves to a copy up to 256 bytes and to a shared
+stake on the root above that. Bytes from the frame arena always copy when they
+escape. A String `=` into a field is a plain borrow and makes no copy. To keep
+your own String past its source, write `this.v #= o.v.clone()`. A String array
+slot follows the same rule. Each slot carries its own title, so `a[i] = s`
+borrows and `a[i] #= s` takes the title or resolves a lent source.
 
 When a fresh node is both registered and linked, register it first and link
 it with `#=`. The transfer demotes the local, so the link records a borrow.
@@ -242,7 +244,7 @@ frees what `this.a` points at, and the compiler does not track that.
 Owners are reclaimed automatically at the closing `}` of their declaring
 block, in reverse declaration order (LIFO). A `throw` unwinds the same chain,
 so cleanup runs on the exception path too. A moved-from local's drop entry is
-deactivated — no double free is possible. There is no `delete`.
+deactivated, so no double free is possible. There is no `delete`.
 
 An owned temporary has no name and no block of its own. It is a builder, or
 any `#T` call result, used as the receiver of a further call. It is freed at
@@ -254,18 +256,18 @@ freed right after the condition is evaluated, so a loop frees it on every pass.
 The checker is static and scope-based. Beyond transfer-from-a-borrow
 (`CAJETA_ERROR_MOVE_OF_BORROW`) it rejects:
 
-- **Borrow escape** — returning or storing a borrow that would outlive its
-  source (including the stack-local return from chapter 10).
-- **Alias-mutation** — writing through a path while a live borrow into it
-  exists (e.g. `list.add(...)` inside a `for` iterating `list`).
-- **Definite assignment** — reading a local before it is assigned.
+- **Borrow escape** is returning or storing a borrow that would outlive its
+  source, including the stack-local return from chapter 10.
+- **Alias-mutation** is writing through a path while a live borrow into it
+  exists, for example `list.add(...)` inside a `for` iterating `list`.
+- **Definite assignment** covers reading a local before it is assigned.
 - **Borrow of a temporary** (`CAJETA_ERROR_BORROW_OF_TEMPORARY`). A plain
   result that reaches an owned temporary can be used inside its statement.
   Binding it to a local, storing it in a field, or returning it is rejected,
-  because the temporary is freed when the statement ends. End a builder chain
-  with its `build()` in the same statement. Or bind the temporary to a local
-  first and configure it in later statements. Or call a method that returns
-  an owned `#T` copy.
+  because the temporary is freed when the statement ends. You can end a
+  builder chain with its `build()` in the same statement, bind the temporary
+  to a local first and configure it in later statements, or call a method that
+  returns an owned `#T` copy.
 
 ```cajeta
 import cajeta.io.net.Server;
@@ -294,11 +296,11 @@ public class Boot {
 
 ## Slices and the `shared` state
 
-`arr[a:b]` yields a [`Slice<T>`](../stdlib/lang/Slice.md) — three machine
-words (buffer, offset, length) windowing the array's storage. No element
-copy; indexing is window-relative and bounds-checked; sub-slicing composes
-against the root in O(1). `substring()` and `trim()` return windowed strings
-the same way ([chapter 13](13-strings.md)).
+`arr[a:b]` yields a [`Slice<T>`](../stdlib/lang/Slice.md), which is three
+machine words (buffer, offset, length) windowing the array's storage. No
+element is copied. Indexing is window-relative and bounds-checked, and
+sub-slicing composes against the root in O(1). `substring()` and `trim()`
+return windowed strings the same way ([chapter 13](13-strings.md)).
 
 ```cajeta
 public class Windows {
@@ -310,17 +312,17 @@ public class Windows {
 }
 ```
 
-A slice that stays local is a plain borrow — it dies with its scope, no
-bookkeeping. When a slice *escapes* (stored in a field or container), the
-compiler resolves the escape: small payloads copy; large buffers promote
-the root from **owned** to **shared** — refcounted, freed at the last drop.
-The promotion is automatic; `shared` here is an ownership state the
-compiler tracks, not something you write (unrelated to the `@Kernel`
-placement keyword).
+A slice that stays local is a plain borrow. It dies with its scope, with no
+bookkeeping. When a slice escapes into a field or a container, the compiler
+resolves the escape. Small payloads copy, and large buffers promote the root
+from owned to shared, which is refcounted and freed at the last drop. The
+promotion is automatic. `shared` here is an ownership state the compiler
+tracks, and you never write it. It is unrelated to the `@Kernel` placement
+keyword.
 
-The store-past-scope idiom is transfer: hand the window to the container
-with `#`, and the compiler keeps a stake on the root so the view survives
-its source's drop.
+The store-past-scope idiom is transfer. Hand the window to the container with
+`#`, and the compiler keeps a stake on the root so the view survives its
+source's drop.
 
 ```cajeta
 import cajeta.collection.ArrayList;

@@ -1,6 +1,6 @@
 # Optional
 
-`cajeta.lang.Optional` — the value-typed sum, present or empty. A by-value `Optional<int32>` should cost what a tagged pair of words costs; the row says whether it does.
+`cajeta.lang.Optional` is the value-typed sum, present or empty. A by-value `Optional<int32>` should cost what a tagged pair of words costs, and the row says whether it does.
 
 ## Benchmarks
 
@@ -10,7 +10,7 @@
 
 ## Results
 
-One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
+Each benchmark has one chart, drawn for the machine selected at the top of the page. Languages are the bars, best first. Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
 
 ```bench
 id: lang/optional-map-unwrap
@@ -25,7 +25,7 @@ cd bench
 ./bench.sh --bench optional-map-unwrap --competitors # every pinned competitor
 ```
 
-Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+Every row records the compiler and competitor versions, flags, machine, OS and driver. [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
 
 ## See also
 

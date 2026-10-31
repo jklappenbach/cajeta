@@ -1,8 +1,8 @@
 # The Cajeta Guide
 
-A linear walk through the toolchain, the language, and the standard library.
-Chapters link to [tour](../../samples/tour/) demos you can run, and to the
-[stdlib reference](../stdlib/README.md) for full API surfaces.
+This guide walks through the toolchain, the language, and the standard library
+in order. Each chapter links to [tour](../../samples/tour/) demos you can run,
+and to the [stdlib reference](../stdlib/README.md) for full API surfaces.
 
 ## Part I — Getting started
 
@@ -16,8 +16,8 @@ Chapters link to [tour](../../samples/tour/) demos you can run, and to the
 | [05 Debugging](05-debugging.md) | gdb, the DAP server, IntelliJ, VS Code |
 | [23 Code coverage](23-code-coverage.md) | coco: configuring it, reading it, dead-vs-untested, mutation, the IDE |
 
-*(23 reads with the tooling chapters above; its file number continues the
-sequence rather than renumbering everything after 05.)*
+*Chapter 23 belongs with the tooling chapters above. Its file number continues
+the sequence, so the chapters after 05 keep their numbers.*
 
 ## Part II — The language
 
@@ -43,13 +43,14 @@ sequence rather than renumbering everything after 05.)*
 
 ## Part III — The standard library
 
-One chapter per package area, mirroring the tour. *(Planned.)*
+Part III is planned as one chapter per package area, mirroring the tour.
 
 ## Part IV — Specialized
 
 | Chapter | |
 |---|---|
 | [23 Profiling](23-profiling.md) | The sampling profiler, `.pftrace` output, reading a trace |
-| [25 Writing XPU Kernels](25-xpu-kernels.md) | How a kernel written once finds its shape on any device: the declarations, the filter and the timed choice, then the measured rules for decode, prefill, bind and fused chains, and the routing contract that admits them. The kernel catalogs are under [Kernels](../xpu/README.md) |
+| [25 Writing XPU Kernels](25-xpu-kernels.md) | How a kernel written once finds its shape on any device. The chapter covers the declarations, the filter and the timed choice, then the measured rules for decode, prefill, bind and fused chains, and the routing contract that admits them. The kernel catalogs are under [Kernels](../xpu/README.md) |
 
-GPU kernels, graphics, embedded targets, further toolchain deep-dives. *(Planned.)*
+Chapters on GPU kernels, graphics, embedded targets, and further toolchain
+deep-dives are planned.

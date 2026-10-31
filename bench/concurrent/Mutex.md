@@ -1,6 +1,6 @@
 # Mutex
 
-`cajeta.concurrent.Mutex` — fused mutual exclusion and the data it protects. Uncontended lock and unlock is the floor; four and sixteen contending fibers show the scheduler.
+`cajeta.concurrent.Mutex` is fused mutual exclusion and the data it protects. Uncontended lock and unlock is the floor. Four and sixteen contending fibers show the scheduler.
 
 ## Benchmarks
 
@@ -12,7 +12,7 @@
 
 ## Results
 
-One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
+Each benchmark has one chart, drawn for the machine selected at the top of the page. Languages are the bars, best first. Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
 
 ```bench
 id: concurrent/mutex-uncontended
@@ -37,7 +37,7 @@ cd bench
 ./bench.sh --bench mutex-uncontended --competitors # every pinned competitor
 ```
 
-Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+Every row records the compiler and competitor versions, flags, machine, OS and driver. [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
 
 ## See also
 

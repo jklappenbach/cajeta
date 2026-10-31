@@ -1,7 +1,7 @@
 # 24 — Notebooks
 
 Cajeta runs as a Jupyter kernel. `cajeta kernel` speaks the v5.3 protocol over
-ZeroMQ, and a notebook cell is a script unit: top-level code, compiled and
+ZeroMQ, and a notebook cell is a script unit of top-level code, compiled and
 JIT'd into a session that accumulates. Bindings made in one cell are there in
 the next, `Out[N]` renders the cell's value, and a traceback names the cell it
 came from.
@@ -59,8 +59,8 @@ it goes so a network fetch is never a silent stall:
 from archives already acquired. They are the same two layers a compiled
 project has, and `install` never imports anything itself.
 
-The practical consequence is the one rule to remember: **a cell cannot import
-what it installs.** The cell is compiled before its code runs, so the import
+The practical consequence is the one rule to remember. A cell cannot import
+what it installs. The cell is compiled before its code runs, so the import
 is resolved before the install has happened. Put the import in the next cell.
 The diagnostic says so if you forget.
 
@@ -71,8 +71,9 @@ returns the loaded version, so running a notebook top to bottom a second time
 does not re-fetch anything.
 
 Installs are additive. A session cannot unload or replace an archive it has
-already loaded — JIT'd code from it may be live — so moving to a version the
-loaded one does not satisfy needs a restart, and the error says as much.
+already loaded, because JIT'd code from it may be live. So moving to a
+version the loaded one does not satisfy needs a restart, and the error says
+as much.
 
 ---
 
@@ -88,8 +89,8 @@ Packages.installAndSave("dev.cajeta.ml", "0.10.*");
 ```
 
 That installs exactly as `install` does, and also writes the dependency into
-the governing project's `cajeta.json`. Your comments and formatting survive —
-it is the same editor `cajeta add` uses. After that the library loads at
+the governing project's `cajeta.json`. Your comments and formatting survive,
+since it is the same editor `cajeta add` uses. After that the library loads at
 session start and the notebook needs no install cell at all.
 
 It is a separate method rather than a flag on `install` so that reading the
@@ -102,16 +103,16 @@ call tells you whether a file was written.
 Installing code into a running session is a supply-chain surface, so an
 archive is checked before it is spliced.
 
-The repository must serve release metadata signed through its root: the
+The repository must serve release metadata signed through its root. The
 root ships with the toolchain, so this works with no setup against the public
 repository. The metadata names the archive's sha256 and the organization that
-owns it. A mismatch discards the bytes and fails the install; nothing is
+owns it. A mismatch discards the bytes and fails the install, and nothing is
 half-installed. This is the same check `cajeta build` runs.
 
 When the repository also publishes an ed25519 signature for the archive, it is
 verified against that organization's key document, or, where the repository
-serves none, against the keys **your machine** trusts, never a key shipped
-alongside the artifact. Manage those with `cajeta trust`:
+serves none, against the keys your machine trusts. A key shipped alongside
+the artifact is never used. Manage those with `cajeta trust`:
 
 ```
 cajeta trust add acme-releases ./acme-releases.pem
@@ -119,8 +120,8 @@ cajeta trust list
 ```
 
 A signature that does not match a trusted key rejects the install. So does a
-signed archive on a machine with no trusted keys at all: unverifiable is not
-the same as fine.
+signed archive on a machine with no trusted keys at all, since a signature
+that cannot be checked gives no assurance.
 
 A local or vendored repository that signs nothing is refused until you relax
 that one repository in `cajeta.json`:
@@ -136,7 +137,7 @@ that one repository in `cajeta.json`:
 }
 ```
 
-The relaxation covers only that repository; the public one stays verified. The
+The relaxation covers only that repository, and the public one stays verified. The
 older `"require-signatures": true` setting is retired and has no effect.
 
 Note what the relaxation gives up. A checksum only says these are the bytes the
@@ -149,18 +150,19 @@ and a mirror cannot forge it.
 ## When an install fails
 
 Every rejection leaves the kernel serving. You lose the install and nothing
-else — the session keeps its bindings and the next cell runs. That is
-deliberate: a notebook session can represent hours of work, and a bad version
+else, so the session keeps its bindings and the next cell runs. That is
+deliberate. A notebook session can represent hours of work, and a bad version
 constraint is not a reason to lose it.
 
-Outside a session — `cajeta run`, a compiled program — `Packages.install`
-throws a recoverable `PackageInstallException` saying there is no live session
-to install into. Declare the dependency in `cajeta.json` instead.
+Outside a session, under `cajeta run` or in a compiled program,
+`Packages.install` throws a recoverable `PackageInstallException` saying there
+is no live session to install into. Declare the dependency in `cajeta.json`
+instead.
 
 ---
 
 ## See also
 
-- [`cajeta.session.Packages`](../stdlib/session/Packages.md) — the API reference
-- [03 — Your first project](03-your-first-project.md) — manifests and dependencies
-- [05 — Debugging](05-debugging.md) — the kernel's place in the tooling
+- [`cajeta.session.Packages`](../stdlib/session/Packages.md), the API reference
+- [03 — Your first project](03-your-first-project.md), manifests and dependencies
+- [05 — Debugging](05-debugging.md), the kernel's place in the tooling

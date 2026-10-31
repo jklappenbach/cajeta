@@ -1,26 +1,27 @@
 # 25 — Writing XPU Kernels
 
-How to write a kernel against `cajeta.xpu` so that it runs at the device's
-ceiling on a device you have never measured, in the regime it serves
-(decode, prefill, bind, or a fused chain), and how to know that it does.
-The substrate's contract is [cajeta.xpu — one kernel, any device](../specification/xpu/CajetaXPU.md);
-the reader's map, with the catalogs of every kernel in the LLM and XGBoost
-libraries, is [Kernels](../xpu/README.md); how the layer picks among
-kernels is [Kernel Routing](../specification/xpu/CajetaXPU-Routing.md).
+This chapter shows you how to write a kernel against `cajeta.xpu` that runs
+at the ceiling of a device you have never measured, in the regime it serves
+(decode, prefill, bind, or a fused chain), and how to confirm that it does.
+The substrate's contract is [cajeta.xpu — one kernel, any device](../specification/xpu/CajetaXPU.md).
+The reader's map, with the catalogs of every kernel in the LLM and XGBoost
+libraries, is [Kernels](../xpu/README.md). How the layer picks among
+kernels is described in [Kernel Routing](../specification/xpu/CajetaXPU-Routing.md).
 
-Two kinds of rule follow. **The adaptation rules** (25.1, 25.8, 25.9) say how
+Two kinds of rule follow. The adaptation rules (25.1, 25.8, 25.9) say how
 a kernel declares what only its author knows and leaves the rest to the
-compiler's measurement, the device's facts and a timed choice; break them and
-the kernel is frozen to the part on your desk. **The performance rules**
-(25.2 through 25.7) were each measured, not reasoned; where a number is
-quoted it was taken on gfx1151 (Radeon 8060S, wave32, shared LPDDR5X,
-~206 GB/s practical streaming ceiling) or an RTX 4090 (sm_89), and the record
-that holds it is named.
+compiler's measurement, the device's facts and a timed choice. A kernel that
+breaks them is frozen to the part on your desk. The performance rules
+(25.2 through 25.7) were each measured. Where a number is quoted it was taken
+on gfx1151 (Radeon 8060S, wave32, shared LPDDR5X, ~206 GB/s practical
+streaming ceiling) or an RTX 4090 (sm_89), and the record that holds it is
+named.
 
 ## 25.1 What the layer gives you
 
-Ask the device, never a backend name. The one place a backend name is tested
-in the LLM library is a documented watchdog workaround, not a capability.
+Ask the device for what you need, and never test a backend name. The one
+place the LLM library tests a backend name is a documented watchdog
+workaround, and it stands in for no capability.
 
 | you need | ask |
 |---|---|
@@ -59,19 +60,20 @@ Inside a kernel body:
   `scaledAccumInto`.
 
 Launch with `k.launch(stream, grid: [workgroups], block: [threads])(args)`.
-`grid` counts **workgroups**, not threads. Every launch is checked, and a
-refusal names its reason.
+`grid` is a count of workgroups, and `block` is a count of threads. Every
+launch is checked, and a refusal names its reason.
 
-Declare what only you know, on the kernel: `@Occupancy(maxThreads = N)` or
-`maxWaves = N`, the structural block the design assumes, so the backend
-budgets registers for it and never for a worst-case 1024; `@Wave(width = N)`
-only where the indexing cannot be written against `Group.width()`;
-`@Unlowered(backend, tracked)` for a construct a backend cannot lower, against
-the plan item that tracks it. A kernel design that has a shape is a class
-template with `@Instantiate` and `@Requires` (25.8), never a hand-picked tile.
+Declare on the kernel what only you know. `@Occupancy(maxThreads = N)` or
+`maxWaves = N` states the structural block the design assumes, so the backend
+budgets registers for it instead of for a worst-case 1024. `@Wave(width = N)`
+belongs only where the indexing cannot be written against `Group.width()`.
+`@Unlowered(backend, tracked)` marks a construct a backend cannot lower,
+against the plan item that tracks it. A kernel design that has a shape is a
+class template with `@Instantiate` and `@Requires` (25.8), and the layer
+chooses the tile rather than the author.
 
-Bandwidth is not on the geometry surface as a measurement. Measure it once per
-device (a streaming copy at a size well past L2) and keep it in `Autotune`.
+The geometry surface does not report bandwidth. Measure it once per device
+with a streaming copy at a size well past L2 and keep it in `Autotune`.
 Every rule below is stated against it.
 
 ## 25.2 Decode: one row, one wave, the bus is the ceiling
@@ -82,36 +84,39 @@ ceiling, and everything that matters is how the wave touches memory.
 
 - **One wave per row, consecutive lanes reading consecutive bytes.**
   One item per row reads strided. One wave per row reads coalesced.
-  Measured 208 vs 162 GB/s on the same kernel body. The mapping *is*
-  the ceiling. Short rows pack several per wave rather than idle lanes.
+  The two mappings measured 208 and 162 GB/s on the same kernel body,
+  so the mapping sets the ceiling. Short rows pack several per wave so
+  that no lanes idle.
 - **Take the integer route.** Quantize the activation once to q8_K
   (256 int8 values, eight sub-block sums, one f32 scale, 320 bytes)
   and dot int8 against int8 with `dotSum`. Codebooks and nibbles reach
   int8 through `lut4`. A nonlinear 4-bit codebook decoded this way ran
-  at 43 µs against llama.cpp's 58.4. The codebook maps to **int8**, not
-  to the f16 scale. That separation is what makes the whole dot
-  integer.
+  at 43 µs against llama.cpp's 58.4. The codebook maps to int8 and
+  leaves the f16 scale out of the table. That separation is what keeps
+  the whole dot integer.
 - **`dotSum` takes a signed receiver.** Read the proven idiom in the
-  same kernel family before inventing a bias: a first draft that folded
+  same kernel family before inventing a bias. A first draft that folded
   +128 into a table and paid it back off the sub-block sum was wrong by
   140% and slower than the plain form.
-- **Per-byte reads: it is where they are, not how many.** The same
-  `vload` fix bought 22% in one format and 0% in another that issued
-  four times more byte reads. The second was already in the line the
-  wave had fetched. Count lines touched, not loads issued.
-- **Small tables live in L1, not LDS, for a 32-lane decode wave.** An
-  8 KB stage is never amortized by one wave's worth of lookups:
-  46.8 t/s reading the table from L1 against 37.1 staging it. Count
-  lanes per stage before staging anything.
+- **Per-byte reads cost by where they land.** The same `vload` fix
+  bought 22% in one format and 0% in another that issued four times
+  more byte reads. The second format's bytes were already in the line
+  the wave had fetched. Count the lines a wave touches, since the
+  number of loads it issues says little.
+- **Small tables live in L1 for a 32-lane decode wave.** One wave's
+  worth of lookups never amortizes an 8 KB stage into LDS. Reading the
+  table from L1 ran at 46.8 t/s against 37.1 staging it. Count lanes
+  per stage before staging anything.
 - **Halve the accumulators before anything else if the manifest shows
-  spill.** Spilling is invisible to wall-clock A/Bs and reads as "flat".
-  halving accumulators won 55–70% on kernels whose A/Bs had been flat
-  for a week. Read `spillBytes` first, always.
+  spill.** Spilling is invisible to wall-clock A/Bs and reads as flat.
+  Halving accumulators won 55–70% on kernels whose A/Bs had been flat
+  for a week. Read `spillBytes` first, every time.
 - **An unpinned launch block caps VGPRs at 192.** A non-literal `block`
-  is budgeted for 1024 threads. `@Occupancy(maxThreads)` on the kernel
-  is the fix, not a despill. The build fails on such a kernel, by name
+  is budgeted for 1024 threads. The fix is `@Occupancy(maxThreads)` on
+  the kernel, and a despill would miss the cause. The build fails on
+  such a kernel by name
   (`[xpu-kernel-unbounded]`, held only by `@Unbounded(tracked = ...)`),
-  so a launcher moved to a derived block without its ceiling does not
+  so a launcher moved to a derived block without its ceiling cannot
   pass in silence. A kernel with no device code for a declared backend
   fails the same way (`[xpu-kernel-skipped]`, held by
   `@Unlowered(backend = ..., tracked = ...)`).
@@ -119,23 +124,23 @@ ceiling, and everything that matters is how the wave touches memory.
   inside a kernel costs eight `v_mul_lo`. Reduce first, then scale once.
   That is integer-exact, and the scale is one multiply.
 - **A weight-GB/s figure hides a fixed cost.** Fit `t = bytes / rate + b`
-  across formats before chasing a low-bit kernel's "slack": at 2 bits
-  the constant term is most of the time.
-- **Dispatch once per bank, not once per expert.** A mixture layer that
-  launches one mat-vec per selected expert spends three quarters of its
-  decode outside any kernel: 231 ms of device time in 944 ms of wall.
-  One launch per projection over an expert-id buffer, in the
-  `mul_mat_vec_id` shape with the row's slab offset through `sel[kk]`,
-  took the same model from 39.9 to 122.1 t/s and the device to 80%
-  busy. The kernels were already bit-identical. The launch count was
-  the cost.
+  across formats before chasing a low-bit kernel's apparent slack. At
+  2 bits the constant term is most of the time.
+- **Dispatch once per bank.** A mixture layer that launches one mat-vec
+  per selected expert spends three quarters of its decode outside any
+  kernel, 231 ms of device time in 944 ms of wall. One launch per
+  projection over an expert-id buffer, in the `mul_mat_vec_id` shape
+  with the row's slab offset through `sel[kk]`, took the same model
+  from 39.9 to 122.1 t/s and the device to 80% busy. The kernels were
+  already bit-identical, so the launch count was the whole cost.
 
 ### 25.2.1 Example — an integer decode wave
 
-The IQ4_NL mat-vec on the integer route, as shipped. One wave per
-row. Each lane owns one 32-element block. The nibble reaches int8
-through a 16-entry codebook in a single `lut4`. Two `dotSum`s against
-the q8_K-packed activation. One wave reduction. Lane 0 stores.
+This is the IQ4_NL mat-vec on the integer route, as shipped. One wave
+serves each row, and each lane owns one 32-element block. The nibble
+reaches int8 through a 16-entry codebook in a single `lut4`. Two
+`dotSum`s run against the q8_K-packed activation, one wave reduction
+follows, and lane 0 stores.
 
 `cajeta-llm/src/main/cajeta/dev/cajeta/llm/io/QuantKernel.cajeta:14962-15009`
 
@@ -193,36 +198,38 @@ public static void iq4nlQ8WaveMatVecKernel(KernelBuffer<float32> y,
 What to read in it:
 
 - `int64 i = (int64) row;` then `i * rowBytes + prefix + wb * 16L` walks
-  the resident layout: a row is its f16 scale prefix, padded to a
-  dword, then dword-clean 16-byte payloads. `scaleAtDev(packed,
+  the resident layout. A row is its f16 scale prefix, padded to a
+  dword, followed by dword-clean 16-byte payloads. `scaleAtDev(packed,
   i * rowBytes / 2L + wb)` reads the block's scale from that prefix.
 - `int64 wb = (int64) lane; ... wb = wb + 32L;`. Lane `l` takes
-  blocks `l, l+32, ...`: consecutive lanes read consecutive 16-byte
-  payloads, which is the coalesced mapping (208 against 162 GB/s).
+  blocks `l, l+32, ...`, so consecutive lanes read consecutive 16-byte
+  payloads. That is the coalesced mapping (208 against 162 GB/s).
 - `(qs & 15).lut4(kv)` and `((qs >> 4) & 15).lut4(kv)`. The codebook
-  maps a nibble to **int8**, never to f16. That is what lets the dot
-  stay integer. `dl.dotSum(a0, 0)` is signed × signed: the receiver is
-  the int8 weight vector, the argument the int8 activation.
+  maps a nibble to int8 and leaves f16 out, which is what lets the dot
+  stay integer. `dl.dotSum(a0, 0)` is signed × signed. The receiver is
+  the int8 weight vector and the argument is the int8 activation.
 - `ab = wb / 8L; xb = ab * 320L + (wb % 8L) * 32L;`. A q8_K block is
-  320 bytes: 256 int8 values, eight int32 sub-block sums at +256, one
-  f32 scale at +288. Eight weight blocks of 32 share one q8_K block.
-- `acc = acc + d * xs * (float32) dot;`. One float multiply per
-  block, after the integer dot. Reduce first, scale once.
+  320 bytes, made of 256 int8 values, eight int32 sub-block sums at
+  +256 and one f32 scale at +288. Eight weight blocks of 32 share one
+  q8_K block.
+- `acc = acc + d * xs * (float32) dot;`. There is one float multiply
+  per block, after the integer dot. The kernel reduces first and scales
+  once.
 - `Wave.reduceSumF32(acc)` then `if (lane == 0 ...)`. The reduction is
-  the hardware's. No LDS tree.
+  the hardware's, with no LDS tree.
 
 This kernel decodes the IQ4_NL 8B at 211 GB/s. The Q4_0 twin it was
 modelled on reads 213. Its first draft folded a +128 bias into the
-table for a mixed unsigned × signed dot and was wrong by 140%: read
+table for a mixed unsigned × signed dot and was wrong by 140%. Read
 the family's proven idiom (`iqDot16` in the same file) before
 inventing one.
 
 ### 25.2.2 Example — the same kernel, grouped over experts
 
-The IQ3_XXS id twin. Everything in the dot loop is the dense wave
-kernel's. Three things change, and they are the whole of "grouped
-dispatch": which slab row the wave reads, where its activation starts,
-and where its output lands.
+This is the IQ3_XXS id twin. Everything in the dot loop is the dense
+wave kernel's. Three things change, and together they are the whole of
+grouped dispatch: which slab row the wave reads, where its activation
+starts, and where its output lands.
 
 `cajeta-llm/src/main/cajeta/dev/cajeta/llm/io/QuantKernel.cajeta:13146-13186`
 
@@ -272,18 +279,20 @@ public static void iq3xxsQ8IdMatVecKernel(KernelBuffer<float32> y,
 
 - `kk = wave / rowsPerExpert; row = wave - kk * rowsPerExpert;`. The
   grid is `rowsPerExpert × used` waves, flattened. `kk` is the
-  selection slot, `row` the output row within the expert.
-- `i = sel[kk] * rowsPerExpert + row`. The row's offset in the bank's
-  contiguous slab, through the device-side selection buffer. One
-  launch covers every selected expert. Nothing is read back to pick.
-- `xbase = kk * xRowBlocks` is 0 in decode (every expert reads the one
-  staged token), `width/256` when each slot has its own row.
-- `y[yOff + kk * rowsPerExpert + row]`. Output slot-major, so the
-  combine reads `used` contiguous rows.
+  selection slot and `row` is the output row within the expert.
+- `i = sel[kk] * rowsPerExpert + row`. This is the row's offset in the
+  bank's contiguous slab, read through the device-side selection
+  buffer. One launch covers every selected expert, and nothing is read
+  back to pick.
+- `xbase = kk * xRowBlocks` is 0 in decode, where every expert reads
+  the one staged token, and `width/256` when each slot has its own row.
+- `y[yOff + kk * rowsPerExpert + row]`. The output is slot-major, so
+  the combine reads `used` contiguous rows.
 
-Bit-identical to `used` per-expert launches of the dense kernel over
-the same slab (§25.7's gate), and the difference between 39.9 and
-122.1 t/s on a 60-expert model: the launch count, not the arithmetic.
+The result is bit-identical to `used` per-expert launches of the dense
+kernel over the same slab (§25.7's gate). The difference between 39.9
+and 122.1 t/s on a 60-expert model came from the launch count alone,
+since the arithmetic was unchanged.
 
 ### 25.2.3 Example — a sum across the whole workgroup
 
@@ -330,10 +339,10 @@ What to read in it:
 
 - The kernel names no wave width and no wave count. Each wave reduces
   its lanes as `Wave.reduceSumF32` does, lane 0 of each wave writes its
-  partial into scratch the compiler owns, one workgroup barrier, then
-  every lane adds the partials from wave 0 upward. That is the code a
-  hand-written cross-wave sum spells out, and it costs the same one
-  barrier.
+  partial into scratch the compiler owns, one workgroup barrier
+  follows, and then every lane adds the partials from wave 0 upward.
+  That is the code a hand-written cross-wave sum spells out, and it
+  costs the same one barrier.
 - The order is fixed, so a `float32` sum is one defined value. Two
   backends that run the kernel at the same wave width agree bit for
   bit (measured on cpu, nvptx, amdgpu and RADV), and the reference
@@ -349,8 +358,8 @@ What to read in it:
   varies costs that read on every launch, about a microsecond on AMD.
 - Every lane must reach the call. A call under a branch, a loop exit
   or an early `return` whose condition depends on the lane is refused
-  at compile time. Guard the value, not the call: compute `0.0f` for a
-  lane past the end and let it contribute.
+  at compile time. Guard the value and leave the call unguarded.
+  Compute `0.0f` for a lane past the end and let it contribute.
 - The operator is a `GroupOp` literal and the value a `float32` or an
   `int32`. Anything else is refused by name, a `uint32` included.
   Called from host code, it acts as a workgroup of one lane and returns
@@ -360,9 +369,9 @@ What to read in it:
 ### 25.2.4 Example — each lane's place in the workgroup
 
 A filter that writes the items it keeps densely needs each keeping lane
-to know how many lanes before it kept one. `Workgroup.scan` returns that:
-the exclusive combination over the lanes before this one in the
-workgroup's order, with the first lane receiving the identity.
+to know how many lanes before it kept one. `Workgroup.scan` returns that
+number. It is the exclusive combination over the lanes before this one in
+the workgroup's order, and the first lane receives the identity.
 
 ```cajeta
 package guide.xpu;
@@ -397,15 +406,16 @@ What to read in it:
   lane order. Lanes past `n` compute `0.0f` and keep nothing, so every
   lane still reaches both calls.
 - It takes `GroupOp.Add`, `Max` or `Min` over an `int32` or an `int64`
-  and is exact on every backend. The expansion is the reduce's: each wave
+  and is exact on every backend. The expansion is the reduce's. Each wave
   scans its lanes, the wave's last lane stores the wave's total, one
-  barrier, then each lane adds the totals of the waves before its own.
+  barrier follows, and then each lane adds the totals of the waves before
+  its own.
 - The workgroup's total is not returned. Take it with a `Workgroup.reduce`
   of the same value, as here, or from the last lane's `slot + keep`.
-- The refusals are the reduce's: a call some lane may not reach, an
+- The refusals are the reduce's. A call some lane may not reach, an
   operator that is not a `GroupOp` literal, and a value that is not an
-  `int32` or `int64` are refused by name. Inside a loop, each pass ends
-  with a barrier.
+  `int32` or `int64` are each refused by name. Inside a loop, each pass
+  ends with a barrier.
 
 ## 25.3 Prefill: fill the device, then feed the tile
 
@@ -417,31 +427,33 @@ Before tuning a tile, check that the grid can fill the device.
   (64/64)` = 16 workgroups. It moved 1.62 MB in 182 µs, which is
   8.9 GB/s, 4% of the ceiling, with 89 VGPRs, no spill and healthy
   occupancy in the
-  manifest. The kernel was not the problem. The grid was. Group the
-  work: one launch over an expert map (`mul_mat_id`), never one per
-  expert.
+  manifest. The kernel was sound and the grid was the problem. Group
+  the work into one launch over an expert map (`mul_mat_id`), so that
+  no expert gets a launch of its own.
 - **Pad to the finest tile the format has.** Padding a ragged expert
   batch of ~34 tokens to 128 rows paid 3.7× dead work. A 64-row tile
   variant with four accumulators instead of eight was lighter (86–148
   VGPRs, no spill) and 31% faster on the same batches.
 - **Pick the tile by K.** The cooperative X3 tile (32×64 warp tile)
-  below K = 8192, X1 (64×32) above. That is a measured partition, kept in
-  `Autotune`, not a literal.
+  serves below K = 8192, and X1 (64×32) serves above it. That partition
+  was measured and lives in `Autotune`, so no literal in the source
+  holds it.
 - **Reuse is a kernel property.** A GEMM that reads the same weight
   tile for every M-block is at the ceiling before its inner loop is.
-  a prefill gap that looked like a kernel's rate was weight *reuse*
+  A prefill gap that looked like a kernel's rate was weight reuse
   across the batch (recorded as 6.4.2 in the codebook-quants plan).
 - **Attention costs what the context costs.** An 8-token prompt made
   attention look like 3 ms. At 512 tokens of context it is 97 ms of a
   125 ms token. Bench at the context you ship.
 - **The tile gates on the head dimension.** The flash decode / prefill
   tile pair requires `hd == 128`. A 96-wide head silently takes the
-  scalar pair. That is a routing row (§25.6), not a kernel bug.
+  scalar pair. That is a routing row (§25.6), and the kernel itself has
+  no bug.
 
 ### 25.3.1 Example — a grid that cannot fill the device
 
-The per-expert coop launch for IQ4_NL, first sixteen lines. The kernel
-body is not the lesson. The grid is.
+These are the first sixteen lines of the per-expert coop launch for
+IQ4_NL. The lesson is the grid, and the kernel body is incidental.
 
 `cajeta-llm/src/main/cajeta/dev/cajeta/llm/io/QuantKernel.cajeta:4971-4986`
 
@@ -465,15 +477,15 @@ public static void iq4nlF16CoopAutoLaunchNoSync(KernelBuffer<float32> y,
     if (cols > 8192L) {
 ```
 
-`grid: [(outDim / 128L) * (rows / 64L)]`, for one expert's down
-projection, `outDim` 2048 and ~34 routed tokens padded to 64, that is
+For one expert's down projection, with `outDim` 2048 and ~34 routed
+tokens padded to 64, `grid: [(outDim / 128L) * (rows / 64L)]` is
 sixteen workgroups of 256 threads. The kernel has 89 VGPRs, no spill
 and three resident groups a CU in its manifest. It moved 1.62 MB in
-182 µs, 8.9 GB/s, because sixteen workgroups leave most of the device
-idle and 3810 such launches ran in series. The `rows % 128L != 0L`
-test chose the halved tile correctly. The tile is right, the launch
-shape is wrong. The fix is the id-GEMM shape of §25.2.2 applied to a
-GEMM: one launch over an expert map.
+182 µs, which is 8.9 GB/s, because sixteen workgroups leave most of
+the device idle and 3810 such launches ran in series. The
+`rows % 128L != 0L` test chose the halved tile correctly. The tile is
+right and the launch shape is wrong. The fix is the id-GEMM shape of
+§25.2.2 applied to a GEMM, one launch over an expert map.
 
 ## 25.4 Bind: one layout, and the copy that reads the lines
 
@@ -481,29 +493,32 @@ Weights are converted at upload, once. The rules are the decode rules
 applied to a copy.
 
 - **One resident layout for every format.** A row is its scale prefix
-  (padded to a dword) then its dword-clean payloads, the scale at one
-  end of the file block by construction so the payload is a single
-  contiguous run. Every kernel reads that. Nothing repacks at first
-  touch. Retiring the runtime repack moved 177 ms out of a mixture
-  model's first prefill.
-- **One work item per payload dword, not one wave per block.** A
-  64-lane wave copying an 18-byte block a byte at a time left 46 lanes
-  idle: 28% occupancy. One item per dword: 16× fewer threads, −10.6%
-  load on that file, flat on a 210-byte block that already filled the
-  wave. The control that proved it was the mapping.
+  (padded to a dword) followed by its dword-clean payloads. The scale
+  sits at one end of the file block by construction, so the payload is
+  a single contiguous run. Every kernel reads that layout, and nothing
+  repacks at first touch. Retiring the runtime repack moved 177 ms out
+  of a mixture model's first prefill.
+- **One work item per payload dword.** A 64-lane wave copying an
+  18-byte block a byte at a time left 46 lanes idle, which is 28%
+  occupancy. One item per dword dispatches 16× fewer threads and cut
+  load on that file by 10.6%, while a 210-byte block that already
+  filled the wave stayed flat. That flat block was the control that
+  proved the mapping was the cause.
 - **A separate pass over scattered bytes is read-amplification bound.**
-  Extracting two scale bytes per block pulls one cache line per block:
-  49× amplification, and the kernel ran at ~221 GB/s of *lines*, the
-  ceiling, for 1% useful bytes. No lane mapping improves it. Fold the
-  extraction into the pass that already reads those lines.
+  Extracting two scale bytes per block pulls one cache line per block,
+  which is 49× amplification. The kernel ran at ~221 GB/s of lines,
+  the ceiling, for 1% useful bytes. No lane mapping improves it. Fold
+  the extraction into the pass that already reads those lines.
 - **Budget device memory against the driver's pool, live.** On a UMA
   part the GTT limit is reached before `MemAvailable`. A device request
-  one byte over 2 MB costs two 2 MB blocks. `Device.freeMemoryBytes()`
-  and the allocation trace, not RSS.
+  one byte over 2 MB costs two 2 MB blocks. Read
+  `Device.freeMemoryBytes()` and the allocation trace. RSS is the wrong
+  figure.
 
 ### 25.4.1 Example — the split, one item per dword
 
-The payload half of the resident split, and the launcher that gates it.
+This is the payload half of the resident split, with the launcher that
+gates it.
 
 `cajeta-llm/src/main/cajeta/dev/cajeta/llm/io/QuantKernel.cajeta:6353-6386`
 
@@ -544,15 +559,16 @@ public static void splitPayloadKernel(KernelBuffer<int32> outW,
 }
 ```
 
-- One work item per payload **dword**, `t / payloadWords` the block and
-  `t % payloadWords` the word within it, not one 64-lane wave per
-  block walking bytes. On an 18-byte block the wave form left 46 lanes
-  idle. This form dispatches 16× fewer threads and cut load 10.6%.
-- `outW` is `KernelBuffer<int32>`, the byte buffer's word view: the
+- There is one work item per payload dword, with `t / payloadWords`
+  the block and `t % payloadWords` the word within it. The byte form
+  gave each block a 64-lane wave, and on an 18-byte block that wave
+  left 46 lanes idle. This form dispatches 16× fewer threads and cut
+  load 10.6%.
+- `outW` is `KernelBuffer<int32>`, the byte buffer's word view. The
   store is a dword because the row prefix is padded to one and every
   payload is dword-clean by construction.
-- The source read is four byte loads assembled with shifts. The file
-  block is not aligned, the resident row is.
+- The source read is four byte loads assembled with shifts, because
+  the file block is unaligned while the resident row is aligned.
 
 `cajeta-llm/src/main/cajeta/dev/cajeta/llm/io/QuantKernel.cajeta:6491-6539`
 
@@ -610,17 +626,17 @@ public static void splitLaunch(KernelBuffer<int8> out,
 ```
 
 - The dword form is taken only when `pay % 4 == 0 && prefix % 4 == 0
-  && rowBytes % 4 == 0`; the byte kernel stays for anything else. A
-  route with a shape constraint keeps its fallback and names it.
+  && rowBytes % 4 == 0`, and the byte kernel stays for anything else.
+  A route with a shape constraint keeps its fallback and names it.
 - The scale half takes its own dword kernel only when the chunk starts
   and ends on a row (`blockBase % bpr == 0 && nBlocks % bpr == 0`),
-  because a prefix dword spans two blocks of the same row. And
+  because a prefix dword spans two blocks of the same row.
   `scaleWordLaunches` counts it, so a test can assert the branch fired
   (§25.7.2). That scale kernel is read-amplification bound at the
-  ceiling, 49 lines pulled per 2 useful bytes, which no mapping
-  fixes. Folding it into the payload pass is the open item.
-- `s.sync()` at the end: bind-time work pays one round trip per chunk
-  and is allowed to. Decode is not (§25.5).
+  ceiling, with 49 lines pulled per 2 useful bytes, and no mapping
+  fixes that. Folding it into the payload pass is the open item.
+- The `s.sync()` at the end is allowed because bind-time work may pay
+  one round trip per chunk. Decode may not (§25.5).
 
 ## 25.5 Execution: launches, syncs, and what the compiler will not tell you
 
@@ -630,7 +646,8 @@ public static void splitLaunch(KernelBuffer<int8> out,
   (down-projection + combine + the next layer's norm and pack in one
   launch) removes the gaps between them as well as the launches.
 - **Keep the launch a top-level statement.** A kernel launched inside a
-  lambda faults: captured buffers are unreachable to launch codegen.
+  lambda faults, because captured buffers are unreachable to launch
+  codegen.
 - **No `?:` in a kernel body.** It lowers to wrong device code. Use the
   `if` form.
 - **Never reuse a name in a kernel body.** A differently-typed shadow
@@ -640,78 +657,81 @@ public static void splitLaunch(KernelBuffer<int8> out,
 - **`@FastMath` folds `x - (f32)(f16) x` to zero.** A device-computed
   f16 residual under `@FastMath` is dead. Take it from LDS after a
   barrier, or leave `@FastMath` off that kernel.
-- **Initialize accumulators by writing, not by multiplying.** `0 *`
-  an uninitialized NaN churns and looks like allocator corruption.
+- **Initialize accumulators by writing to them.** A `0 *` on an
+  uninitialized NaN churns and looks like allocator corruption.
 - **`int64 *` traps on overflow.** Multiplicative hashing in a kernel
   is impossible. Use the library's hash.
 - **Trust the manifest over the wall clock.** `spillBytes`, `vgpr` and
   `residentGroupsPerCu` are read from the code object. A kernel that
   spills can A/B flat against one that does not.
-- **A launch is a driver call before it is a kernel.** 6 to 13
-  microseconds on an RTX 4090 under WSL2, whatever the kernel does; a
-  decode token is hundreds of them. `KernelStream.setDeferred(true)`
-  queues a stream's launches and replays a sequence it has seen three
-  times as one recorded submission (a CUDA graph; a no-op on the other
-  backends), submitting at the next sync, transfer, event or release. Results are unchanged; the
-  token's submit cost goes from milliseconds to a fraction of one. The
-  same floor sits under a timing loop: a bracket around back-to-back
-  launches of a kernel faster than the submit reads the submit rate,
-  not the kernel. Defer the timed stream (the LLM parity harness's `--deferred`).
+- **A launch is a driver call before it is a kernel.** A launch costs
+  6 to 13 microseconds on an RTX 4090 under WSL2, whatever the kernel
+  does, and a decode token is hundreds of them.
+  `KernelStream.setDeferred(true)` queues a stream's launches and
+  replays a sequence it has seen three times as one recorded
+  submission, which is a CUDA graph and a no-op on the other backends.
+  It submits at the next sync, transfer, event or release. Results are
+  unchanged, and the token's submit cost goes from milliseconds to a
+  fraction of one. The same floor sits under a timing loop. A bracket
+  around back-to-back launches of a kernel faster than the submit reads
+  the submit rate instead of the kernel. Defer the timed stream (the
+  LLM parity harness's `--deferred`).
 - **Byte vectors are words on NVPTX when the offset is provable.**
   `vload<32>` on a `KernelBuffer<int8>` is a byte-by-byte load unless
   the index is a multiple of four, and the compiler proves that from
   the index's own arithmetic (a product of 144, a shift by five, a
   loop carried in steps of 32) without a depth limit. Where it can, the
-  load is word loads, or 16-byte vector loads where the offset proves a
-  multiple of sixteen, and `dotAccum` is `dp4a`; the hot Q4_K mat-vec
-  went from 260 byte loads and 258 multiplies to 16 vector loads, 8 word
-  loads and 80 `dp4a`. The proof is about the offset, so the launch
-  checks the BASE: a buffer parameter read in words or vectors whose
-  base is short of the widest access proved on it is refused by name
-  (`XpuLaunchException`, "not aligned"), and a slice handed to such a
-  kernel must start at that multiple (four bytes for words, sixteen for
-  vectors). An index the compiler cannot prove stays a byte load and
-  works at any alignment.
+  load becomes word loads, or 16-byte vector loads where the offset
+  proves a multiple of sixteen, and `dotAccum` becomes `dp4a`. The hot
+  Q4_K mat-vec went from 260 byte loads and 258 multiplies to 16 vector
+  loads, 8 word loads and 80 `dp4a`. The proof is about the offset, so
+  the launch checks the base. A buffer parameter read in words or
+  vectors whose base is short of the widest access proved on it is
+  refused by name (`XpuLaunchException`, "not aligned"), and a slice
+  handed to such a kernel must start at that multiple (four bytes for
+  words, sixteen for vectors). An index the compiler cannot prove stays
+  a byte load and works at any alignment.
 
 ## 25.6 Routing: declare it, then let the test find the gaps
 
 Which kernel serves which format in which regime is one table with one
 audit, described in [Kernel Routing](../specification/xpu/CajetaXPU-Routing.md).
-The failure it prevents was measured four times in one day: a predicate
-that named two formats where it meant "on an integer route", each
-costing a whole route, one of them with a bare `else` that would have
+The failure it prevents was measured four times in one day. Each time,
+a predicate named two formats where it meant "on an integer route", and
+each cost a whole route. One of them had a bare `else` that would have
 fed one format's bytes through another's decoder.
 
 Three rules carry it. The rest of this section is what each looks like
 in code you can read today.
 
-- **One row is one kernel variant**, not a family with arms. Q4_K's
-  wave variant and its packed variant are two rows, and `priority`
-  orders them. A family row keeps its arms, an arm-set keeps its bare
-  `else`, and that `else` is the defect.
+- **One row is one kernel variant.** A family with arms is the wrong
+  unit. Q4_K's wave variant and its packed variant are two rows, and
+  `priority` orders them. A family row keeps its arms, an arm-set keeps
+  its bare `else`, and that `else` is the defect.
 - **A static constraint and a runtime one go in different halves.**
   `shapeRefusal(query)` is pure and the audit walks it with nothing
   bound. `readyRefusal(call)` reads the receiver and no audit can check
   it. The types enforce the split, because a query carries no receiver
   to reach through, so a static gate cannot read a slab even by accident.
-- **A half answers with the gate, not with `false`.** Both return the
-  row's own name for what refused, or null to admit. A string literal
-  is a static instance, so naming costs nothing, and there is one
-  statement of each gate instead of a predicate plus a list of reasons
-  beside it.
+- **A half answers with the gate.** Both return the row's own name for
+  what refused, or null to admit, and neither returns a bare `false`.
+  A string literal is a static instance, so naming costs nothing, and
+  there is one statement of each gate instead of a predicate plus a
+  list of reasons beside it.
 
-A row's `needs` is a `Capability`, never a backend name. Every row owes
-a test that it fires and a test that it does not (§25.7.2).
+A row's `needs` is a `Capability`, and a backend name has no place
+there. Every row owes a test that it fires and a test that it does not
+(§25.7.2).
 
 ### 25.6.1 Example — a predicate and the dispatcher it guards
 
-`Linear.packedWaveReady` and `matvecPackedKeep`, as they are now. Until
-2026-09-17 the predicate ended `return (this.q8 && this.wave) ||
+These are `Linear.packedWaveReady` and `matvecPackedKeep` as they are
+now. Until 2026-09-17 the predicate ended `return (this.q8 && this.wave) ||
 this.wave6;` and the dispatcher was `if (q8 && wave) { q4k } else {
 q6k }`. Widening the predicate alone would have sent codebook bytes
-through the Q6_K decoder, giving wrong logits and no crash, which is why a
-route's admission and its arms must change together, and why the
-audit checks that an admitted format has an arm.
+through the Q6_K decoder, giving wrong logits and no crash. A route's
+admission and its arms must therefore change together, and the audit
+checks that an admitted format has an arm.
 
 `cajeta-llm/src/main/cajeta/dev/cajeta/llm/model/Linear.cajeta:3118-3126`
 
@@ -758,8 +778,8 @@ boolean matvecPackedKeep(KernelBuffer<int8> xp) {
 
 - `this.waveIq || this.wave4nl`. The predicate now asks "on an integer
   wave route", which is what it always meant. Each of those booleans is
-  one row: the predicate and its matching arm become a `format()` and a
-  `dispatch()` that has nothing left to choose.
+  one row, so the predicate and its matching arm become a `format()`
+  and a `dispatch()` that has nothing left to choose.
 - Every branch is explicit and the last is `return false`. A bare
   `else` is a dispatcher with an arm for a format it was never asked
   to serve. One row per variant is how that `else` stops existing. There
@@ -769,11 +789,11 @@ boolean matvecPackedKeep(KernelBuffer<int8> xp) {
 
 ### 25.6.2 Example — which half a constraint belongs in
 
-`ExpertBank.idReady`, as it is now. Four lines answering two different
-questions at once: which formats this row is for, and whether this
-bank's widen actually happened. Widening it for a new format also
-claims that format's slab is ready. That conflation is the defect, not
-an incidental of it, and it is why one predicate cannot be both halves.
+This is `ExpertBank.idReady` as it is now. Its four lines answer two
+different questions at once, which formats this row is for and whether
+this bank's widen actually happened. Widening it for a new format also
+claims that format's slab is ready. That conflation is the defect
+itself, and it is why one predicate cannot be both halves.
 
 `cajeta-llm/src/main/cajeta/dev/cajeta/llm/model/ExpertBank.cajeta:929-936`
 
@@ -791,33 +811,33 @@ public boolean idReady() {
 ```
 
 - `packedTy == 12 || packedTy == 14`, and `codebookId`'s twin list, are
-  the row's `format()`. They are not a constraint at all. They are the
-  key the table resolves on, and a list of them in a predicate is the
-  duplicated knowledge the table removes.
-- `this.widenRefused` is written by a bind that failed: the receiver's
-  state, so `readyRefusal`.
-- `ExpertBank.widenSlabOn` is a mutable static. An A/B arm someone can
-  flip at run time. It goes in `readyRefusal` too, not in the static
-  half, and the test is not "is this value known at compile time" but
-  "can the audit's answer change depending on when it ran". A global
-  switch fails that. A query field does not.
+  the row's `format()`. They are the key the table resolves on, and no
+  constraint at all. A list of them in a predicate is the duplicated
+  knowledge the table removes.
+- `this.widenRefused` is written by a bind that failed. It is the
+  receiver's state, so it belongs in `readyRefusal`.
+- `ExpertBank.widenSlabOn` is a mutable static, an A/B arm someone can
+  flip at run time. It goes in `readyRefusal` too. The test for the
+  static half is whether the audit's answer could change depending on
+  when it ran, and compile-time knowledge of the value is beside the
+  point. A global switch fails that test. A query field passes it.
 
 `MoeFfn.zeroSyncReady` (`MoeFfn.cajeta:1248-1288`) is the same reading
-with every case present: nine gates with nine sentences in the
+with every case present. It has nine gates with nine sentences in the
 `moe-row-route` record. Three are per-bank format tests, so they become
 the `format()` of three rows. Four are shape tests, namely `gating != 1`,
 `hidden % 256`, `widthN % 32` and the shared expert's width, and they go in
 `shapeRefusal`, where the audit can walk them with nothing bound. Two
 read a slab that did or did not bind, and go in `readyRefusal`. Each
-keeps its own sentence, which is the whole reason a half answers with
-the gate rather than with `false`: collapse them and you have
-reproduced the thing the table was built to remove.
+keeps its own sentence, and that is the whole reason a half answers
+with the gate. Collapse them and you have reproduced the thing the
+table was built to remove.
 
 ### 25.6.3 Example — the row those predicates become
 
-The shape of one row. The registrant declares its static facts once, on
-its own `RouteQuery` subclass, and both halves read them. The receiver
-and the operands ride on `RouteCall`. The llm rows land with
+This is the shape of one row. The registrant declares its static facts
+once, on its own `RouteQuery` subclass, and both halves read them. The
+receiver and the operands ride on `RouteCall`. The llm rows land with
 codebook-quants 9.2.9.
 
 ```cajeta
@@ -892,23 +912,23 @@ public final class IntWaveRow implements Route {
 
 - `format()` is one format. A second variant for the same format is a
   second row with a different `priority()`, and the audit reports the pair
-  as shadowed rather than letting the choice be implicit.
+  as shadowed, so the choice is never implicit.
 - `shapeRefusal` names which width refused. A row with one gate could
   have returned a boolean. A row with four could not, and every real
   one has four.
 - `readyRefusal` reads `WeightCall`. It could not read it from
   `shapeRefusal`, because that parameter is a `RouteQuery` and has no
   receiver on it.
-- `dispatch` is where the launch goes, and it is the only arm: one
-  `k.launch(...)`, no `if`, nothing to fall through. Compare
+- `dispatch` is where the launch goes, and it is the only arm. It holds
+  one `k.launch(...)`, with no `if` and nothing to fall through. Compare
   `matvecPackedKeep` above, which is five arms and a bare `else`.
 - `needs()` returns a stored list, so the selector asking it costs no
   allocation. `null` means the row needs nothing.
 
-Registration is once, at start-up. Resolution is once, **at bind**. The
-weight stores the row it got and the launch is one virtual call. This is
-the same trade the sixteen booleans on `Linear` make today, with the
-knowledge in one place instead of sixteen.
+Registration happens once, at start-up. Resolution happens once, at
+bind. The weight stores the row it got and the launch is one virtual
+call. This is the same trade the sixteen booleans on `Linear` make today,
+with the knowledge in one place instead of sixteen.
 
 <!-- snippet: skip -->
 
@@ -926,8 +946,8 @@ if (this.row == null) {
 
 - `pick` returns the row or nothing, and allocates nothing either way.
   The refusal is built by `whyNotPicked`, on the branch that is already
-  about to print, so a route record costs the path that took the row
-  nothing at all.
+  about to print, so a route record costs nothing on the path that took
+  the row.
 - `why.text()` names the row and the gate in one line. The failure this
   replaces is a census showing the old kernels and no way to tell which
   of a dozen predicates said no.
@@ -937,9 +957,9 @@ if (this.row == null) {
 
 ### 25.6.4 Example — the audit, and what it will not check
 
-`audit` walks the **declared** half over the registrant's own queries,
-meaning format, regime and shape. Nothing is bound, and no device is asked, which
-is what lets it run in the same commit as the route it checks and on a
+`audit` walks the declared half over the registrant's own queries,
+meaning format, regime and shape. Nothing is bound and no device is
+asked, so it can run in the same commit as the route it checks and on a
 machine with none of the hardware.
 
 <!-- snippet: skip -->
@@ -957,68 +977,71 @@ Assert.equals(a.neverFiringCount(), 0);
 - `unservedCount()` is the check that a new format has a row. Run it
   over the package's whole format set and it names every row that lacks
   the format, the day the format lands.
-- `neverFiringCount()` is the other direction: a row that serves
+- `neverFiringCount()` is the other direction. A row that serves
   nothing in the set has a format that left it, or a gate that refuses
   everything. A predicate that silently disabled a whole check once read
   as a clean run for an hour.
 - `a.shadowed(qi)` says two rows admit one query. Priority still
-  decides. The point is that the choice is visible.
+  decides, and the choice is visible.
 - `table.auditRow(row, qs)` is the per-row fire / no-fire count. Hand
   it the row's own format at shapes that should and should not take it,
   and assert both halves. §25.7.2 is that pair written against a real
   kernel.
 
-- `a.needsCount(ri)` / `a.needAt(ri, k)` list what a row DECLARES it
-  needs. The audit reports that and does not rule on it: a capability is
-  a fact about the box, and a row the local machine cannot run still
-  serves its format. `needs` is `pick`'s question, on the live device.
+- `a.needsCount(ri)` / `a.needAt(ri, k)` list what a row declares it
+  needs. The audit reports that and does not rule on it, because a
+  capability is a fact about the box, and a row the local machine cannot
+  run still serves its format. `needs` is `pick`'s question, on the live
+  device.
 
-What the audit will not do is ask `readyRefusal`, or ask the device. A
-slab that did not bind and a capability this box lacks are both
-invisible to it. Those refusals are `whyNotPicked`'s, at bind, in the
-route record. This is the same question the two halves answer: if the
-answer could change with where or when the walk ran, it is not the
+The audit will never ask `readyRefusal`, and it will never ask the
+device. A slab that did not bind and a capability this box lacks are
+both invisible to it. Those refusals are `whyNotPicked`'s, at bind, in
+the route record. This is the same question the two halves answer. If
+the answer could change with where or when the walk ran, it is not the
 audit's to give.
 
 ## 25.7 Measuring: the order that does not lie
 
-1. **Bit gate first.** A kernel that is faster and not the same kernel
-   is not a fix. Compare against the host or the kernel it replaces,
-   using `==` and not a tolerance where the arithmetic is the same.
+1. **Bit gate first.** A kernel that is faster and computes something
+   different is no fix. Compare against the host or the kernel it
+   replaces. Where the arithmetic is the same, use `==` and no
+   tolerance.
 2. **Validate the instrument.** Compare only bytes the layout defines.
-   a fixture whose f16 scales are rotated bytes reads as NaN, and NaN
+   A fixture whose f16 scales are rotated bytes reads as NaN, and NaN
    compares unequal to itself and passes a bare non-zero check.
 3. **Read the manifest before editing.** Spill is invisible to timing.
 4. **Presence before rate.** The profiler's kernel table says whether
    the new kernel ran at all. A route that refused shows the old
    kernels at the old counts, and no A/B is worth taking until it does.
-5. **A/B on the same box, arms alternating, gated on idle.** ABBA, three
-   reps a pass. A fixed arm order let a decaying load read as a speedup.
-   Load time is the box's witness: a shift there says the box moved,
-   not the code.
-6. **A flat A/B under the noise floor is not "no change."** A 45 ms
-   kernel inside a 2.2 s load is 2% against ±3% spread. The kernel
-   table resolves what the wall clock cannot.
+5. **A/B on the same box, arms alternating, gated on idle.** Run ABBA,
+   three reps a pass. A fixed arm order let a decaying load read as a
+   speedup. Load time is the box's witness, and a shift there says the
+   box moved while the code stayed the same.
+6. **A flat A/B under the noise floor says nothing about change.** A
+   45 ms kernel inside a 2.2 s load is 2% against ±3% spread. The
+   kernel table resolves what the wall clock cannot.
 7. **Controls must vary the mechanism.** A control that could not have
    refuted the explanation is decoration. The 210-byte block that
    already filled the wave was the control for the lane-mapping claim.
-8. **Window the profiler on kernel populations, not on host-frame
-   spans.** The device and host tiers have different origins. The load
-   frame's span read as a device offset swept every prefill GEMM into
-   "load". The window is right when its wall matches the harness's
-   phase timer.
-9. **Name the engine.** `llama.cpp (Vulkan)`, never `vulkan`: cajeta has
-   its own Vulkan backend and the bare name misreads.
+8. **Window the profiler on kernel populations.** The device and host
+   tiers have different origins, so a host-frame span is the wrong
+   window. The load frame's span read as a device offset swept every
+   prefill GEMM into "load". The window is right when its wall matches
+   the harness's phase timer.
+9. **Name the engine.** Write `llama.cpp (Vulkan)` and never the bare
+   `vulkan`, because cajeta has its own Vulkan backend and the bare
+   name misreads.
 10. **The first model in a loop runs cold.** Re-measure a surprise on
     its own.
 
 ### 25.7.1 Example — the bit gate for a grouped kernel
 
-The test that admitted §25.2.2's kernel. It builds a slab of six
-experts from a real fixture, gives each expert a different block
+This is the test that admitted §25.2.2's kernel. It builds a slab of
+six experts from a real fixture, gives each expert a different block
 rotation so a kernel that ignored `sel` cannot agree by accident,
 packs one activation, and compares the grouped launch against the
-per-expert wave launches it replaces, using `==` and never a tolerance.
+per-expert wave launches it replaces with `==` and no tolerance.
 
 `cajeta-llm/src/test/cajeta/dev/cajeta/llm/selftest/MoeCodebookIdMatVecTest.cajeta:84-167`
 
@@ -1112,17 +1135,17 @@ static void check(int32 ty, String fixture) {
 
 - `a[i] != a[i]` counts NaN, and the non-zero check demands
   `a[i] == a[i]` as well. The first version of this fixture rotated
-  *resident* bytes, slid the f16 scale field onto payload bytes, and
-  produced NaN on both arms, which compares unequal to itself and would
+  resident bytes, slid the f16 scale field onto payload bytes, and
+  produced NaN on both arms. NaN compares unequal to itself and would
   have satisfied a bare "not all zero." Validate the instrument.
 - `QuantKernel.stream().sync()` once, after every launch on both arms.
 
 ### 25.7.2 Example — a test that the route fires, and one that it does not
 
-For the split's dword scale kernel (§25.4.1). The existing byte-exact
-tests would have gone green without executing a line of the new
-kernel, because their chunks end mid-row, so both took the fallback. Hence a
-counter on the branch and a pair of tests against it.
+This pair is for the split's dword scale kernel (§25.4.1). The existing
+byte-exact tests would have gone green without executing a line of the
+new kernel, because their chunks end mid-row and both took the fallback.
+So the branch got a counter and a pair of tests against it.
 
 `cajeta-llm/src/test/cajeta/dev/cajeta/llm/selftest/ResidentLayoutTest.cajeta:190-205`
 
@@ -1148,14 +1171,15 @@ public void theScaleSplitTakesTheDwordKernelOnARowAlignedChunk() {
 
 The twin, `theScaleSplitKeepsTheBlockKernelOnAChunkThatEndsMidRow`,
 splits at `first = 2000` with `bpr = 317` and asserts the counter did
-not move. Red first at "0 times, wanted 2". The byte-exactness half of
-the same test passed while red. That is the pair every route row gets.
+not move. The test was red first, at "0 times, wanted 2", and the
+byte-exactness half of the same test passed while it was red. That is
+the pair every route row gets.
 
 ## 25.8 Shapes as families: the filter and the timed choice
 
 A tile kernel has a shape, and the right shape is a property of the device
-and the problem, not of the author. Write the design once over its shape and
-let the layer choose the member.
+and the problem. The author cannot know it in advance. Write the design once
+over its shape and let the layer choose the member.
 
 ```cajeta
 @Instantiate({QkTile<64, 64, 32, 32, 128>, QkTile<128, 128, 32, 64, 128>})
@@ -1173,14 +1197,15 @@ public final class QkTile<uint32 TM, uint32 TN, uint32 WM, uint32 WN, uint32 KS>
 }
 ```
 
-- **`@Instantiate` builds the members; `@Requires` refuses by name** the
+- **`@Instantiate` builds the members and `@Requires` refuses by name** the
   shapes the body cannot serve, at instantiation, with the failing clause.
   A member that would miscompile does not exist.
 - **The `@Occupancy` bound travels with the shape** as an expression over
-  the template's values: `maxThreads = 2 * TN` here, `maxWaves = (TM / WM)
-  * (TN / WN)` on a multi-wave design.
+  the template's values. It is `maxThreads = 2 * TN` here, and
+  `maxWaves = (TM / WM) * (TN / WN)` on a multi-wave design.
 - **Each member registers its own kernel**, named with its arguments, so the
-  registry, the manifest and the census see members, not the template.
+  registry, the manifest and the census see each member as a kernel of its
+  own.
 
 At a problem, the family builds a `ShapeFilter` over `DeviceFacts.current()`
 and considers each member with `KernelFacts.measured(kernel, dynamicShared)`:
@@ -1196,22 +1221,22 @@ ShapeResult r #= ShapeChoice.choose(tuneDir, f, probe);
 
 The filter prunes a spilling member, a member whose threads × registers
 exceed the register file, one whose shared bytes exceed the per-block limit,
-and one with no resident workgroup, each with its rule kept; it records,
+and one with no resident workgroup, each with its rule kept. It records,
 without pruning, whether the grid fills the device (or the split-K that would)
 and the padding the shape wastes. A fact the backend does not report prunes
-nothing, which is why every member survives on the CPU backend and the timer
-decides there. `ShapeChoice` then takes a lone survivor outright, or recalls
-the remembered winner for this exact problem and build, or times the
-survivors through your `ShapeProbe` (five interleaved rounds, fastest median,
-a lead under three percent is a tie) and remembers it, unless another process
-held the device. An override (`ShapeChoice.setShapeOverride`) wins for a
-sweep.
+nothing, so every member survives on the CPU backend and the timer decides
+there. `ShapeChoice` then takes a lone survivor outright, or recalls the
+remembered winner for this exact problem and build, or times the survivors
+through your `ShapeProbe` and remembers the result, unless another process
+held the device. The probe runs five interleaved rounds and takes the fastest
+median, and a lead under three percent is a tie. An override
+(`ShapeChoice.setShapeOverride`) wins for a sweep.
 
-Two rules about the probe. **Prewarm at load** (`ShapeChoice.prewarm`) at
-every shape the program will meet, so the first real launch is the settled
-choice. **A probe that times the running program in place** (the LLM
-library's Id families bracket real mixture-of-experts layers with
-`KernelTimer`) costs stream synchronisations for its samples; hold the trial
+Two rules govern the probe. Prewarm at load (`ShapeChoice.prewarm`) at every
+shape the program will meet, so the first real launch is the settled choice.
+A probe that times the running program in place costs stream
+synchronisations for its samples. The LLM library's Id families do this,
+bracketing real mixture-of-experts layers with `KernelTimer`. Hold the trial
 through the warm-up, and read the program's throughput only after the store
 has settled. A 30B-parameter prefill measured before the store settled read
 three times its kernel time (2026-10-24).
@@ -1224,29 +1249,32 @@ libraries' `setPays` pins).
 
 ## 25.9 The gates, and what each one would have let through
 
-- **The reference interpreter** decides what the kernel means; every backend
+- **The reference interpreter** decides what the kernel means. Every backend
   is compared to it, and recorded launches replay through it. A kernel's
   meaning is never what one vendor's compiler produced.
 - **The build gates** refuse a spilling kernel, a kernel with no device code
   for a declared backend, an unbounded block and a vectorisation that hung,
-  each by name; each has one declared escape, tracked, that goes STALE when
+  each by name. Each has one declared escape, tracked, that goes STALE when
   its cause is gone. `[xpu-kernel-spill]` tells you whether the cause is
-  register pressure or a construct legalised through memory; believe it.
+  register pressure or a construct legalised through memory, and you can
+  believe it.
 - **The launch check** refuses the scalar twin of a wave kernel, an
-  unsupported declared wave, a block that differs from the pinned one, a
+  unsupported declared wave, a block that differs from the pinned one, and a
   misaligned buffer base. A refused launch that fell through would have been
   a slow or wrong kernel that looked like a run.
 - **The census** (the libraries' test gates) requires every registered kernel
-  to be value-checked by some test or excused by name; a kernel that ran is
-  not covered. Add a kernel and the census names it until a test holds it.
+  to be value-checked by some test or excused by name. A kernel that merely
+  ran is not covered. Add a kernel and the census names it until a test
+  holds it.
 - **Device-memory poisoning** (`CAJETA_XPU_POISON=1`, the suites' default)
   fills fresh buffers with 0xFF so an unwritten read answers NaN at once. An
-  order-dependent red is an unwritten read; a readiness answer that did not
-  launch would otherwise hand the next layer whatever the allocator left.
+  order-dependent red is an unwritten read. Without the poison, a readiness
+  answer that did not launch would hand the next layer whatever the
+  allocator left.
 - **The route gate.** A change to which kernel serves a weight passes only
-  when the program's greedy walk agrees token for token with the reference;
-  a batched throughput is read beside its tokens. Four quant formats once
-  decoded garbage at full speed for a morning because the batched route's
-  dispatcher knew two kernels while its admission knew six; a test through
-  the route, not the kernels, is what caught it.
+  when the program's greedy walk agrees token for token with the reference,
+  and a batched throughput is read beside its tokens. Four quant formats
+  once decoded garbage at full speed for a morning because the batched
+  route's dispatcher knew two kernels while its admission knew six. A test
+  through the route caught it, where the kernel tests had not.
 

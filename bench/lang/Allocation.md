@@ -1,6 +1,6 @@
 # Allocation and ownership
 
-The cost of the single-owner heap: allocating a small object with `heap` and dropping it at scope end, churn with one and ten objects live, transferring ownership with `#` down a chain of calls, the live-allocation set on and off, arrays, and struct values that never touch the heap. The memory tab of every chart shows allocated bytes, and for the live-set rows the chart shows the same program under `--live-set=on` and `--live-set=off`.
+This page measures the cost of the single-owner heap. The rows allocate a small object with `heap` and drop it at scope end, churn with one and ten objects live, transfer ownership with `#` down a chain of calls, run with the live-allocation set on and off, allocate arrays, and construct struct values that never touch the heap. The memory tab of every chart shows allocated bytes, and for the live-set rows the chart shows the same program under `--live-set=on` and `--live-set=off`.
 
 ## Benchmarks
 
@@ -15,11 +15,11 @@ The cost of the single-owner heap: allocating a small object with `heap` and dro
 | `lang/alloc-array` | 1e5 allocations of an `int32[1024]` | C++, Rust, Go, Java, Python | sum of first elements |
 | `lang/alloc-struct-value` | 1e8 struct values constructed and read on the stack | C++, Rust, Go, Java record, Python | sum |
 
-The ownership model is the load-bearing design of the language; read the [memory model](../../docs/specification/lang/MemoryModel.md) before reading these numbers. Java and Go rows include their collectors' work in the measured window; the allocation-bytes metric is the one that compares runtimes on equal terms.
+The ownership model is the load-bearing design of the language, so read the [memory model](../../docs/specification/lang/MemoryModel.md) before reading these numbers. Java and Go rows include their collectors' work in the measured window. The allocation-bytes metric is the one that compares runtimes on equal terms.
 
 ## Results
 
-One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
+Each benchmark has one chart, drawn for the machine selected at the top of the page. Languages are the bars, best first. Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
 
 ```bench
 id: lang/alloc-small-object
@@ -69,7 +69,7 @@ cd bench
 ./bench.sh --bench alloc-small-object --competitors # every pinned competitor
 ```
 
-Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+Every row records the compiler and competitor versions, flags, machine, OS and driver. [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
 
 ## See also
 

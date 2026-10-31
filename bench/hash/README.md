@@ -1,6 +1,6 @@
 # cajeta.hash
 
-Non-cryptographic hashing against the reference implementations. Cryptographic hashes moved to `dev.cajeta.crypto` and are measured there.
+This section measures non-cryptographic hashing against the reference implementations. Cryptographic hashes moved to `dev.cajeta.crypto` and are measured there.
 
 | Page | |
 |---|---|

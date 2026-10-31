@@ -1,26 +1,26 @@
 # 14 — Expressions
 
-This chapter defines expression forms and their evaluation: operators and their order, method invocation and its ownership modes, instantiation expressions, lambdas, and method references.
+This chapter defines expression forms and their evaluation. It covers operators and their order, method invocation and its ownership modes, instantiation expressions, lambdas, and method references.
 
 ## 14.1 Evaluation Order
 
-Operands evaluate left to right: in `a() + b()`, `a()` completes before `b()` begins. The conditional operators short-circuit — `&&` skips its right operand when the left is `false`, `||` when the left is `true` — and `cond ? x : y` evaluates only the selected branch.
+Operands evaluate left to right, so in `a() + b()`, `a()` completes before `b()` begins. The conditional operators short-circuit. `&&` skips its right operand when the left is `false`, and `||` skips it when the left is `true`. `cond ? x : y` evaluates only the selected branch.
 
-Operator precedence follows the C family, as fixed by the expression grammar: unary binds tightest, then multiplicative, additive, shift, relational (`instanceof` among them), equality, bitwise `&` `^` `|`, logical `&&` `||`, the conditional, and assignment last.
+Operator precedence follows the C family, as fixed by the expression grammar. Unary binds tightest, then multiplicative, additive, shift, relational (`instanceof` among them), equality, bitwise `&` `^` `|`, logical `&&` `||`, the conditional, and assignment last.
 
 ## 14.2 Operators
 
-The operator set over primitives: arithmetic `+ - * / %`, bitwise `& | ^ ~`, shifts `<< >> >>>`, comparisons `== != < > <= >=`, logical `! && ||`, increment and decrement `++ --`, and the compound assignments `+= -= *= /= %= &= |= ^= <<= >>= >>>=`. `n += 3` and `n++` mutate their target in place. Class types may declare their own binary and index operators (Classes §8.7). String concatenation and its conversions are Conversions §6.4.
+The operator set over primitives is arithmetic `+ - * / %`, bitwise `& | ^ ~`, shifts `<< >> >>>`, comparisons `== != < > <= >=`, logical `! && ||`, increment and decrement `++ --`, and the compound assignments `+= -= *= /= %= &= |= ^= <<= >>= >>>=`. `n += 3` and `n++` mutate their target in place. Class types may declare their own binary and index operators (Classes §8.7). String concatenation and its conversions are Conversions §6.4.
 
 ## 14.3 Method Invocation
 
 An invocation names a receiver (or a class, for statics), a method, and arguments. Overload selection is by name and parameter types. Transfer mode is not part of the signature (Ownership §5.5.1).
 
-Each class-typed argument travels with the caller's ownership decision: `f(x)` lends, `f(#x)` transfers, and the hidden per-call flag tells the callee which it got (Ownership §5.5). A call result binds per the callee's return spelling: a `#T` result must be received with `#=` (Ownership §5.5.2).
+Each class-typed argument travels with the caller's ownership decision. `f(x)` lends, `f(#x)` transfers, and the hidden per-call flag tells the callee which it got (Ownership §5.5). A call result binds per the callee's return spelling, so a `#T` result must be received with `#=` (Ownership §5.5.2).
 
 ## 14.4 Instantiation Expressions
 
-`stack T(args)` and `heap T(args)` construct an instance (Allocation §4.1) and are expressions: they may initialize a binding, pass as an argument, or stand in any value position. Construction selects a constructor by argument types. The absence of a match is a compile-time error, `CAJETA_ERROR_NO_MATCHING_CONSTRUCTOR` — an instance is never left with its constructor unrun.
+`stack T(args)` and `heap T(args)` construct an instance (Allocation §4.1) and are expressions. They may initialize a binding, pass as an argument, or stand in any value position. Construction selects a constructor by argument types. The absence of a match is a compile-time error, `CAJETA_ERROR_NO_MATCHING_CONSTRUCTOR`, so an instance is never left with its constructor unrun.
 
 An anonymous `heap T(args)` in transfer position promotes its title implicitly (Allocation §4.1).
 
@@ -32,7 +32,7 @@ Capture follows the memory model, with no separate capture syntax:
 
 - **Primitives capture by value**, copied at capture time, so later mutation of the source is invisible to the closure.
 - **Class-typed values capture as borrows** by default, and `#name` in the body transfers the capture.
-- **A lambda with no captures is a bare function**: the function value's captures pointer is null and calls dispatch directly, so non-capturing lambdas add no cost.
+- **A lambda with no captures is a bare function.** The function value's captures pointer is null and calls dispatch directly, so non-capturing lambdas add no cost.
 
 **Example 14.5-1.** Value capture, a capturing lambda, and a pipeline.
 
@@ -51,16 +51,16 @@ int32 sum = xs.stream()
 System.stdout.println(sum);          // 72
 ```
 
-> *Discussion.* Compile-time rejection of a closure-captured borrow that outlives its source is interim as of 0.27.0 — a lint plus debug-runtime checks rather than a strict type error. Strict enforcement is planned. Per-lambda type parameters are not supported, and a class-level `T` referenced in a lambda body is fine.
+> *Discussion.* Compile-time rejection of a closure-captured borrow that outlives its source is interim as of 0.27.0. Today it is a lint plus debug-runtime checks. Strict enforcement as a type error is planned. Per-lambda type parameters are not supported, and a class-level `T` referenced in a lambda body is fine.
 
 ## 14.6 Method References
 
 `::` forms a function value from an existing method. Each form desugars to a lambda, and the desugaring determines the captures:
 
-- `MyClass::staticMethod` — no captures.
-- `obj::method` — captures `obj` (a borrow, by default).
-- `MyClass::instanceMethod` — unbound, so the receiver becomes the first parameter. No captures.
-- `MyClass::heap` — a constructor reference producing a fresh instance.
+- `MyClass::staticMethod` captures nothing.
+- `obj::method` captures `obj`, as a borrow by default.
+- `MyClass::instanceMethod` is unbound, so the receiver becomes the first parameter. It captures nothing.
+- `MyClass::heap` is a constructor reference producing a fresh instance.
 
 ## 14.7 Ownership Spellings in Expressions
 

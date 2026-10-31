@@ -1,6 +1,6 @@
 # Sort
 
-`cajeta.collection.Sort` — general-purpose host sorting and the shared comparison protocol. The int64 row is a pattern matrix (random, ascending, descending, duplicates) after sort-research-rs; the first suite skipped three of the four because the quicksort of the day overflowed its range stack on sorted input.
+`cajeta.collection.Sort` is general-purpose host sorting and the shared comparison protocol. The int64 row is a pattern matrix of random, ascending, descending and duplicate inputs, after sort-research-rs. The first suite skipped three of the four because the quicksort of the day overflowed its range stack on sorted input.
 
 ## Benchmarks
 
@@ -13,7 +13,7 @@
 
 ## Results
 
-One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
+Each benchmark has one chart, drawn for the machine selected at the top of the page. Languages are the bars, best first. Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
 
 ```bench
 id: collection/sort-int64
@@ -43,7 +43,7 @@ cd bench
 ./bench.sh --bench sort-int64 --competitors # every pinned competitor
 ```
 
-Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+Every row records the compiler and competitor versions, flags, machine, OS and driver. [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
 
 ## See also
 

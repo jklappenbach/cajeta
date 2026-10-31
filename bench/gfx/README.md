@@ -1,6 +1,6 @@
 # cajeta.gfx
 
-Texture sampling from a kernel.
+This section measures texture sampling from a kernel.
 
 | Page | |
 |---|---|

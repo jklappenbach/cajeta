@@ -1,6 +1,6 @@
 # Calls and dispatch
 
-A direct call, a virtual call through a base class, an interface call, a call through a monomorphized template, a lambda, a method reference and `instanceof`. Cajeta templates are instantiated per type the way C++ templates are, so the template row is the one to read against Java's erased generics.
+This page measures a direct call, a virtual call through a base class, an interface call, a call through a monomorphized template, a lambda, a method reference and `instanceof`. Cajeta templates are instantiated per type the way C++ templates are, so the template row is the one to read against Java's erased generics.
 
 ## Benchmarks
 
@@ -16,7 +16,7 @@ A direct call, a virtual call through a base class, an interface call, a call th
 
 ## Results
 
-One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
+Each benchmark has one chart, drawn for the machine selected at the top of the page. Languages are the bars, best first. Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
 
 ```bench
 id: lang/call-direct
@@ -61,7 +61,7 @@ cd bench
 ./bench.sh --bench call-direct --competitors # every pinned competitor
 ```
 
-Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+Every row records the compiler and competitor versions, flags, machine, OS and driver. [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
 
 ## See also
 

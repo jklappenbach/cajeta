@@ -1,6 +1,6 @@
 # Fuse
 
-`cajeta.nucleo.expr.Fuse` — compile-time fusion of elementwise tensor expressions: the fused row against the same expression written as separate operations.
+`cajeta.nucleo.expr.Fuse` is compile-time fusion of elementwise tensor expressions. The row reads the fused expression against the same expression written as separate operations.
 
 ## Benchmarks
 
@@ -10,7 +10,7 @@
 
 ## Results
 
-One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
+Each benchmark has one chart, drawn for the machine selected at the top of the page. Languages are the bars, best first. Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
 
 ```bench
 id: nucleo/fuse-elementwise-chain
@@ -25,7 +25,7 @@ cd bench
 ./bench.sh --bench fuse-elementwise-chain --competitors # every pinned competitor
 ```
 
-Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+Every row records the compiler and competitor versions, flags, machine, OS and driver. [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
 
 ## See also
 

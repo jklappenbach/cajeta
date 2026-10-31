@@ -1,6 +1,6 @@
 # cajeta.collection
 
-The collections, each against the standard container of five languages and, where one exists, the fastest known library in that language.
+This section measures the collections, each against the standard container of five languages and, where one exists, the fastest known library in that language.
 
 | Page | |
 |---|---|

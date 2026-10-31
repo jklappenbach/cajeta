@@ -4,11 +4,11 @@ This chapter defines four ways to shape data. Arrays are the indexed storage typ
 
 ## 12.1 Arrays
 
-`T[]` is an array of `T`. An array is created with an allocation expression naming its length — `heap int32[3]` — and reports its length through `count()`. Elements are read and written by index.
+`T[]` is an array of `T`. An array is created with an allocation expression naming its length, such as `heap int32[3]`, and reports its length through `count()`. Elements are read and written by index.
 
-Index access is bounds-checked at run time: an out-of-bounds access reports the index and the dimension size and terminates the program. It is not an exception a program can catch.
+Index access is bounds-checked at run time. An out-of-bounds access reports the index and the dimension size and terminates the program. It is not an exception a program can catch.
 
-An element store participates in ownership: a plain store lends into the slot, `#=` passes the source's mode into it, and the slot records the arrived mode in its own ownership bit (Ownership §5.4). Keeping a `T` or `#T` formal or an owned local in an element of a field follows the same rule as a field store. It is stored with `#=`, or a formal that is only ever borrowed is spelled `^T` (Ownership §5.7).
+An element store participates in ownership. A plain store lends into the slot, `#=` passes the source's mode into it, and the slot records the arrived mode in its own ownership bit (Ownership §5.4). Keeping a `T` or `#T` formal or an owned local in an element of a field follows the same rule as a field store. It is stored with `#=`, or a formal that is only ever borrowed is spelled `^T` (Ownership §5.7).
 
 **Example 12.1-1.** Creation, length, and indexing.
 
@@ -27,7 +27,7 @@ There is no `byte` type. `int8[]` (or `uint8[]`) is the byte buffer (Types §3.1
 
 ## 12.2 Views
 
-A `view` declares a byte-exact overlay onto a buffer: every field's value is encoded directly in the buffer's bytes, at the declared offset, in the declared endianness. Reading a view field reads the buffer, and writing one writes it. Nothing is copied, allocated, or owned — a view borrows the buffer it is constructed over.
+A `view` declares a byte-exact overlay onto a buffer. Every field's value is encoded directly in the buffer's bytes, at the declared offset, in the declared endianness. Reading a view field reads the buffer, and writing one writes it. A view borrows the buffer it is constructed over, so nothing is copied, allocated, or owned.
 
 ```text
 viewDeclaration
@@ -36,14 +36,14 @@ viewDeclaration
     ;
 ```
 
-What keeps the bytes-are-the-value guarantee:
+Four rules keep the bytes-are-the-value guarantee:
 
-- A view field is a primitive, a `String`, an array of primitives, or a nested view — never a class reference: a pointer in untrusted bytes is a wild pointer.
+- A view field is a primitive, a `String`, an array of primitives, or a nested view. A class reference is never a view field, because a pointer in untrusted bytes is a wild pointer.
 - A view implements no interfaces, inherits from nothing, and has no virtual methods and no vtable.
-- Layout is declared, not compiler-chosen: fields lay out in declaration order, packed by default, and `@Align(natural)` opts into ABI-natural padding. Endianness is declared with `@BigEndian`, `@LittleEndian`, or `@HostEndian` (Annotations §10.3).
+- Layout is declared by the program, and the compiler does not choose it. Fields lay out in declaration order, packed by default, and `@Align(natural)` opts into ABI-natural padding. Endianness is declared with `@BigEndian`, `@LittleEndian`, or `@HostEndian` (Annotations §10.3).
 - `String` and array fields are variable-size and lay out inline as a length prefix plus data. Fields after one have their offsets resolved once at construction and cached, so every access remains a constant-offset read.
 
-A view is constructed by calling its name with the buffer: `Header h = Header(buf)`. Construction verifies the buffer covers the fixed prefix and that every variable-size length prefix stays in bounds, throwing a parse error otherwise — after construction, field access needs no further validation.
+A view is constructed by calling its name with the buffer, as in `Header h = Header(buf)`. Construction verifies the buffer covers the fixed prefix and that every variable-size length prefix stays in bounds, throwing a parse error otherwise. After construction, field access needs no further validation.
 
 **Example 12.2-1.** A declared wire layout, written and read back.
 
@@ -68,11 +68,11 @@ System.stdout.println(C.run());
 
 ## 12.3 Slices and Shared Stakes
 
-A slice is a value that designates a range of another value's immutable backing buffer — `String.substring` is the canonical producer. A borrow cannot express a slice that outlives its source, and forcing a copy would tax the common case, so the shared stake exists for exactly this. A stake is a property of the buffer, not of any binding (Ownership §5.1) — a runtime count co-owns the buffer, and the binding holding the slice remains a borrow.
+A slice is a value that designates a range of another value's immutable backing buffer, and `String.substring` is the canonical producer. A borrow cannot express a slice that outlives its source, and forcing a copy would tax the common case, so the shared stake exists for exactly this. A stake is a property of the buffer itself and belongs to no binding (Ownership §5.1). A runtime count co-owns the buffer, and the binding holding the slice remains a borrow.
 
-- **Escaping-borrow resolution.** When a borrow of an eligible source escapes its frame — returned, stored beyond the source's life — it does not error (the identity-object discipline of Ownership §5.7 does not apply): it resolves into a copy for small values, a shared stake in the backing buffer for large ones, and a copy for arena-backed ones.
-- **Eligibility** is immutable leaf buffers only — values with no identity, no mutation, and no outgoing references. The graph of staked buffers is therefore acyclic: no cycles, no weak references, no leaks.
-- **Staking is one-way** — a staked buffer never returns to sole ownership, and only immutable leaf buffers are staked, while identity objects and mutable values never are. Moves of a staked value are count-neutral. The count lives in a side table keyed by buffer base, and a buffer that is never sliced-and-stored pays one predicted bit test at drop and nothing else. The last stake frees the buffer.
+- **Escaping-borrow resolution.** When a borrow of an eligible source escapes its frame, whether returned or stored beyond the source's life, it does not error, because the identity-object discipline of Ownership §5.7 does not apply. It resolves into a copy for small values, a shared stake in the backing buffer for large ones, and a copy for arena-backed ones.
+- **Eligibility** is limited to immutable leaf buffers, which are values with no identity, no mutation, and no outgoing references. The graph of staked buffers is therefore acyclic, with no cycles, no weak references, and no leaks.
+- **Staking is one-way.** A staked buffer never returns to sole ownership. Only immutable leaf buffers are staked, and identity objects and mutable values never are. Moves of a staked value are count-neutral. The count lives in a side table keyed by buffer base, and a buffer that is never sliced-and-stored pays one predicted bit test at drop and nothing else. The last stake frees the buffer.
 
 **Example 12.3-1.** A substring escaping its source's frame.
 
@@ -86,7 +86,7 @@ public final class C {
 System.stdout.println(C.tail());     // world
 ```
 
-> *Discussion.* `Slice<T>` — the generalization of the mechanism beyond `String` — is designed but not shipped. When it lands, this section governs it with `String` as one producer among several.
+> *Discussion.* `Slice<T>`, the generalization of the mechanism beyond `String`, is designed but not shipped. When it lands, this section governs it with `String` as one producer among several.
 
 ## 12.4 Records
 
@@ -138,7 +138,7 @@ public final class C {
 
 Two rules keep a record a value.
 
-- **Fields are value types** — a primitive, a `Vector`, another record, or an `@ValueType` class. A field of a heap class type is a compile-time error, `CAJETA_ERROR_VALUE_TYPE`. An identity reference inside a value would defeat the copy.
+- **Fields are value types**, meaning a primitive, a `Vector`, another record, or an `@ValueType` class. A field of a heap class type is a compile-time error, `CAJETA_ERROR_VALUE_TYPE`. An identity reference inside a value would defeat the copy.
 - **A record implements no interface.** `record R implements I` parses and is rejected with `CAJETA_ERROR_RECORD_IMPLEMENTS`. Interface dispatch needs a vtable and a record has none. A type that must be reached polymorphically is a class (Classes §8).
 
 ### 12.4.1 Records and Views
@@ -157,4 +157,4 @@ Parse or emit a wire format with a view. Model a data shape with a record. A vie
 
 Both exclude class-typed fields, for different reasons. In a view, a pointer read out of bytes the program did not write is a wild pointer. In a record, an identity reference would survive a copy that is supposed to be independent.
 
-> *Discussion.* Records reach further than this chapter states. They carry schemas as type arguments (`Table<Tick>`), they support static vtable-free composition through `extends`, and they are the data-modeling primitive the núcleo typed surface stands on. Positional construction, field defaults, and destructuring are recorded as open in `nucleo/records-spec.md` and are not specified here. That document also still describes `record` as unimplemented, which is stale — every rule in this section is enforced by the shipped compiler.
+> *Discussion.* Records reach further than this chapter states. They carry schemas as type arguments (`Table<Tick>`), they support static vtable-free composition through `extends`, and they are the data-modeling primitive the núcleo typed surface stands on. Positional construction, field defaults, and destructuring are recorded as open in `nucleo/records-spec.md` and are not specified here. That document also still describes `record` as unimplemented, which is stale. Every rule in this section is enforced by the shipped compiler.

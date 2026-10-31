@@ -1,8 +1,8 @@
 # Catalog: every cajeta-xgboost kernel
 
-Generated from the sources of `dev.cajeta.xgboost` 0.7.0 on 2026-10-25 by `tools/catalog/gen-catalog.py`: every `@Kernel` in the `gpu` package, its name linked to its source line, the training stage it serves, whether it declares a 32-lane wave, and under it its role from the kernel's own documentation. The stages, decompositions and the one measured adaptation are described in [Gradient boosting on the device](kernels-xgboost.md).
+This catalog was generated from the sources of `dev.cajeta.xgboost` 0.7.0 on 2026-10-25 by `tools/catalog/gen-catalog.py`. It lists every `@Kernel` in the `gpu` package, with its name linked to its source line, the training stage it serves, whether it declares a 32-lane wave, and under it its role from the kernel's own documentation. The stages, decompositions and the one measured adaptation are described in [Gradient boosting on the device](kernels-xgboost.md).
 
-33 kernels. Every one is integer-exact across backends except the gradient and leaf kernels, whose float32 results are per row and need no reduction.
+There are 33 kernels. Every one is integer-exact across backends except the gradient and leaf kernels, whose float32 results are per row and need no reduction.
 
 <table class="kernel-catalog">
 <thead><tr><th>kernel</th><th>stage</th><th class="census"><code>@Wave(32)</code></th></tr></thead>

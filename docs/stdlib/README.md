@@ -1,10 +1,11 @@
 # Stdlib reference
 
-One document per public stdlib class: purpose, the `@EntryPoint`-tagged
-methods, and the full public method surface, verified against
-`runtime/src/cajeta/`. The [guide](../guide/README.md) is the linear
-tutorial; it links here for API detail. Docs link the
-[tour](../../samples/tour/) demo that exercises each class, where one exists.
+There is one document per public stdlib class. Each gives the class's
+purpose, its `@EntryPoint`-tagged methods, and the full public method
+surface, verified against `runtime/src/cajeta/`. The
+[guide](../guide/README.md) is the linear tutorial, and it links here for
+API detail. Each document links the [tour](../../samples/tour/) demo that
+exercises its class, where one exists.
 
 ## cajeta.lang
 
@@ -13,7 +14,7 @@ tutorial; it links here for API detail. Docs link the
 | [String](lang/String.md) | Immutable UTF-8 text, the single string type |
 | [StringBuilder](lang/StringBuilder.md) | Growable byte buffer for building a String in amortized O(N) |
 | [Optional](lang/Optional.md) | Value-typed sum: present or empty |
-| [Pair](lang/Pair.md) | Two-field generic value type |
+| [Pair](lang/Pair.md) | Two-field template value type |
 | [Math](lang/Math.md) | Numeric utilities + device math intrinsics |
 | [Guid](lang/Guid.md) | 128-bit UUID backed by a single `uint128` |
 | [Slice](lang/Slice.md) | Zero-copy array window, the `arr[a:b]` result type |
@@ -124,12 +125,12 @@ tutorial; it links here for API detail. Docs link the
 | [Uri](io/net/uri/Uri.md) | Immutable parsed URI (RFC 3986) |
 | [UriBuilder](io/net/uri/UriBuilder.md) | Builder for `Uri` |
 
-> HTTP/1.1 and WebSocket are **not stdlib** — they are application-layer
-> protocols and live in the external
+> HTTP/1.1 and WebSocket are application-layer protocols, so they live
+> outside the stdlib in the external
 > [`dev.cajeta.http`](https://github.com/jklappenbach/cajeta-http) library.
 
-> TLS is **not stdlib** either: `TlsStream`, `TlsListener` and `TlsConnection`
-> live in the external
+> TLS lives outside the stdlib as well. `TlsStream`, `TlsListener` and
+> `TlsConnection` are in the external
 > [`dev.cajeta.crypto`](https://github.com/jklappenbach/cajeta-crypto) library
 > (`dev.cajeta.crypto.tls`), which took them from `cajeta.io.net.tls`.
 
@@ -145,7 +146,7 @@ tutorial; it links here for API detail. Docs link the
 Cryptographic digests (`Sha256`, `Sha1`, `MD5`, `Blake3`), `HmacSha256`,
 `HmacSha1`, `Pbkdf2`, `Totp` and `SecureRandom` are the external
 [`dev.cajeta.crypto`](https://github.com/jklappenbach/cajeta-crypto) library,
-with the same names and APIs; `cajeta.hash.Sha256` became
+with the same names and APIs. For example, `cajeta.hash.Sha256` became
 `dev.cajeta.crypto.Sha256`. `Hash.constantTimeEquals` stays here.
 
 ## cajeta.math
@@ -222,8 +223,8 @@ with the same names and APIs; `cajeta.hash.Sha256` became
 
 ## cajeta.aot
 
-The compile-time DI graph. `@Component`, `@Inject` and `@Factory` are covered in
-the [guide](../guide/19-di-aspects.md).
+This package is the compile-time DI graph. `@Component`, `@Inject` and
+`@Factory` are covered in the [guide](../guide/19-di-aspects.md).
 
 | Class | |
 |---|---|
@@ -249,7 +250,8 @@ the [guide](../guide/19-di-aspects.md).
 
 ## cajeta.nucleo
 
-The ML spine: compile-time function transforms and the runtime eager tape.
+This package is the ML spine, with compile-time function transforms and the
+runtime eager tape.
 
 | Class | |
 |---|---|
@@ -274,5 +276,5 @@ The ML spine: compile-time function transforms and the runtime eager tape.
 | [BackendRegistry](ifx/BackendRegistry.md) | UI backend registry, probe, and dispatcher |
 | [Window](ifx/Window.md) | The portable window contract |
 
-Coverage is checked: `scripts/check-stdlib-coverage.sh` fails if any class
+Coverage is checked. `scripts/check-stdlib-coverage.sh` fails if any class
 with an `@EntryPoint`-tagged member lacks a document here.

@@ -1,6 +1,6 @@
 # Server
 
-`cajeta-http` — the TechEmpower plaintext and JSON shapes without a database, over HTTP/1.1 keep-alive and HTTP/2, at 64 and 512 connections. `oha` drives; `wrk` cross-checks one row. Every competitor's response is byte-compared before load.
+This page measures `cajeta-http` on the TechEmpower plaintext and JSON shapes without a database, over HTTP/1.1 keep-alive and HTTP/2, at 64 and 512 connections. `oha` drives the load and `wrk` cross-checks one row. Every competitor's response is byte-compared before load.
 
 ## Benchmarks
 
@@ -13,7 +13,7 @@
 
 ## Results
 
-One chart per benchmark, for the machine selected at the top of the page. Languages are the bars, best first; Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
+Each benchmark has one chart, drawn for the machine selected at the top of the page. Languages are the bars, best first. Cajeta's bar is in color and the competitors' are gray. A skipped competitor keeps its row with the reason in place of a bar. A benchmark with no row on the selected machine says so and shows nothing else.
 
 ```bench
 id: http/plaintext-h1
@@ -43,7 +43,7 @@ cd bench
 ./bench.sh --bench plaintext-h1 --competitors # every pinned competitor
 ```
 
-Every row records the compiler and competitor versions, flags, machine, OS and driver; [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
+Every row records the compiler and competitor versions, flags, machine, OS and driver. [METHODOLOGY](../METHODOLOGY.md) states the rules a number must satisfy before it is published.
 
 ## See also
 

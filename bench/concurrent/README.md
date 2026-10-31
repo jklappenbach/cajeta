@@ -1,6 +1,6 @@
 # cajeta.concurrent
 
-Atomics, locks, channels and fibers. Fibers are stackful, so the spawn, footprint and wake rows are read against goroutines and virtual threads.
+This section measures atomics, locks, channels and fibers. Fibers are stackful, so the spawn, footprint and wake rows are read against goroutines and virtual threads.
 
 | Page | |
 |---|---|

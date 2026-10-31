@@ -1,6 +1,6 @@
 # 5 — Ownership & the Borrow Checker
 
-This chapter defines Cajeta's ownership model — the owned and borrow states — and the static analysis that enforces it. Every heap value has one responsible owner. A plain `=` produces a borrow, a `#` on the source surrenders the title, and `#=` is a passthrough that hands along whatever title its source holds. All enforcement is at compile time, with no ownership annotations in the type system and no reference counting on the owned path.
+This chapter defines Cajeta's ownership model and the static analysis that enforces it. The model has two states, owned and borrow. Every heap value has one responsible owner. A plain `=` produces a borrow, a `#` on the source surrenders the title, and `#=` is a passthrough that hands along whatever title its source holds. All enforcement is at compile time, with no ownership annotations in the type system and no reference counting on the owned path.
 
 ## 5.1 Ownership States
 
@@ -13,7 +13,7 @@ A binding to a title-bearing value is in one of two states. The state is inferre
 
 The **title** is the ownership stake in a value, the right and the obligation to drop it. A **borrow** is a reference without the title.
 
-One resolution operates beside the two states without adding a third. An escaping borrow of an immutable leaf buffer — a `String` produced by `substring` is the canonical case — resolves into a copy, or into a shared stake in the backing buffer. A stake is a property of the buffer, not of the binding. A runtime count co-owns the buffer, and the last stake frees it. The binding itself is a borrow. Stakes are specified in Arrays, Views, Slices & Records §12.
+One resolution operates beside the two states without adding a third. An escaping borrow of an immutable leaf buffer resolves into a copy, or into a shared stake in the backing buffer. A `String` produced by `substring` is the canonical case. A stake is a property of the buffer. A runtime count co-owns the buffer, and the last stake frees it. The binding itself is a borrow. Stakes are specified in Arrays, Views, Slices & Records §12.
 
 ## 5.2 The Borrow Operator
 
@@ -66,7 +66,7 @@ public final class C {
 
 A borrow must not outlive its source. The compiler tracks each owner's declaration site and scope end, and each borrow's source. A borrow that may outlive its source is a compile-time error at the use site.
 
-A borrow tracks its *path* from the named root, not only the variable it was read from. After `String n = person.address.city`, the borrow `n` is rooted at `person` with path `address.city`. Reassigning any link along that path — `person.address #= x` — invalidates everything derived from the link, and a subsequent use of `n` is a compile-time error.
+A borrow tracks its path from the named root, and the path records every link from the root to the value. After `String n = person.address.city`, the borrow `n` is rooted at `person` with path `address.city`. Reassigning any link along that path, as in `person.address #= x`, invalidates everything derived from the link, and a subsequent use of `n` is a compile-time error.
 
 Two further rules protect borrows.
 
@@ -196,9 +196,9 @@ public final class C {
 
 ## 5.4 The Passthrough Operator
 
-`#=` is a passthrough. It hands along whatever title its source actually holds — a transfer when the source owns, a borrow when it does not. `#=` is a single token, so an ownership store cannot be half-written. When the source owns, the store is a transfer and the source is demoted (§5.3). When the source is a borrow, the destination borrows and nothing is demoted.
+`#=` is a passthrough. It hands along whatever title its source actually holds. `#=` is a single token, so an ownership store cannot be half-written. When the source owns, the store is a transfer and the source is demoted (§5.3). When the source is a borrow, the destination borrows and nothing is demoted.
 
-A source holds no title in two ways, and `#=` forwards a borrow from either. A name that **never owned** — an alias, a field read, the result of a plain call — is one. A name **demoted** by an earlier transfer is the other. Neither has a title to give, so the destination borrows, nothing is demoted a second time, and the owner still drops the value exactly once. `#=` therefore never raises `CAJETA_ERROR_MOVE_OF_BORROW`. That diagnostic belongs to `#v` (§5.6), which asserts that its source holds a title to surrender.
+A source holds no title in two ways, and `#=` forwards a borrow from either. The first is a name that never owned, such as an alias, a field read, or the result of a plain call. The second is a name demoted by an earlier transfer. Neither has a title to give, so the destination borrows, nothing is demoted a second time, and the owner still drops the value exactly once. `#=` therefore never raises `CAJETA_ERROR_MOVE_OF_BORROW`. That diagnostic belongs to `#v` (§5.6), which asserts that its source holds a title to surrender.
 
 The destination may be a local binding, a field, or an element. A field or element store records the arrived mode in the slot's own ownership bit. A `#T` result is received the same way (§5.5.2), and a formal forwards its arrived mode through `#=` (§5.5).
 
@@ -249,15 +249,15 @@ public final class C {
 
 ## 5.5 Calls and Mode Forwarding
 
-The call site decides ownership. `f(x)` lends and `f(#x)` transfers. The callee is told what it got — every class-typed parameter and return carries a hidden per-call ownership flag, whose encoding is the Runtime & ABI companion's concern — so a formal is a *runtime* owner, neither statically a borrow nor statically an owner, but whichever the caller made it. Its drop entry is armed from the flag on entry. A local initialized from a call arms from the return flag the same way.
+The call site decides ownership. `f(x)` lends and `f(#x)` transfers. The callee is told what it got, because every class-typed parameter and return carries a hidden per-call ownership flag. The flag's encoding is the Runtime & ABI companion's concern. A formal is therefore a runtime owner. It is whichever the caller made it, and it is never statically a borrow or statically an owner. Its drop entry is armed from the flag on entry. A local initialized from a call arms from the return flag the same way.
 
 Three consequences follow.
 
 1. A surrendered argument the callee never consumes drops in the callee, on whatever exit the callee takes, including a `throw`.
 2. A lent argument leaves the callee's drop entry disarmed, and the caller still owns it.
-3. `#p` on a formal — at a store, a forward, or a return — consumes the formal and passes the *arrived* mode on. A forwarding chain threads the original caller's decision all the way down. A value lent into `outer` and forwarded with `#` to `inner` arrives at `inner` still lent, and nobody frees it.
+3. `#p` on a formal, at a store, a forward, or a return, consumes the formal and passes the arrived mode on. A forwarding chain threads the original caller's decision all the way down. A value lent into `outer` and forwarded with `#` to `inner` arrives at `inner` still lent, and nobody frees it.
 
-This is what makes mode-forwarding wrappers expressible, and it is why the move-of-borrow check (§5.6) deliberately excludes plain formals.
+This behavior makes mode-forwarding wrappers expressible. For the same reason, the move-of-borrow check (§5.6) deliberately excludes plain formals.
 
 **Example 5.5-1.** A mode-forwarding wrapper. `keep` forwards whichever mode arrived, and `run` transfers, so the buffer's title reaches the `Sink`.
 
@@ -310,13 +310,13 @@ a[0] = (int8) 5;
 System.stdout.println(C.f(a));    // CAJETA_ERROR_TRANSFER_REQUIRED
 ```
 
-Transfer mode is not part of a signature — dispatch erases `#` — so two declarations that differ only in mode collide. Declaring both `f(Cell c)` and `f(#Cell c)` is `CAJETA_ERROR_TRANSFER_MODE_OVERLOAD`. A plain formal already accepts both a lend and a transfer.
+Transfer mode is not part of a signature, because dispatch erases `#`, so two declarations that differ only in mode collide. Declaring both `f(Cell c)` and `f(#Cell c)` is `CAJETA_ERROR_TRANSFER_MODE_OVERLOAD`. A plain formal already accepts both a lend and a transfer.
 
 ### 5.5.2 Returns
 
 A plain `return x` hands back whatever title `x` held. A lent value stays lent, and an owned one transfers. `return #x` hands back the title.
 
-A method may declare its return type `#T`, promising the caller a title. A `#T` result must be received with `#=`, which is what makes the acquisition visible at the call site without opening the callee. Binding it with a plain `=` is a compile-time error. A plain-`T` result binds with a plain `=` and carries whatever mode the callee's frame held.
+A method may declare its return type `#T`, promising the caller a title. A `#T` result must be received with `#=`, and that spelling makes the acquisition visible at the call site without opening the callee. Binding it with a plain `=` is a compile-time error. A plain-`T` result binds with a plain `=` and carries whatever mode the callee's frame held.
 
 **Example 5.5-4.** A rejected program. A `#T` result bound with `=`.
 
@@ -336,7 +336,7 @@ System.stdout.println(q[0]);
 
 The receiving local's *type* never carries the marker. `#Point q = …` is a compile-time error (`CAJETA_ERROR_TYPE_TRANSFER_RETIRED`), because a local's role comes from its initializer.
 
-> *Discussion.* Nothing in user code reads the per-call flag positionally, and the retired `Cajeta.moveMask()` accessor is rejected with `CAJETA_ERROR_MOVEMASK_RETIRED`. Code that branches on a formal's arrived mode calls `Cajeta.owned(formal)`. Ownership is never inferred from the body. A lend at a local's last use is often a transfer the author did not spell, and the compiler advises (§5.10) rather than guesses, because the guess is wrong exactly where it matters — a value handed to a spawned task outlives the frame that appears finished with it.
+> *Discussion.* Nothing in user code reads the per-call flag positionally, and the retired `Cajeta.moveMask()` accessor is rejected with `CAJETA_ERROR_MOVEMASK_RETIRED`. Code that branches on a formal's arrived mode calls `Cajeta.owned(formal)`. Ownership is never inferred from the body. A lend at a local's last use is often a transfer the author did not spell. The compiler advises (§5.10) and never guesses, because the guess is wrong exactly where it matters. A value handed to a spawned task outlives the frame that appears finished with it.
 
 ### 5.5.3 Borrow-only parameters
 
@@ -364,9 +364,9 @@ public final class C {
 
 ## 5.6 Restrictions on Transfer
 
-This section governs `#`, the transfer spelling. `#` asserts that its source holds a title to surrender, so the restriction is a single rule: **you cannot transfer from a borrow.** Applying `#` to a value the compiler can prove holds no title is a compile-time error, `CAJETA_ERROR_MOVE_OF_BORROW`.
+This section governs `#`, the transfer spelling. `#` asserts that its source holds a title to surrender, so the restriction is a single rule. You cannot transfer from a borrow. Applying `#` to a value the compiler can prove holds no title is a compile-time error, `CAJETA_ERROR_MOVE_OF_BORROW`.
 
-A transferred source becomes a borrow, so a second transfer is the same rule seen twice, not a separate one:
+A transferred source becomes a borrow, so a second transfer is the same rule seen twice:
 
 ```
 T a = heap T();
@@ -374,9 +374,9 @@ T b = #a;      // valid   -- a holds the title, b takes it
 T c = #a;      // rejected -- a is a borrow now
 ```
 
-Lending reaches the same place by the other road. `T b = a` lends, so `#b` is a transfer from a borrow and is rejected for the identical reason.
+Lending reaches the same rule. `T b = a` lends, so `#b` is a transfer from a borrow and is rejected for the identical reason.
 
-What the compiler can PROVE holds no title is the limit of the rule. A local bound to a plain (non-`#`) call is not provably a borrow, because a plain return is runtime-conditional (§5.5.2) — it may well arrive carrying a title. `T b = lend(a); T c = #b;` therefore compiles, and whether it is correct is decided at run time.
+The rule reaches only what the compiler can prove holds no title. A local bound to a plain (non-`#`) call is not provably a borrow, because a plain return is runtime-conditional (§5.5.2) and may arrive carrying a title. `T b = lend(a); T c = #b;` therefore compiles, and whether it is correct is decided at run time.
 
 None of this reaches `#=`. A passthrough asserts nothing and claims nothing, so from a titleless source it simply forwards a borrow (§5.4). `b #= a` followed by `c #= a` is a transfer followed by a borrow, and it compiles.
 
@@ -434,7 +434,7 @@ The same table governs an element store (`this.items[i] = v`) and a nested path 
 
 `=` never moves. An owned local stored with `=` is rejected even when no later statement reads it, so `String w #= s.substring(1, 9); this.v = w;` is an error and `this.v #= w;` is the fix.
 
-Strings follow every rule in this section. A `#=` of an owned window moves the window and its shared stake on the root. A lent window stored with `#=` resolves to a copy up to 256 bytes, or to a shared stake on the root above that. Frame-arena bytes always copy when they escape. A String `=` into a field is a plain borrow and makes no copy. To keep your own String past its source, write `this.v #= o.v.clone()`. A String array slot follows the same rule: each slot carries its own title, so `a[i] = s` borrows and `a[i] #= s` takes the title or resolves a lent source.
+Strings follow every rule in this section. A `#=` of an owned window moves the window and its shared stake on the root. A lent window stored with `#=` resolves to a copy up to 256 bytes, or to a shared stake on the root above that. Frame-arena bytes always copy when they escape. A String `=` into a field is a plain borrow and makes no copy. To keep your own String past its source, write `this.v #= o.v.clone()`. A String array slot follows the same rule. Each slot carries its own title, so `a[i] = s` borrows and `a[i] #= s` takes the title or resolves a lent source.
 
 **Holders.** A store into a field or element of a local, the *holder*, follows the same table when the holder escapes. A holder escapes when it is returned, passed with `#`, stored with `#=`, or stored into a field, an element, a static, or another holder that escapes or is not the frame's own. A holder bound from a parameter, a field read or a call is not the frame's own, so a store into it is always checked. A holder declared in an outer block that keeps an owned local declared in an inner block outlives that local, so the store is checked too. A holder bound in the frame that stays local is exempt.
 
@@ -492,7 +492,7 @@ public final class C {
 }
 ```
 
-**Dangling lend.** When a method lends one of its own owned locals to a holder local through a call that retains it, and then returns the holder, the return is a compile-time error, `CAJETA_ERROR_DANGLING_LEND`. The holder would leave holding a pointer to a local that is about to drop. The check is intra-procedural and single-hop. It fires only when the callee actually retains, because a method that merely reads its argument cannot strand anything. The fix is to say what was meant. `h.keep(#s)` gives the holder the title.
+**Dangling lend.** When a method lends one of its own owned locals to a holder local through a call that retains it, and then returns the holder, the return is a compile-time error, `CAJETA_ERROR_DANGLING_LEND`. The holder would leave holding a pointer to a local that is about to drop. The check is intra-procedural and single-hop. It fires only when the callee actually retains, because a method that merely reads its argument cannot strand anything. The fix is to spell the transfer. `h.keep(#s)` gives the holder the title.
 
 **Example 5.7-4.** A dangling lend through a retaining call is rejected.
 
@@ -520,9 +520,9 @@ A sibling field alias is not checked either. `this.a = this.b` stores a legal bo
 
 ## 5.8 Field Ownership and the Live-Set Claim
 
-A field's ownership status is resolved at drop time, not at declaration. `p.field #= x` and `p.field = heap T(...)` make the field an owner. `p.field = y`, where `y` is a borrow, stores the borrow, and the field aliases `y`'s source.
+A field's ownership status is resolved at drop time. The declaration does not fix it. `p.field #= x` and `p.field = heap T(...)` make the field an owner. `p.field = y`, where `y` is a borrow, stores the borrow, and the field aliases `y`'s source.
 
-Every `heap` allocation is registered in a global live set. When an owner drops, the synthesized drop body offers each owned-shape field to its drop dispatcher, and the dispatcher makes an atomic *claim* — remove-if-present — on the field's address. The first claimant frees the value and runs its destructor. Every later claimant for the same address, whether the owning local's own drop or another field aliasing it, finds it gone and does nothing. The claim is what keeps aliased fields from double-freeing without reference counts.
+Every `heap` allocation is registered in a global live set. When an owner drops, the synthesized drop body offers each owned-shape field to its drop dispatcher, and the dispatcher makes an atomic claim, a remove-if-present, on the field's address. The first claimant frees the value and runs its destructor. Every later claimant for the same address, whether the owning local's own drop or another field aliasing it, finds it gone and does nothing. The claim keeps aliased fields from double-freeing without reference counts.
 
 > *Discussion.* A use after free through an aliased field whose source has already dropped is the programmer's responsibility in v1. A static lifetime tracker for that case is planned but not implemented.
 

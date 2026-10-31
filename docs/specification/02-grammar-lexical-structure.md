@@ -1,6 +1,6 @@
 # 2 — Grammar & Lexical Structure
 
-This chapter defines the notation grammar productions use throughout the specification, and the lexical structure of Cajeta source: encoding, tokens, identifiers, keywords, literals, operators, and comments.
+This chapter defines the notation grammar productions use throughout the specification, and the lexical structure of Cajeta source. The lexical structure covers encoding, tokens, identifiers, keywords, literals, operators, and comments.
 
 ## 2.1 Grammar Notation
 
@@ -14,11 +14,11 @@ The complete grammar, collected, is Complete Grammar §21.
 
 ## 2.2 Source Text
 
-Source text is Unicode, and the reference implementation reads source files as UTF-8. The language is case-sensitive. Whitespace — space, tab, carriage return, line feed, and form feed — separates tokens and has no other meaning.
+Source text is Unicode, and the reference implementation reads source files as UTF-8. The language is case-sensitive. Whitespace separates tokens and has no other meaning. The whitespace characters are space, tab, carriage return, line feed, and form feed.
 
 ## 2.3 Tokenization
 
-The lexer is greedy: at each position it produces the longest token the lexical grammar admits, and among equal-length matches, the rule declared first. In particular, `#=` is one indivisible token, declared before `#` so that a title store cannot be read as `#` followed by `=`:
+The lexer is greedy. At each position it produces the longest token the lexical grammar admits, and among equal-length matches, the rule declared first. In particular, `#=` is one indivisible token. It is declared before `#` so that a title store cannot be read as `#` followed by `=`:
 
 ```text
 SHARP_ASSIGN:       '#=';
@@ -31,7 +31,7 @@ REFERENCE:          '#';
 IDENTIFIER:         Letter LetterOrDigit*;
 ```
 
-A letter is `a`–`z`, `A`–`Z`, `$`, `_`, or any Unicode character above U+007F that is not a surrogate (supplementary characters are accepted as surrogate pairs). Digits are `0`–`9`. An identifier is any such sequence that is not a keyword.
+A letter is `a`–`z`, `A`–`Z`, `$`, `_`, or any Unicode character above U+007F that is not a surrogate. Supplementary characters are accepted as surrogate pairs. Digits are `0`–`9`. An identifier is any such sequence that is not a keyword.
 
 **Example 2.4-1.** Identifiers may use non-ASCII letters.
 
@@ -56,13 +56,13 @@ switch     this        throw      throws     transient  try        var
 view       void        volatile   while      yield
 ```
 
-The primitive type names are also keywords: `int8` `uint8` `int16` `uint16` `int32` `uint32` `int64` `uint64` `int128` `uint128`, `float16` `float32` `float64` `float128`, the reduced-precision floats `float4e2m1` `float6e2m3` `float6e3m2` `float8e4m3` `float8e5m2` `float8e4m3fnuz` `float8e5m2fnuz`, plus `boolean` and `char` above. The literal words `true`, `false`, and `null` are literals, not keywords, but are equally unavailable as identifiers.
+The primitive type names are also keywords: `int8` `uint8` `int16` `uint16` `int32` `uint32` `int64` `uint64` `int128` `uint128`, `float16` `float32` `float64` `float128`, the reduced-precision floats `float4e2m1` `float6e2m3` `float6e3m2` `float8e4m3` `float8e5m2` `float8e4m3fnuz` `float8e5m2fnuz`, plus `boolean` and `char` above. The words `true`, `false`, and `null` are literals. They are not keywords, but they are equally unavailable as identifiers.
 
 Three groups carry qualifications:
 
 - **Reserved, no grammar role today:** `goto` and `structure` appear in no parser rule. `var` is reserved for local type inference.
 - **Soft keyword:** `mut` is also accepted where an identifier is expected, so existing names continue to parse. Its keyword role is per-field mutation opt-in on records.
-- **Module words:** `open`, `requires`, `exports`, `opens`, `to`, `uses`, `provides`, `with`, `transitive` (and the module-declaration token itself) are reserved for future module syntax but are consumed by no rule today, and remain freely usable as ordinary identifiers so that names like `open` and `requires` parse.
+- **Module words:** `open`, `requires`, `exports`, `opens`, `to`, `uses`, `provides`, `with`, `transitive`, and the module-declaration token itself are reserved for future module syntax. No rule consumes them today, so they remain freely usable as ordinary identifiers and names like `open` and `requires` parse.
 
 ## 2.6 Literals
 
@@ -75,7 +75,7 @@ OCT_LITERAL:        '0' '_'* [0-7] ([0-7_]* [0-7])? [lL]?;
 BINARY_LITERAL:     '0' [bB] [01] ([01_]* [01])? [lL]?;
 ```
 
-Decimal, hexadecimal (`0x`), octal (leading `0`), and binary (`0b`) forms. Underscores may separate digits for readability, and they carry no value. The `l`/`L` suffix marks a 64-bit literal.
+Integer literals come in decimal, hexadecimal (`0x`), octal (leading `0`), and binary (`0b`) forms. Underscores may separate digits for readability, and they carry no value. The `l`/`L` suffix marks a 64-bit literal.
 
 ### 2.6.2 Floating-point literals
 
@@ -85,7 +85,7 @@ FLOAT_LITERAL:      (Digits '.' Digits? | '.' Digits) ExponentPart? [fFdD]?
 HEX_FLOAT_LITERAL:  '0' [xX] (HexDigits '.'? | HexDigits? '.' HexDigits) [pP] [+-]? Digits [fFdD]?;
 ```
 
-Decimal forms with optional exponent (`1.5e3`), and hexadecimal forms with a binary exponent (`0x1.8p3`). The `f`/`F` suffix marks `float32`, and `d`/`D` marks `float64`.
+Floating-point literals come in decimal forms with an optional exponent (`1.5e3`) and hexadecimal forms with a binary exponent (`0x1.8p3`). The `f`/`F` suffix marks `float32`, and `d`/`D` marks `float64`.
 
 ### 2.6.3 Boolean, character, string, and null literals
 
@@ -110,13 +110,13 @@ String s = "a\tb";
 System.stdout.println("" + million + " " + mask + " " + bits + " " + f + " " + s);
 ```
 
-> *Discussion.* The lexer also defines a text-block token — `"""` through `"""`, spanning lines. Delimiter and indentation processing for text blocks is not finished (as of 0.27.0 the delimiters' inner quotes reach the string value verbatim), so text blocks are not yet specified here.
+> *Discussion.* The lexer also defines a text-block token, which runs from `"""` to `"""` and spans lines. Delimiter and indentation processing for text blocks is not finished. As of 0.27.0 the delimiters' inner quotes reach the string value verbatim, so text blocks are not yet specified here.
 
 ## 2.7 Separators and Operators
 
 Separators: `(` `)` `{` `}` `[` `]` `;` `,` `.` `@` `...` `::`.
 
-Ownership tokens: `#=` (title store, one token — §2.3) and `#` (move expression prefix, and the must-own marker in `#T` parameter and return types). Their semantics are Ownership §5.
+The ownership tokens are `#=` and `#`. `#=` is the title store, and it is one token (§2.3). `#` is the move expression prefix and the must-own marker in `#T` parameter and return types. Their semantics are Ownership §5.
 
 Operators:
 
@@ -135,7 +135,7 @@ COMMENT:            '/*' (COMMENT | .)*? '*/';
 LINE_COMMENT:       '//' ~[\r\n]*;
 ```
 
-A line comment runs to end of line. Block comments **nest**: `/*` inside a block comment opens an inner comment that must close before the outer one ends. A comment whose opener is `/**` is a documentation comment by convention. The lexer does not distinguish it, and documentation tooling consumes the convention.
+A line comment runs to end of line. Block comments nest. A `/*` inside a block comment opens an inner comment that must close before the outer one ends. A comment whose opener is `/**` is a documentation comment by convention. The lexer does not distinguish it, and documentation tooling consumes the convention.
 
 **Example 2.8-1.** A nested block comment.
 

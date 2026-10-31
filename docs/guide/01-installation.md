@@ -1,6 +1,7 @@
 # 01 — Installation
 
-Two ways in: `cvm` (the toolchain manager) or building from source.
+There are two ways to install Cajeta. You can use `cvm`, the toolchain
+manager, or build from source.
 
 ## With cvm
 
@@ -25,8 +26,8 @@ cvm which               # show the cvm home + active shim
 cvm doctor              # diagnose the environment cvm sees
 ```
 
-Toolchains install under `~/.cajeta/versions/<version>/`; the active `cajeta`
-shim goes on your `PATH`. `cvm self update` updates cvm itself.
+Toolchains install under `~/.cajeta/versions/<version>/`. The active `cajeta`
+shim goes on your `PATH`, and `cvm self update` updates cvm itself.
 
 ## From source
 
@@ -47,7 +48,8 @@ $ cajeta --version
 cajeta 0.8.0 (8190ee59)
 ```
 
-Any version string means you're installed. Platform packages (`.deb`, `.rpm`,
-`.msi`, macOS bundles) are on the roadmap; today it's cvm or source.
+Any version string means the toolchain is installed. Platform packages
+(`.deb`, `.rpm`, `.msi`, macOS bundles) are on the roadmap. Today the choices
+are cvm or source.
 
 Next: [Kick the tires](02-kick-the-tires.md).

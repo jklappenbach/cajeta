@@ -1,34 +1,34 @@
 # Nucleo: columns, tables, autograd and fusion
 
-`cajeta.nucleo` is the data-science layer: Arrow-laid-out columns, a lazy
-typed dataframe, a define-by-run autograd tape, and the compile-time
-transforms that fuse, differentiate, vectorize and compile tensor
-expressions. It sits on [Math](../math/README.md) and serves
-[ML](../ml/README.md). The LLM engine does not pass through it; the two
-share the substrate beside each other.
+`cajeta.nucleo` is the data-science layer. It holds Arrow-laid-out columns, a
+lazy typed dataframe, a define-by-run autograd tape, and the compile-time
+transforms that fuse, differentiate, vectorize and compile tensor expressions.
+It sits on [Math](../math/README.md) and serves [ML](../ml/README.md). The LLM
+engine does not pass through it, and the two share the substrate beside each
+other.
 
 ## What it is
 
 - **`Column`** (`cajeta.nucleo.column`): typed, contiguous, Arrow-conformant
-  buffers with a validity bitmap, the physical substrate a dataframe
-  column, a tensor backing and an interchange buffer all share; a column
-  aliases a `Tensor` with no copy.
+  buffers with a validity bitmap. They are the physical substrate a
+  dataframe column, a tensor backing and an interchange buffer all share,
+  and a column aliases a `Tensor` with no copy.
 - **`Table<T>`** (`cajeta.nucleo.frame`): a columnar dataframe whose schema
-  is a record type, and whose operations are built, then run: `groupBy`,
-  `agg`, `join`, `sort`, `filter` compose into a plan that `collect()`
+  is a record type, and whose operations are built, then run. `groupBy`,
+  `agg`, `join`, `sort` and `filter` compose into a plan that `collect()`
   forces, so a pipeline over a 1e7-row table touches memory once.
-- **`Tape`** (`cajeta.nucleo.autograd`): the runtime eager tape; ops compute
+- **`Tape`** (`cajeta.nucleo.autograd`): the runtime eager tape. Ops compute
   their forward value as they execute and record a node, and `backward`
-  replays the recording. Today the tape is scalar, one float32 per node.
+  replays the recording. Today the tape is scalar, with one float32 per node.
 - **`Fuse`, `Grad`, `Vmap`, `Jit`** (`cajeta.nucleo.expr`,
-  `cajeta.nucleo.transform`): compiler intrinsics, not methods. Applied to a
-  lambda they rewrite it: `Fuse` collapses an elementwise chain into one
-  kernel, `Grad` differentiates, `Vmap` batches, `Jit` compiles.
+  `cajeta.nucleo.transform`): compiler intrinsics. Applied to a lambda they
+  rewrite it. `Fuse` collapses an elementwise chain into one kernel, `Grad`
+  differentiates, `Vmap` batches, and `Jit` compiles.
 
 ## How it uses what is below, and serves what is above
 
-A column's arithmetic goes through `Tensor` kernels; a fused expression is
-one `@Kernel` the compiler wrote, launched through the same substrate as any
+A column's arithmetic goes through `Tensor` kernels. A fused expression is one
+`@Kernel` the compiler wrote, launched through the same substrate as any
 hand-written one. The ML library's `Frames.design<T>(frame, target)` turns a
 `Table<T>` into a named design matrix, and its neural half's autodiff
 (`ml.grad`) is its own tape over `Tensor<float32>`, built the same way.

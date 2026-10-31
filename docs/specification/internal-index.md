@@ -1,18 +1,18 @@
 # Internal specification index
 
-The internal design and working documents behind every Cajeta subsystem —
-the material the numbered chapters of the public
+These are the internal design and working documents behind every Cajeta
+subsystem. They are the material the numbered chapters of the public
 [language specification](01-introduction.md) are distilled from. These pages
-are unlisted; they remain reachable by direct link.
+are unlisted, and they remain reachable by direct link.
 
-The design and specification documents behind every Cajeta subsystem. Each
-group leads with its overview document. The [guide](../guide/README.md) teaches
-the language; the [stdlib reference](../stdlib/README.md) documents the API
-surface; these documents record the design decisions underneath both.
+Each group leads with its overview document. The [guide](../guide/README.md)
+teaches the language, the [stdlib reference](../stdlib/README.md) documents
+the API surface, and these documents record the design decisions underneath
+both.
 
 ## The language — `lang/`
 
-Core semantics: types, ownership, memory, dispatch.
+This group covers the core semantics of types, ownership, memory, and dispatch.
 
 - [MemoryModel](lang/MemoryModel.md) — stack/heap allocation, single ownership, borrows, drops.
 - [OwnershipTransfer](lang/OwnershipTransfer.md) — the `#` operator at call sites.
@@ -89,14 +89,15 @@ Core semantics: types, ownership, memory, dispatch.
 - [cajeta.math.Matrix](math/MatrixDeterminantInverse.md) — `Matrix<T,R,C>` determinant
   and inverse.
 
-  `Vector`, `Quaternion`, and `Matrix<T,R,C>` are compiler-defined value types, not stdlib
-  source; no import needed. They lower to flat LLVM vectors — native SIMD instructions where
-  the host CPU has them — and lower the same way inside XPU kernels on the device backends.
+  `Vector`, `Quaternion`, and `Matrix<T,R,C>` are compiler-defined value types, and no
+  import is needed. They are not part of the stdlib source. They lower to flat LLVM vectors,
+  which are native SIMD instructions where the host CPU has them, and they lower the same
+  way inside XPU kernels on the device backends.
 - [sorting-spec](sorting/sorting-spec.md) — the comparison interface, host sort, Tensor sort.
 - [Núcleo](nucleo/README.md) — the Python scientific-stack port (own index).
-- Caramelo (formerly Toffee) — the PyTorch-successor ML framework — is a
-  *consumer* of the foundation and lives in its own repo (`cajeta-caramelo`);
-  its design spec moved there (`docs/specification/CajetaCaramelo.md`).
+- Caramelo (formerly Toffee), the PyTorch-successor ML framework, is a
+  consumer of the foundation and lives in its own repo (`cajeta-caramelo`).
+  Its design spec moved there (`docs/specification/CajetaCaramelo.md`).
 
 ## GPU and compute
 
@@ -145,9 +146,9 @@ Core semantics: types, ownership, memory, dispatch.
 
 ## Agents — `mcp/`
 
-Cajeta is designed around AI agents from the ground up: the compiler is an MCP
-server, and skills — hand-written implementation guidance — ship inside every
-library archive.
+Cajeta is designed around AI agents from the ground up. The compiler is an MCP
+server, and skills, which are hand-written implementation guidance, ship inside
+every library archive.
 
 - [CompilerMcp](mcp/CompilerMcp.md) — the MCP server built into the compiler
   (`cajeta compiler-mcp`): transport, lifecycle, and the three skill tools.
