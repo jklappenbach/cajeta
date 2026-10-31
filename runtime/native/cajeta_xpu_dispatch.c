@@ -305,17 +305,117 @@ uint32_t __cajeta_xpu_bits_permute_u32(uint32_t lo, uint32_t hi, uint32_t select
 // cajeta-llm's test binary crossed that and whichever kernels registered
 // last (ropeF32, sliceF32) were dropped in silence, their launches refused
 // as "no device code registered" on a backend that had compiled them.
-struct caj_cpu_kernel { const char* name; void* fn; };
+struct caj_cpu_kernel { const char* name; void* fn; int32_t level; int refused; };
 static struct caj_cpu_kernel* g_cpu_kernels = NULL;
 static int g_cpu_kernel_count = 0;
 static int g_cpu_kernel_cap = 0;
 
-// Register a CPU-backend kernel under `name`; last writer wins. The name is
-// strdup'd, since a JIT'd ctor's string dies with its module.
-void __cajeta_xpu_register_cpu_kernel(const char* name, void* fn) {
+// --- ISA levels (cpu-isa-variants spec 2.2, 2.3) ------------------------------
+// A `--cpu=portable` program registers each kernel once per level; `host` (100)
+// is the one copy a `--cpu=native` build makes, for the machine that built it.
+enum {
+    CAJ_CPU_LVL_NONE = -1, CAJ_CPU_LVL_V3 = 0, CAJ_CPU_LVL_V3_VNNI = 1,
+    CAJ_CPU_LVL_V4 = 2, CAJ_CPU_LVL_V4_AMX = 3, CAJ_CPU_LVL_HOST = 100
+};
+static const char* const caj_cpu_level_names[4] = {"v3", "v3-vnni", "v4", "v4-amx"};
+static int32_t g_cpu_level_detected = -3;      /* -3: not yet detected */
+static int32_t g_cpu_level_override = -2;      /* -2: none */
+static int g_cpu_level_env_read = 0;
+static uint64_t g_cpu_level_gen = 1;           /* bumped by registrations and overrides */
+static int32_t g_cpu_wave_at[4] = {0, 0, 0, 0};
+static char g_cpu_level_refusal[320] = "";
+
+const char* __cajeta_xpu_cpu_level_name(int32_t level) {
+    if (level == CAJ_CPU_LVL_HOST) return "host";
+    if (level < 0 || level > 3) return "none";
+    return caj_cpu_level_names[level];
+}
+
+static int32_t caj_cpu_level_parse(const char* s) {
+    if (!s) return -2;
+    for (int i = 0; i < 4; ++i)
+        if (strcmp(s, caj_cpu_level_names[i]) == 0) return i;
+    if (strcmp(s, "host") == 0) return CAJ_CPU_LVL_HOST;
+    return -2;
+}
+
+#if defined(__linux__)
+#include <sys/syscall.h>
+#endif
+#if defined(__x86_64__) || defined(__i386__)
+#include <cpuid.h>
+#endif
+/* The highest level this host runs: CPUID, XCR0 (the OS saves the state) and,
+ * for AMX on Linux, the per-process tile-data grant. x86 only; -1 elsewhere. */
+static int32_t caj_cpu_detect_level(void) {
+#if defined(__x86_64__) || defined(__i386__)
+    unsigned a, b, c, d;
+    if (!__get_cpuid(1, &a, &b, &c, &d)) return CAJ_CPU_LVL_NONE;
+    int osxsave = (c >> 27) & 1, avx = (c >> 28) & 1, fma = (c >> 12) & 1, f16c = (c >> 29) & 1;
+    if (!osxsave || !avx) return CAJ_CPU_LVL_NONE;
+    unsigned xlo, xhi;
+    __asm__ volatile("xgetbv" : "=a"(xlo), "=d"(xhi) : "c"(0));
+    unsigned a7 = 0, b7 = 0, c7 = 0, d7 = 0;
+    if (!__get_cpuid_count(7, 0, &a7, &b7, &c7, &d7)) return CAJ_CPU_LVL_NONE;
+    int avx2 = (b7 >> 5) & 1, bmi2 = (b7 >> 8) & 1;
+    if (!avx2 || !bmi2 || !fma || !f16c || (xlo & 0x6) != 0x6) return CAJ_CPU_LVL_NONE;
+    int32_t level = CAJ_CPU_LVL_V3;
+    unsigned a71 = 0, b71 = 0, c71 = 0, d71 = 0;
+    if (__get_cpuid_count(7, 1, &a71, &b71, &c71, &d71) && ((a71 >> 4) & 1))
+        level = CAJ_CPU_LVL_V3_VNNI;
+    int f512 = (b7 >> 16) & 1, dq = (b7 >> 17) & 1, bw = (b7 >> 30) & 1, vl = (b7 >> 31) & 1;
+    int vnni512 = (c7 >> 11) & 1;
+    if (f512 && dq && bw && vl && vnni512 && (xlo & 0xE0) == 0xE0) {
+        level = CAJ_CPU_LVL_V4;
+        int tile = (d7 >> 24) & 1, i8 = (d7 >> 25) & 1;
+        if (tile && i8) {
+#if defined(__linux__)
+            /* ARCH_REQ_XCOMP_PERM for XFEATURE_XTILEDATA (18). */
+            if (syscall(SYS_arch_prctl, 0x1023, 18) == 0) {
+                __asm__ volatile("xgetbv" : "=a"(xlo), "=d"(xhi) : "c"(0));
+                if ((xlo & 0x60000) == 0x60000) level = CAJ_CPU_LVL_V4_AMX;
+            }
+#else
+            if ((xlo & 0x60000) == 0x60000) level = CAJ_CPU_LVL_V4_AMX;
+#endif
+        }
+    }
+    return level;
+#else
+    return CAJ_CPU_LVL_NONE;
+#endif
+}
+
+int32_t __cajeta_xpu_cpu_host_level(void) {
+    if (g_cpu_level_detected == -3) g_cpu_level_detected = caj_cpu_detect_level();
+    if (!g_cpu_level_env_read) {
+        g_cpu_level_env_read = 1;
+        int32_t e = caj_cpu_level_parse(getenv("CAJETA_XPU_CPU_LEVEL"));
+        if (e >= 0 && e != CAJ_CPU_LVL_HOST && g_cpu_level_override == -2) g_cpu_level_override = e;
+    }
+    if (g_cpu_level_override >= 0 && g_cpu_level_override < g_cpu_level_detected)
+        return g_cpu_level_override;
+    return g_cpu_level_detected;
+}
+
+/* Forces a LOWER level for A/B runs and tests; -2 clears. Never raises the level. */
+void __cajeta_xpu_cpu_set_level_override(int32_t level) {
+    g_cpu_level_override = (level >= 0 && level <= 3) ? level : -2;
+    g_cpu_level_env_read = 1;
+    ++g_cpu_level_gen;
+}
+
+const char* __cajeta_xpu_cpu_level_refusal(void) { return g_cpu_level_refusal; }
+
+// Register a CPU-backend kernel under `name` at `level`; the same name and level
+// replaces. The name is strdup'd, since a JIT'd ctor's string dies with its module.
+void __cajeta_xpu_register_cpu_kernel_at(const char* name, int32_t level, void* fn) {
     if (!name || !fn) return;
+    if (level != CAJ_CPU_LVL_HOST && (level < 0 || level > 3)) return;
+    ++g_cpu_level_gen;
     for (int i = 0; i < g_cpu_kernel_count; ++i) {
-        if (g_cpu_kernels[i].name && strcmp(g_cpu_kernels[i].name, name) == 0) {
+        if (g_cpu_kernels[i].name && g_cpu_kernels[i].level == level
+                && strcmp(g_cpu_kernels[i].name, name) == 0) {
             g_cpu_kernels[i].fn = fn;
             return;
         }
@@ -335,18 +435,103 @@ void __cajeta_xpu_register_cpu_kernel(const char* name, void* fn) {
     }
     g_cpu_kernels[g_cpu_kernel_count].name = strdup(name);
     g_cpu_kernels[g_cpu_kernel_count].fn = fn;
+    g_cpu_kernels[g_cpu_kernel_count].level = level;
+    g_cpu_kernels[g_cpu_kernel_count].refused = 0;
     ++g_cpu_kernel_count;
 }
 
-// Resolve a registered CPU kernel by name; NULL when absent.
+// Today's registration: the one copy built for the build host.
+void __cajeta_xpu_register_cpu_kernel(const char* name, void* fn) {
+    __cajeta_xpu_register_cpu_kernel_at(name, CAJ_CPU_LVL_HOST, fn);
+}
+
+/* The entry `name` resolves to: the highest level copy the host supports, else the
+ * `host` copy, else -1 (with `lowest` the lowest level built, for the refusal). */
+static int caj_cpu_resolve(const char* name, int32_t* lowest) {
+    int32_t host = __cajeta_xpu_cpu_host_level();
+    int best = -1, hostCopy = -1;
+    int32_t bestLevel = -1, low = 1000;
+    for (int i = 0; i < g_cpu_kernel_count; ++i) {
+        if (!g_cpu_kernels[i].name || strcmp(g_cpu_kernels[i].name, name) != 0) continue;
+        int32_t l = g_cpu_kernels[i].level;
+        if (l == CAJ_CPU_LVL_HOST) { hostCopy = i; continue; }
+        if (l < low) low = l;
+        if (l <= host && l > bestLevel) { bestLevel = l; best = i; }
+    }
+    if (lowest) *lowest = low == 1000 ? -1 : low;
+    return best >= 0 ? best : hostCopy;
+}
+
+// Resolve a registered CPU kernel by name; NULL when absent or built only above
+// this host's level (spec 2.5: said once a name, before anything runs in its place).
 void* __cajeta_xpu_lookup_cpu_kernel(const char* name) {
     if (!name) return 0;
-    for (int i = 0; i < g_cpu_kernel_count; ++i) {
-        if (g_cpu_kernels[i].name && strcmp(g_cpu_kernels[i].name, name) == 0) {
-            return g_cpu_kernels[i].fn;
+    int32_t lowest = -1;
+    int i = caj_cpu_resolve(name, &lowest);
+    if (i >= 0) return g_cpu_kernels[i].fn;
+    if (lowest >= 0) {
+        snprintf(g_cpu_level_refusal, sizeof g_cpu_level_refusal,
+                 "cpu kernel '%s' is built for ISA level %s and above; this host runs %s",
+                 name, __cajeta_xpu_cpu_level_name(lowest),
+                 __cajeta_xpu_cpu_level_name(__cajeta_xpu_cpu_host_level()));
+        for (int k = 0; k < g_cpu_kernel_count; ++k) {
+            if (g_cpu_kernels[k].name && g_cpu_kernels[k].level == lowest
+                    && strcmp(g_cpu_kernels[k].name, name) == 0 && !g_cpu_kernels[k].refused) {
+                g_cpu_kernels[k].refused = 1;
+                fprintf(stderr, "cajeta.xpu: %s\n", g_cpu_level_refusal);
+            }
         }
     }
     return 0;
+}
+
+int32_t __cajeta_xpu_cpu_kernel_level(const char* name) {
+    if (!name) return -1;
+    int i = caj_cpu_resolve(name, NULL);
+    return i >= 0 ? g_cpu_kernels[i].level : -1;
+}
+
+/* `Device.cpuKernelLevel(name)`: the cajeta String's bytes follow an 8-byte header. */
+int32_t __cajeta_xpu_cpu_kernel_level_n(void* nameArr, int64_t len) {
+    if (!nameArr || len <= 0 || len > 255) return -1;
+    char name[256];
+    memcpy(name, (const char*) nameArr + 8, (size_t) len);
+    name[len] = 0;
+    return __cajeta_xpu_cpu_kernel_level(name);
+}
+
+/* The program-wide level: the highest level copy any kernel has that the host
+ * supports; `host` when only host copies exist; -1 with no kernels. Cached by
+ * registration and override generation. */
+int32_t __cajeta_xpu_cpu_resolved_level(void) {
+    static uint64_t gen = 0;
+    static int32_t cached = -1;
+    if (gen == g_cpu_level_gen) return cached;
+    int32_t host = __cajeta_xpu_cpu_host_level();
+    int32_t best = -1, anyHost = 0;
+    for (int i = 0; i < g_cpu_kernel_count; ++i) {
+        int32_t l = g_cpu_kernels[i].level;
+        if (l == CAJ_CPU_LVL_HOST) { anyHost = 1; continue; }
+        if (l <= host && l > best) best = l;
+    }
+    cached = best >= 0 ? best : (anyHost ? CAJ_CPU_LVL_HOST : -1);
+    gen = g_cpu_level_gen;
+    return cached;
+}
+
+/* The wave a level's kernels were built at; `host` goes to the built wave below. */
+void __cajeta_xpu_set_cpu_wave(int32_t lanes);
+void __cajeta_xpu_set_cpu_wave_at(int32_t level, int32_t lanes) {
+    if (level == CAJ_CPU_LVL_HOST) { __cajeta_xpu_set_cpu_wave(lanes); return; }
+    if (level < 0 || level > 3) return;
+    g_cpu_wave_at[level] = lanes < 0 ? 0 : lanes;
+    ++g_cpu_level_gen;
+}
+
+/* The resolved level's built wave, 0 when none was set for it. */
+static int32_t caj_cpu_level_wave(void) {
+    int32_t l = __cajeta_xpu_cpu_resolved_level();
+    return (l >= 0 && l <= 3) ? g_cpu_wave_at[l] : 0;
 }
 
 // --- Kernel census: what is registered, and what has actually run ------------
@@ -773,9 +958,12 @@ static int64_t cajeta_xpu_cpu_geometry(CajetaXpuGeometryKey key) {
     switch (key) {
         case CAJETA_XPU_GEO_MP_COUNT:              return cajeta_xpu_cpu_pool_workers();
         case CAJETA_XPU_GEO_SIMDS_PER_MP:          return 1;
-        case CAJETA_XPU_GEO_WAVE_SIZE:
+        case CAJETA_XPU_GEO_WAVE_SIZE: {
+            int32_t lw = caj_cpu_level_wave();
+            if (lw > 0) return lw;
             return g_cpu_built_wave > 0 ? (int64_t) g_cpu_built_wave
                                         : cajeta_xpu_host_simd_lanes_i32();
+        }
         case CAJETA_XPU_GEO_TOTAL_VRAM_BYTES:      return cajeta_xpu_host_physical_bytes();
         case CAJETA_XPU_GEO_INTEGRATED:            return 1;
         case CAJETA_XPU_GEO_MAX_GRID_DIM_X:        return INT32_MAX;

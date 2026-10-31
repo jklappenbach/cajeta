@@ -127,6 +127,37 @@ public final class Device {
     }
 
     /**
+     * The x86 ISA level this host runs the cpu backend's kernels at: 0 `v3`
+     * (AVX2), 1 `v3-vnni`, 2 `v4` (AVX-512 with VNNI), 3 `v4-amx`; -1 below the
+     * baseline or off x86. Lowered, never raised, by `setCpuLevelOverride` or
+     * `CAJETA_XPU_CPU_LEVEL` (cpu-isa-variants 2.3).
+     */
+    public static int32 cpuLevel() {
+        return Device.nativeCpuHostLevel();
+    }
+
+    /** The level's name: `v3`, `v3-vnni`, `v4`, `v4-amx`, `host` (100) or `none`. */
+    public static #String cpuLevelName(int32 level) {
+        if (level == 0) { return "v3"; }
+        if (level == 1) { return "v3-vnni"; }
+        if (level == 2) { return "v4"; }
+        if (level == 3) { return "v4-amx"; }
+        if (level == 100) { return "host"; }
+        return "none";
+    }
+
+    /** The level the cpu kernel `name` resolves to on this host (100 for a build-host copy), -1 for none. */
+    public static int32 cpuKernelLevel(String name) {
+        int8[] b #= name.toBytes();
+        return Device.nativeCpuKernelLevel(b, (int64) b.count());
+    }
+
+    /** Forces a lower cpu level for an A/B run; -2 clears. A level above the host's is clamped. */
+    public static void setCpuLevelOverride(int32 level) {
+        Device.nativeSetCpuLevelOverride(level);
+    }
+
+    /**
      * How many worker threads the LAST CPU-backend launch actually used —
      * 1 whenever it ran serially (forced, single block, or under the
      * parallel threshold).
@@ -212,6 +243,15 @@ public final class Device {
 
     @Native("__cajeta_xpu_cpu_worker_cap")
     private static int32 nativeWorkerCap();
+
+    @Native("__cajeta_xpu_cpu_host_level")
+    private static int32 nativeCpuHostLevel();
+
+    @Native("__cajeta_xpu_cpu_kernel_level_n")
+    private static int32 nativeCpuKernelLevel(int8[] name, int64 len);
+
+    @Native("__cajeta_xpu_cpu_set_level_override")
+    private static void nativeSetCpuLevelOverride(int32 level);
 
     @Native("__cajeta_xpu_cpu_last_workers")
     private static int32 nativeLastWorkers();
