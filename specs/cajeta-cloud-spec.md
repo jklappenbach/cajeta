@@ -71,8 +71,10 @@ Status of each family, and what would trigger specifying it:
 |---|---|---|
 | object store | **specified** (§4–§8) | `cajeta-dqe` §7, `buildtool-resources` asset cache |
 | stream | **specified** (§12) | streaming ingest; absorbs the former `cajeta-kafka-client` |
-| queue, topic, notification | named | a consumer needing async work dispatch |
-| key-value, SQL, cache | named | an external-source connector for `cajeta-dqe` |
+| queue | **specified** (`cajeta-cloud-cloudflare-spec.md` §5.1, in `dev.cajeta.cloud` 0.5.0) | Cloudflare Queues for a primavera application |
+| key-value | **specified** (`cajeta-cloud-cloudflare-spec.md` §6.1, in `dev.cajeta.cloud` 0.5.0) | Workers KV for a primavera application |
+| topic, notification | named | a consumer needing async work dispatch |
+| SQL, cache | named | an external-source connector for `cajeta-dqe` |
 | secrets | named | first adapter deployed outside a dev environment |
 | managed compute | named — invocation only, see §1.3 | none today |
 | identity | **shipped in 0.3.0** (`archive/cajeta-cloud-identity-spec.md`) | the primavera user-registration sample |
