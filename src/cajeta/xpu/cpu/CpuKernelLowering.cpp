@@ -118,6 +118,7 @@ public:
         // backend stays the GPU backends' bit-exact oracle; the exact form otherwise.
         vecops::DotAccumTargets t;
         t.vnni = vnni;
+        t.vnni512 = sti.checkFeatures("+avx512vnni");
         t.avx2 = !vnni && avx2;
         t.forceScalar = false;
         if (t.avx2) t.saturatingOk = byteBits(w, m.getDataLayout(), 0).Zero[7];

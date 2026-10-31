@@ -5410,6 +5410,7 @@ namespace cajeta {
                         avt->getNumElements());
                     vecops::DotAccumTargets dtgt;
                     dtgt.vnni        = module->targetHasIntDotAccum();
+                    dtgt.vnni512     = module->targetHasAvx512Vnni();
                     dtgt.avx2        = module->targetHasAvx2();
                     dtgt.armDotProd  = module->targetHasArmDotProd();
                     dtgt.armI8mm     = module->targetHasArmI8mm();

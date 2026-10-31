@@ -359,6 +359,11 @@ namespace cajeta {
             return sti.checkFeatures("+avx512vnni")
                 || sti.checkFeatures("+avxvnni");
         }
+        bool targetHasAvx512Vnni() const {      // x86 AVX512-VNNI: the 512-bit vpdpbusd exists
+            if (targetMachine == nullptr) return false;
+            if (!targetMachine->getTargetTriple().isX86()) return false;
+            return targetMachine->getMCSubtargetInfo().checkFeatures("+avx512vnni");
+        }
         bool targetHasAvx2() const {            // x86 AVX2, the pre-VNNI tier
             if (targetMachine == nullptr) return false;
             if (!targetMachine->getTargetTriple().isX86()) return false;

@@ -63,6 +63,19 @@ public class P {
         }
     }
     @Kernel
+    public static void dot64(KernelBuffer<int32> out, KernelBuffer<int8> w, KernelBuffer<int8> x, uint32 n) {
+        uint32 g = KernelThread.globalIdX();
+        if (g < n) {
+            int64 o = (int64) g * 64L;
+            Vector<uint8,64> wv = w.vload<64>(o).asUnsigned() & 15;
+            Vector<int8,64> xv = x.vload<64>(o);
+            Vector<int32,16> z = heap Vector<int32,16>(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+            Vector<int32,16> acc = wv.dotAccum(xv, z);
+            out[g] = acc[0] + acc[1] + acc[2] + acc[3] + acc[4] + acc[5] + acc[6] + acc[7]
+                + acc[8] + acc[9] + acc[10] + acc[11] + acc[12] + acc[13] + acc[14] + acc[15];
+        }
+    }
+    @Kernel
     public static void dotFull(KernelBuffer<int32> out, KernelBuffer<int8> w, KernelBuffer<int8> x, uint32 n) {
         uint32 g = KernelThread.globalIdX();
         if (g < n) {
@@ -109,6 +122,9 @@ public class P {
         dot6.launch(s, grid: [n / 64], block: [64])(out, w, x, n);
         s.sync();
         System.stdout.println("checksum3 " + P.checksum(out, n));
+        dot64.launch(s, grid: [n / 128], block: [64])(out, w, x, n / 2);
+        s.sync();
+        System.stdout.println("checksum4 " + P.checksum(out, n));
         System.stdout.println("level " + Device.cpuLevelName(Device.cpuLevel()));
         System.stdout.println("kernel " + Device.cpuLevelName(Device.cpuKernelLevel("dot")));
         System.stdout.println("wave " + Device.waveSize());
@@ -363,6 +379,8 @@ TEST(XpuCpuPortable, onePortableBinaryRunsAtEveryLevelWithTheSameBits) {
             << "the " << lvl << " copy's unbounded-weight bits differ (3.1.2): " << out;
         EXPECT_EQ(field(out, "checksum3"), field(plain, "checksum3"))
             << "the " << lvl << " copy's 6-bit-assembly bits differ (3.3.2): " << out;
+        EXPECT_EQ(field(out, "checksum4"), field(plain, "checksum4"))
+            << "the " << lvl << " copy's 64-lane bits differ (4.3.3): " << out;
         const std::string wave = field(out, "wave");
         if (want == "v3" || want == "v3-vnni") EXPECT_EQ(wave, "8") << out;
         else EXPECT_EQ(wave, "16") << out;

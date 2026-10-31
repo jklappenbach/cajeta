@@ -334,6 +334,7 @@ namespace vecops {
     struct DotAccumTargets {
         bool vnni        = false;   // x86 AVX512-VNNI / AVX-VNNI
         bool avx2        = false;   // x86 AVX2, the pre-VNNI tier
+        bool vnni512     = false;   // x86 AVX512-VNNI: 512-bit vpdpbusd; off, a 16-lane dot splits in two
         bool armDotProd  = false;   // AArch64 ARMv8.2 dotprod: sdot / udot
         bool armI8mm     = false;   // AArch64 i8mm: usdot, the mixed form
         bool forceScalar = false;   // CAJETA_SIMD_SCALAR_FALLBACK=1
@@ -364,6 +365,24 @@ namespace vecops {
         // shape; the non-saturating variant, so the tiers agree bit-for-bit.
         if (!forceScalar && isX86 && hasVnni && wUnsigned && lanes == n * 4
                 && (n == 4 || n == 8 || n == 16)) {
+            if (n == 16 && !tgt.vnni512) {
+                // AVX-VNNI has no 512-bit form: two 256-bit dots, concatenated.
+                llvm::SmallVector<int, 32> lo32, hi32;
+                llvm::SmallVector<int, 8> lo8, hi8;
+                for (int i = 0; i < 32; ++i) { lo32.push_back(i); hi32.push_back(32 + i); }
+                for (int i = 0; i < 8; ++i) { lo8.push_back(i); hi8.push_back(8 + i); }
+                llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
+                    m, llvm::Intrinsic::x86_avx512_vpdpbusd_256);
+                llvm::Value* lo = b.CreateCall(fn, {b.CreateShuffleVector(acc, acc, lo8),
+                                                    b.CreateShuffleVector(w, w, lo32),
+                                                    b.CreateShuffleVector(a, a, lo32)}, "dotacc.vnni.lo");
+                llvm::Value* hi = b.CreateCall(fn, {b.CreateShuffleVector(acc, acc, hi8),
+                                                    b.CreateShuffleVector(w, w, hi32),
+                                                    b.CreateShuffleVector(a, a, hi32)}, "dotacc.vnni.hi");
+                llvm::SmallVector<int, 16> cat;
+                for (int i = 0; i < 16; ++i) cat.push_back(i);
+                return b.CreateShuffleVector(lo, hi, cat, "dotacc.vnni");
+            }
             llvm::Intrinsic::ID id = n == 16
                 ? llvm::Intrinsic::x86_avx512_vpdpbusd_512
                 : (n == 8 ? llvm::Intrinsic::x86_avx512_vpdpbusd_256
