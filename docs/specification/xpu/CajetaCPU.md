@@ -934,7 +934,7 @@ selection only (spec cpu-isa-variants 5.4), never by a run.
 
 ## 8. The pool's launch path (cpu-isa-variants 5.3.3, 2026-10-31)
 
-A parallel launch is a fork-join over static slices: the caller cuts the blocks
+A parallel launch is a fork-join over static slices. The caller cuts the blocks
 into `min(blocks, workers)` contiguous slices, hands all but the last to the
 pool, runs the last itself and joins. Three things decide and describe that path.
 
@@ -942,15 +942,15 @@ pool, runs the last itself and joins. Three things decide and describe that path
   (`CAJETA_XPU_CPU_PARALLEL_MIN`, or `__cajeta_xpu_cpu_set_parallel_min`, lowers
   or raises it). The floor judges a launch by its work-item count.
 - **Promotion by measured work.** A work-item can be a whole row group's dot, so
-  the floor misjudges it: cajeta-llm's 1024-row Q6_K projection (64 or 128
-  work-items) ran inline for about 100 µs while 15 workers waited, 3.4% of an
-  8B decode. An inline launch under the floor is timed, and a kernel over
+  the floor can misjudge a launch. cajeta-llm's 1024-row Q6_K projection, at 64
+  or 128 work-items, ran inline for about 100 µs while 15 workers waited, which
+  was 3.4% of an 8B decode. An inline launch under the floor is timed, and a kernel over
   `CAJETA_XPU_CPU_PROMOTE_NS` (20 µs, or `__cajeta_xpu_cpu_set_promote_ns`) on
-  two launches fans out from then on. Two, so one cold first touch does not
-  promote a tiny kernel; a one-block launch is never promoted.
+  two launches fans out from then on. It takes two so that one cold first touch
+  does not promote a tiny kernel. A one-block launch is never promoted.
 - **The trace.** `CAJETA_XPU_CPU_TRACE=1` stamps every parallel launch at
   dispatch, at each slice's start and end, and at the join, and dumps a table
-  per kernel at exit: launches, wall, critical (the last slice's end), idle
+  per kernel at exit with these columns: launches, wall, critical (the last slice's end), idle
   (worker time at the barrier past each slice's own end), lag (worker time from
   dispatch to each slice's start), the host gap since the previous join, the
   caller slice's overrun, and inline launches as serial. Measured on proton
