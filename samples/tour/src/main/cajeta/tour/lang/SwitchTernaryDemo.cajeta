@@ -123,6 +123,21 @@ public class SwitchTernaryDemo extends DemoClass {
         System.stdout.println("  cond=false ? 1.5 : 2 (coerced f64) = " + mixed);
         this.check(minAb == 5 && minThree == 3 && x == 100 && mixed == 2.0,
             "ternary selects, nests, gates side effects, widens");
+
+        // A `null` arm takes the other arm's type. Bound with `=` over a field, the
+        // local borrows: the bin keeps its object.
+        Bin full = heap Bin();
+        Bin none = null;
+        int32 fromFull = SwitchTernaryDemo.valueOrZero(full);
+        int32 fromNone = SwitchTernaryDemo.valueOrZero(none);
+        System.stdout.println("  h == null ? null : h.parcel  -> " + fromFull + " (a bin), " + fromNone + " (null)");
+        this.check(fromFull == 9 && fromNone == 0 && full.parcel.value == 9,
+            "a null arm over a field borrows; the field survives");
+    }
+
+    static int32 valueOrZero(Bin h) {
+        Parcel b = h == null ? null : h.parcel;
+        return b == null ? 0 : b.value;
     }
 
     // 4. instanceof — static-type match against the operand's
@@ -143,4 +158,14 @@ public class SwitchTernaryDemo extends DemoClass {
         this.check(isInt32 && !isFloat64 && tag.equals("f64"),
             "instanceof matches the static type");
     }
+}
+
+class Parcel {
+    public int32 value;
+    public Parcel(int32 value) { this.value = value; }
+}
+
+class Bin {
+    public Parcel parcel;
+    public Bin() { this.parcel #= heap Parcel(9); }
 }

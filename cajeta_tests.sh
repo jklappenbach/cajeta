@@ -1277,6 +1277,12 @@ if ! "$SCRIPT_DIR/scripts/check-docstring-examples.sh"; then
     exit 1
 fi
 
+# The language tour builds, runs and passes its self-checks (about 70 s). Its
+# demos are the end-to-end use of each feature; nothing else ran them.
+if ! "$SCRIPT_DIR/scripts/check-tour.sh"; then
+    exit 1
+fi
+
 # Release download surface (release-download-surface 1.1.x): the README table
 # is generated at release time from what the run actually published, so no
 # ordinary build exercises it. Render a fixture release instead. Fast and

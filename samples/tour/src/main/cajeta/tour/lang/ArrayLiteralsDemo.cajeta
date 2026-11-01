@@ -1,0 +1,85 @@
+package tour.lang;
+
+import tour.DemoClass;
+
+// Array literals: `[e1, e2, ...]` builds a heap array whose element type is
+// unified from the elements, or taken from the target (`int64[] xs = [1, 2]`).
+// Any expression can be an element: a literal, a local, a field, a static, an
+// element of another array, a call or a `heap` construction. A class or String
+// element read from a field lends, so the array's drop leaves the field alone.
+
+public class ArrayLiteralsDemo extends DemoClass {
+    static final int32 BASE = 13;
+    static int64 scale = 55L;
+
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Array literals --");
+
+        this.fromLiterals();
+        this.fromReads();
+        this.fromFields();
+    }
+
+    // 1. Literal elements, with the type unified or taken from the target.
+    public void fromLiterals() {
+        int32[] small = [1, 2, 3];
+        int64[] wide = [1, 2, 3];
+        float64[] mixed = [1, 2.5];
+        System.stdout.println("  [1, 2, 3].count() = " + small.count() + "; int64 target sum = "
+            + (wide[0] + wide[1] + wide[2]) + "; [1, 2.5] widens to " + mixed[0] + ", " + mixed[1]);
+        this.check(small.count() == 3L && wide[2] == 3L && mixed[0] == 1.0 && mixed[1] == 2.5,
+            "literal elements unify or follow the target");
+    }
+
+    // 2. Elements read from locals, statics and other arrays store the values read.
+    public void fromReads() {
+        int32 local = 7;
+        int32[] source = [5, 6];
+        int32[] picked = [local, ArrayLiteralsDemo.BASE, source[1], local * 2];
+        int64[] scaled = [ArrayLiteralsDemo.scale, 2L];
+        System.stdout.println("  [local, BASE, source[1], local * 2] = " + picked[0] + ", " + picked[1] + ", "
+            + picked[2] + ", " + picked[3] + "; [scale, 2] = " + scaled[0] + ", " + scaled[1]);
+        this.check(picked[0] == 7 && picked[1] == 13 && picked[2] == 6 && picked[3] == 14 && scaled[0] == 55L,
+            "local, static and element reads store their values");
+    }
+
+    // 3. Fields, primitive and reference: a class or String field is lent, not moved.
+    public void fromFields() {
+        Shelf shelf = heap Shelf();
+        int32[] counts = [shelf.count, shelf.count + 1];
+        Item[] items = [shelf.first, shelf.second];
+        String[] names = [shelf.label, "spare"];
+        System.stdout.println("  [shelf.count, shelf.count + 1] = " + counts[0] + ", " + counts[1]
+            + "; items " + items[0].weight + ", " + items[1].weight + "; names " + names[0] + ", " + names[1]);
+        this.check(counts[0] == 4 && counts[1] == 5 && items[0].weight == 12 && items[1].weight == 30
+            && names[0].equals("top shelf"), "field elements store the fields' values");
+        this.check(ArrayLiteralsDemo.weightOf(shelf) == 42 && shelf.first.weight == 12 && shelf.label.equals("top shelf"),
+            "a literal over fields leaves the fields intact after it drops");
+    }
+
+    // Builds and drops a literal over the shelf's fields; the shelf keeps its items.
+    static int32 weightOf(Shelf shelf) {
+        Item[] both = [shelf.first, shelf.second];
+        return both[0].weight + both[1].weight;
+    }
+}
+
+class Item {
+    public int32 weight;
+    public Item(int32 weight) { this.weight = weight; }
+}
+
+class Shelf {
+    public int32 count;
+    public Item first;
+    public Item second;
+    public String label;
+
+    public Shelf() {
+        this.count = 4;
+        this.first #= heap Item(12);
+        this.second #= heap Item(30);
+        this.label #= "top " + "shelf";
+    }
+}
