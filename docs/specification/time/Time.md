@@ -1,8 +1,8 @@
 # `cajeta.time`
 
-Modeled on `java.time` (JSR-310), pared down for cajeta's needs.
-Status: **designed, not implemented**. No runtime stdlib files exist
-yet. Tracked in specs/Features.md.
+`cajeta.time` is modeled on `java.time` (JSR-310), pared down for
+cajeta's needs. It is designed and not yet implemented. No runtime
+stdlib files exist yet, and it is tracked in specs/Features.md.
 
 ## `Clock` — static "what time is it" surface
 
@@ -62,15 +62,16 @@ ZonedDateTime here = now.atZone(ZoneId.of("America/Los_Angeles"));
 
 ## Open questions
 
-- **Time zone database**: parse `/usr/share/zoneinfo` at first use vs.
-  bake compact tables into the runtime. Recommended: read-from-disk
-  with embedded UTC + fixed-offset fallback for static builds.
-- **Leap seconds**: `Instant` ignores them (UTC-SLS convention, same
-  as java.time).
+- **Time zone database**: the choice is between parsing
+  `/usr/share/zoneinfo` at first use and baking compact tables into the
+  runtime. The recommendation is read-from-disk with an embedded UTC and
+  fixed-offset fallback for static builds.
+- **Leap seconds**: `Instant` ignores them, following the UTC-SLS
+  convention, the same as java.time.
 - **Nanosecond precision everywhere**: Java's `Instant` is ns
   precision but many platforms only deliver ms. Document the system
   clock resolution caveat.
 
 ## Open items
 
-All of `cajeta.time` is unimplemented. Tracked in specs/Features.md.
+All of `cajeta.time` is unimplemented, and it is tracked in specs/Features.md.

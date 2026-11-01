@@ -1,46 +1,46 @@
 # Cajeta XPU capability matrix — NVIDIA · AMD · Vulkan · Core
 
-A per-feature matrix of the Cajeta GPU-compute (XPU) backend across the three
-target platforms, plus a **Core** column for what the shared layer provides
-regardless of vendor. The point of the matrix is to make the *variance surface*
-legible: where all three have a native primitive, where one lacks it but Cajeta
-supplies an abstraction, and where an abstraction is not cleanly possible (with
-the reason).
+This is a per-feature matrix of the Cajeta GPU-compute (XPU) backend across the three
+target platforms, plus a Core column for what the shared layer provides
+regardless of vendor. The matrix makes the variance surface legible for you. It
+shows where all three have a native primitive, where one lacks it but Cajeta
+supplies an abstraction, and where an abstraction is not cleanly possible, with
+the reason.
 
 This is a companion to the backend-variance discipline in
-[`CajetaXPU-Variance.md`](CajetaXPU-Variance.md); it extends the original
-NVIDIA∩AMD two-backend reckoning with the Vulkan/SPIR-V column. The **stable
-launch + kernel-arg FFI contract** these backends dispatch through (the register
+[`CajetaXPU-Variance.md`](CajetaXPU-Variance.md). It extends the original
+NVIDIA∩AMD two-backend reckoning with the Vulkan/SPIR-V column. The stable
+launch + kernel-arg FFI contract these backends dispatch through (the register
 trio, the `argv` marshalling per parameter kind, per-launch device targeting, and
 the ABI version policy) is frozen in [`CajetaXPU-FFI.md`](CajetaXPU-FFI.md).
 
-> **A fourth backend — CPU — and a runtime dispatcher now exist** (see
-> [`CajetaCPU.md`](CajetaCPU.md)). The CPU is deliberately *not* given a
-> column here: the three columns below measure the **GPU** variance surface, and
-> the CPU is a different shape — it has no hardware grid or coordinate
-> intrinsics, so its sole seam fork is the *coordinate source* (the kernel gains
-> 9 trailing `i32` coordinate params; `KernelThread`/`Workgroup` reads pull from those
-> — the grid→threads model), buffers are flat `addrspace(0)`, the wave is the
+> **A fourth backend, CPU, and a runtime dispatcher now exist** (see
+> [`CajetaCPU.md`](CajetaCPU.md)). The CPU is deliberately given no
+> column here. The three columns below measure the GPU variance surface, and
+> the CPU is a different shape. It has no hardware grid or coordinate
+> intrinsics, so its sole seam fork is the coordinate source. The kernel gains
+> 9 trailing `i32` coordinate params, and `KernelThread`/`Workgroup` reads pull from those,
+> which is the grid→threads model. Buffers are flat `addrspace(0)`, the wave is the
 > host SIMD vector (Inc 5C), and workgroup barriers run via work-item loop
-> fission (Inc 6 — split the kernel at each barrier, loop each region over the
-> block; per-block shared memory + context arrays; Inc 7 — multiple barriers per
-> uniform loop; Inc 8 — nested uniform loops with barriers; Inc 9 — wave ops +
-> barriers composed; Inc 10 — dynamic-sized shared memory). The body walk is the same ~90%
-> Core. Separately, the **runtime dispatcher** (in the C runtime, the sole launch
+> fission. Inc 6 splits the kernel at each barrier and loops each region over the
+> block, with per-block shared memory + context arrays. Inc 7 adds multiple barriers per
+> uniform loop, Inc 8 nested uniform loops with barriers, Inc 9 wave ops +
+> barriers composed, and Inc 10 dynamic-sized shared memory. The body walk is the same ~90%
+> Core. Separately, the runtime dispatcher (in the C runtime, the sole launch
 > path for compiled programs) selects among bundled+available backends at startup
 > (`CUDA → HIP → Vulkan → CPU`) and routes launch + `KernelBuffer<T>` device memory to
-> the winner — so "run anywhere, degrade to CPU" is ordinary dispatch reaching
-> its guaranteed terminal. The one launch-ABI asymmetry it exposed is Vulkan's:
-> the uniform `kernelParams` argv (buffer handles + raw scalars) doesn't map to
+> the winner. So "run anywhere, degrade to CPU" is ordinary dispatch reaching
+> its guaranteed terminal. The one launch-ABI asymmetry it exposed is Vulkan's.
+> The uniform `kernelParams` argv (buffer handles + raw scalars) doesn't map to
 > Vulkan's descriptor-set model, so scalars are wrapped in transient SSBOs from
-> per-kernel parameter metadata (rows in §2 already note the descriptor-set fork).
+> per-kernel parameter metadata. The rows in §2 already note the descriptor-set fork.
 
 ---
 
 ## Provenance & how to read this
 
-The three platform columns do **not** have equal evidentiary weight yet, and the
-matrix says so explicitly rather than pretending otherwise:
+The three platform columns do not have equal evidentiary weight yet, and the
+matrix says so explicitly:
 
 | Column | Status | Basis |
 |--------|--------|-------|
@@ -49,13 +49,13 @@ matrix says so explicitly rather than pretending otherwise:
 | **Vulkan** | **Measured** — live backend, on-device | SPIR-V (descriptor-set SSBOs) → `vkCmdDispatch`. Built 2026-05-30; SAXPY + static-shared tree reduction run on the Strix Halo APU via the radeon (RADV) ICD, and the emitted modules pass strict `spirv-val`. One build-discovered finding shaped the design: **BDA is unavailable**, so the buffer model is descriptor sets (§3). (LLVM 23's barrier emits Vulkan-invalid semantics; a post-emit fixup corrects it — §1.) |
 
 > **Build-discovered correction (2026-05-30).** An earlier draft of this matrix
-> projected the Vulkan column on the assumption that **KernelBuffer Device Address**
-> would carry buffers as raw pointers (keeping the kernel body identical to
-> NV/AMD). The build overturned that: LLVM 23's SPIR-V backend has **no
-> PhysicalStorageBuffer/BDA path from IR**, so the only Vulkan buffer model is
-> **descriptor-set storage buffers**, which fork the kernel signature *and* the
-> body's buffer access — a bigger fork than AMD. The cells below reflect what
-> was actually built and measured, not the original projection.
+> projected the Vulkan column on the assumption that KernelBuffer Device Address
+> would carry buffers as raw pointers, keeping the kernel body identical to
+> NV/AMD. The build overturned that. LLVM 23's SPIR-V backend has no
+> PhysicalStorageBuffer/BDA path from IR, so the only Vulkan buffer model is
+> descriptor-set storage buffers, which fork the kernel signature and the
+> body's buffer access. That is a bigger fork than AMD. The cells below reflect what
+> was actually built and measured. The original projection is gone.
 
 **Cell vocabulary**
 
@@ -65,14 +65,14 @@ matrix says so explicitly rather than pretending otherwise:
 - `not possible: …` — cannot be provided on this platform as specified; the `…` says why.
 - `—` — not applicable / not yet a capability on any platform.
 
-**⚑** marks a Vulkan cell that carries a measured *caveat or limitation* the
-build surfaced (the fixed compile-time block dim, deferred dynamic shared) — see
-the [status section](#status--vulkan-column-now-measured). (The barrier
-limitation the build found is now fixed by a post-emit pass — §1.)
+**⚑** marks a Vulkan cell that carries a measured caveat or limitation the
+build surfaced (the fixed compile-time block dim, deferred dynamic shared). See
+the [status section](#status--vulkan-column-now-measured). The barrier
+limitation the build found is now fixed by a post-emit pass (§1).
 
-The **Core** column describes what the shared `KernelLowering` walk + the
-backend-neutral registration provide independent of vendor — the ≈90% that did
-*not* fork between NVIDIA and AMD, and which the Vulkan analysis expects to hold
+The Core column describes what the shared `KernelLowering` walk + the
+backend-neutral registration provide independent of vendor. That is the ≈90% that did
+not fork between NVIDIA and AMD, and which the Vulkan analysis expects to hold
 for a third time.
 
 ---
@@ -81,7 +81,7 @@ for a third time.
 
 These are the entire `LoweringTarget` leaf-read interface
 (`src/cajeta/xpu/lowering/LoweringTarget.h`). The kernel-body AST walk that
-*consumes* them is shared and does not fork.
+consumes them is shared and does not fork.
 
 | Feature | Core | NVIDIA | AMD | Vulkan |
 |---------|------|--------|-----|--------|
@@ -92,20 +92,20 @@ These are the entire `LoweringTarget` leaf-read interface
 | Workgroup barrier | one `workgroupBarrier()` seam method | `native` · `nvvm.barrier.cta.sync.aligned.all` | `forks: ` `amdgcn.s.barrier` wrapped in workgroup-scoped release/acquire fences (LDS visibility) | `abstraction: ` `llvm.spv.group.memory.barrier.with.group.sync` + a **post-emit fixup**. LLVM 23 emits `OpControlBarrier` with Vulkan-forbidden **SequentiallyConsistent** semantics (`VUID-StandaloneSpirv-MemorySemantics-10866`); `SpirvBackend::fixupControlBarriers` rewrites each barrier's memory-semantics to `WorkgroupMemory\|AcquireRelease` (0x108) by adding one uint constant + repointing. The module then passes strict `spirv-val` **and** runs on-device (verified: `XpuVulkanEmitTests.workgroupBarrierIsSpecValid` + the on-device reduction). |
 | Num-workgroups (grid dim) read | not yet a Cajeta builtin | `native` (`nctaid`) | `native` (dispatch packet) | `native` · `llvm.spv.num.workgroups` |
 
-**Reading:** every coordinate *read* is `native` on Vulkan, and *two* of them
+**Reading.** Every coordinate read is `native` on Vulkan, and two of them
 (`workgroupDim`, `globalId`) are native single-intrinsic reads where AMD needed a
-structural workaround — on this axis Vulkan is the least divergent of the three.
-The one wrinkle is the **barrier**: LLVM 23 emits Vulkan-forbidden semantics, so
-a one-instruction post-emit fixup (see the cell above) rewrites it — after which
+structural workaround. On this axis Vulkan is the least divergent of the three.
+The one wrinkle is the barrier. LLVM 23 emits Vulkan-forbidden semantics, so
+a one-instruction post-emit fixup (see the cell above) rewrites it. After that
 the execution-model column is fully native + spec-valid on all three backends.
 
 ---
 
 ## 2. Address spaces & memory model
 
-Numeric address spaces from `src/cajeta/xpu/core/AddressSpace.h`. NVIDIA and AMD
-share the LLVM numbering; SPIR-V uses storage classes (the integers below are the
-Khronos storage-class enum values, not LLVM address spaces).
+Numeric address spaces come from `src/cajeta/xpu/core/AddressSpace.h`. NVIDIA and AMD
+share the LLVM numbering. SPIR-V uses storage classes, so the integers in its column are the
+Khronos storage-class enum values rather than LLVM address spaces.
 
 | Address space | Core (Cajeta `AddressSpace`) | NVIDIA `addrspace` | AMD `addrspace` | Vulkan storage class |
 |---------------|------------------------------|--------------------|-----------------|----------------------|
@@ -116,18 +116,18 @@ Khronos storage-class enum values, not LLVM address spaces).
 | Alloca / entry-block slots | `allocaAddressSpace()` seam | 0 (generic) | **5 (private)** — AS-0 alloca is invalid IR on AMDGPU | Function (7) — one-liner from `spirvNumberFor(Private)` |
 | Generic / flat (default-deref) | `Generic` | 0 (native flat) | 0 (native flat) | `not possible: ` Vulkan SPIR-V has **no Generic storage class** (that's an OpenCL/`Kernel`-capability feature). Benign for Cajeta — the lowerer already tracks every pointer's address space *explicitly*, so it never relies on flat generic deref. |
 
-**Reading:** address space is a near-non-fork across all three (NV/AMD identical;
+**Reading.** Address space is a near-non-fork across all three. NV/AMD are identical, and
 Vulkan's only real difference is the absence of a generic flat space, which the
-explicit-AS lowering sidesteps). The single alloca fork (0/5/7) stays a one-line
+explicit-AS lowering sidesteps. The single alloca fork (0/5/7) stays a one-line
 seam method.
 
 ---
 
 ## 3. Kernel-argument ABI — the Vulkan fork (signature + buffer access)
 
-NVIDIA and AMD both pass kernel args as a flat `kernelParams` array: buffers as
-raw `addrspace(1)` device pointers, scalars by value. Vulkan has **no
-raw-pointer kernel-argument ABI**. This is the architectural fork the Vulkan
+NVIDIA and AMD both pass kernel args as a flat `kernelParams` array, with buffers as
+raw `addrspace(1)` device pointers and scalars by value. Vulkan has no
+raw-pointer kernel-argument ABI. This is the architectural fork the Vulkan
 bring-up turns on.
 
 | Feature | Core | NVIDIA | AMD | Vulkan |
@@ -138,14 +138,14 @@ bring-up turns on.
 | Why not KernelBuffer Device Address | — | — | — | `not possible: ` LLVM 23's SPIR-V backend exposes **no PhysicalStorageBuffer/BDA intrinsic** — the `PhysicalStorageBuffer64EXT` strings are capability enum names only. So raw-pointer kernel args can't be reconstituted from IR; descriptor sets are the only model. |
 | Where the fork lands on the seam | param-materialization + buffer-access hooks (default preserves NV/AMD) | default | default | `forks: ` **both** the kernel signature (`void main()`, no params; `createKernel` + `materializeParam` hooks) **and** the body's buffer element access (`bufferElementPtr` → `getpointer` instead of GEP). Bigger than AMD: the body walk forks, not just the prologue. |
 
-**Reading:** Vulkan's missing raw-pointer ABI is the headline divergence — and
-the build proved it's *not* bridgeable by KernelBuffer Device Address (no IR path),
-only by descriptor-set SSBOs. That is the "bigger fork than AMD" the pass set
-out to measure: where AMD forked only the coordinate leaf reads, Vulkan forks
-the kernel **signature** (`void main()`, descriptor binds) *and* the body's
-**buffer element access** (`getpointer` vs GEP). The coordinate reads, control
+**Reading.** Vulkan's missing raw-pointer ABI is the headline divergence, and
+the build proved that KernelBuffer Device Address cannot bridge it (there is no IR path).
+Only descriptor-set SSBOs can. That is the "bigger fork than AMD" the pass set
+out to measure. Where AMD forked only the coordinate leaf reads, Vulkan forks
+the kernel signature (`void main()`, descriptor binds) and the body's
+buffer element access (`getpointer` vs GEP). The coordinate reads, control
 flow, operators, scalar-slot model, and `addrspace(3)` shared memory still stay
-shared — so the core is smaller than NV∩AMD's ≈90%, but still the majority.
+shared, so the core is smaller than NV∩AMD's ≈90%, but still the majority.
 
 ---
 
@@ -160,10 +160,10 @@ shared — so the core is smaller than NV∩AMD's ≈90%, but still the majority
 | Dispatch + sync | `KernelStream.sync()` | `native` · `cuLaunchKernel` + sync | `native` · launch + `hipDeviceSynchronize` | `forks: ` `vkQueueSubmit` + `vkQueueWaitIdle` |
 | Driver acquisition | dlopen vendor lib | `native` · `libcuda.so.1` | `native` · `libamdhip64.so` (+ pinned `libhsa`) | `abstraction: ` dlopen `libvulkan.so.1`, resolve entry points via `vkGetInstanceProcAddr`/`vkGetDeviceProcAddr`; pick the first physical device with a compute queue (radeon/RADV ICD reaches the Strix Halo APU) |
 
-**Reading:** the *launch-config shape* (grid/block + a buffer/scalar arg list)
+**Reading.** The launch-config shape (grid/block + a buffer/scalar arg list)
 stays universal at the Cajeta surface, but block dim partially migrates from
 launch-time (NV/AMD) to pipeline-creation-time (Vulkan), and the runtime driver
-forks heavily. The fork is contained to the driver layer; the language-level
+forks heavily. The fork is contained to the driver layer. The language-level
 `kernel.launch(...)` syntax stays backend-neutral.
 
 ---
@@ -179,8 +179,8 @@ forks heavily. The fork is contained to the driver layer; the language-level
 | Final binary | host-embedded bytes | cubin | hsaco | `.spv` |
 | Kernel decoration | `decorateKernel()` seam | `ptx_kernel` CC **+ `nvvm.annotations`** | `amdgpu_kernel` CC, no metadata | `forks: ` `OpEntryPoint GLCompute` + execution-mode marking (LocalSize) |
 
-**Reading:** Vulkan is the *only* one of the three that needs no external
-assembler or linker — the TargetMachine produces the shippable binary directly.
+**Reading.** Vulkan is the only one of the three that needs no external
+assembler or linker. The TargetMachine produces the shippable binary directly.
 
 ---
 
@@ -195,8 +195,8 @@ assembler or linker — the TargetMachine produces the shippable binary directly
 | `shared` placement keyword | frontend → `addrspace(3)` | `native` | `native` | `native` (→ Workgroup storage class) |
 | Control flow, operators, casts, mem2reg slot model | shared AST walk | `native` | `native` | `native` (body walk does not fork) |
 
-**Reading:** the entire frontend + the name-keyed registration are vendor-neutral
-and were *never touched* when AMD landed; the Vulkan analysis expects the same —
+**Reading.** The entire frontend + the name-keyed registration are vendor-neutral
+and were never touched when AMD landed. The Vulkan analysis expects the same, so
 the third backend inherits all of it for free.
 
 ---
@@ -208,9 +208,9 @@ the third backend inherits all of it for free.
 | Static shared `Shared<T> t = shared T[N]` | internal `[N x T] addrspace(3)` global | `native` | `native` | `native` · `addrspace(3)` → Workgroup storage class (a **non-fork**: the shared lowerer's hardcoded `addrspace(3)` is exactly Workgroup on SPIR-V). **Measured on-device** — the tree reduction returns the correct sum, with a spec-valid barrier (§1). |
 | Dynamic shared `shared T[expr]` | external unsized `[0 x T] addrspace(3)`, sized at launch | `native` · `cuLaunchKernel` `sharedMemBytes` | `native` · `hipModuleLaunchKernel` `sharedMemBytes` (= groupMemBytes) | `abstraction: ` **spec-constant array length** — the lowerer emits a concrete internal `[N x T]` Workgroup array (kept typed, not decayed to `T*`), and a post-emit patch (`injectDynamicSharedSpecConstant`) makes its `OpTypeArray` length an `OpSpecConstant` (SpecId 3); the runtime sets it from the launch's `sharedBytes:` (÷ elem size) via `VkSpecializationInfo` at pipeline creation. So it is sized **per pipeline**, not per-`vkCmdDispatch` (one dynamic array, 4-byte elem for now). Verified on-device (`XpuVulkanDispatchDeviceTests.dynamicSharedOnDevice`). |
 
-**Reading:** static shared is a clean `native` three-way. Dynamic shared is the
+**Reading.** Static shared is a clean `native` three-way. Dynamic shared is the
 second place (after block dim, §4) where a value Cajeta treats as launch-time on
-NV/AMD becomes pipeline-creation-time on Vulkan — bridgeable by a spec constant +
+NV/AMD becomes pipeline-creation-time on Vulkan. It is bridgeable by a spec constant +
 pipeline cache, but it cannot be a free per-dispatch scalar, and the matrix says
 why.
 
@@ -219,13 +219,13 @@ why.
 ## 8. Wave / subgroup ops (the `@Wave` feature — readlane + ballot + reduce built & measured)
 
 Wave ops are the archetypal variance-shaped feature and the headline test of the
-seam — and the seam held. `Wave.shuffleSync` (readlane / shuffle-by-index),
+seam, and the seam held. `Wave.shuffleSync` (readlane / shuffle-by-index),
 `Wave.ballotSync`, `Wave.reduceSum`, and `Wave.laneId` lower through the shared AST
 walk with only five `LoweringTarget` methods (`waveWidth`/`waveShuffle`/`waveBallot`/
-`waveReduceSum`/`waveLaneId`) forking. Built 2026-05-30; emit-verified on all three
-GPU backends, run on-device on AMD + Vulkan + **NVIDIA (RTX 4090, 2026-06-16 —
-shuffle/ballot/reduceSum/reduce-family/laneId/width/rotate/prefix-scan)**; **wave =
-SIMD lane on the CPU backend (Inc 5C, 2026-05-31)**.
+`waveReduceSum`/`waveLaneId`) forking. They were built 2026-05-30 and emit-verified on all three
+GPU backends. They run on-device on AMD, Vulkan and NVIDIA (RTX 4090, 2026-06-16:
+shuffle/ballot/reduceSum/reduce-family/laneId/width/rotate/prefix-scan). The wave is the
+SIMD lane on the CPU backend (Inc 5C, 2026-05-31).
 
 | Feature | Core | NVIDIA | AMD | Vulkan | CPU (Inc 5C) |
 |---------|------|--------|-----|--------|--------------|
@@ -235,26 +235,26 @@ SIMD lane on the CPU backend (Inc 5C, 2026-05-31)**.
 | Ballot | `Wave.ballotSync(pred)` → i64 | `native` · `nvvm.vote.ballot.sync` (i32→i64) | `native` · `amdgcn.ballot.i32` (i32→i64) | `native` · `spv.wave.ballot` (`<4 x i32>`, low 64 → i64) | VFABI variant · `bitcast <W x i1> → iW` |
 | Reduce (sum) | `Wave.reduceSum(v)` → i32 | `native` · `nvvm.redux.sync.add` (sm_80+) | `native` · `amdgcn.wave.reduce.add` | `native` · `spv.wave.reduce.sum` (→ `OpGroupNonUniformIAdd`) | VFABI variant · `broadcast(vector.reduce.add)`; masked for divergence |
 
-**Reading:** wave ops are native on all three. **The reduce probe overturned its own
-hypothesis.** The guess (recorded here in the prior pass) was that reduce would
-*invert* comprehensiveness — one native intrinsic on Vulkan vs. a shuffle/DPP
-butterfly sequence on NV/AMD. The build showed the opposite: **all three expose a
-single hardware wave-reduce intrinsic in LLVM 23**, so reduce maps as cleanly as
+**Reading.** Wave ops are native on all three. The reduce probe overturned its own
+hypothesis. The guess (recorded here in the prior pass) was that reduce would
+invert comprehensiveness, with one native intrinsic on Vulkan against a shuffle/DPP
+butterfly sequence on NV/AMD. The build showed the opposite. All three expose a
+single hardware wave-reduce intrinsic in LLVM 23, so reduce maps as cleanly as
 shuffle/ballot (`waveReduceSum` is a one-liner per backend). The real asymmetries are
 narrower and were only visible by running it:
-- **NVPTX `redux.sync` is gated on sm_80+** (Ampere); below that a butterfly-shuffle
-  fallback would be needed (out of scope — the emit test targets `sm_89`).
-- **AMDGPU folds a *uniform-constant* operand** to `wave.reduce.add` back to the
-  operand instead of summing it (`reduceSum(1)` returned 1 on-device); a *divergent*
+- **NVPTX `redux.sync` is gated on sm_80+** (Ampere). Below that a butterfly-shuffle
+  fallback would be needed, which is out of scope since the emit test targets `sm_89`.
+- **AMDGPU folds a uniform-constant operand** to `wave.reduce.add` back to the
+  operand instead of summing it (`reduceSum(1)` returned 1 on-device). A divergent
   operand takes the real reduction path. The device test feeds a buffer of 1s so the
   reduction actually runs.
-- **Ballot shape still forks** (NV i32, AMD i32 wave32, Vulkan `<4 x i32>` 128-bit —
-  the Core API normalizes to i64).
+- **Ballot shape still forks** (NV i32, AMD i32 wave32, Vulkan `<4 x i32>` 128-bit).
+  The Core API normalizes to i64.
 
 Tests: `XpuWaveEmitTests` (3 backends + `spirv-val`, shuffle/ballot/reduce),
-`XpuWaveDeviceTests` (shuffle/ballot/reduce on-device on AMD + Vulkan + **NVIDIA**;
+`XpuWaveDeviceTests` (shuffle/ballot/reduce on-device on AMD + Vulkan + NVIDIA;
 the `nvptx*` arms cover shuffle/ballot, reduceSum, laneId, width, rotate, the
-reduce family, and prefix scans; the reduce/width checks are width-agnostic — sum
+reduce family, and prefix scans; the reduce/width checks are width-agnostic, since the sum
 of 1s over a full wave == wave width ∈ {32, 64}, which is 32 on NVIDIA).
 
 ---
@@ -274,8 +274,8 @@ of 1s over a full wave == wave width ∈ {32, 64}, which is 32 on NVIDIA).
 
 ## 10. Deferred / not-yet capabilities (no backend has these)
 
-Tracked here so the matrix is honest about the frontier, not just the floor.
-These are backend-neutral gaps, unaffected by the Vulkan column.
+These are tracked here so the matrix is honest about the frontier as well as the floor.
+They are backend-neutral gaps, unaffected by the Vulkan column.
 
 | Capability | Status |
 |------------|--------|
@@ -296,23 +296,23 @@ These are backend-neutral gaps, unaffected by the Vulkan column.
 
 ## 11. The abstraction-layer ledger (the user's core question)
 
-Where a platform lacks a native primitive — can Cajeta provide it, and if not, why?
+Where a platform lacks a native primitive, can Cajeta provide it, and if not, why?
 
 **Provided cleanly (abstraction layer bridges the gap):**
 
-- **Vulkan · raw-pointer buffer args** → **descriptor-set SSBOs** (`resource.handlefrombinding` + `getpointer`); scalars as single-element SSBOs. Forks signature + body buffer access; the rest of the body stays shared. *(§3)*
-- **Vulkan · workgroup barrier** → `group.memory.barrier.with.group.sync` + a one-instruction post-emit fixup (`SpirvBackend::fixupControlBarriers`) that corrects LLVM 23's Vulkan-forbidden SequentiallyConsistent semantics to `WorkgroupMemory|AcquireRelease`. Now passes strict `spirv-val` and runs on-device. *(§1)*
-- **Vulkan · block dim** → fixed compile-time `LocalSize` (first cut); spec-constant `LocalSizeId` is the refinement. *(§4)*
-- **AMD · workgroup dim read** → dispatch-packet load (no `ntid` intrinsic, but the value is recoverable). *(§1)*
-- **All · `tex.sample(sampler, u, v)`** (Item 8) → one `LoweringTarget::sampleTexture` seam, four native realizations: CPU C bilinear (`__cajeta_xpu_cpu_tex_sample`); Vulkan `llvm.spv.resource.samplelevel` → `OpImageSampleExplicitLod` (image + sampler descriptors); AMD `__ockl_image_sample_2D` → `image_sample` (ROCm device-lib **hybrid-linked only for sampling kernels** — reuses ROCm's SRD build + coord normalization rather than hand-packing gfx descriptors); NVIDIA `llvm.nvvm.tex.unified.2d` → PTX `tex.2d`. Texture marshals like a `KernelBuffer` handle, `Sampler` like a by-value POD; on AMD/NVIDIA the sampler state rides the texture object (built per-launch). CPU+Vulkan+AMD on-device, NVIDIA emit-only. *(needs LLVM 23 for Vulkan)*
+- **Vulkan · raw-pointer buffer args** → descriptor-set SSBOs (`resource.handlefrombinding` + `getpointer`), with scalars as single-element SSBOs. This forks signature + body buffer access, and the rest of the body stays shared. *(§3)*
+- **Vulkan · workgroup barrier** → `group.memory.barrier.with.group.sync` + a one-instruction post-emit fixup (`SpirvBackend::fixupControlBarriers`) that corrects LLVM 23's Vulkan-forbidden SequentiallyConsistent semantics to `WorkgroupMemory|AcquireRelease`. It now passes strict `spirv-val` and runs on-device. *(§1)*
+- **Vulkan · block dim** → fixed compile-time `LocalSize` (first cut). Spec-constant `LocalSizeId` is the refinement. *(§4)*
+- **AMD · workgroup dim read** → dispatch-packet load (there is no `ntid` intrinsic, but the value is recoverable). *(§1)*
+- **All · `tex.sample(sampler, u, v)`** (Item 8) → one `LoweringTarget::sampleTexture` seam with four native realizations. CPU uses C bilinear (`__cajeta_xpu_cpu_tex_sample`). Vulkan uses `llvm.spv.resource.samplelevel` → `OpImageSampleExplicitLod` (image + sampler descriptors). AMD uses `__ockl_image_sample_2D` → `image_sample`, with the ROCm device-lib hybrid-linked only for sampling kernels, which reuses ROCm's SRD build + coord normalization rather than hand-packing gfx descriptors. NVIDIA uses `llvm.nvvm.tex.unified.2d` → PTX `tex.2d`. Texture marshals like a `KernelBuffer` handle and `Sampler` like a by-value POD. On AMD/NVIDIA the sampler state rides the texture object (built per-launch). CPU+Vulkan+AMD are on-device, and NVIDIA is emit-only. *(needs LLVM 23 for Vulkan)*
 
-- **Texture dimensions** — `Texture1D/2D/3D/2DArray` + fetch/sample work on CPU + Vulkan/RADV + AMD/gfx1151 on-device (NVIDIA emit-only). **`TextureCube` sample and mipmapped `Texture2D` + explicit-LOD (`sampleLod`/`fetchLod`, incl. trilinear cross-level blend) now work on CPU + Vulkan/RADV + AMD/gfx1151 on-device** (NVIDIA emit-only). HIP's high-level array APIs don't support these on gfx1151 — `hipMalloc3DArray[hipArrayCubemap]` → invalid-arg, `hipMallocMipmappedArray` → `hipErrorNotSupported(801)`, unchanged across ROCm 7.11.0 (a documented HIP gap — the official "Texture Management [Not supported]" group — not a hardware limit). cajeta **emulates** both on AMD: cubemaps via a LAYERED `hipArray` + in-kernel face projection, and mipmaps via a **hand-built gfx11 image SRD over an addrlib-tiled `hipMalloc`** (option B), sampled through the unchanged `__ockl_image_sample_lod_2D` seam — proven bit-exact on-device (`plans/gpu/xpu/probes/mipprobe.cpp`). The mip emulation rides the optional `libcajeta_amdtex` helper (vendored addrlib, dlopen'd like libamdhip64); where it's absent or the gfx arch isn't in its config table the AMD mip path degrades to unsupported and the Vulkan backend remains the fallback. Scope: explicit-LOD only (no auto-LOD/derivatives — N/A in compute), no anisotropic, no seamless cube edges; v1 mip format = R32F. *(`XpuHipDispatchDeviceTests.{mipmapFetchAndSampleLod,mipTrilinearBlend,textureCubeSample}RoutesToHipOnDevice`; project memory `project_amd_mip_emulation_shipped`)*
+- **Texture dimensions.** `Texture1D/2D/3D/2DArray` + fetch/sample work on CPU + Vulkan/RADV + AMD/gfx1151 on-device (NVIDIA emit-only). `TextureCube` sample and mipmapped `Texture2D` + explicit-LOD (`sampleLod`/`fetchLod`, incl. trilinear cross-level blend) now work on CPU + Vulkan/RADV + AMD/gfx1151 on-device (NVIDIA emit-only). HIP's high-level array APIs don't support these on gfx1151. `hipMalloc3DArray[hipArrayCubemap]` → invalid-arg and `hipMallocMipmappedArray` → `hipErrorNotSupported(801)`, unchanged across ROCm 7.11.0. That is a documented HIP gap, the official "Texture Management [Not supported]" group, and it is no hardware limit. cajeta emulates both on AMD. Cubemaps go via a LAYERED `hipArray` + in-kernel face projection, and mipmaps via a hand-built gfx11 image SRD over an addrlib-tiled `hipMalloc` (option B), sampled through the unchanged `__ockl_image_sample_lod_2D` seam. Both are proven bit-exact on-device (`plans/gpu/xpu/probes/mipprobe.cpp`). The mip emulation rides the optional `libcajeta_amdtex` helper (vendored addrlib, dlopen'd like libamdhip64). Where it's absent or the gfx arch isn't in its config table, the AMD mip path degrades to unsupported and the Vulkan backend remains the fallback. The scope is explicit-LOD only (no auto-LOD/derivatives, which are N/A in compute), no anisotropic, and no seamless cube edges. The v1 mip format is R32F. *(`XpuHipDispatchDeviceTests.{mipmapFetchAndSampleLod,mipTrilinearBlend,textureCubeSample}RoutesToHipOnDevice`; project memory `project_amd_mip_emulation_shipped`)*
 
 **Not cleanly possible (and why):**
 
-- **Vulkan · KernelBuffer Device Address (raw pointers)** → LLVM 23's SPIR-V backend has **no PhysicalStorageBuffer/BDA intrinsic** from IR. This forced the descriptor-set model above — the central build-discovered finding. *(§3)*
-- **Vulkan · generic/flat address space** → SPIR-V has no Generic storage class outside the OpenCL `Kernel` capability. **Benign**: the lowerer tracks every pointer's address space explicitly and never relies on flat generic deref. *(§2)*
-- **Vulkan · dynamic shared as a *free per-dispatch* byte count** → workgroup arrays are sized at pipeline creation, not per-`vkCmdDispatch`. Deferred this pass. *(§7)*
+- **Vulkan · KernelBuffer Device Address (raw pointers)** → LLVM 23's SPIR-V backend has no PhysicalStorageBuffer/BDA intrinsic from IR. This forced the descriptor-set model above, and it is the central build-discovered finding. *(§3)*
+- **Vulkan · generic/flat address space** → SPIR-V has no Generic storage class outside the OpenCL `Kernel` capability. This is benign, because the lowerer tracks every pointer's address space explicitly and never relies on flat generic deref. *(§2)*
+- **Vulkan · dynamic shared as a free per-dispatch byte count** → workgroup arrays are sized at pipeline creation rather than per-`vkCmdDispatch`. Deferred this pass. *(§7)*
 
 **Needed nowhere (already shared across all three):** the entire kernel-body AST
 walk, the coordinate leaf reads, `addrspace(3)` shared memory (→ Workgroup on
@@ -336,123 +336,123 @@ on the Strix Halo APU via RADV.
 | 5 | static workgroup-shared tree reduction on-device (§7); dynamic deferred | Tier-1 | `XpuSharedVulkanDeviceTests` |
 | 5b | barrier post-emit fixup → spec-valid `OpControlBarrier` (§1) | Tier-0 | `XpuVulkanEmitTests.workgroupBarrierIsSpecValid` |
 
-One cell carries a measured caveat — block dim is fixed at SPIR-V compile time
-(§4); dynamic shared is deferred. The barrier limitation found during the build
-is now **fixed** (§1). Everything else in the Vulkan column is on-device-measured
+One cell carries a measured caveat. Block dim is fixed at SPIR-V compile time
+(§4), and dynamic shared is deferred. The barrier limitation found during the build
+is now fixed (§1). Everything else in the Vulkan column is on-device-measured
 and spec-valid.
 
 ---
 
 ## Part C cutting-edge SPIR-V (via the `cajeta-llvm` fork, LLVM 23)
 
-Both delivered on-device on the RADV / STRIX_HALO (Radeon 8060S) box (2026-06-04),
+Both were delivered on-device on the RADV / STRIX_HALO (Radeon 8060S) box (2026-06-04),
 through the fork's `cajeta-spirv` branch. The native matrix-core path is now wired
-on all three GPU backends (Vulkan `OpCooperativeMatrix`, AMD RDNA3 WMMA, **NVIDIA
-tensor-core `wmma`**, 2026-06-16); the native RT-core ray-query seam is on-device-
-validated on RADV (Linux) + the RTX 4090 (Windows) via Vulkan, **and on NVIDIA CUDA
-via OptiX (2026-06-17)** — only the AMDGPU backend stays software-BVH-only.
-**NVIDIA now runs both via the portable/software tiers on-device (RTX 4090,
-2026-06-16):** cooperative-matrix on the portable flat-tile tier (f16/f16→f32
-bit-exact), and ray-query over the portable software BVH (the same
-`SoftwareRayQuery` walk the CPU uses — AABB/triangle/nearest/barycentrics/front-face
-all match the CPU results). **NVIDIA cooperative-matrix now ALSO runs on the native
-tensor-core (`wmma`) tier** — 16×16×16 f16→f32 row-major, bit-exact on the RTX 4090
-via the NVVM `wmma.load`/`wmma.mma`/`wmma.store` intrinsics (the cajeta seam derives
-the fragment struct type from the load intrinsic so load/mma/store agree; the warp-
-collective launch uses a full warp). So all three GPU backends now have a native
+on all three GPU backends (Vulkan `OpCooperativeMatrix`, AMD RDNA3 WMMA, NVIDIA
+tensor-core `wmma`, 2026-06-16). The native RT-core ray-query seam is on-device-
+validated on RADV (Linux) + the RTX 4090 (Windows) via Vulkan, and on NVIDIA CUDA
+via OptiX (2026-06-17). Only the AMDGPU backend stays software-BVH-only.
+NVIDIA now runs both via the portable/software tiers on-device (RTX 4090,
+2026-06-16). Cooperative-matrix runs on the portable flat-tile tier (f16/f16→f32
+bit-exact), and ray-query runs over the portable software BVH, the same
+`SoftwareRayQuery` walk the CPU uses, where AABB/triangle/nearest/barycentrics/front-face
+all match the CPU results. NVIDIA cooperative-matrix now also runs on the native
+tensor-core (`wmma`) tier. It is 16×16×16 f16→f32 row-major, bit-exact on the RTX 4090
+via the NVVM `wmma.load`/`wmma.mma`/`wmma.store` intrinsics. The cajeta seam derives
+the fragment struct type from the load intrinsic so load/mma/store agree, and the warp-
+collective launch uses a full warp. So all three GPU backends now have a native
 cooperative-matrix path (Vulkan `OpCooperativeMatrix`, AMD RDNA3 WMMA, NVIDIA
-tensor-core wmma). **The native RT-core ray-query path is now on-device-validated
-on the RTX 4090's Windows Vulkan backend** (2026-06-16): AABB + triangle BLAS/TLAS
-traced via `OpRayQuery` on the RT cores, results matching the software-BVH oracle,
-with AUTO resolving to native and `AsImpl.Software`/`AsImpl.Native` selectable.
-**NVIDIA CUDA also reaches its RT cores via OptiX (2026-06-17):** a `RayQuery`
+tensor-core wmma). The native RT-core ray-query path is now on-device-validated
+on the RTX 4090's Windows Vulkan backend (2026-06-16). AABB + triangle BLAS/TLAS are
+traced via `OpRayQuery` on the RT cores, with results matching the software-BVH oracle,
+AUTO resolving to native, and `AsImpl.Software`/`AsImpl.Native` selectable.
+NVIDIA CUDA also reaches its RT cores via OptiX (2026-06-17). A `RayQuery`
 `@Kernel` against an OptiX-impl AS lowers to a separate OptiX program-PTX module
-(`NvptxOptixRayQuery`) dispatched by `optixLaunch` — four canonical shapes (AABB
+(`NvptxOptixRayQuery`) dispatched by `optixLaunch`. Four canonical shapes (AABB
 candidate-count, triangle nearest-hit, triangle candidate getters, committed-triangle /
-front-face) match the software oracle (777) on the 4090. **Under M3, AUTO on CUDA prefers
-the RT cores** (`Device.supports(Capability.RayQueryRtCore)`): the AS is a multi-impl noun
+front-face) match the software oracle (777) on the 4090. Under M3, AUTO on CUDA prefers
+the RT cores (`Device.supports(Capability.RayQueryRtCore)`). The AS is a multi-impl noun
 that retains the software floor and builds the OptiX rep lazily on the first supported-shape
-launch, with launch-time selection routing Unsupported shapes back to the floor (no fault,
-no opt-in — see `docs/gpu/RayQuery.md` §5–§6). The software BVH stays the portable floor
+launch, with launch-time selection routing Unsupported shapes back to the floor. There is no fault and
+no opt-in (see `docs/gpu/RayQuery.md` §5–§6). The software BVH stays the portable floor
 (CPU/AMD, non-RT Vulkan, and any Unsupported-shape kernel).
-**AMD gets
-the symmetric ray-query software-BVH path** (`AmdgpuTarget.accelImpl() == SoftwareBvh`
-+ a HIP noun provider) — code-complete + compile-verified, on-device-PENDING the
-gfx1151 box (both NVPTX and AMDGPU had the same latent `accelImpl()` gap that made
-`RayQuery` throw; now fixed). AMD's cooperative-matrix is already native WMMA.
+AMD gets
+the symmetric ray-query software-BVH path (`AmdgpuTarget.accelImpl() == SoftwareBvh`
++ a HIP noun provider). It is code-complete + compile-verified, and on-device-PENDING the
+gfx1151 box. Both NVPTX and AMDGPU had the same latent `accelImpl()` gap that made
+`RayQuery` throw, and it is now fixed. AMD's cooperative-matrix is already native WMMA.
 
 | Feature | Vulkan (Cajeta's flavor) | On-device |
 |---|---|---|
 | **Cooperative matrix** `CooperativeMatrix<T,Rows,Cols,Use>` | `OpTypeCooperativeMatrixKHR` + load/store/mul-add via `llvm.spv.cooperative.matrix.*`; mandates `OpMemoryModel Logical VulkanKHR`. CM1–CM5 + multi-tile GEMM | ✅ f16/f16→f32 16×16×16 bit-exact on RDNA3 WMMA cores; 64×64×64 tiled GEMM bit-exact (needed the `SPIRVFixupMergePlacement` backend fix). CM6 LDS-staging deferred |
 | **Ray query + accel structures** `RayQuery` / `AccelerationStructure` | `OpTypeRayQueryKHR` / `OpTypeAccelerationStructureKHR` + init/proceed/get via `llvm.spv.ray.query.*`; AS bound through the standard `handlefrombinding` path | ✅ spatial-index (RTNN) pattern over AABB + triangle geometry, on-device; consumed by Caramelo `SpatialIndex` (3c) |
 
-`float16` is IEEE binary16 (`getHalfTy`, not bfloat) to match the device's
+`float16` is IEEE binary16 (`getHalfTy` rather than bfloat) to match the device's
 `VK_COMPONENT_TYPE_FLOAT16_KHR` cooperative-matrix config.
 
 **Ray-query AS impl, by platform.** The `AccelerationStructure` noun has two impls
-(CajetaGPU §1.5): the **native** Vulkan BLAS+TLAS (`OpRayQuery`, RT cores) and the
-**portable software BVH** (the `SoftwareRayQuery` walk over a `KernelBuffer<float32>`,
-shared with CPU/NVPTX/AMD). On any **ray-query-capable Vulkan device — RADV on Linux
-AND the RTX 4090 on Windows** — AUTO resolves to **native**; the `caj_native_
+(CajetaGPU §1.5). They are the native Vulkan BLAS+TLAS (`OpRayQuery`, RT cores) and the
+portable software BVH (the `SoftwareRayQuery` walk over a `KernelBuffer<float32>`,
+shared with CPU/NVPTX/AMD). On any ray-query-capable Vulkan device, both RADV on Linux
+and the RTX 4090 on Windows, AUTO resolves to native. The `caj_native_
 rayquery_available` resolver and the `RayQueryNative` capability share one condition
 (active backend is Vulkan + the device advertises ray query), so they never
 disagree. On a non-RT Vulkan device (or the CPU/NVPTX/AMD backends, which have no
 native inline ray-query seam) AUTO resolves to the software BVH floor. The impl is
-selectable per AS: `AccelerationStructure.of(.., AsImpl.Native | AsImpl.Software)`
-or the process-wide `CAJETA_GPU_AS_IMPL=native|software` override; the chosen impl
+selectable per AS, through `AccelerationStructure.of(.., AsImpl.Native | AsImpl.Software)`
+or the process-wide `CAJETA_GPU_AS_IMPL=native|software` override. The chosen impl
 is recorded on the noun (`AccelerationStructure.implTag()`) and the verb follows it.
 
-**CUDA gets a third impl — OptiX (`implTag` 2, 2026-06-17).** NVIDIA has no *inline*
-ray-query seam, so its RT cores are reached through an OptiX **pipeline** that the
+**CUDA gets a third impl, OptiX (`implTag` 2, 2026-06-17).** NVIDIA has no inline
+ray-query seam, so its RT cores are reached through an OptiX pipeline that the
 compiler emits as a lowering of the same inline `RayQuery` verb (`NvptxOptixRayQuery`).
-**M3 made AUTO prefer OptiX safely** via a multi-impl noun + launch-time selection: an
+M3 made AUTO prefer OptiX safely via a multi-impl noun + launch-time selection. An
 `AccelerationStructure` always retains the software-BVH floor and (on CUDA, under AUTO)
-builds the OptiX rep **lazily** on the first supported-shape launch — `implSet()` reports
+builds the OptiX rep lazily on the first supported-shape launch. `implSet()` reports
 the live set (`1<<impl` per rep; e.g. `Software|OptiX = 5`), while `implTag()` keeps the
 single-primary read. At launch the runtime picks, per consuming kernel, the best impl it
-can traverse (a registered OptiX program + the AS carrying OptiX → `optixLaunch`; else the
-software cubin over the floor — an Unsupported shape can no longer be handed an `OptixAs*`
-to misread). `=optix` forces eager OptiX (+ retained floor); `=software` forces the floor.
-`Device.supports(Capability.RayQueryRtCore)` reports the OptiX path per device (distinct
-from `RayQueryNative`, false on CUDA). This supersedes the earlier opt-in-only / deferred-
-flip policy (the fault that made it unsafe is gone). See `documents/gpu-rayquery-optix/
+can traverse. A registered OptiX program + the AS carrying OptiX → `optixLaunch`, and otherwise the
+software cubin runs over the floor. An Unsupported shape can no longer be handed an `OptixAs*`
+to misread. `=optix` forces eager OptiX (+ retained floor), and `=software` forces the floor.
+`Device.supports(Capability.RayQueryRtCore)` reports the OptiX path per device. It is distinct
+from `RayQueryNative`, which is false on CUDA. This supersedes the earlier opt-in-only / deferred-
+flip policy, because the fault that made it unsafe is gone. See `documents/gpu-rayquery-optix/
 rayquery-optix-m3-multiimpl-{spec,plan}.md`.
 
-**On-device (RTX 4090, Windows, 2026-06-16):** native AABB + triangle ray query —
-hits/primitive-index/T/barycentrics/front-face/nearest-hit — all match the software
-oracle; `autoRecordsNativeImplOnDevice` proves AUTO records native (impl 1) on the
+**On-device (RTX 4090, Windows, 2026-06-16).** Native AABB + triangle ray query
+(hits/primitive-index/T/barycentrics/front-face/nearest-hit) all match the software
+oracle. `autoRecordsNativeImplOnDevice` proves AUTO records native (impl 1) on the
 4090, and `forcedNativeOfApiOnDevice`/`forcedSoftwareOfApiOnDevice` prove both impls
-are selectable and agree. Bugs fixed on the way to native: the native **triangle**
-builder recorded a BLAS as the traceable AS (must be a TLAS — NVIDIA returns no
-hits, RADV tolerated it; now wraps the BLAS in a TLAS like the AABB path), and the
-runtime resolver + `RayQueryNative` capability were both Win32-gated (now removed —
-the 4090's native RT-core path is wired and validated). AMD's **HIP** backend still
-uses the software BVH. NVIDIA's **CUDA** backend is growing an **OptiX RT-core tier**
-(`CAJ_AS_IMPL_OPTIX`): NVIDIA RT cores are reached via OptiX (a pipeline model, no
+are selectable and agree. Two bugs were fixed on the way to native. The native triangle
+builder recorded a BLAS as the traceable AS, which must be a TLAS. NVIDIA returns no
+hits and RADV tolerated it, and it now wraps the BLAS in a TLAS like the AABB path. The
+runtime resolver + `RayQueryNative` capability were both Win32-gated, and that gate is now removed, since
+the 4090's native RT-core path is wired and validated. AMD's HIP backend still
+uses the software BVH. NVIDIA's CUDA backend is growing an OptiX RT-core tier
+(`CAJ_AS_IMPL_OPTIX`). NVIDIA RT cores are reached via OptiX (a pipeline model, with no
 inline-RQ intrinsic), so M0 proved OptiX results match the software oracle on the
 4090 and M1 landed the runtime AS provider (build + record the OptiX AS on-device,
-`implTag` 2); the traversal verb (NVPTX→OptiX codegen + `optixLaunch`) is in progress
-(M2). OptiX is a compile-time-only dependency — the engine is the driver's
+`implTag` 2). The traversal verb (NVPTX→OptiX codegen + `optixLaunch`) is in progress
+(M2). OptiX is a compile-time-only dependency, and the engine is the driver's
 `nvoptix.dll`. See `documents/gpu-rayquery-optix/`.
 
 ---
 
-*Generated 2026-05-30; updated 2026-06-04 with Part C cooperative-matrix (CM1–CM5 +
-GEMM) and ray-query (Inc 1–3c) on-device landings. **Updated 2026-06-16: the
-NVIDIA compute substrate is now on-device-measured** on an RTX 4090 (sm_89, native
-Windows CUDA — the B5 WSL2 runner turned out to be unnecessary). Two real bugs were
-found and fixed by the on-device bring-up: (1) `NvptxRegistration` never emitted the
+*Generated 2026-05-30. Updated 2026-06-04 with Part C cooperative-matrix (CM1–CM5 +
+GEMM) and ray-query (Inc 1–3c) on-device landings. Updated 2026-06-16, when the
+NVIDIA compute substrate became on-device-measured on an RTX 4090 (sm_89, native
+Windows CUDA, so the B5 WSL2 runner turned out to be unnecessary). Two real bugs were
+found and fixed by the on-device bring-up. (1) `NvptxRegistration` never emitted the
 `__cajeta_xpu_register_kernel_params` ctor (AMD/Vulkan did), so `find_kparams`
-returned NULL on CUDA and bindless/texture/image arg translation silently no-op'd;
+returned NULL on CUDA and bindless/texture/image arg translation silently no-op'd.
 (2) `__cajeta_xpu_register_module` dropped re-registration of an existing kernel
-name (first-wins) instead of overwriting + resetting the cached module — a
-use-after-free for a second JIT'd program reusing a kernel name. Both fixed; all
+name (first-wins) instead of overwriting + resetting the cached module, which was a
+use-after-free for a second JIT'd program reusing a kernel name. Both are fixed, and all
 three GPU backends + CPU are now on-device-measured for the compute substrate.
-**Follow-up landed the same day:** NVIDIA wave ops, the texture+surface runtime,
-ray-query (portable software BVH — new `NvptxTarget.accelImpl() == SoftwareBvh` +
+A follow-up landed the same day. NVIDIA wave ops, the texture+surface runtime,
+ray-query (portable software BVH, with the new `NvptxTarget.accelImpl() == SoftwareBvh` +
 a CUDA noun provider), and cooperative-matrix (portable flat-tile tier) are now all
 on-device-verified on the RTX 4090. What remains future on NVPTX is only the
-*native* tensor-core (`wmma`/`mma.sync`) and RT-core seams — the portable/software
+native tensor-core (`wmma`/`mma.sync`) and RT-core seams. The portable/software
 tiers run today and match the CPU/Vulkan results.
 See [`CajetaXPU-Variance.md`](CajetaXPU-Variance.md) for the NVIDIA∩AMD variance
 discipline and `cajeta-gpu-plan.md` Part C.*

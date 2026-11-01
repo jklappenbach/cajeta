@@ -2,24 +2,24 @@
 
 ## Purpose
 
-A `view` is a **typed overlay onto a byte buffer**. Reads and writes go through to the buffer's bytes directly; no allocation, no copy, no object graph. It is the right choice for:
+A `view` is a typed overlay onto a byte buffer. Reads and writes go through to the buffer's bytes directly, with no allocation, no copy and no object graph. It is the right choice for:
 
-- **Network protocol frames** — RPC requests, packet headers, framing layers (TCP / IP / custom).
-- **Memory-mapped file records** — fixed-layout binary formats, database pages, on-disk record types.
-- **Zero-copy serialization formats** — Cap'n Proto data sections, FlatBuffers (with caveats), custom binary protocols.
+- **Network protocol frames**, such as RPC requests, packet headers, and framing layers (TCP / IP / custom).
+- **Memory-mapped file records**, such as fixed-layout binary formats, database pages, and on-disk record types.
+- **Zero-copy serialization formats**, such as Cap'n Proto data sections, FlatBuffers (with caveats), and custom binary protocols.
 
-A `view` declaration names a layout — a sequence of fields with declared byte positions, endianness, and packing. The layout exists as a type. An *instance* of a view is the layout plus a borrowed byte buffer. Constructing the instance is bounds-checking the buffer and producing a typed handle; per-field access is then a direct GEP + load/store with no further runtime cost.
+A `view` declaration names a layout, which is a sequence of fields with declared byte positions, endianness, and packing. The layout exists as a type. An instance of a view is the layout plus a borrowed byte buffer. Constructing the instance bounds-checks the buffer and produces a typed handle. Per-field access is then a direct GEP + load/store with no further runtime cost.
 
-Views are **not** for self-describing formats — Ion, JSON, CBOR, MessagePack, BSON, Protobuf. Those have variable-length, tag-encoded structure where offsets depend on the data; they need streaming parsers (see `cajeta.codec.*` libraries), not overlay. The line: **if field offsets are determined by the type alone, view works. If they depend on the data, you need a parser.**
+Views are not for self-describing formats such as Ion, JSON, CBOR, MessagePack, BSON, and Protobuf. Those have variable-length, tag-encoded structure where offsets depend on the data, so they need streaming parsers (see `cajeta.codec.*` libraries). The line is simple. If field offsets are determined by the type alone, a view works. If they depend on the data, you need a parser.
 
-Views are not for value aggregates with class references or behavior. That is the unified `class` keyword's job — see `docs/specification/lang/UnifiedClasses.md`. There is no separate `struct` keyword: Cajeta has one `class` type, and the stack-vs-heap storage class chosen at each construction site decides value-copy vs reference semantics. A POD value type (the basis for `Vector` / `Matrix`) is just a `class` marked `@ValueType`. (`structure` and `record` are reserved words but unimplemented.)
+Views are not for value aggregates with class references or behavior. That is the unified `class` keyword's job, described in `docs/specification/lang/UnifiedClasses.md`. There is no separate `struct` keyword. Cajeta has one `class` type, and the stack-vs-heap storage class chosen at each construction site decides value-copy vs reference semantics. A POD value type (the basis for `Vector` / `Matrix`) is just a `class` marked `@ValueType`. `structure` and `record` are reserved words but unimplemented.
 
 ---
 
 ## `view` vs `class` (value vs reference) vs overlay
 
 The first two columns are the same `class` type under different storage
-classes (`heap X(...)` = reference, `stack X(...)` = value); a `@ValueType`
+classes (`heap X(...)` = reference, `stack X(...)` = value), and a `@ValueType`
 class is the POD value flavor. `view` is the byte overlay.
 
 | | `heap` class | `stack` class | `view` |
@@ -33,7 +33,7 @@ class is the POD value flavor. `view` is the byte overlay.
 | Vtable | yes (header) | yes (header) | no |
 | Implements interfaces | yes | yes | no |
 
-The defining constraint of `view`: every field's value is encoded *directly* in the buffer's bytes. Class references can't be in a view because a pointer in untrusted bytes is a wild pointer; reading through it would crash or return garbage.
+The defining constraint of `view` is that every field's value is encoded directly in the buffer's bytes. Class references can't be in a view because a pointer in untrusted bytes is a wild pointer, and reading through it would crash or return garbage.
 
 ---
 
@@ -54,14 +54,14 @@ Each field has a declared type. Primitive types lay out as their native LLVM wid
 
 Methods can be declared on a view using the same syntax as a class, with restrictions documented under "Methods" below.
 
-Views **cannot**:
+Views cannot:
 
 - Hold class references as fields.
 - Implement interfaces.
 - Inherit from other views.
 - Have virtual methods.
 
-These constraints aren't arbitrary; each is necessary for the "bytes in the buffer are the value" guarantee.
+These constraints aren't arbitrary. Each is necessary for the "bytes in the buffer are the value" guarantee.
 
 ---
 
@@ -86,26 +86,26 @@ Sub-byte float types (`float8e4m3`, `float4e2m1`, etc.) lay out as 1 byte.
 
 ### Packing
 
-**Default: packed.** Fields lay out at consecutive byte offsets with no padding between them. A view's fixed-prefix size is the sum of its fixed-field sizes.
+The default is packed. Fields lay out at consecutive byte offsets with no padding between them. A view's fixed-prefix size is the sum of its fixed-field sizes.
 
 ### Alignment
 
-Default packed layout means fields may be unaligned (an `int32` starting at offset 1, for example). The compiler emits unaligned-access intrinsics by default — essentially free on x86, small perf cost on ARM, always correct.
+Default packed layout means fields may be unaligned (an `int32` starting at offset 1, for example). The compiler emits unaligned-access intrinsics by default. They are essentially free on x86, carry a small perf cost on ARM, and are always correct.
 
-**Opt-in natural alignment** via `@Align(natural)`:
+Natural alignment is opt-in via `@Align(natural)`:
 
 ```cajeta
 @Align(natural)
 view LocalRecord { ... }
 ```
 
-Inserts padding so each field starts on its natural boundary. Total size grows; field access uses standard aligned loads.
+This inserts padding so each field starts on its natural boundary. Total size grows, and field access uses standard aligned loads.
 
-Per-view annotation only; field-level alignment overrides are not supported in v1.
+The annotation is per view only. Field-level alignment overrides are not supported in v1.
 
 ### Endianness
 
-**Endianness defaults to `@HostEndian`.** A view declaration may carry `@BigEndian`, `@LittleEndian`, or `@HostEndian`; omitting the annotation is equivalent to `@HostEndian` (host byte order, no `bswap`). Annotate explicitly whenever a view crosses platforms — a wire or file format with a fixed byte order should always say so.
+Endianness defaults to `@HostEndian`. A view declaration may carry `@BigEndian`, `@LittleEndian`, or `@HostEndian`, and omitting the annotation is equivalent to `@HostEndian` (host byte order, no `bswap`). Annotate explicitly whenever a view crosses platforms, since a wire or file format with a fixed byte order should always say so.
 
 ```cajeta
 @BigEndian       view NetworkFrame { ... }
@@ -120,7 +120,7 @@ All multi-byte primitive fields are byte-swapped on access when the view's endia
 
 ## Variable-size fields
 
-`String` and `T[]` where `T` is fixed-size are variable-size fields. Their inline layout is **length-prefix + data**:
+`String` and `T[]` where `T` is fixed-size are variable-size fields. Their inline layout is length-prefix + data:
 
 - `String`: `i32 length` followed by `length` bytes of UTF-8 content.
 - `T[]`: `i32 length` followed by `length * sizeof(T)` bytes.
@@ -136,21 +136,21 @@ view UserRecord {
 }
 ```
 
-Variable-size fields can appear anywhere in the declaration. Fields **after** a variable-size field have offsets resolved at view-construction time — one length-prefix read per variable-size field, then subsequent fields have constant offsets relative to a cached pointer.
+Variable-size fields can appear anywhere in the declaration. Fields after a variable-size field have offsets resolved at view-construction time. That is one length-prefix read per variable-size field, after which subsequent fields have constant offsets relative to a cached pointer.
 
-**Construction-time offset cache.** When `UserRecord(buf)` is called, the compiler-synthesized constructor walks the variable-size fields in order, reading each length-prefix and computing the offset of every following field. The resolved offsets are stored in a per-view metadata block on the stack alongside the view value. Per-field access is then a constant-offset GEP against the cached pointer.
+The offset cache is built at construction time. When `UserRecord(buf)` is called, the compiler-synthesized constructor walks the variable-size fields in order, reading each length-prefix and computing the offset of every following field. The resolved offsets are stored in a per-view metadata block on the stack alongside the view value. Per-field access is then a constant-offset GEP against the cached pointer.
 
-**Optimization fast path.** If a view declares all variable-size fields at the end, every fixed field has a compile-time-constant offset and the metadata block can be elided. The compiler detects this layout and emits the fast path automatically — the common case.
+There is an optimization fast path. If a view declares all variable-size fields at the end, every fixed field has a compile-time-constant offset and the metadata block can be elided. The compiler detects this layout, which is the common case, and emits the fast path automatically.
 
-**Validation.** Every length-prefix is validated against the remaining buffer size at construction. A length-prefix value larger than the remaining bytes throws `ParseException` from the construction call. See "Security" below.
+Every length-prefix is validated against the remaining buffer size at construction. A length-prefix value larger than the remaining bytes throws `ParseException` from the construction call. See "Security" below.
 
-**Element arrays (v1.1).** Arrays of variable-size elements are supported as *element-array fields*: `V[] f;` where `V` is a view type (fixed-size or var-size), and `String[] f;`. See § Element arrays below. Still not supported: nested element arrays (`V[][]`, `String[][]`, or a `V[]` whose element view itself declares an element array) — rejected with `CAJETA_ERROR_VIEW_NESTED_ELEMENT_ARRAY`.
+Element arrays arrived in v1.1. Arrays of variable-size elements are supported as element-array fields, which are `V[] f;` where `V` is a view type (fixed-size or var-size), and `String[] f;`. See § Element arrays below. Nested element arrays (`V[][]`, `String[][]`, or a `V[]` whose element view itself declares an element array) are still not supported, and they are rejected with `CAJETA_ERROR_VIEW_NESTED_ELEMENT_ARRAY`.
 
 ---
 
 ## Element arrays (v1.1)
 
-Spec: `specs/view-element-arrays-spec.md` (driving consumer: cajeta-gossip's piggyback delta list).
+The spec is `specs/view-element-arrays-spec.md`, and the driving consumer is cajeta-gossip's piggyback delta list.
 
 ```cajeta
 @BigEndian
@@ -169,29 +169,29 @@ view GossipMessage {
 }
 ```
 
-**Wire layout:** a `u32` element count, then the elements back-to-back, each in `V`'s own layout (self-delimiting via its internal prefixes). No per-element framing overhead — the layout overlays foreign protocols (DNS RR sections, TLV lists) as-is.
+**Wire layout.** The layout is a `u32` element count, then the elements back-to-back, each in `V`'s own layout (self-delimiting via its internal prefixes). There is no per-element framing overhead, so the layout overlays foreign protocols (DNS RR sections, TLV lists) as-is.
 
 **Surface.**
-- `m.deltas[i]` — an element view of type `V` borrowing the outer's buffer (zero-copy; chains, binds to locals, writes through on fixed fields). Out-of-range indexing throws.
-- `m.deltas.count()` — the element count, O(1).
+- `m.deltas[i]` is an element view of type `V` borrowing the outer's buffer. It is zero-copy, it chains, it binds to locals, and it writes through on fixed fields. Out-of-range indexing throws.
+- `m.deltas.count()` is the element count, in O(1).
 - `String[]` elements read as owned `String`s (same as a `String` field read).
-- **Bare reads of the field are a static error** (`CAJETA_ERROR_VIEW_ELEMENT_ARRAY_BARE_READ`) — elements are borrows, not copyable values; index or `count()`.
-- Fixed fields may follow an element array; they are reachable in O(1).
+- Bare reads of the field are a static error (`CAJETA_ERROR_VIEW_ELEMENT_ARRAY_BARE_READ`), because elements are borrows and cannot be copied as values. Index them or call `count()`.
+- Fixed fields may follow an element array, and they are reachable in O(1).
 
-**Cost model.** Construction validates the whole frame in one sweep (count, every element's internal prefixes — a malformed inner prefix throws from the constructor) and fills a per-instance offset table in the **per-fiber frame arena** (no heap allocation; reclaimed with the constructing scope). After construction, element access is **O(1)** — a table load, no walking. Fixed-size element views skip the table entirely (constant-stride math). The view's value becomes a pointer to an arena `{data, table}` descriptor; views without element-array fields keep the plain single-pointer representation unchanged.
+**Cost model.** Construction validates the whole frame in one sweep, covering the count and every element's internal prefixes, and a malformed inner prefix throws from the constructor. It fills a per-instance offset table in the per-fiber frame arena, with no heap allocation, and the table is reclaimed with the constructing scope. After construction, element access is O(1), which is a table load with no walking. Fixed-size element views skip the table entirely (constant-stride math). The view's value becomes a pointer to an arena `{data, table}` descriptor, and views without element-array fields keep the plain single-pointer representation unchanged.
 
-**Endianness inheritance (wired in v1.1).** An unannotated view used as a `V[]` element inherits the outer view's annotation — fields *and* internal length-prefixes read in the inherited order. An element view with its own annotation keeps it (mixed-endian records). Inheriting two different orders from different outers is rejected (`CAJETA_ERROR_VIEW_ENDIAN_AMBIGUOUS`): annotate the element view explicitly. All length/count prefixes of annotated views are read in the view's declared wire order.
+**Endianness inheritance (wired in v1.1).** An unannotated view used as a `V[]` element inherits the outer view's annotation, so fields and internal length-prefixes read in the inherited order. An element view with its own annotation keeps it (mixed-endian records). Inheriting two different orders from different outers is rejected (`CAJETA_ERROR_VIEW_ENDIAN_AMBIGUOUS`), so annotate the element view explicitly. All length/count prefixes of annotated views are read in the view's declared wire order.
 
 **Restrictions (v1.1).**
-- Single level: no `V[][]` / `String[][]`, and the element view may not itself declare an element-array field.
-- The owning construction form (`M(#bytes)`) is rejected for element-array views (`CAJETA_ERROR_VIEW_ELEMENT_ARRAY_OWNING`) — the descriptor is frame-arena-backed and cannot escape the constructing frame. Use the borrow form.
-- Encode stays writer-side: var-size fields (including element arrays) are not assignable through a view; producers build the buffer with a writer and overlay the view to read.
+- Only a single level is supported. There is no `V[][]` / `String[][]`, and the element view may not itself declare an element-array field.
+- The owning construction form (`M(#bytes)`) is rejected for element-array views (`CAJETA_ERROR_VIEW_ELEMENT_ARRAY_OWNING`), because the descriptor is frame-arena-backed and cannot escape the constructing frame. Use the borrow form.
+- Encode stays writer-side. Var-size fields (including element arrays) are not assignable through a view, so producers build the buffer with a writer and overlay the view to read.
 
 ---
 
 ## Nested views
 
-A view field may itself be of view type. Nested views lay out **inline** — the inner view's bytes appear directly within the outer at its declared offset. There is no pointer indirection.
+A view field may itself be of view type. Nested views lay out inline, so the inner view's bytes appear directly within the outer at its declared offset. There is no pointer indirection.
 
 ```cajeta
 @BigEndian
@@ -207,7 +207,7 @@ view Line {
 }
 ```
 
-Total size of `Line` is 16 bytes — exactly the sum of its nested layouts.
+The total size of `Line` is 16 bytes, exactly the sum of its nested layouts.
 
 ### Fixed-size inner
 
@@ -215,21 +215,21 @@ If every field of the inner view is fixed-size, the inner contributes a constant
 
 ### Variable-size inner
 
-If the inner view contains a `String` / `T[]` / another variable-size view, the inner is itself variable-size. The outer treats it like any other variable-size field: subsequent fields' offsets are resolved at construction. Length-prefix validation recurses — the constructor sweeps every length-prefix at every nesting level.
+If the inner view contains a `String` / `T[]` / another variable-size view, the inner is itself variable-size. The outer treats it like any other variable-size field, so subsequent fields' offsets are resolved at construction. Length-prefix validation recurses, and the constructor sweeps every length-prefix at every nesting level.
 
 ### Endianness inheritance
 
-A nested view **inherits the outer view's endianness** unless it has its own annotation. The intent of `@BigEndian` on the outer is that every multi-byte primitive in the record is big-endian, regardless of how fields are grouped into nested types.
+A nested view inherits the outer view's endianness unless it has its own annotation. The intent of `@BigEndian` on the outer is that every multi-byte primitive in the record is big-endian, regardless of how fields are grouped into nested types.
 
 To opt a sub-region into a different byte order, annotate the nested view's declaration. Mixed-endian records are rare but supported.
 
 ### Alignment inheritance
 
-A nested view **inherits the outer view's alignment** unless it has its own `@Align(...)` annotation. Packed outer → packed inner. `@Align(natural)` outer → naturally aligned inner.
+A nested view inherits the outer view's alignment unless it has its own `@Align(...)` annotation. A packed outer gives a packed inner, and an `@Align(natural)` outer gives a naturally aligned inner.
 
 ### Field access through nesting
 
-`outer.inner.field` is a borrow rooted at `outer`'s buffer per the field-path rule. For fixed-size inners the chained offset is constant; for variable-size inners the cached offset table from construction is used.
+`outer.inner.field` is a borrow rooted at `outer`'s buffer per the field-path rule. For fixed-size inners the chained offset is constant, and for variable-size inners the cached offset table from construction is used.
 
 ### Recursive views forbidden
 
@@ -252,21 +252,21 @@ int8[] frame = network.read();
 RpcHeader h = RpcHeader(frame);          // borrow form — `frame` keeps ownership
 ```
 
-The form is intentionally constructor-like; under the hood it lowers to compiler-synthesized code that:
+The form is intentionally constructor-like. Under the hood it lowers to compiler-synthesized code that:
 
-1. **Size check** — verifies `buf.count() >= MinSize` where `MinSize` is the fixed-prefix size. If not, throws `ParseException`.
-2. **Length-prefix validation** — single sweep over the data confirming every variable-size length-prefix stays within `buf.count()`. If any overruns, throws.
-3. **Offset cache** — for views with variable-size fields, records the resolved offset of each post-variable field in a per-view metadata block.
-4. Returns the view value — a small handle carrying `{ buffer-ptr, offset-cache-or-null }`.
+1. **Size check.** It verifies `buf.count() >= MinSize` where `MinSize` is the fixed-prefix size. If not, it throws `ParseException`.
+2. **Length-prefix validation.** A single sweep over the data confirms every variable-size length-prefix stays within `buf.count()`. If any overruns, it throws.
+3. **Offset cache.** For views with variable-size fields, it records the resolved offset of each post-variable field in a per-view metadata block.
+4. It returns the view value, a small handle carrying `{ buffer-ptr, offset-cache-or-null }`.
 
-After construction, every field access is **bounds-check-free** — the constructor guaranteed every offset lies within the buffer.
+After construction, every field access is bounds-check-free, because the constructor guaranteed every offset lies within the buffer.
 
 ### Two construction forms
 
 Cajeta has two construction forms for views, picked by whether the call site uses `#`:
 
-- `RpcHeader(buf)` — **borrow form.** The view borrows the buffer; original owner unchanged. The view's lifetime is statically tied to the buffer's lifetime (see "Borrow semantics integration").
-- `RpcHeader(#buf)` — **owning form.** Takes ownership of the buffer; `buf` is moved. The view owns the buffer for the duration of its scope; when the view drops, the buffer drops with it.
+- `RpcHeader(buf)` is the borrow form. The view borrows the buffer, and the original owner is unchanged. The view's lifetime is statically tied to the buffer's lifetime (see "Borrow semantics integration").
+- `RpcHeader(#buf)` is the owning form. It takes ownership of the buffer, and `buf` is moved. The view owns the buffer for the duration of its scope, and when the view drops, the buffer drops with it.
 
 ```cajeta
 // Borrowing — useful when the buffer outlives the view's scope
@@ -283,7 +283,7 @@ process(h);
 // via the pool's registered drop hook.
 ```
 
-The discriminator at the call site is the same `#` token used everywhere else in the memory model. No new syntax.
+The discriminator at the call site is the same `#` token used everywhere else in the memory model. There is no new syntax.
 
 ### Construction failure
 
@@ -293,7 +293,7 @@ Both bounds-check failures and length-prefix-overflow failures throw `ParseExcep
 - The expected minimum size, or the field offset that failed validation.
 - The view type name.
 
-Reasoning: server parse loops already have an outer `try/catch` for malformed inputs; exceptions cost nothing on the happy path; null-return forces a check at every call site.
+The reasoning is that server parse loops already have an outer `try/catch` for malformed inputs, exceptions cost nothing on the happy path, and a null return would force a check at every call site.
 
 ---
 
@@ -301,9 +301,9 @@ Reasoning: server parse loops already have an outer `try/catch` for malformed in
 
 Read and write IR is the same shape regardless of fixed-vs-variable layout. The only difference is where the offset comes from:
 
-- **Fixed-offset primitive:** `load <type>, ptr (buffer + offset)`. With endian mismatch: `bswap` after the load.
-- **Variable-size-following fixed primitive:** the offset is loaded from the per-view metadata block at the cached slot; otherwise identical.
-- **Variable-size field (`String`, `T[]`) read:** loads the length-prefix to determine size; returns a typed view over the data region.
+- **Fixed-offset primitive:** `load <type>, ptr (buffer + offset)`. With an endian mismatch, a `bswap` follows the load.
+- **Variable-size-following fixed primitive:** the offset is loaded from the per-view metadata block at the cached slot, and the access is otherwise identical.
+- **Variable-size field (`String`, `T[]`) read:** loads the length-prefix to determine size, and returns a typed view over the data region.
 
 ### Reads
 
@@ -323,7 +323,7 @@ h.magic = 0xCAFEBABE;               // bswap+store to frame+0
 h.messageId = 42;                   // bswap+store to frame+8
 ```
 
-The borrow checker enforces that the buffer is exclusively borrowed by the view for the view's lifetime — no other writer can race, no two views can mutate the same bytes.
+The borrow checker enforces that the buffer is exclusively borrowed by the view for the view's lifetime, so no other writer can race and no two views can mutate the same bytes.
 
 ### Mutation rules
 
@@ -335,13 +335,13 @@ The borrow checker enforces that the buffer is exclusively borrowed by the view 
 | `h.name = "longer string"` (reassigning a variable-size field) | **Static error** |
 | `h.flags = newArray` (reassigning a variable-size field) | **Static error** |
 
-Variable-size field reassignment requires a buffer of a different total size — not supported in-place. The caller must allocate a new buffer and write fields into a fresh view.
+Variable-size field reassignment requires a buffer of a different total size, which is not supported in place. The caller must allocate a new buffer and write fields into a fresh view.
 
 ---
 
 ## Methods on views
 
-A view can declare methods. `this` is the view value (buffer pointer + offset cache); methods can read and write fields and return primitives or owned values.
+A view can declare methods. `this` is the view value (buffer pointer + offset cache), and methods can read and write fields and return primitives or owned values.
 
 ```cajeta
 @BigEndian
@@ -367,14 +367,14 @@ view RpcHeader {
 ### Restrictions
 
 - **No virtual methods.** Views have no vtable.
-- **No method-level templates on view methods.** Methods can use the view's own template type parameters (if any), not introduce new ones. (Class-level method-level templates work on `class` declarations per `docs/specification/lang/templates/MethodLevelTemplate.md`, but views are layout-pinned to a buffer and have no vtable / no per-instance specialization mechanism — adding method-level templates on views would conflate the wire format with the dispatch model.)
-- **Methods cannot return borrows into `this`.** A view is already a borrow of its buffer; nested borrow tracking ("this borrow is rooted in the borrow that is `this`") is the kind of complexity deferred to a later spec. If a method needs to expose a sub-region, return the underlying bytes (`int8[]`) or a separately-constructed view value, both of which the caller can use within the view's lifetime via the standard borrow rules.
+- **No method-level templates on view methods.** Methods can use the view's own template type parameters (if any), and they cannot introduce new ones. Method-level templates work on `class` declarations per `docs/specification/lang/templates/MethodLevelTemplate.md`, but views are layout-pinned to a buffer and have no vtable and no per-instance specialization mechanism. Adding method-level templates on views would conflate the wire format with the dispatch model.
+- **Methods cannot return borrows into `this`.** A view is already a borrow of its buffer, and nested borrow tracking ("this borrow is rooted in the borrow that is `this`") is the kind of complexity deferred to a later spec. If a method needs to expose a sub-region, return the underlying bytes (`int8[]`) or a separately-constructed view value, both of which the caller can use within the view's lifetime via the standard borrow rules.
 
 ### What methods *can* do
 
 - Read and write any field.
 - Call other methods on `this`.
-- Construct nested views over sub-regions of `this`'s buffer (e.g., `this.payloadAsCommand()` constructs and returns a `CommandView(this.payload)`). The returned view borrows the same buffer; its lifetime is bounded by `this`'s lifetime.
+- Construct nested views over sub-regions of `this`'s buffer (e.g., `this.payloadAsCommand()` constructs and returns a `CommandView(this.payload)`). The returned view borrows the same buffer, and its lifetime is bounded by `this`'s lifetime.
 - Throw exceptions.
 - Return owned values (primitives, freshly-allocated strings, etc.).
 
@@ -382,29 +382,29 @@ view RpcHeader {
 
 ## Borrow semantics integration
 
-A view is a **borrow of its backing buffer** (in the `RpcHeader(buf)` form) or **owns its buffer** (in the `RpcHeader(#buf)` form). The standard memory-model rules apply.
+A view is a borrow of its backing buffer (in the `RpcHeader(buf)` form) or owns its buffer (in the `RpcHeader(#buf)` form). The standard memory-model rules apply.
 
 For borrow-form views (`RpcHeader(buf)`):
 
-- `h` borrows `buf`; `h` cannot outlive `buf` (static error otherwise — `CAJETA_ERROR_VIEW_ESCAPE`).
+- `h` borrows `buf`, so `h` cannot outlive `buf` (otherwise the static error `CAJETA_ERROR_VIEW_ESCAPE`).
 - `h.field` is a borrow rooted at `buf` (path-based tracking).
-- Mutating `buf` directly while `h` is live → static error (alias-mutation).
+- Mutating `buf` directly while `h` is live is a static error (alias-mutation).
 - Mutating through `h.field = X` invalidates other live borrows of `buf`.
-- A view cannot be sent to another fiber (it's a borrow; cross-fiber borrows are forbidden).
+- A view cannot be sent to another fiber (it's a borrow, and cross-fiber borrows are forbidden).
 
 For owning-form views (`RpcHeader(#buf)`):
 
-- `h` owns `buf`; `h` drops the buffer when `h` drops.
+- `h` owns `buf`, and `h` drops the buffer when `h` drops.
 - `h.field` is a borrow rooted at `h`'s owned buffer.
-- The owning view is itself an owner — can be transferred (`#h`), stored in a heap class field, sent to another fiber (subject to the same rules as any other owner).
+- The owning view is itself an owner. It can be transferred (`#h`), stored in a heap class field, or sent to another fiber, subject to the same rules as any other owner.
 
-Full details in `MemoryModel.md`.
+Full details are in `MemoryModel.md`.
 
 ---
 
 ## Security
 
-Wire-format parsers are a category of code where bugs become CVEs. The view design assumes adversarial input and validates aggressively at construction; per-access reads are free *because* the validation has already happened.
+Wire-format parsers are a category of code where bugs become CVEs. The view design assumes adversarial input and validates aggressively at construction. Per-access reads are free because the validation has already happened.
 
 ### Threats and mitigations
 
@@ -413,7 +413,7 @@ Wire-format parsers are a category of code where bugs become CVEs. The view desi
 | Read past buffer end | Size check at construction: `buf.count() >= MinSize`. For variable-size views, the length-prefix sweep validates total reachable size. Per-access reads then assume validity. |
 | Length-prefix attack (`int32 len = 0xFFFFFFFF`) | Construction-time sweep validates every length-prefix against remaining buffer. Throws on overflow. |
 | Buffer mutated while view live | Borrow checker treats the buffer as exclusively borrowed by the view. No other writers; no two views over the same buffer. |
-| Two views with conflicting layout over same buffer | Same as above — exclusive borrow precludes this. |
+| Two views with conflicting layout over same buffer | Same as above, since the exclusive borrow precludes this. |
 | Endianness confusion | Endianness defaults to `@HostEndian`; annotate `@BigEndian` / `@LittleEndian` on any view that crosses platforms. Cross-platform formats should always annotate explicitly. |
 | Unaligned access trap (older ARM) | Packed views (`@Align(packed)`, the default) emit unaligned-safe access intrinsics. `@Align(natural)` views emit standard aligned loads. |
 | Class-reference pointer reinterpretation | Class refs are forbidden in view fields. There is no construct that lets adversarial bytes become a class pointer through a view. |
@@ -430,12 +430,12 @@ RpcHeader h = RpcHeader(frame);
 
 At construction:
 
-1. `frame.count() >= RpcHeader.MinSize` — throws if not.
-2. For each variable-size field in declaration order: read the length-prefix, verify `(currentOffset + prefix + length) <= frame.count()`, throws if not. Recurses into nested variable-size views.
-3. Records the resolved offset of every post-variable-size field in the view's offset cache.
-4. Returns the view handle. Total work: one bounds check + one read per variable-size length-prefix. For fully-fixed views, just the bounds check.
+1. It checks `frame.count() >= RpcHeader.MinSize`, and throws if not.
+2. For each variable-size field in declaration order, it reads the length-prefix, verifies `(currentOffset + prefix + length) <= frame.count()`, and throws if not. It recurses into nested variable-size views.
+3. It records the resolved offset of every post-variable-size field in the view's offset cache.
+4. It returns the view handle. The total work is one bounds check plus one read per variable-size length-prefix. For fully-fixed views, it is just the bounds check.
 
-After step 4, every field access is unchecked — the constructor's guarantees are load-bearing.
+After step 4, every field access is unchecked, so the constructor's guarantees are load-bearing.
 
 ### What the constructor does *not* check
 
@@ -443,20 +443,20 @@ After step 4, every field access is unchecked — the constructor's guarantees a
 - **Cross-field invariants.** The constructor doesn't know that `h.payloadLen` should match `frame.count() - 24`. The caller validates protocol-specific invariants.
 - **String encoding validity.** A `String` field's bytes are not verified to be valid UTF-8 at construction. Operations that decode the string (iteration, code-point access) will throw on invalid sequences.
 
-The principle: the constructor guarantees **no field access reads past the buffer end**. Everything else is application logic.
+The principle is that the constructor guarantees no field access reads past the buffer end. Everything else is application logic.
 
 ---
 
 ## Wire-format versioning
 
-The view declaration **is** the wire spec. Adding or reordering fields, changing widths, endianness, or alignment breaks compatibility with existing producers and consumers — silently in the field-rename case, with construction-time errors in the size case.
+The view declaration is the wire spec. Adding or reordering fields, or changing widths, endianness, or alignment, breaks compatibility with existing producers and consumers. The break is silent in the field-rename case and a construction-time error in the size case.
 
 Recommended versioning patterns:
 
 - **Embed a version field** at a known offset (typically the first field) and dispatch to different view types per version.
 - **Use distinct view types per protocol version** (`RequestHeaderV1`, `RequestHeaderV2`), with conversion routines between them.
 
-No automatic backwards compatibility — that's a protocol design problem, not a language problem.
+There is no automatic backwards compatibility. Backwards compatibility is a protocol design problem, and the language does not solve it.
 
 ```cajeta
 @BigEndian
@@ -480,11 +480,11 @@ match v.version {
 
 ### Unaligned access
 
-x86 handles unaligned loads/stores transparently with negligible cost. ARMv7+ allows them at a small perf cost; pre-ARMv6 traps. The compiler emits unaligned-access intrinsics by default for portability. If a view uses `@Align(natural)`, accesses are aligned and use standard load/store.
+x86 handles unaligned loads/stores transparently with negligible cost. ARMv7+ allows them at a small perf cost, and pre-ARMv6 traps. The compiler emits unaligned-access intrinsics by default for portability. If a view uses `@Align(natural)`, accesses are aligned and use standard load/store.
 
 ### Byte order
 
-Network protocols are typically big-endian. Use `@BigEndian` on the wire view. Most file formats are little-endian; use `@LittleEndian`. An unannotated view defaults to host order (`@HostEndian`), which is the right choice for in-process buffers (caches, scratch overlays) that never leave the machine — but always annotate explicitly on a view that crosses architectures, since the host default silently differs between platforms.
+Network protocols are typically big-endian. Use `@BigEndian` on the wire view. Most file formats are little-endian, so use `@LittleEndian`. An unannotated view defaults to host order (`@HostEndian`), which is the right choice for in-process buffers (caches, scratch overlays) that never leave the machine. Always annotate explicitly on a view that crosses architectures, since the host default silently differs between platforms.
 
 ### Wide primitives
 
@@ -494,11 +494,11 @@ Network protocols are typically big-endian. Use `@BigEndian` on the wire view. M
 
 ## What this is not
 
-- **Not for self-describing formats.** Wire views cover fixed-layout protocols. Ion, JSON, MessagePack, CBOR, BSON, Protobuf, Avro need streaming parsers — see `cajeta.codec.*` libraries.
-- **Not a replacement for `class`.** Use views only for layout-stable POD overlay; `class` for everything with behavior, identity, or class-reference fields.
+- **Not for self-describing formats.** Wire views cover fixed-layout protocols. Ion, JSON, MessagePack, CBOR, BSON, Protobuf, Avro need streaming parsers, found in the `cajeta.codec.*` libraries.
+- **Not a replacement for `class`.** Use views only for layout-stable POD overlay, and use `class` for everything with behavior, identity, or class-reference fields.
 - **Not a replacement for a stack value class.** A `stack`-allocated class (optionally `@ValueType`) is a value aggregate with full field-type freedom (including class refs). Views are buffer overlays with the byte-encodability restriction.
 - **Not safe across versions.** Field changes are silently breaking. Add explicit versioning.
-- **Not suitable for shared mutable state across threads.** Multi-threading isn't in v1; when added, shared-buffer access will need synchronization primitives.
+- **Not suitable for shared mutable state across threads.** Multi-threading isn't in v1. When it is added, shared-buffer access will need synchronization primitives.
 
 ---
 
@@ -506,11 +506,11 @@ Network protocols are typically big-endian. Use `@BigEndian` on the wire view. M
 
 ### Why views cannot be class fields
 
-A view is a borrow (or owner) of its buffer. A class field can be stored anywhere — heap, container, sent across method boundaries via the field's enclosing instance — and may outlive the buffer the view was constructed over. The borrow check would have to track every field's buffer-of-origin and prove the field can never be observed after its buffer drops; the analysis is intractable in the general case.
+A view is a borrow (or owner) of its buffer. A class field can be stored anywhere, on the heap, in a container, or sent across method boundaries via the field's enclosing instance, and it may outlive the buffer the view was constructed over. The borrow check would have to track every field's buffer-of-origin and prove the field can never be observed after its buffer drops, and that analysis is intractable in the general case.
 
-Template instantiations are caught by the same rule. `HashMap<int32, MyView>` instantiates `V[] vals` as `MyView[]` — an array-of-view class field, rejected at instantiation time. `Optional<MyView>` has a `T value` field, also rejected. Users who want a map keyed or valued by view-shape data store the underlying `int8[]` in the class and reconstruct the view per access; the per-construction cost is one bounds check + one length-prefix sweep, both of which fall out of register pressure on the read path.
+Template instantiations are caught by the same rule. `HashMap<int32, MyView>` instantiates `V[] vals` as `MyView[]`, which is an array-of-view class field and is rejected at instantiation time. `Optional<MyView>` has a `T value` field, which is also rejected. If you want a map keyed or valued by view-shape data, store the underlying `int8[]` in the class and reconstruct the view per access. The per-construction cost is one bounds check plus one length-prefix sweep, both of which fall out of register pressure on the read path.
 
-Nested views (`view A { view B inner; }`) are NOT rejected — the inner lays out inline within the outer's buffer per the doctrine in § Nested views.
+Nested views (`view A { view B inner; }`) are accepted, because the inner lays out inline within the outer's buffer per the doctrine in § Nested views.
 
 | Error | Caught by |
 |---|---|
@@ -541,15 +541,15 @@ Nested views (`view A { view B inner; }`) are NOT rejected — the inner lays ou
 
 For the language implementer:
 
-1. **Parser:** recognize `view` keyword (new lexer token `VIEW`); parse `viewDeclaration` with field list and optional method list. Accept `@BigEndian`, `@LittleEndian`, `@HostEndian`, `@Align(...)` annotations; at most one endianness annotation per view, defaulting to `@HostEndian` when absent.
+1. **Parser:** recognize `view` keyword (new lexer token `VIEW`); parse `viewDeclaration` with field list and optional method list. Accept `@BigEndian`, `@LittleEndian`, `@HostEndian`, `@Align(...)` annotations, with at most one endianness annotation per view, defaulting to `@HostEndian` when absent.
 2. **Type system:** add `CajetaView` (sibling of `CajetaClass`; see `src/cajeta/type/CajetaView.{h,cpp}`) with explicit layout computation. Compute fixed-prefix size; identify variable-size fields; pre-compute the constant-offset fast path when applicable. Recurse into nested view fields, inheriting endianness/alignment from the outer unless overridden. Detect layout cycles and reject. Reject class-reference field types.
-3. **Constructor synthesis:** for each view type, emit two construction functions — `View(int8[])` returning a borrow view, and `View(#int8[])` returning an owning view. Both emit the size check + length-prefix-validation sweep + offset-cache build. Resolve the bare-call construction syntax at the parser/AST level so `RpcHeader(buf)` lowers to the synthesized constructor.
-4. **Field accessor codegen:** for each field, emit a read and write accessor that performs the offset computation, byte-swap if needed, and the load/store. For variable-size-following fields, the offset comes from the runtime offset cache; for fixed fields, it's compile-time-constant.
+3. **Constructor synthesis:** for each view type, emit two construction functions, `View(int8[])` returning a borrow view and `View(#int8[])` returning an owning view. Both emit the size check + length-prefix-validation sweep + offset-cache build. Resolve the bare-call construction syntax at the parser/AST level so `RpcHeader(buf)` lowers to the synthesized constructor.
+4. **Field accessor codegen:** for each field, emit a read and write accessor that performs the offset computation, byte-swap if needed, and the load/store. For variable-size-following fields, the offset comes from the runtime offset cache, and for fixed fields, it's compile-time-constant.
 5. **Variable-size offset cache:** at construction time, walk variable-size fields and cache resolved offsets in the view's metadata block. Recurse into nested variable-size views so every length-prefix at every nesting level is validated and offsets are resolved before construction returns.
 6. **Borrow checker integration:** treat borrow-form construction as a borrow of the byte array; treat owning-form construction as a move of the array into the view. Treat each field access as a path-based borrow. Reject views whose backing buffer goes out of scope before the view does. Reject sending a borrow-form view to another fiber.
 7. **Mutation rule enforcement:** at the AST level, reject reassignment of variable-size view fields.
 8. **Endianness intrinsics:** emit `bswap` only when view endianness differs from host endianness (resolved at compile time per target triple).
-9. **Calling convention:** view values pass by pointer at call sites and return sites (cajeta's existing aggregate pass-by-pointer rule). The view value is a small handle (buffer pointer + optional offset-cache pointer); passing it by pointer is cheaper than by-value when methods are large.
+9. **Calling convention:** view values pass by pointer at call sites and return sites (cajeta's existing aggregate pass-by-pointer rule). The view value is a small handle (buffer pointer + optional offset-cache pointer), and passing it by pointer is cheaper than by-value when methods are large.
 10. **Owning-view drop:** when an owning-form view drops, drop the contained buffer (single LLVM `free` call against the buffer's stored ownership).
 
 ---
@@ -557,8 +557,8 @@ For the language implementer:
 ## Examples
 
 > Note: the `subarray(start, end)` sub-range helper used in a couple of
-> examples below is illustrative — no such method is in the stdlib yet
-> (raw `int8[]` slicing is unconfirmed). Construct a view over the whole
+> examples below is illustrative. No such method is in the stdlib yet, and
+> raw `int8[]` slicing is unconfirmed. Construct a view over the whole
 > buffer, or pass an offset, until a slice API lands.
 
 ### Simple fixed-size record

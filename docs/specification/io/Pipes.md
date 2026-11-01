@@ -1,22 +1,22 @@
 # `cajeta.io.pipe` — Pipes (anonymous + named)
 
-A pipe is a unidirectional, in-kernel **byte** stream with a read end and a
-write end. Cajeta exposes two kinds:
+A pipe is a unidirectional, in-kernel byte stream with a read end and a write
+end. Cajeta exposes two kinds:
 
-- **Anonymous pipe** (`Pipe`) — an unnamed kernel pipe whose ends are passed by
-  fd. The backbone of **subprocess stdio** (a child's stdin/stdout/stderr) and
-  of fd-passing patterns. This is the high-value kind.
-- **Named pipe / FIFO** (`Fifo`) — a filesystem rendezvous (`mkfifo`) that two
-  *unrelated* processes open by path. POSIX-only, niche.
+- **Anonymous pipe** (`Pipe`) is an unnamed kernel pipe whose ends are passed
+  by fd. It is the backbone of subprocess stdio (a child's stdin, stdout and
+  stderr) and of fd-passing patterns. This is the high-value kind.
+- **Named pipe / FIFO** (`Fifo`) is a filesystem rendezvous (`mkfifo`) that two
+  unrelated processes open by path. It is POSIX-only and niche.
 
-Status: **designed, not implemented.** Tracked in `specs/Features.md`; implementation
-plan in `plans/io/pipes-plan.md`. Sibling concern to `cajeta.io.file` and
-`cajeta.process`.
+The package is designed and not yet implemented. It is tracked in
+`specs/Features.md`, and the implementation plan is `plans/io/pipes-plan.md`.
+It is a sibling concern to `cajeta.io.file` and `cajeta.process`.
 
 ## When to use a pipe (and when not to)
 
-Pipes are a low-level **byte** transport. Reach for them only when a richer
-primitive doesn't fit:
+Pipes are a low-level byte transport. Reach for them only when a richer
+primitive does not fit:
 
 | Need | Use | Not |
 |------|-----|-----|
@@ -25,12 +25,12 @@ primitive doesn't fit:
 | Cross-process, bidirectional / structured IPC | a Unix-domain socket (preferred; reuses the `cajeta.io.net` socket + reactor machinery) | a FIFO |
 | Cross-process, one-way byte rendezvous on a known path | `Fifo` (POSIX) | — |
 
-`Channel<T>` already covers everything in-process — it is typed and structured,
-strictly better than a byte pipe for fiber-to-fiber use. A pipe's unique value
-is crossing the **process** boundary by **fd** (anonymous) or by **path**
-(named). For anything bidirectional or structured across processes, a
-Unix-domain socket beats a FIFO; the FIFO is for the genuinely simple
-"one writer, one reader, one path" case.
+`Channel<T>` already covers everything in-process. It is typed and structured,
+and it is strictly better than a byte pipe for fiber-to-fiber use. A pipe's
+unique value is crossing the process boundary, by fd for the anonymous kind or
+by path for the named kind. For anything bidirectional or structured across
+processes, a Unix-domain socket beats a FIFO. The FIFO is for the genuinely
+simple case of one writer, one reader and one path.
 
 ## Anonymous pipe — `Pipe`
 
@@ -58,22 +58,23 @@ public final class PipeEnds {
 ```
 
 Each end is a single-owner handle over one fd. The reader is an `InputStream`
-and the writer an `OutputStream` — the **same** interfaces `File` and `Process`
-use — so the fiber-aware read/write pumps work automatically. Closing the write
-end makes the reader observe EOF; closing the read end makes a subsequent write
-fail (the `EPIPE`/`SIGPIPE` case is reported as an `IoException`, never a
-process-killing signal — `SIGPIPE` is ignored process-wide).
+and the writer an `OutputStream`, the same interfaces `File` and `Process`
+use, so the fiber-aware read and write pumps work automatically. Closing the
+write end makes the reader observe EOF. Closing the read end makes a
+subsequent write fail, and the `EPIPE`/`SIGPIPE` case is reported as an
+`IoException` rather than a process-killing signal, because `SIGPIPE` is
+ignored process-wide.
 
-Backpressure is the kernel pipe buffer (≈64 KiB on Linux): `write` parks when
-the buffer is full, `read` parks when it is empty — the same shape as
-`Channel`, but byte-level and process-crossing.
+Backpressure is the kernel pipe buffer, which is about 64 KiB on Linux.
+`write` parks when the buffer is full and `read` parks when it is empty. That
+is the same shape as `Channel`, at the byte level and across processes.
 
 ### Subprocess stdio (the primary consumer)
 
-`Process` (see [`Process.md`](../process/Process-design.md)) builds on this primitive. When a
-stream is configured `Stdio.PIPE`, the builder creates a `Pipe`, hands the child
-the appropriate end at fork/exec, and exposes the parent end as
-`process.stdin()` / `stdout()` / `stderr()`:
+`Process` (see [`Process.md`](../process/Process-design.md)) builds on this
+primitive. When a stream is configured `Stdio.PIPE`, the builder creates a
+`Pipe`, hands the child the appropriate end at fork/exec, and exposes the
+parent end as `process.stdin()` / `stdout()` / `stderr()`:
 
 ```cajeta
 Process p = stack ProcessBuilder("wc")
@@ -88,9 +89,9 @@ String out #= p.stdout().readString();
 p.waitFor();
 ```
 
-User code rarely constructs a `Pipe` directly; it asks for `Stdio.PIPE` and the
-plumbing is handled. `Pipe.create()` is the escape hatch for hand-rolled fd
-wiring.
+User code rarely constructs a `Pipe` directly. It asks for `Stdio.PIPE` and
+the plumbing is handled. `Pipe.create()` is the escape hatch for hand-rolled
+fd wiring.
 
 ## Named pipe (FIFO) — `Fifo`
 
@@ -109,8 +110,8 @@ public final class Fifo {
 }
 ```
 
-A FIFO is just a path on disk after creation, so it is **opened with the
-ordinary file API** — no new stream type:
+A FIFO is just a path on disk after creation, so it is opened with the
+ordinary file API and needs no new stream type:
 
 ```cajeta
 Fifo.create(Path.of("/tmp/cajeta.fifo"));
@@ -121,31 +122,33 @@ FileReader r #= File.openRead(Path.of("/tmp/cajeta.fifo"));   // blocks until a 
 FileWriter w #= File.openWrite(Path.of("/tmp/cajeta.fifo"), OpenMode.WRITE);
 ```
 
-Opening a FIFO for read blocks (or parks) until a writer opens it, and vice
-versa — that rendezvous is the whole point. Beyond `create`, a FIFO needs no
-dedicated surface; it rides `cajeta.io.file`.
+Opening a FIFO for read blocks (or parks) until a writer opens it, and the
+reverse holds too. That rendezvous is the whole point. Beyond `create`, a FIFO
+needs no dedicated surface, and it rides `cajeta.io.file`.
 
 ## Ownership & lifetime
 
-A pipe end owns one fd — a single-owner resource under the standard model
-([`MemoryModel.md`](../lang/MemoryModel.md)). Plain assignment borrows; `#name` moves
-the end (e.g. into a `ProcessBuilder` or another scope). Each end is closed
-independently with `close()` (idempotent). Auto-close-on-drop follows the same
-trajectory as `FileReader`/`FileWriter` — required explicitly today, automatic
-once the I/O destructor work lands.
+A pipe end owns one fd, so it is a single-owner resource under the standard
+model ([`MemoryModel.md`](../lang/MemoryModel.md)). Plain assignment borrows.
+`#name` moves the end, for example into a `ProcessBuilder` or another scope.
+Each end is closed independently with `close()`, which is idempotent.
+Auto-close-on-drop follows the same trajectory as `FileReader`/`FileWriter`.
+It is required explicitly today and becomes automatic once the I/O destructor
+work lands.
 
 ## Platform notes
 
-- **Anonymous pipes are portable.** Linux uses `pipe2(O_NONBLOCK | O_CLOEXEC)`;
-  macOS/BSD `pipe()` + `fcntl`; Windows `CreatePipe` with overlapped I/O. Async
-  readiness/completion rides the existing `cajeta.io.net` reactor (epoll / kqueue /
-  IOCP), so no new event-loop machinery is needed.
+- **Anonymous pipes are portable.** Linux uses `pipe2(O_NONBLOCK | O_CLOEXEC)`,
+  macOS/BSD uses `pipe()` + `fcntl`, and Windows uses `CreatePipe` with
+  overlapped I/O. Async readiness and completion ride the existing
+  `cajeta.io.net` reactor (epoll / kqueue / IOCP), so no new event-loop
+  machinery is needed.
 - **FIFOs are POSIX-only.** Windows "named pipes" (`\\.\pipe\…`,
-  `CreateNamedPipe`) are a *different* model (message mode, server/client
-  semantics) — they are **not** POSIX FIFOs and are out of scope here. A future
-  Windows-named-pipe or, better, a cross-platform **Unix-domain socket**
-  (`cajeta.io.net`, including Windows AF_UNIX) is the preferred path for portable
-  IPC and is tracked separately.
+  `CreateNamedPipe`) are a different model with message mode and
+  server/client semantics. They are not POSIX FIFOs and are out of scope here.
+  A future Windows-named-pipe or, better, a cross-platform Unix-domain socket
+  (`cajeta.io.net`, including Windows AF_UNIX) is the preferred path for
+  portable IPC, and it is tracked separately.
 
 ## See also
 

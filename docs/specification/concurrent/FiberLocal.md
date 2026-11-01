@@ -1,47 +1,47 @@
 # `FiberLocal<T>` — ambient per-request state — Specification v1
 
-_Package: **`cajeta.concurrent`** (alongside `Mutex`, `Channel`, `Tasks`).
+_Package: `cajeta.concurrent` (alongside `Mutex`, `Channel`, `Tasks`).
 Companion to `docs/specification/concurrent/Concurrency.md`. Plan: `plans/FiberLocal-plan.md`.
 Guided walkthrough: `docs/specification/concurrent/FiberLocal-tour.md`._
 
 ## 1. The problem
 
-Some state is logically attached to a **unit of work** — an HTTP request, a job,
-a command — not to a single function call. Threading it through every function
+Some state is logically attached to a unit of work, such as an HTTP request, a job,
+or a command, rather than to a single function call. Threading it through every function
 signature (`handle(req, ctx)`, `validate(input, ctx)`, `persist(row, ctx)`, …)
-is the explicit-parameter tax. The canonical case is **logging**: a request-scoped
-"system log" entry (one wide JSON event per request — see the logging spec) that
-any code on the request's path can add fields to, without every layer taking a
+is the explicit-parameter tax. The canonical case is logging. A request-scoped
+"system log" entry is one wide JSON event per request (see the logging spec), and
+any code on the request's path can add fields to it, without every layer taking a
 `SystemLogEntry` parameter. Tracing/correlation IDs, the authenticated principal,
 a per-request deadline, and a DB transaction handle are the same shape.
 
 Two execution shapes must both work:
 
 - **Single fiber owns the request end-to-end.** One fiber accepts the request,
-  does the work, writes the response. State set at entry is visible everywhere
+  does the work, and writes the response. State set at entry is visible everywhere
   it calls.
 - **The request is handed off across fibers.** A fiber accepts the request, fans
-  out to children (parallel sub-queries) and/or enqueues it onto a worker pool.
-  The logging view must stay **consistent for the whole request** regardless of
+  out to children for parallel sub-queries, and/or enqueues it onto a worker pool.
+  The logging view must stay consistent for the whole request regardless of
   which fiber is currently running it.
 
 Cajeta's existing model gives us strong cards and one hard constraint:
 
-- **Fibers are single-use** (`Concurrency.md` § `async fn`): one fiber runs one
-  task to completion, then is freed. A per-fiber slot therefore has naturally
-  request-scoped lifetime and **cannot** leak into a later, unrelated request —
-  unlike a thread-pool `ThreadLocal`, whose stale-value bug comes precisely from
-  the OS thread outliving the work.
-- **Carriers are pooled OS threads** (`min(nproc,4)`). So a *literal* thread-local
-  (`__thread`) is exactly the wrong primitive — it would alias across the many
-  fibers a carrier hosts and bleed one request's state into another. This is the
-  same reason `scope_top` / `drop_top` / `exc_top` already live **per fiber** in
-  the fiber control block, not in a `__thread` slot.
+- **Fibers are single-use** (`Concurrency.md` § `async fn`). One fiber runs one
+  task to completion, then is freed. A per-fiber slot therefore has a naturally
+  request-scoped lifetime and cannot leak into a later, unrelated request. A
+  thread-pool `ThreadLocal` differs here, since its stale-value bug comes precisely
+  from the OS thread outliving the work.
+- **Carriers are pooled OS threads** (`min(nproc,4)`). A literal thread-local
+  (`__thread`) is therefore exactly the wrong primitive, because it would alias
+  across the many fibers a carrier hosts and bleed one request's state into
+  another. This is the same reason `scope_top` / `drop_top` / `exc_top` already
+  live per fiber in the fiber control block instead of in a `__thread` slot.
 - **No data races at compile time.** Ambient state must not become shared mutable
   state across fibers.
 
-This is why `Concurrency.md` § Goals banned `ThreadLocal` — and why a
-**`FiberLocal`** is nonetheless sound. The ban was on the *thread*-keyed,
+This is why `Concurrency.md` § Goals banned `ThreadLocal`, and it is also why a
+`FiberLocal` is sound. The ban was on the thread-keyed,
 pool-aliasing, leak-prone Java primitive. A fiber-keyed, single-use,
 scope-restored binding is a different animal.
 
@@ -56,11 +56,11 @@ scope-restored binding is a different animal.
 | Rust `thread_local!` + Tokio `tokio::task_local!` | thread / task; `task_local!` scoped via `.scope(v, fut)` | task-local scopes the future | Confirms the scoped-binding shape is the modern consensus. |
 | Kotlin `CoroutineContext` element | coroutine; structured | inherited by child coroutines of the scope | Same structured-inherit lesson. |
 
-**Consensus the field has converged on:** the modern, safe design is a
-**scoped, immutable, structured-inherited** binding (ScopedValue / task_local /
-CoroutineContext), *not* the mutable thread-keyed slot (`ThreadLocal`). We adopt
-that, and add Go's explicit-context discipline for the unstructured handoff that
-structured inheritance can't reach.
+The field has converged on a consensus. The modern, safe design is a
+scoped, immutable, structured-inherited binding (ScopedValue / task_local /
+CoroutineContext), and the mutable thread-keyed slot (`ThreadLocal`) is the
+design it left behind. We adopt that, and we add Go's explicit-context
+discipline for the unstructured handoff that structured inheritance cannot reach.
 
 ## 3. The three layers
 
@@ -77,18 +77,18 @@ REQUEST_ID.where(id, () -> {
 });                       // <- binding popped here, even on a throw
 ```
 
-`where(value, body)` is the recommended form: the binding's lifetime is exactly
+`where(value, body)` is the recommended form. The binding's lifetime is exactly
 `body`'s dynamic extent, it is immutable for that extent, and cleanup is
 automatic. This mirrors the library's existing closure-form philosophy
-(`Mutex.withLock`, `Semaphore.withPermit`) — the value has no handle outside the
+(`Mutex.withLock`, `Semaphore.withPermit`). The value has no handle outside the
 scoped block, so "forgot to clear it" is unrepresentable.
 
-`get()` reads the current binding; it is an error to `get()` an unbound key
-(use `orElse` / `isBound` when a binding may be absent).
+`get()` reads the current binding. It is an error to `get()` an unbound key, so
+use `orElse` / `isBound` when a binding may be absent.
 
 ### Layer 2 — inherit on `spawn` (structured fan-out)
 
-A child fiber spawned **inside a `scope`** inherits the parent's bindings as they
+A child fiber spawned inside a `scope` inherits the parent's bindings as they
 stood at the `spawn`:
 
 ```cajeta
@@ -100,22 +100,22 @@ REQUEST_ID.where(id, () -> {
 });
 ```
 
-This is what makes the **multi-fiber-but-structured** case work with zero
-ceremony: the parallel sub-queries of one request all observe the same request
-context. Safety rests on the join the concurrency model already guarantees —
-`scope` does not exit until every child completes, so a binding *borrowed* into a
+This is what makes the multi-fiber-but-structured case work with zero
+ceremony. The parallel sub-queries of one request all observe the same request
+context. Safety rests on the join the concurrency model already guarantees.
+`scope` does not exit until every child completes, so a binding borrowed into a
 child cannot outlive its owner (`Concurrency.md` § "Borrows can outlive the
-spawn"). Inheritance is a **copy-on-write snapshot** of the binding stack head:
+spawn"). Inheritance is a copy-on-write snapshot of the binding stack head, so
 a child re-binding a key with its own `where` does not perturb the parent or its
-siblings (no shared mutable ambient state → no race).
+siblings. There is no shared mutable ambient state, and so there is no race.
 
 ### Layer 3 — explicit capture across an unstructured handoff
 
-When a request crosses to an **unrelated** fiber — pushed onto a `Channel` for a
-worker pool, or `detach`ed — the ambient chain deliberately does **not** follow.
-(Auto-flow there would be both unsound, the source fiber's borrows may already be
-gone, and wrong, the worker fiber serves many requests over its life.) You carry
-the context explicitly:
+When a request crosses to an unrelated fiber, whether pushed onto a `Channel` for a
+worker pool or `detach`ed, the ambient chain deliberately does not follow.
+Auto-flow there would be unsound, because the source fiber's borrows may already be
+gone, and it would be wrong, because the worker fiber serves many requests over its
+life. You carry the context explicitly:
 
 ```cajeta
 // Producer: snapshot the live bindings and hand them off with the work item.
@@ -127,27 +127,28 @@ Optional<WorkItem> item = channel.receive();
 item.get().ctx.run(() -> process(item.get().payload));
 ```
 
-`ctx.run(body)` (an instance method on the captured snapshot) installs its bindings for `body`'s extent
-and restores the worker's prior (empty) state on exit — so the worker fiber never
+`ctx.run(body)`, an instance method on the captured snapshot, installs its bindings for `body`'s extent
+and restores the worker's prior empty state on exit, so the worker fiber never
 accretes one request's state into the next. The snapshot is transferred with `#`
-(single new owner), matching the `detach`/channel captures rule
-(`Concurrency.md` § Sendability): a request context that crosses an unstructured
-boundary is *moved*, not aliased.
+to a single new owner, matching the `detach`/channel captures rule
+(`Concurrency.md` § Sendability). A request context that crosses an unstructured
+boundary is moved, and it is never aliased.
 
 ### Where the "request-ID cache" fits (and why it is the escape hatch)
 
-A global `ID → context` **registry** (a concurrent map keyed by request/command
-ID) is a *fourth*, heavier option, and is **deliberately not** the core
+A global `ID → context` registry, a concurrent map keyed by request/command
+ID, is a fourth, heavier option, and it is deliberately kept out of the core
 mechanism. Carrying the context directly (Layers 1–3) avoids a process-global
-concurrent map and its attendant problems — entry **cleanup** (who deletes the
-key when the request ends? leak it and you have the `ThreadLocal`-pool bug back,
-at global scope), **contention** on the shared map, and **lifetime** (the map
-holds the context alive past its owner). It is the right tool for exactly one
-case: a boundary that can carry only a *string* — an FFI hop, or a serialized
-queue message on another process — where the live `FiberContext` object cannot
-travel. Then you put the correlation ID in the message, and the receiver
-reconstructs context from the ID. v1 ships Layers 1–3; the registry is documented
-as a pattern (`FiberContext.toToken()` / a user-owned map), not a core type.
+concurrent map and its attendant problems. Those problems are entry cleanup,
+since someone must delete the key when the request ends, and leaking it brings
+the `ThreadLocal`-pool bug back at global scope; contention on the shared map;
+and lifetime, since the map holds the context alive past its owner. The registry
+is the right tool for exactly one case, a boundary that can carry only a string,
+such as an FFI hop or a serialized queue message on another process, where the
+live `FiberContext` object cannot travel. Then you put the correlation ID in the
+message, and the receiver reconstructs context from the ID. v1 ships Layers 1–3.
+The registry is documented as a pattern (`FiberContext.toToken()` / a user-owned
+map) and is not a core type.
 
 ## 4. Surface API (v1 as shipped)
 
@@ -174,24 +175,24 @@ public class FiberContext {
 }
 ```
 
-**`T` may be any type** — primitive or reference. The per-fiber runtime store
-keys bindings to opaque pointers, so the value is boxed in a `FiberLocalBox<T>`
-(a reference) on `where` and read back through that box's typed `value` field on
-`get` — the same typed-slot approach `Optional<T>` uses, so a primitive `T`
-round-trips correctly rather than being bitcast out of a raw pointer.
+`T` may be any type, primitive or reference. The per-fiber runtime store
+keys bindings to opaque pointers, so the value is boxed in a `FiberLocalBox<T>`,
+a reference, on `where` and read back through that box's typed `value` field on
+`get`. This is the same typed-slot approach `Optional<T>` uses, so a primitive `T`
+round-trips correctly instead of being bitcast out of a raw pointer.
 
-**Deferred to post-v1** (designed, not shipped — kept here so the surface leaves
-room):
-- `FiberLocal(#T initial)` — a process-wide default. An owned reference field
-  that is legitimately null trips the drop chain; needs a borrow-or-guard design.
-- `set(#T)` / `remove()` — imperative (no auto-restore) escape hatch. `where` is
-  preferred regardless; ship `set` only if a concrete need appears.
-- `<R> R where(...)` / `<R> R run(...)` — value-returning scoped forms (v1 is
-  `void`-only; capture results in a heap accumulator the body writes, or a field).
+Three items are deferred to post-v1. They are designed but not shipped, and they
+are kept here so the surface leaves room:
+- `FiberLocal(#T initial)`, a process-wide default. An owned reference field
+  that is legitimately null trips the drop chain, so this needs a borrow-or-guard design.
+- `set(#T)` / `remove()`, an imperative escape hatch with no auto-restore. `where` is
+  preferred regardless, so ship `set` only if a concrete need appears.
+- `<R> R where(...)` / `<R> R run(...)`, the value-returning scoped forms. v1 is
+  `void`-only, so capture results in a heap accumulator the body writes, or in a field.
 
 For inherit-on-spawn and capture-on-handoff, the binding object's lifetime is
-guaranteed either by the structured scope (Layer 2 — the scope outlives its
-children) or by the `#`-transfer of the `FiberContext` snapshot (Layer 3).
+guaranteed either by the structured scope in Layer 2, where the scope outlives its
+children, or by the `#`-transfer of the `FiberContext` snapshot in Layer 3.
 
 ## 5. Runtime design
 
@@ -209,95 +210,95 @@ struct cajeta_fiber_local {          // one binding frame
 // main thread: a __thread fallback head, same pattern as drop_top/exc_top.
 ```
 
-Intrinsics (wrapped by the Cajeta class, never called by user code), resolved the
+The intrinsics are wrapped by the Cajeta class and never called by user code. They are resolved the
 same way as `Cajeta.lockNew` et al.:
 
-- `Cajeta.fiberLocalPush(key, value) -> token` — push a frame, return the prior
+- `Cajeta.fiberLocalPush(key, value) -> token` pushes a frame and returns the prior
   head as a restore token. `where` pushes on entry.
-- `Cajeta.fiberLocalPop(token)` — restore the head to `token`. Runs from the
-  drop chain on `where`/`run` exit (normal **or** unwind).
-- `Cajeta.fiberLocalGet(key) -> value` — walk the chain newest-first for `key`;
-  fall back to the key's default; signal unbound otherwise.
-- `Cajeta.fiberContextCapture() -> snapshot` — copy the current chain head
-  (cheap: the frames are immutable, so capture is pointer-snapshot + refcount /
-  shallow copy, not a deep walk).
+- `Cajeta.fiberLocalPop(token)` restores the head to `token`. It runs from the
+  drop chain on `where`/`run` exit, whether normal or unwind.
+- `Cajeta.fiberLocalGet(key) -> value` walks the chain newest-first for `key`,
+  falls back to the key's default, and signals unbound otherwise.
+- `Cajeta.fiberContextCapture() -> snapshot` copies the current chain head.
+  This is cheap, because the frames are immutable, so capture is a pointer
+  snapshot plus a refcount or shallow copy rather than a deep walk.
 
-**Inherit-on-spawn:** `__cajeta_task_run` (the spawn path) copies the parent's
-`fl_top` head into the new fiber's `fl_top` (COW — frames are immutable and
-shared; a child `where` pushes a *new* frame, never mutates a shared one). This
-is a single pointer copy at spawn; no per-key work.
+**Inherit-on-spawn.** `__cajeta_task_run`, the spawn path, copies the parent's
+`fl_top` head into the new fiber's `fl_top`. This is COW, since frames are immutable and
+shared, and a child `where` pushes a new frame and never mutates a shared one. It
+is a single pointer copy at spawn with no per-key work.
 
-**Accessor:** `__cajeta_current_fiber` (line ~1303) selects the fiber's
-`fl_top`; the main thread uses the `__thread` fallback head — identical to how
+**Accessor.** `__cajeta_current_fiber` (line ~1303) selects the fiber's
+`fl_top`, and the main thread uses the `__thread` fallback head. This is identical to how
 `__cajeta_drop_top_ptr` / `__cajeta_exc_top_ptr` already choose.
 
-**No new capability.** Fiber-local state is pure in-process memory; it needs no
+**No new capability.** Fiber-local state is pure in-process memory. It needs no
 `network`/`filesystem`/`clock` capability and is hermetic by construction.
 
 ## 6. Safety properties (why this is sound where `ThreadLocal` isn't)
 
-1. **No cross-request leak.** Bindings live on the *fiber*, and a fiber runs one
-   task; `where`/`run` additionally restore on exit. The thread-pool stale-value
+1. **No cross-request leak.** Bindings live on the fiber, and a fiber runs one
+   task. `where`/`run` additionally restore on exit. The thread-pool stale-value
    bug is structurally absent.
 2. **No forgotten cleanup.** The scoped forms restore via the drop chain on both
-   the normal and the exception edge (same machinery as `Mutex.withLock`).
-3. **No data race.** Frames are immutable; inheritance is COW; a child never
-   mutates a binding another fiber can observe. Consistent with `Concurrency.md`
+   the normal and the exception edge, with the same machinery as `Mutex.withLock`.
+3. **No data race.** Frames are immutable, inheritance is COW, and a child never
+   mutates a binding another fiber can observe. This is consistent with `Concurrency.md`
    § Goals ("no data races at compile time").
 4. **Handoff is explicit and moved.** Crossing an unstructured boundary requires
-   a `#`-transferred `FiberContext` — aliasing a request's context across
-   unrelated fibers is unrepresentable, not merely discouraged.
+   a `#`-transferred `FiberContext`, so aliasing a request's context across
+   unrelated fibers is unrepresentable.
 
 ## 7. Interaction with the rest of the language
 
 | Feature | Interaction |
 |---|---|
 | `#` transfer | `where(#T, …)` and `FiberContext.capture()` move/borrow per the existing ownership rules; cross-fiber handoff is a `#` move (the established "send" marker). |
-| Drop chain | `where`/`run` push a restore entry; it fires on return and on unwind — unbinding-on-exception is automatic. |
+| Drop chain | `where`/`run` push a restore entry; it fires on return and on unwind, so unbinding-on-exception is automatic. |
 | `scope` / `spawn` | inherit-on-spawn snapshots the binding head; the scope join guarantees a borrowed context outlives its children. |
 | `detach` | does **not** auto-inherit (no scope to anchor lifetimes); must `#`-capture a `FiberContext`, matching detach's borrow-capture ban. |
 | Exceptions | a throw through a `where` body restores the prior binding on the unwind, before the catch runs. |
-| Templates | `FiberLocal<T>` monomorphizes like `Mutex<T>` — no erasure, primitives allowed. |
+| Templates | `FiberLocal<T>` monomorphizes like `Mutex<T>`, with no erasure and primitives allowed. |
 | Capabilities | none required; pure memory. |
 
 ## 8. Lint / diagnostics
 
-- Prefer `where` over `set` *(latent — v1 ships only `where`)*: if `set` ever
-  ships, a `set` with no matching fiber-lifetime rationale → advisory lint
+- Prefer `where` over `set`. This is latent, since v1 ships only `where`. If `set` ever
+  ships, a `set` with no matching fiber-lifetime rationale gets an advisory lint
   (`fiber-local-prefer-scoped`).
-- `get()` on a possibly-unbound key without a default → suggest `orElse`/`isBound`.
+- `get()` on a possibly-unbound key without a default suggests `orElse`/`isBound`.
 - Capturing a `#`-owned heap binding into a `detach`/channel without
-  `FiberContext.capture()` → reuse the existing `CAJETA_ERROR_DETACH_BORROW_CAPTURE`
+  `FiberContext.capture()` reuses the existing `CAJETA_ERROR_DETACH_BORROW_CAPTURE`
   class.
 
 ## 9. Non-goals (v1)
 
-- The global `ID → context` registry as a core type (documented pattern only — § 3).
-- Automatic flow across `detach`/channels (explicit `FiberContext` by design).
+- The global `ID → context` registry as a core type. It is a documented pattern only (§ 3).
+- Automatic flow across `detach`/channels. The explicit `FiberContext` is by design.
 - Per-key change listeners / observers.
-- `set`/`remove` are deliberately not shipped in v1 — scoped `where` only (§ 4);
-  add `set` only if a concrete need appears.
+- `set`/`remove`. They are deliberately not shipped in v1, which has scoped `where` only (§ 4).
+  Add `set` only if a concrete need appears.
 
 ## 10. The logging tie-in (why this lands first)
 
-The logging framework's **system log** is one wide event per request whose fields
+The logging framework's system log is one wide event per request whose fields
 accrue as the request runs. Its storage is precisely a
-`FiberLocal<SystemLogEntry>`: set at request entry (`where`), inherited by
-structured sub-fibers (Layer 2), reinstalled across a worker handoff (Layer 3).
-`FiberLocal` is therefore a prerequisite, which is why it ships before the
+`FiberLocal<SystemLogEntry>`. It is set at request entry with `where`, inherited by
+structured sub-fibers (Layer 2), and reinstalled across a worker handoff (Layer 3).
+`FiberLocal` is therefore a prerequisite, so it ships before the
 logging framework returns. See the logging spec's system-log section.
 
 ## 11. Design questions — resolved in v1
 
-1. Ship `set`/`remove`, or scoped-only (`where`) first? **Resolved:** scoped-only
-   (`where`); `set`/`remove` deferred (§ 4, § 9). `where` is preferred regardless.
-2. Should `FiberContext.capture()` snapshot **all** keys, or take an explicit key
-   set? **Resolved:** snapshots all live bindings (the chain head) — ergonomic and
+1. Ship `set`/`remove`, or scoped-only (`where`) first? **Resolved.** Scoped-only
+   (`where`) ships first, and `set`/`remove` are deferred (§ 4, § 9). `where` is preferred regardless.
+2. Should `FiberContext.capture()` snapshot all keys, or take an explicit key
+   set? **Resolved.** It snapshots all live bindings, meaning the chain head, which is ergonomic and
    cheap since frames are immutable. An explicit-key form can be added later if a
    heavy binding ever needs to be kept off a handoff.
-3. `get()` on unbound: throw, or require `Optional`-returning `find()` only?
-   **Resolved:** `get()` throws when unbound; `orElse` / `isBound` cover the
+3. Should `get()` on an unbound key throw, or should only an `Optional`-returning `find()` be offered?
+   **Resolved.** `get()` throws when unbound, and `orElse` / `isBound` cover the
    may-be-absent path (validated by `orElseUnboundReturnsFallback` / `constructUnbound`).
-4. Token format for the Layer-3 registry escape hatch — ship a helper, or leave to
-   user code? **Resolved:** left entirely to user code in v1 (no `toToken`/`fromToken`
-   shipped); revisit if the FFI/string-boundary case becomes common.
+4. Token format for the Layer-3 registry escape hatch. Should we ship a helper, or leave it to
+   user code? **Resolved.** It is left entirely to user code in v1, with no `toToken`/`fromToken`
+   shipped. Revisit this if the FFI/string-boundary case becomes common.

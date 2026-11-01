@@ -1,28 +1,29 @@
 # compiler-mcp
 
-**The Cajeta compiler is an MCP server.** `cajeta compiler-mcp` speaks Model
-Context Protocol (JSON-RPC 2.0) over stdio and serves skill discovery — the
-hand-written implementation guidance an agent retrieves *before* it writes
-Cajeta code. There is no second binary to install and no network to reach:
-wherever the compiler is, the skills server is, and the corpus it serves is
+The Cajeta compiler is an MCP server. `cajeta compiler-mcp` speaks Model
+Context Protocol (JSON-RPC 2.0) over stdio and serves skill discovery, which is
+the hand-written implementation guidance an agent retrieves before it writes
+Cajeta code. There is no second binary to install and no network to reach.
+Wherever the compiler is, the skills server is, and the corpus it serves is
 version-locked to that compiler.
 
-For what a skill *is* — the format, the authoring rules, how libraries ship
-theirs, and how matching works — see [Skills](Skills.md). For the external,
+For what a skill is, including the format, the authoring rules, how libraries
+ship theirs, and how matching works, see [Skills](Skills.md). For the external,
 Cajeta-written server that adds `compile` and `jit_execute`, see
 [CajetaMcp](CajetaMcp.md).
 
-Spec: `specs/archive/compiler-mcp-spec.md`.
-Source: `src/cajeta/buildtool/mcp/CompilerMcpServer.{h,cpp}`, dispatched from
-`src/main.cpp`; the skill cores it calls live in `src/cajeta/buildtool/skill/`.
+The spec is `specs/archive/compiler-mcp-spec.md`. The source is
+`src/cajeta/buildtool/mcp/CompilerMcpServer.{h,cpp}`, dispatched from
+`src/main.cpp`, and the skill cores it calls live in `src/cajeta/buildtool/skill/`.
 
 ## Why it lives in the compiler
 
-Skill serving is stateless, read-only, and already entirely in-binary — the
-embedded corpus plus whatever archives the project's lockfile resolves. Routing
-that through a separate process would mean an extra binary to build, locate, and
-keep in sync, which would then shell out to `cajeta search-skill --json` once per
-call. Serving it natively means:
+Skill serving is stateless, read-only, and already entirely in-binary. It reads
+the embedded corpus plus whatever archives the project's lockfile resolves.
+Routing that through a separate process would mean an extra binary to build,
+locate, and keep in sync, which would then shell out to
+`cajeta search-skill --json` once per call. Serving it natively gives you three
+things:
 
 - **Zero setup.** Installing the toolchain installs the agent integration.
 - **No version skew.** The skills describe the compiler that serves them.
@@ -35,11 +36,12 @@ call. Serving it natively means:
 cajeta compiler-mcp
 ```
 
-One JSON-RPC object per line on stdin, one response object per line on stdout.
-**stdout is the protocol channel and carries nothing else** — diagnostics go to
-stderr. The server holds no mutable state and exits cleanly when stdin closes.
+The server reads one JSON-RPC object per line on stdin and writes one response
+object per line on stdout. stdout is the protocol channel and carries nothing
+else, and diagnostics go to stderr. The server holds no mutable state and exits
+cleanly when stdin closes.
 
-Register it with an agent host (`.mcp.json` in this repo does exactly this):
+Register it with an agent host. The `.mcp.json` in this repo does exactly this:
 
 ```json
 {
@@ -64,8 +66,8 @@ Register it with an agent host (`.mcp.json` in this repo does exactly this):
 
 `serverInfo.version` is the compiler version. Unknown methods, unknown tools, and
 malformed arguments yield well-formed JSON-RPC errors (`-32700` parse, `-32600`
-invalid request, `-32601` method not found, `-32602` invalid params) and **the
-server stays up** — the next request still works.
+invalid request, `-32601` method not found, `-32602` invalid params), and the
+server stays up, so the next request still works.
 
 ### Instructions
 
@@ -84,17 +86,17 @@ behaves the same against either.
 
 ### Search context
 
-The discovery context is built **once at startup**, exactly as the CLI builds it:
+The discovery context is built once at startup, exactly as the CLI builds it:
 
-1. The embedded corpora are **always** seeded — the stdlib packages plus the
+1. The embedded corpora are always seeded. They are the stdlib packages plus the
    `cajeta.language`, `cajeta.toolchain`, and `cajeta.stdlib` domains.
 2. If a `cajeta.lock` is present in the working directory, its resolved packages
-   are added: each package's `.cja` is located in the artifact cache and its
-   `skills/index.json` read.
+   are added. Each package's `.cja` is located in the artifact cache and its
+   `skills/index.json` is read.
 
-A missing lockfile is **not** an error — it means an empty resolved set plus the
+A missing lockfile is never an error. It means an empty resolved set plus the
 always-present embedded corpus. A package that is not cached, or that ships no
-skills, is skipped; a corrupt index is an error.
+skills, is skipped. A corrupt index is an error.
 
 ## Tools
 
@@ -104,14 +106,16 @@ skills, is skipped; a corrupt index is an error.
 { name, version?, from?, exact? }  →  { results: [{uri, matchedName, tier, distance}] }
 ```
 
-`name` is a canonical name — library (`cajeta.io`), package (`cajeta/io/file`),
-class (`cajeta/io/file/File`), or method (`cajeta/io/File.open`). Matching is
-fuzzy and typo-tolerant, and hierarchical: a query returns exact matches, the
-skills bound to *descendants* of the name, and the nearest *ancestor overview*.
-`tier` is `exact` | `descendant` | `ancestorOverview`; `distance` is the edit
-distance (0 = exact); `matchedName` reports what the query actually resolved to.
-`exact: true` disables fuzzy matching. `version` / `from` pin version resolution
-in multi-version builds. An empty result is a normal empty result, not an error.
+`name` is a canonical name, which is a library (`cajeta.io`), a package
+(`cajeta/io/file`), a class (`cajeta/io/file/File`), or a method
+(`cajeta/io/File.open`). Matching is fuzzy and typo-tolerant, and it is
+hierarchical. A query returns exact matches, the skills bound to descendants of
+the name, and the nearest ancestor overview. `tier` is `exact` | `descendant` |
+`ancestorOverview`. `distance` is the edit distance, where 0 is exact.
+`matchedName` reports what the query actually resolved to. `exact: true`
+disables fuzzy matching. `version` / `from` pin version resolution in
+multi-version builds. An empty result is a normal empty result and never an
+error.
 
 ```jsonc
 → {"jsonrpc":"2.0","id":1,"method":"tools/call",
@@ -129,9 +133,10 @@ in multi-version builds. An empty result is a normal empty result, not an error.
 { scope?, version?, from? }  →  { skills: [{uri, names, title}] }
 ```
 
-Browse rather than resolve: it filters, it does not guess (no fuzzy matching).
-`scope` is a library or package subtree in slash form (e.g. `cajeta/toolchain`);
-omit it to enumerate everything resolved. Ordering is deterministic.
+This tool browses. It filters and never guesses, so there is no fuzzy matching.
+`scope` is a library or package subtree in slash form, for example
+`cajeta/toolchain`. Omit it to enumerate everything resolved. Ordering is
+deterministic.
 
 ### `getSkills`
 
@@ -139,18 +144,18 @@ omit it to enumerate everything resolved. Ordering is deterministic.
 { uris: [ "cja-skill://<library>@<version>/<id>", … ] }  →  { skills: [{uri, ok, payload|error}] }
 ```
 
-Batched, with partial success: an unknown URI yields a per-URI error while the
-rest still return their Markdown payload. Because a URI pins the *resolved*
-version, `getSkills` is always exact — it resolves to exactly one archive — and
-it never touches the network.
+The call is batched, with partial success. An unknown URI yields a per-URI
+error while the rest still return their Markdown payload. Because a URI pins the
+resolved version, `getSkills` is always exact. It resolves to exactly one
+archive, and it never touches the network.
 
 ## CLI parity
 
-The three tools call the C++ cores in-process; the `cajeta search-skill`,
+The three tools call the C++ cores in-process. The `cajeta search-skill`,
 `cajeta list-skills`, and `cajeta get-skills` subcommands call the same cores
-through the same formatting helpers (`src/cajeta/buildtool/skill/SkillCli.h`).
-The same query gives result-identical output to the CLI's `--json` form — parity
-is a test, not a convention.
+through the same formatting helpers in `src/cajeta/buildtool/skill/SkillCli.h`.
+The same query gives result-identical output to the CLI's `--json` form, and a
+test enforces that parity.
 
 ```sh
 cajeta search-skill cajeta/collection/ArrayList --json
@@ -161,8 +166,8 @@ cajeta get-skills cja-skill://cajeta.language@1.0/language-ownership --json
 ## Boundaries
 
 `compile` and `jit_execute` deliberately stay in the external
-[`cajeta-mcp`](CajetaMcp.md) server — process-per-execute isolation does not
-belong inside the compiler binary. This server also does not implement HTTP
+[`cajeta-mcp`](CajetaMcp.md) server, because process-per-execute isolation does
+not belong inside the compiler binary. This server also does not implement HTTP
 transport, multi-client serving, auth, or MCP Resources/Prompts/Sampling. Search
-semantics — matching, ranking, URIs, version resolution — belong to
+semantics, meaning matching, ranking, URIs and version resolution, belong to
 [Skills](Skills.md) and are unchanged by the transport.

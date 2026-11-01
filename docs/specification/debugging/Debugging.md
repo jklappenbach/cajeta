@@ -1,58 +1,58 @@
 # Debugging
 
-Specification for cajeta's debugging story: the Debug Adapter
+This is the specification for cajeta's debugging story. It covers the Debug Adapter
 Protocol (DAP) server that makes IDE plugin authoring trivial, the
 Language Server Protocol (LSP) server for editor integration, the
 Jupyter-compatible kernel that turns a debugging session into a
 live notebook-style interactive environment, and time-travel
 debugging as a v1.5 follow-up.
 
-Cajeta debugging is not "GDB clone." It targets two concrete user
+Cajeta debugging is not a "GDB clone." It targets two concrete user
 experiences:
 
 1. **IDE-attached debugging.** Open the project in VSCode /
-   JetBrains / Helix / Zed / Emacs / vim. Plugin spawns
-   `cajeta dap`; standard "set breakpoint, step, inspect" works
+   JetBrains / Helix / Zed / Emacs / vim. The plugin spawns
+   `cajeta dap`, and the standard "set breakpoint, step, inspect" works
    from the IDE's existing UI. Plugin code is ~50 lines because
    DAP does all the work.
 2. **Notebook-style live interaction.** `cajeta kernel` starts a
    Jupyter-compatible kernel. The user submits cells of cajeta
    code in a notebook frontend (Jupyter Lab, VSCode's notebook
    UI, Hex, Marimo, etc.). State persists across cells, code is
-   JIT-compiled into the running kernel, breakpoints set in one
-   cell pause execution triggered from another. The notebook IS
+   JIT-compiled into the running kernel, and breakpoints set in one
+   cell pause execution triggered from another. The notebook is
    a debug session.
 
-Both targets share infrastructure — the JIT compiler, the RTTI
-machinery, the fiber scheduler, the breakpoint engine. The IDE
-debugger is one frontend; the notebook is another.
+Both targets share infrastructure, namely the JIT compiler, the RTTI
+machinery, the fiber scheduler, and the breakpoint engine. The IDE
+debugger is one frontend, and the notebook is another.
 
 > **Status (shipped vs. design).** This document is largely a
-> forward-looking specification. What exists in the compiler today:
-> the `cajeta dap` subcommand (`src/main.cpp` dispatches it to
-> `cajeta::dap::DapServer`); the in-process breakpoint engine
-> (`src/cajeta/dbg/DebugController`); statement-boundary safepoints
+> forward-looking specification. Several pieces exist in the compiler today.
+> The `cajeta dap` subcommand exists (`src/main.cpp` dispatches it to
+> `cajeta::dap::DapServer`). The in-process breakpoint engine exists
+> (`src/cajeta/dbg/DebugController`). Statement-boundary safepoints are
 > emitted under `--debug-info=full` / `-g`, or on their own via the
 > narrower `CompilerFlags::safepoints` the kernel uses
-> (`src/cajeta/asn/Block.cpp`; both off by default);
-> memory-facet local metadata (`dbg::MemoryFacets`,
-> `__cajeta_dbg_local`); the destructor-breakpoint story below; and
-> **`cajeta kernel`** — the Jupyter kernel, running against Jupyter Lab
-> as of 2026-08-14: persistent JIT session, cross-cell bindings,
-> `Out[N]` rendering, structured `In[N]` tracebacks, five-channel
+> (`src/cajeta/asn/Block.cpp`; both off by default).
+> Memory-facet local metadata exists (`dbg::MemoryFacets`,
+> `__cajeta_dbg_local`), as does the destructor-breakpoint story below.
+> `cajeta kernel`, the Jupyter kernel, runs against Jupyter Lab
+> as of 2026-08-14 with a persistent JIT session, cross-cell bindings,
+> `Out[N]` rendering, structured `In[N]` tracebacks, a five-channel
 > ZeroMQ transport with HMAC, and safepoint-based interrupt
-> (`src/cajeta/kernel/`). What of it is **not** built: the
-> notebook-plus-debugger bridge staged for v1.5 below, and the richer
+> (`src/cajeta/kernel/`). Two parts of it are not built, the
+> notebook-plus-debugger bridge staged for v1.5 below and the richer
 > MIME bundles of jupyter-kernel spec §8.2.
-> **Not yet implemented:** `cajeta lsp`, time-travel /
-> `cajeta record|replay`, and **DWARF emission** — the debug-info path
-> is the in-process safepoint system, *not* standard DWARF (the
-> compiler has no `DIBuilder` / `DICompileUnit` codegen today). Each
+> `cajeta lsp`, time-travel /
+> `cajeta record|replay`, and DWARF emission are not yet implemented. The debug-info path
+> is the in-process safepoint system, since the
+> compiler has no `DIBuilder` / `DICompileUnit` codegen today. Each
 > section below is shipped where it matches that list and design
 > otherwise.
 >
-> DWARF is not planned. To debug a **compiled binary** in gdb, see
-> [ExternalDebugging.md](ExternalDebugging.md): the same encoding this
+> DWARF is not planned. To debug a compiled binary in gdb, see
+> [ExternalDebugging.md](ExternalDebugging.md). The same encoding this
 > page describes is embedded in the binary and read by a gdb bridge
 > (`cjbreak` / `cjstack` / `cjlocals` / `cjstep`), so one mechanism
 > serves the JIT, an AOT binary, and device targets alike.
@@ -82,8 +82,8 @@ debugger is one frontend; the notebook is another.
 
 - **Easy IDE plugins.** `cajeta dap` and `cajeta lsp` speak the
   standard wire protocols verbatim. Any IDE with DAP / LSP
-  support gets cajeta debugging + editor features by plugging in
-  a launcher. No per-IDE bespoke implementations.
+  support gets cajeta debugging and editor features by plugging in
+  a launcher. There are no per-IDE bespoke implementations.
 - **Standard debugger primitives.** Source-level breakpoints,
   conditional breakpoints, watchpoints, step-in / step-out /
   step-over, stack inspection, variable inspection, scope
@@ -93,19 +93,19 @@ debugger is one frontend; the notebook is another.
   ownership annotations in the variables panel, async-task
   tree visualization, capability-violation breakpoints, aspect-
   affected method markers.
-- **Live kernel.** `cajeta kernel` over the Jupyter messaging
-  protocol. Cells compile + link into a long-running JIT host;
-  state persists; the kernel doubles as a debugger.
+- **Live kernel.** `cajeta kernel` runs over the Jupyter messaging
+  protocol. Cells compile and link into a long-running JIT host,
+  state persists, and the kernel doubles as a debugger.
 - **Hot-reload of code.** Add new top-level definitions on the
   fly. Replace method bodies in place. Existing instances keep
-  working; layout-changing redefinitions are rejected with a
+  working, and layout-changing redefinitions are rejected with a
   clear error citing the conflict.
 - **DWARF debug info on AOT binaries (planned).** The goal is for
   native debuggers (LLDB, GDB, WinDbg) to attach to a `--debug`
-  binary and show source-level info from standard DWARF. **Not yet
-  implemented** — the compiler currently emits in-process
-  statement-boundary safepoints under `--debug-info`, not DWARF
-  (no `DIBuilder` codegen). The in-process `cajeta dap` path is how
+  binary and show source-level info from standard DWARF. This is not yet
+  implemented. The compiler currently emits in-process
+  statement-boundary safepoints under `--debug-info`, and it has no
+  `DIBuilder` codegen for DWARF. The in-process `cajeta dap` path is how
   source-level debugging works today.
 
 **v1.5:**
@@ -113,27 +113,27 @@ debugger is one frontend; the notebook is another.
 - **Time-travel debugging.** Record once, replay deterministically
   with backward stepping. See [Time-travel debugging](#time-travel-debugging--v15).
 - **Session record / replay in the notebook.** Each cell's input
-  + state delta captured; replay or fork a session from any
+  and state delta are captured, so you can replay or fork a session from any
   prior point.
 
 **v2+:**
 
-- **Production tracing** — lightweight, always-on event capture
+- **Production tracing.** Lightweight, always-on event capture
   for diagnosing issues at scale. See [Production tracing](#production-tracing).
 
 ## Non-goals (v1)
 
 - **Custom debugger UI.** No `cajeta debug --gui` window. IDEs do
-  this better; we ride on theirs via DAP.
-- **Cross-language debugging.** Cajeta debugger sees cajeta code.
-  If user calls C via `@Native`, the C frames render as "native
-  code (no source)" — stepping into them is delegated to a
-  native debugger if attached, opaque otherwise.
+  this better, so we ride on theirs via DAP.
+- **Cross-language debugging.** The Cajeta debugger sees cajeta code.
+  If the user calls C via `@Native`, the C frames render as "native
+  code (no source)". Stepping into them is delegated to a
+  native debugger if one is attached, and is opaque otherwise.
 - **Profile-guided debugging.** Profilers (perf, samply, Tracy
-  integration) are a separate concern; the debugger doesn't try
+  integration) are a separate concern, and the debugger does not try
   to be a profiler too.
 - **Crash dump analysis.** Post-mortem of a core file is a
-  distinct UX from interactive debugging; deferred.
+  distinct UX from interactive debugging, and it is deferred.
 
 ---
 
@@ -172,18 +172,18 @@ debugger is one frontend; the notebook is another.
 ```
 
 Both the DAP server and the kernel attach to the same debugger
-core + JIT host. Two front-ends of one back-end. A single user
-session can have both attached simultaneously — the IDE for code
-navigation + breakpoints, the notebook for exploratory cell
+core and JIT host. They are two front-ends of one back-end. A single user
+session can have both attached simultaneously, with the IDE for code
+navigation and breakpoints and the notebook for exploratory cell
 execution against the same paused process.
 
 ---
 
 ## DAP server — `cajeta dap`
 
-Implements the [Debug Adapter Protocol](https://microsoft.github.io/debug-adapter-protocol/)
-verbatim. Speaks JSON over stdio (or a TCP port via
-`--port=<n>`). Used by every IDE that supports DAP — which is
+`cajeta dap` implements the [Debug Adapter Protocol](https://microsoft.github.io/debug-adapter-protocol/)
+verbatim. It speaks JSON over stdio, or over a TCP port via
+`--port=<n>`. It is used by every IDE that supports DAP, which is
 every major IDE in 2026.
 
 ### Launching
@@ -195,7 +195,7 @@ cajeta dap --port=4711              # TCP mode (IDE connects to a port)
 
 ### Supported DAP requests
 
-The full standard set, plus cajeta-specific extensions described
+The server supports the full standard set, plus the cajeta-specific extensions described
 below.
 
 | Request                  | Purpose                                                  |
@@ -219,7 +219,7 @@ below.
 
 ### Launch configuration shape
 
-What IDE plugins send to the DAP server when starting a debug
+This is what IDE plugins send to the DAP server when starting a debug
 session:
 
 ```jsonc
@@ -254,15 +254,15 @@ launch. The plugin's contribution to the IDE is essentially:
 }
 ```
 
-That's it. The full DAP standard does the rest.
+That is it. The full DAP standard does the rest.
 
 ---
 
 ## LSP server — `cajeta lsp`
 
-Implements the [Language Server Protocol](https://microsoft.github.io/language-server-protocol/)
-for editor features: autocomplete, hover, go-to-definition,
-find-references, rename, diagnostics, formatting.
+`cajeta lsp` implements the [Language Server Protocol](https://microsoft.github.io/language-server-protocol/)
+for editor features, namely autocomplete, hover, go-to-definition,
+find-references, rename, diagnostics, and formatting.
 
 ```
 cajeta lsp                          # stdio mode
@@ -287,20 +287,20 @@ cajeta lsp --port=2087              # TCP mode
 
 ### Cajeta-specific LSP behaviors
 
-- **Capability-aware completion.** If `cajeta.json` doesn't
+- **Capability-aware completion.** If `cajeta.json` does not
   declare `network`, network APIs (`cajeta.io.net.Socket`,
-  `cajeta.io.net.TcpStream`) don't appear in completion
-  suggestions — and using them gets a diagnostic with a code
+  `cajeta.io.net.TcpStream`) do not appear in completion
+  suggestions, and using them gets a diagnostic with a code
   action to add the capability.
 - **Aspect-affected markers.** Methods wrapped by `@Around` /
-  `@Before` advice get a CodeLens annotation: "wrapped by 2
-  aspects" with a link to the advice methods.
+  `@Before` advice get a CodeLens annotation that reads "wrapped by 2
+  aspects", with a link to the advice methods.
 - **Ownership annotations as inlay hints.** A call site
   `process(data)` renders as `process(data: <#borrowed>)` or
   `process(#data: <#owned>)` depending on the parameter's
-  ownership semantics. Reduces ambient memory-model surprise.
+  ownership semantics. This reduces ambient memory-model surprise.
 - **Type-argument inlay hints.** `Box<int32>` is shown at use
-  sites even when type inference picks it: `var x = heap Box(42)`
+  sites even when type inference picks it, so `var x = heap Box(42)`
   becomes `var x: <Box<int32>> = heap Box(42)`.
 
 ---
@@ -308,15 +308,15 @@ cajeta lsp --port=2087              # TCP mode
 ## Cajeta-specific DAP extensions
 
 DAP allows custom requests for protocol additions. Cajeta's
-debugger ships these — IDE plugins that want to render them
-specially can; others see them as opaque structured data.
+debugger ships these. IDE plugins that want to render them
+specially can, and others see them as opaque structured data.
 
 ### Fiber pane
 
 The standard DAP `threads` request returns OS threads. Cajeta's
 runtime schedules fibers across a small thread pool, so the
 threads view alone misses 90% of what the user wants to inspect.
-Custom request:
+The custom request is:
 
 ```jsonc
 // Request
@@ -338,7 +338,7 @@ Custom request:
 ```
 
 IDE plugins render this as a "Fibers" tab alongside Threads.
-Clicking a fiber selects it as the current debug target;
+Clicking a fiber selects it as the current debug target, and
 `stackTrace` and `variables` then reflect that fiber's state.
 
 ### Capability pane
@@ -354,14 +354,14 @@ Clicking a fiber selects it as the current debug target;
 }
 ```
 
-For the current process, shows declared vs actually-exercised
-capabilities. Useful for trimming over-declared sets during
+For the current process, this shows declared vs actually-exercised
+capabilities. It is useful for trimming over-declared sets during
 development.
 
 ### Drop chain inspection
 
-When paused, lists the pending drops in the current scope —
-what will fire when the function returns or scope exits.
+When paused, this lists the pending drops in the current scope,
+meaning what will fire when the function returns or the scope exits.
 
 ```jsonc
 { "command": "cajeta:dropChain" }
@@ -378,26 +378,26 @@ what will fire when the function returns or scope exits.
 
 ### Drop / destructor breakpoints
 
-To answer *"when was this instance destructed?"*, set an **ordinary source
-breakpoint on the class's destructor** — `~T()`. No special breakpoint type and
+To answer *"when was this instance destructed?"*, set an ordinary source
+breakpoint on the class's destructor, `~T()`. No special breakpoint type and
 no protocol extension are involved:
 
 - Every class implicitly extends `Object`, which declares the root virtual
-  destructor `~Object()`. Destruction is virtual — dropping through any base
+  destructor `~Object()`. Destruction is virtual, so dropping through any base
   reference dispatches to the most-derived `~T()` via the vtable drop slot.
 - A `~T()` body is a normal method body, so under `--debug-info` it carries the
   same per-statement safepoints as any other code. A breakpoint on a line in
   `~T()` therefore parks through the existing DebugController rendezvous when an
-  instance of `T` is dropped (at scope exit, when a binding is reassigned, or
-  when an owner is set to `null` — cajeta has no `delete`/`free`; reclamation is
-  the scope-exit drop chain).
+  instance of `T` is dropped, whether at scope exit, when a binding is reassigned, or
+  when an owner is set to `null`. Cajeta has no `delete`/`free`, and reclamation is
+  the scope-exit drop chain.
 - It composes with conditional breakpoints (CP6f-1) and is toggled/removed live
   like any line breakpoint.
 
-To make a class's destruction observable, give it a `~T()` (even a trivial one)
+To make a class's destruction observable, give it a `~T()`, even a trivial one,
 and breakpoint its body. A class with no `~T()` runs only `Object`'s empty
 destructor plus the synthesized field-drop/free wrapper, which carry no
-user-visible source line — add a `~T()` if you need to stop there.
+user-visible source line. Add a `~T()` if you need to stop there.
 
 ### Ownership annotations in variables
 
@@ -424,18 +424,18 @@ facets (CP7-1d; see `ide-plugins/idea/ide-plugin-debug-fr-1.md`):
 }
 ```
 
-The three axes are independent (a value can be heap + owner +
-about-to-drop, or heap + borrow + live). Each tag is always
-present — `"unknown"` is emitted explicitly rather than omitted so
+The three axes are independent, so a value can be heap + owner +
+about-to-drop, or heap + borrow + live. Each tag is always
+present. `"unknown"` is emitted explicitly rather than omitted, so
 the plugin renders a neutral state instead of guessing. The tags
-are the authoritative, color-independent carrier; the plugin maps
-them to icon + color + treatment. `presentationHint.attributes`
+are the authoritative, color-independent carrier, and the plugin maps
+them to icon, color, and treatment. `presentationHint.attributes`
 gets `"readOnly"` for a moved-out binding so a generic DAP client
 also blocks editing a consumed value.
 
 The facets originate in the compiler (`dbg::MemoryFacets`),
 travel through the runtime debug frame chain (`__cajeta_dbg_local`
-carries the alloc/ownership bytes + the owner's drop-entry
+carries the alloc/ownership bytes and the owner's drop-entry
 pointer), and `lifetime` is derived host-side at the stop from the
 drop entry's live `active` flag.
 
@@ -460,8 +460,8 @@ drop entry's live `active` flag.
 }
 ```
 
-Parent-child task hierarchy with await points and resolution
-states. Useful for understanding why a task is stuck waiting.
+This is the parent-child task hierarchy with await points and resolution
+states. It is useful for understanding why a task is stuck waiting.
 
 ### Capability-violation breakpoints
 
@@ -472,28 +472,28 @@ states. Useful for understanding why a task is stuck waiting.
 }
 ```
 
-Triggers a breakpoint the next time the program uses the named
-capability. Useful for "where exactly does this thing hit the
+This triggers a breakpoint the next time the program uses the named
+capability. It is useful for "where exactly does this thing hit the
 network?" investigations.
 
 ---
 
 ## Kernel — `cajeta kernel`
 
-Implements the [Jupyter messaging protocol](https://jupyter-client.readthedocs.io/en/latest/messaging.html)
-— a ZeroMQ-based wire format used by Jupyter Lab, classic Jupyter
+`cajeta kernel` implements the [Jupyter messaging protocol](https://jupyter-client.readthedocs.io/en/latest/messaging.html),
+a ZeroMQ-based wire format used by Jupyter Lab, classic Jupyter
 Notebook, VSCode's notebook UI, Hex, Marimo, and other notebook
 frontends.
 
-> **Governing specs (approved 2026-08-07).** Cell semantics — what
-> top-level code *means* — are owned by the **script-units** language
-> spec (`specs/script-units-spec.md`): a cell is a script unit, an
+> **Governing specs (approved 2026-08-07).** Cell semantics, meaning what
+> top-level code means, are owned by the script-units language
+> spec (`specs/script-units-spec.md`). A cell is a script unit, an
 > implicit class with a synthetic entry whose top-level bindings live
 > in a session scope with ordinary ownership and drop semantics. The
-> kernel process itself — protocol, execution model, display,
-> interrupt — is specified by `specs/jupyter-kernel-spec.md`, and
+> kernel process itself, covering the protocol, execution model, display, and
+> interrupt, is specified by `specs/jupyter-kernel-spec.md`, and
 > `cajeta run <file>.cajeta` consumes the same language feature as the
-> one-cell case. This section is the debugging-facing view; where it
+> one-cell case. This section is the debugging-facing view. Where it
 > and the specs disagree, the specs win.
 
 ### Launching
@@ -503,7 +503,7 @@ cajeta kernel                                    # auto-generated connection fil
 cajeta kernel --connection-file=path.json        # explicit connection params
 ```
 
-Frontends typically don't launch the kernel directly — they go
+Frontends typically do not launch the kernel directly. They go
 through a "kernel spec" registration:
 
 ```jsonc
@@ -521,38 +521,38 @@ place per platform, with the absolute path of the running `cajeta`
 binary as `argv[0]`. It refuses to overwrite an existing spec unless
 you pass `--force`.
 
-Both `-f <path>` and `--connection-file=<path>` are accepted; `-f` is
+Both `-f <path>` and `--connection-file=<path>` are accepted, and `-f` is
 the form a kernel spec's `argv` actually uses. `interrupt_mode` is
 `message`, so a frontend's interrupt arrives as an `interrupt_request`
-on the control channel rather than as a signal — see
+on the control channel rather than as a signal. See
 [Interrupt](#interrupt) below for why that matters here.
 
 ### Kernel state model
 
 The kernel maintains:
 
-- A **persistent JIT session** — one `LLJIT` whose JITDylib world
+- A **persistent JIT session**, one `LLJIT` whose JITDylib world
   accumulates per-cell modules against a resident stdlib
   (`CajetaJitHost` / `StdlibReuseCore` machinery; per-module ORC
   delivery, content-addressed object pool).
-- The **session scope** (script-units spec §4) — top-level bindings
-  with one owner each, alive across cells; rebinding drops the old
-  value; kernel shutdown/restart drops all in reverse order.
-- **Capture buffers** for stdout / stderr — output streams back to
+- The **session scope** (script-units spec §4), top-level bindings
+  with one owner each, alive across cells. Rebinding drops the old
+  value, and kernel shutdown/restart drops all in reverse order.
+- **Capture buffers** for stdout / stderr. Output streams back to
   the frontend as `stream` messages, live during execution.
 - An **execution counter** incremented per cell.
 
 When the frontend sends an `execute_request` with cell source:
 
-1. Compile the cell as a **script unit** into the session (the
+1. Compile the cell as a script unit into the session, with the
    implicit-class synthesis and session-binding promotion the
-   language spec defines).
-2. Add the cell's module(s) to the session dylib world; run its
+   language spec defines.
+2. Add the cell's module(s) to the session dylib world, and run its
    static ctors once.
 3. Execute the cell's entry. The trailing expression, if any, is
-   the **unit result**; the kernel renders it as `execute_result`.
+   the unit result, and the kernel renders it as `execute_result`.
 4. A cell that fails to compile leaves the session exactly as it
-   was (script-units §5.5); the counter still advances.
+   was (script-units §5.5). The counter still advances.
 
 The execution counter is the `In[N]:` / `Out[N]:` numbering
 notebooks use.
@@ -560,16 +560,16 @@ notebooks use.
 ### Cell evaluation rules
 
 Cell shapes and their semantics are the script-units spec's §2 and
-§5 — statements, top-level methods, and type declarations freely
-mixed; hoisting; last-write-wins bindings and methods; generational
+§5. They cover statements, top-level methods, and type declarations freely
+mixed, hoisting, last-write-wins bindings and methods, and generational
 type redefinition. The short version:
 
-- **A statement sequence** — the unit body; top-level declarations
+- **A statement sequence** is the unit body. Top-level declarations
   bind into the session scope.
-- **A trailing expression** — the unit result, rendered as
+- **A trailing expression** is the unit result, rendered as
   `Out[N]:`.
-- **Declarations** — types and top-level methods, visible to later
-  cells; no `Out[N]` unless the cell ends with an expression.
+- **Declarations** are types and top-level methods, visible to later
+  cells. There is no `Out[N]` unless the cell ends with an expression.
 
 Cells mix all three:
 
@@ -585,45 +585,44 @@ Point origin = heap Point(0, 0);
 origin.x + origin.y
 ```
 
-This declares `Point`, binds `origin` into the session scope,
+This declares `Point`, binds `origin` into the session scope, and
 returns `0` as `Out[5]:`.
 
 ### Interrupt
 
-Shipped. A frontend's interrupt arrives as an `interrupt_request` on
-the **control** channel and stops the running cell at its next
+This has shipped. A frontend's interrupt arrives as an `interrupt_request` on
+the control channel and stops the running cell at its next
 statement-boundary safepoint. The cell ends as a `KeyboardInterrupt`
 cell error with an `In[N]` traceback; the session, its bindings, and
 every earlier cell survive, and the next cell runs normally.
 
-Two properties are worth stating because they are structural rather
-than incidental:
+Two properties are worth stating because they are structural:
 
 **The kernel answers while it is stuck.** `interrupt_request` is
 handled on the transport's IO thread and never queued behind the
 execution thread. Queueing it would put the request behind the very
-cell it is meant to stop — a thread inside a runaway loop cannot drain
+cell it is meant to stop. A thread inside a runaway loop cannot drain
 its own queue, so the interrupt would arrive only once the loop ended,
 which is never.
 
 **The interrupt cannot be swallowed.** It unwinds to the session
-guard, not to the innermost handler, so a cell's own
+guard past the innermost handler, so a cell's own
 `catch (Exception e)` does not intercept it.
 
-**Limitation — interruption is safepoint-granular.** Safepoints are
+**Interruption is safepoint-granular.** This is a limitation. Safepoints are
 emitted in the cell's own module only, so a cell parked inside a long
 stdlib call or a native call reaches none and will not stop until it
 returns to its own code. The kernel stays responsive throughout
-regardless; it is the *cell* that is late, not the kernel. An
+regardless, and only the cell is late. An
 interrupt arriving while nothing is running is a no-op, acknowledged
-per protocol — it is cleared at the start of every cell, so it can
+per protocol. It is cleared at the start of every cell, so it can
 never land on a cell the user did not aim at.
 
 ### Notebook + debugger combined
 
 > **Staged: v1.5** (jupyter-kernel spec §7). Kernel v1 ships
 > structured tracebacks, recoverable-throw interception, and
-> safepoint-based interrupt — cells compile with the same
+> safepoint-based interrupt. Cells compile with the same
 > statement-boundary safepoints the DAP server uses, so the pausing
 > machinery below has something to bind to from day one. The
 > debug-protocol bridge (`debug_request`/`debug_event`, breakpoints
@@ -635,19 +634,19 @@ breakpoint:
 
 1. The fiber executing the cell parks at the breakpoint.
 2. The kernel notifies the frontend via Jupyter's `debug_event`
-   message + cajeta-specific extension data (the fiber id, the
-   stack, the local variables).
-3. Frontend renders the paused state — VSCode shows it in the
-   debugger panel; standalone notebook frontends render it in a
+   message plus cajeta-specific extension data, namely the fiber id, the
+   stack, and the local variables.
+3. The frontend renders the paused state. VSCode shows it in the
+   debugger panel, and standalone notebook frontends render it in a
    side panel via cajeta-specific frontend extensions.
-4. User can submit new cells while paused. Cells execute in the
-   paused fiber's scope — declared variables visible, helper
-   functions callable, modifications to mutable state stick.
-5. User resumes; the original cell continues.
+4. The user can submit new cells while paused. Cells execute in the
+   paused fiber's scope, so declared variables are visible, helper
+   functions are callable, and modifications to mutable state stick.
+5. The user resumes, and the original cell continues.
 
-This is the killer feature. Defining a debugging helper function
-mid-investigation and immediately invoking it against the paused
-state — Smalltalk / Lisp / Clojure productivity, applied to a
+This is the killer feature. You can define a debugging helper function
+mid-investigation and immediately invoke it against the paused
+state. That is Smalltalk / Lisp / Clojure productivity, applied to a
 statically-typed compiled language via the JIT.
 
 ---
@@ -655,16 +654,16 @@ statically-typed compiled language via the JIT.
 ## Hot-reload semantics
 
 The kernel accepts incremental code submissions. Redefinition
-semantics are owned by the script-units spec (§5); this section is
-the debugging-facing summary. Three categories, three policies —
-and note the third changed when the spec landed (2026-08-07): the
-kernel no longer refuses layout changes; it versions them.
+semantics are owned by the script-units spec (§5), and this section is
+the debugging-facing summary. There are three categories and three policies.
+Note that the third changed when the spec landed (2026-08-07). The
+kernel no longer refuses layout changes, and instead it versions them.
 
 ### 1. New top-level definitions — always allowed
 
-Declaring a new type, function, or variable that doesn't conflict
-with an existing name. Trivially supported. The JIT compiles +
-links + the session registers the name.
+This is declaring a new type, function, or variable that does not conflict
+with an existing name. It is trivially supported. The JIT compiles and
+links, and the session registers the name.
 
 ```cajeta
 // Cell 3:
@@ -674,12 +673,12 @@ public class Cache { ... }
 
 ### 2. Body-only changes to existing definitions — allowed
 
-Replacing a method's implementation without changing its
+This is replacing a method's implementation without changing its
 signature, or replacing a top-level function's body. The JIT
 generates a new function, swaps the binding, and existing call
 sites resolve to the new version on next dispatch. This is the
 same "body-only" compatibility class the script-units spec's §5.4
-defines — no new type generation is introduced.
+defines, so no new type generation is introduced.
 
 ```cajeta
 // Cell 7:
@@ -693,20 +692,20 @@ public static int32 score(int32 raw) {
 }
 ```
 
-Caveat: in-flight calls don't pick up the new body. They finish
-with the old code. The next call dispatches to the new code.
+One caveat applies. In-flight calls do not pick up the new body. They finish
+with the old code, and the next call dispatches to the new code.
 
 ### 3. Layout-changing redefinitions — a new type generation
 
-Adding / removing / reordering fields, changing a method's
-signature, changing inheritance — any redefinition that would
-invalidate existing instances' layout introduces a **new
-generation** of the type (script-units spec §5.3). No instance is
+Adding, removing, or reordering fields, changing a method's
+signature, or changing inheritance, meaning any redefinition that would
+invalidate existing instances' layout, introduces a new
+generation of the type (script-units spec §5.3). No instance is
 ever reinterpreted:
 
-- Existing values stay alive and fully usable **at the old
-  generation** — their layout, methods, and bindings are untouched.
-- The type *name* resolves to the newest generation in later cells.
+- Existing values stay alive and fully usable at the old
+  generation. Their layout, methods, and bindings are untouched.
+- The type name resolves to the newest generation in later cells.
 - Passing an old-generation value where the new generation is
   expected is an ordinary compile-time type error, diagnosed with a
   "stale generation" hint naming both generations:
@@ -719,25 +718,25 @@ Cell 19: error: type mismatch — `p` is `Point` (generation 1,
   the session
 ```
 
-This is the JShell model, and it squares the circle the earlier
-draft of this section framed as refuse-vs-corrupt: Python's
+This is the JShell model, and it resolves the refuse-vs-corrupt choice the earlier
+draft of this section framed. Python's
 append-only shadowing surprises ("old instances behave strangely")
-because the mismatch surfaces at *runtime*; refusal frustrates
+because the mismatch surfaces at runtime. Refusal frustrates
 because notebooks redefine classes constantly. Generations keep
-both honesty (the mismatch is a compile error at the use site) and
-freedom (the redefinition always succeeds). Body-only changes
-(category 2) deliberately do **not** bump the generation.
+both honesty, since the mismatch is a compile error at the use site, and
+freedom, since the redefinition always succeeds. Body-only changes
+(category 2) deliberately do not bump the generation.
 
-Note the scope distinction: these are *session* semantics for
-cell-by-cell work. Live-patching a **running, paused** program —
-where old frames hold the old layout on the stack — is a different
-problem with a different answer (the v1.5 debug bridge inherits
-category 2 only; layout changes to a live debuggee remain refused).
+Note the scope distinction. These are session semantics for
+cell-by-cell work. Live-patching a running, paused program,
+where old frames hold the old layout on the stack, is a different
+problem with a different answer. The v1.5 debug bridge inherits
+category 2 only, and layout changes to a live debuggee remain refused.
 
-Future work — **migration mode** is a v2 feature: walk the session
+Migration mode is future work and a v2 feature. It would walk the session
 scope finding old-generation values, project their fields onto the
-new generation where feasible, rebind. Genuinely-conflicting
-layouts have no migration; the stale-generation error remains the
+new generation where feasible, and rebind. Genuinely conflicting
+layouts have no migration, so the stale-generation error remains the
 honest default.
 
 ---
@@ -745,8 +744,8 @@ honest default.
 ## Fiber-aware debugging
 
 Cajeta's runtime is fiber-scheduled. The OS sees a small thread
-pool; the runtime multiplexes many fibers across it. Pausing
-"the program" doesn't mean what it does in a thread-per-request
+pool, and the runtime multiplexes many fibers across it. Pausing
+"the program" does not mean what it does in a thread-per-request
 system.
 
 ### Pause modes
@@ -755,16 +754,16 @@ Two modes, switchable per-debug-session:
 
 **Pause-everything (default).** When a breakpoint fires, every
 fiber freezes. Carrier threads stop scheduling. The debugger sees
-a fully stopped world. Easy to reason about; right for typical
+a fully stopped world. This is easy to reason about, and it is right for typical
 "is this one bug producing wrong output?" investigations.
 
 **Single-fiber-pause (opt-in).** Only the fiber that hit the
 breakpoint freezes. Other fibers continue scheduling. The
 debugger can inspect the paused fiber while production-ish
-activity continues. Right for "what's wrong with this one
+activity continues. This is right for "what's wrong with this one
 connection out of 100k?" investigations on long-running servers.
 
-Switched via DAP customRequest:
+The mode is switched via DAP customRequest:
 
 ```jsonc
 { "command": "cajeta:setPauseMode", "arguments": { "mode": "single-fiber" } }
@@ -773,23 +772,23 @@ Switched via DAP customRequest:
 ### Fiber as DAP "thread"
 
 The standard DAP `threads` response lists OS threads. Cajeta
-maps **fibers** to the DAP thread abstraction by default
-(configurable via `cajeta:setThreadsView=fibers|os|both`). Most
-IDE plugins render the "Threads" tab; mapping fibers there gives
+maps fibers to the DAP thread abstraction by default, and this is
+configurable via `cajeta:setThreadsView=fibers|os|both`. Most
+IDE plugins render the "Threads" tab, so mapping fibers there gives
 users the natural unit of concurrent work without the IDE plugin
 needing custom UI.
 
-Pure OS-thread view is available for users who want to see
-scheduler carriers (e.g. confirming work distribution across
-cores). The `both` view shows a tree — carrier threads as parents,
-the fibers they're currently running as children.
+The pure OS-thread view is available for users who want to see
+scheduler carriers, for example to confirm work distribution across
+cores. The `both` view shows a tree, with carrier threads as parents and
+the fibers they are currently running as children.
 
 ### Async-task stepping
 
 When stepping into an `await` point on a `Task<T>`:
 
-- **Step Over** treats the entire await as a single line — the
-  fiber blocks on the task's completion, the debugger waits, then
+- **Step Over** treats the entire await as a single line. The
+  fiber blocks on the task's completion, the debugger waits, and then it
   continues past the await.
 - **Step Into** descends into the awaited task's body. The
   debugger switches to whatever fiber is executing that task and
@@ -802,8 +801,8 @@ frame" so `stepOut` returns to the await site.
 
 ## Rich display protocol
 
-Jupyter supports MIME-typed outputs: text, HTML, images, SVG,
-LaTeX, structured tables, plotly / vega plots, ipywidgets. Cajeta
+Jupyter supports MIME-typed outputs, such as text, HTML, images, SVG,
+LaTeX, structured tables, plotly / vega plots, and ipywidgets. Cajeta
 types declare their representations:
 
 ```cajeta
@@ -822,19 +821,19 @@ public class HeatMap implements Displayable {
 ```
 
 The frontend picks the richest MIME type it can render. Plain-text
-notebook frontends get `text/plain`; web-based frontends get the
+notebook frontends get `text/plain`, and web-based frontends get the
 PNG or HTML.
 
 Stdlib types ship sensible defaults:
 
-- `cajeta.math.tensor.Tensor` — text repr for small shapes,
+- `cajeta.math.tensor.Tensor` gets a text repr for small shapes, and an
   HTML table or PNG heatmap for larger 2D / 3D shapes.
-- `cajeta.io.Buffer` — hex dump up to a configurable cap.
-- `Array<T>` — bracketed comma list for small arrays, truncated
+- `cajeta.io.Buffer` gets a hex dump up to a configurable cap.
+- `Array<T>` gets a bracketed comma list for small arrays, truncated
   with `... <N more>` for large.
-- All other types — `toString()` fallback.
+- All other types get the `toString()` fallback.
 
-Annotations as shortcut:
+An annotation is the shortcut:
 
 ```cajeta
 @DisplayAs(mime = "image/png", method = "renderToPng")
@@ -848,17 +847,17 @@ annotation's MIME + method.
 
 ## Time-travel debugging — v1.5
 
-Mozilla's [rr](https://rr-project.org/) approach, adapted for
-cajeta. Record once, replay deterministically, step backward
+This is Mozilla's [rr](https://rr-project.org/) approach, adapted for
+cajeta. Record once, replay deterministically, and step backward
 through the recorded execution.
 
 ### Why it matters
 
-The classic frustrating case: a value is wrong when you notice
-it, but the corruption happened 30 seconds and ten thousand
-function calls earlier. Conventional debugging: set hypothetical
-breakpoints, re-run, hope you guessed right, repeat. Time-travel
-debugging: breakpoint *after* the symptom, hit it, step backward
+The classic frustrating case is a value that is wrong when you notice
+it, where the corruption happened 30 seconds and ten thousand
+function calls earlier. With conventional debugging you set hypothetical
+breakpoints, re-run, hope you guessed right, and repeat. With time-travel
+debugging you breakpoint after the symptom, hit it, and step backward
 through execution until you find where the value got wrong. The
 bug location reveals itself directly.
 
@@ -881,26 +880,26 @@ control the runtime:
 | `clock_gettime` / `getuid` / `getenv`     | Record returned value                                         |
 | `pthread_*` / cond / mutex outcomes       | Record acquisition order + return values                      |
 
-Recording overhead estimate: ~1.5-2× the program's runtime
-(matches rr's overhead on similar instrumentation density).
-Storage: ~50-200 MB per minute of recording for typical
-workloads, compressed via zstd as it's written.
+The recording overhead estimate is ~1.5-2× the program's runtime,
+which matches rr's overhead on similar instrumentation density.
+Storage is ~50-200 MB per minute of recording for typical
+workloads, compressed via zstd as it is written.
 
 ### The replay phase
 
-Same binary, recorded inputs replayed at the same
-instruction-count points. Deterministic — every instruction
+Replay uses the same binary, with the recorded inputs replayed at the same
+instruction-count points. It is deterministic, so every instruction
 executes in the same order, with the same inputs as the original
 run.
 
 The debugger runs against the replaying process. Forward-stepping
 works normally. Backward-stepping uses periodic state snapshots:
 
-- The recorder takes a memory snapshot every N instructions
-  (default: every 100 milliseconds of recording time, configurable).
-- "Step backward one instruction" → rewind to nearest prior
-  snapshot, replay forward to instruction-1.
-- "Reverse-continue until breakpoint X" → similar but scans
+- The recorder takes a memory snapshot every N instructions. The
+  default is every 100 milliseconds of recording time, and it is configurable.
+- "Step backward one instruction" rewinds to the nearest prior
+  snapshot and replays forward to instruction-1.
+- "Reverse-continue until breakpoint X" is similar but scans
   forward looking for the breakpoint condition.
 
 ### DAP integration
@@ -922,12 +921,12 @@ is replaying a recording.
   "arguments": { "kernelCell": 7 } }
 ```
 
-`jumpToTime` is the killer use case for production crash analysis
-— a stack trace from a crash names the wall-clock time; the
+`jumpToTime` is the killer use case for production crash analysis.
+A stack trace from a crash names the wall-clock time, and the
 debugger can rewind directly to that moment.
 
-`jumpToCellResult` is the notebook integration — fork the session
-back to the state after cell N completed, re-run cells N+1
+`jumpToCellResult` is the notebook integration. It forks the session
+back to the state after cell N completed, so you can re-run cells N+1
 onward with different code.
 
 ### CLI
@@ -941,8 +940,8 @@ cajeta record --prune <selector>   # delete older recordings
 ```
 
 Recordings are stored in `.cajeta/recordings/<timestamp>-<binary>/`,
-gitignored by default. Each recording is a directory with metadata
-+ event log + periodic snapshots. Average size ~100 MB per recorded
+gitignored by default. Each recording is a directory with metadata,
+an event log, and periodic snapshots. The average size is ~100 MB per recorded
 minute after zstd compression.
 
 ### Platform support
@@ -957,11 +956,11 @@ minute after zstd compression.
 
 ### Cost of recording opt-in
 
-Recording isn't always-on — `cajeta build --record-ready` produces
-a binary that supports recording (links the recorder hooks); a
-plain `cajeta build` produces a binary that doesn't. The runtime
-cost of always-on hooks is too high for production builds; the
-opt-in keeps the cost paid only by development / test runs.
+Recording is opt-in. `cajeta build --record-ready` produces
+a binary that supports recording, because it links the recorder hooks, and a
+plain `cajeta build` produces a binary that does not. The runtime
+cost of always-on hooks is too high for production builds, so the
+opt-in keeps the cost paid only by development and test runs.
 
 The kernel always runs in `--record-ready` mode so notebook
 sessions can be recorded for replay later.
@@ -971,32 +970,32 @@ sessions can be recorded for replay later.
 Even before full instruction-level time travel, the kernel
 supports a lightweight "session record":
 
-- Every cell's input source + the kernel's state delta (new
+- Every cell's input source and the kernel's state delta (new
   bindings, mutated values) get logged.
 - `cajeta kernel --replay=<session-file>` re-executes the cells in
   order, restoring state at each step.
 - `cajeta kernel --fork=<session-file>:<cell>` starts a kernel
-  with state restored to the moment after cell `<cell>` completed
-  — user can then submit new cells from that branch point.
+  with state restored to the moment after cell `<cell>` completed.
+  The user can then submit new cells from that branch point.
 
 This is ~1% the implementation effort of full rr-style time
 travel and 80% the value for the interactive-development
-workflow. Ships in v1; full time travel lands in v1.5.
+workflow. It ships in v1, and full time travel lands in v1.5.
 
 ---
 
 ## Production tracing
 
-A separate user experience from interactive debugging.
-Always-on, low-overhead structured event capture. Useful when
+Production tracing is a separate user experience from interactive debugging.
+It is always-on, low-overhead structured event capture. It is useful when
 the symptom shows up in production logs but reproducing locally
 fails.
 
 Scope hints:
 
-- `@trace` annotation on functions — every call records entry +
-  exit + arguments + return value to a circular buffer in
-  memory. Negligible overhead when not actively read.
+- A `@trace` annotation on functions. Every call records entry,
+  exit, arguments, and return value to a circular buffer in
+  memory, with negligible overhead when not actively read.
 - Capture buffer dumped on crash, signal, or external request.
 - Standard OpenTelemetry export so existing tooling
   (Honeycomb / Jaeger / Datadog) can consume it.
@@ -1005,7 +1004,7 @@ Scope hints:
   enough non-determinism.
 
 Detailed design for production tracing lands in a separate spec
-(`Tracing.md`) once the v1 debugger is solid. Out of scope here.
+(`Tracing.md`) once the v1 debugger is solid. It is out of scope here.
 
 ---
 
@@ -1015,8 +1014,8 @@ A reasonable order, building on the existing JIT infrastructure:
 
 **v1 (basic debugger):**
 
-1. **DAP server skeleton.** Implement the protocol envelope —
-   message framing, JSON marshaling, the `initialize` /
+1. **DAP server skeleton.** Implement the protocol envelope, meaning
+   message framing, JSON marshaling, and the `initialize` /
    `launch` / `disconnect` lifecycle. Stub the inspection
    requests.
 2. **Breakpoint engine.** Source-line breakpoints via instruction-
@@ -1024,8 +1023,8 @@ A reasonable order, building on the existing JIT infrastructure:
    DWARF + standard ptrace integration. Conditional breakpoints
    via compiled expression evaluators.
 3. **Step / pause / continue.** Single-step (instruction or
-   line), step-in, step-out, step-over. Pause-everything mode
-   first; single-fiber-pause as a v1.1 follow-up.
+   line), step-in, step-out, step-over. Pause-everything mode comes
+   first, and single-fiber-pause is a v1.1 follow-up.
 4. **Stack + variable inspection.** Walk the call stack, resolve
    variable values per scope. Cajeta's RTTI + structural type
    info drives the rendered representations.
@@ -1067,8 +1066,8 @@ A reasonable order, building on the existing JIT infrastructure:
 17. **macOS time travel.** Mach-task-port integration; SIP
     workarounds.
 18. **Windows time travel.** TTD framework or equivalent.
-19. **Production tracing** — separate spec (`Tracing.md`).
-20. **Migration-mode hot reload** — walk the heap, project
+19. **Production tracing.** This gets a separate spec (`Tracing.md`).
+20. **Migration-mode hot reload.** Walk the heap and project
     instances of old types onto new layouts where feasible.
 
 ---
@@ -1078,36 +1077,36 @@ A reasonable order, building on the existing JIT infrastructure:
 - **Notebook frontend ecosystem.** Jupyter is the lingua franca,
   but the next generation (Marimo, Hex, Observable) all have
   somewhat different feature sets and stability guarantees. We
-  target Jupyter compatibility as the baseline; cajeta-specific
+  target Jupyter compatibility as the baseline, and cajeta-specific
   notebook UI features (the in-line debugger panel, fiber pane,
   capability viewer) need cajeta-specific frontend extensions
-  per platform. Lean: ship the kernel against Jupyter's protocol
-  exactly; extension modules per frontend follow demand.
-- **Recording storage policy.** How long to keep recordings,
-  whether to auto-prune by age / size / count. Lean: default to
-  size-based with a configurable cap (e.g. 10GB across all
-  recordings); LRU eviction.
+  per platform. The lean is to ship the kernel against Jupyter's protocol
+  exactly, with extension modules per frontend following demand.
+- **Recording storage policy.** The open points are how long to keep recordings, and
+  whether to auto-prune by age, size, or count. The lean is to default to
+  size-based pruning with a configurable cap, such as 10GB across all
+  recordings, with LRU eviction.
 - **Replay-from-production.** Can a recording captured in
   production be replayed locally? Only if (a) the binary is
   the same, (b) the recording captured enough non-determinism,
-  (c) shared-memory regions are captured. (c) is hardest —
+  (c) shared-memory regions are captured. (c) is hardest, because
   cajeta programs that mmap shared memory may not replay
-  cleanly. Lean: document as "best effort"; programs that need
+  cleanly. The lean is to document this as "best effort", and programs that need
   guarantees use the simpler logging-based approach.
 - **Live-code-reload limits.** v1's "refuse incompatible
   redefinitions" is the safe choice but frustrates users who
   want Python-style flexibility. The v2 migration-mode is a
-  real fix but a big implementation. Worth surveying users
+  real fix but a big implementation. It is worth surveying users
   after v1 ships to see how often they hit the limit.
 - **Performance overhead of fiber-aware DAP.** Walking the
   fiber list, building the async-task tree, computing per-fiber
   stacks at each pause is O(active fibers). Programs with
   100k+ live fibers (long-poll servers, IoT gateways) may
-  experience long pause times when the debugger attaches. Lean:
-  lazy-compute these views; the IDE expands them on demand
+  experience long pause times when the debugger attaches. The lean is to
+  lazy-compute these views, so the IDE expands them on demand
   rather than pre-fetching for every pause.
 - **DAP capability negotiation drift.** The DAP standard
-  evolves; new requests get added over time. We pin to a
-  version of the spec for v1; matching the latest spec is a
-  rolling effort. Lean: pin to DAP 1.65 (the current as of
-  v1 design) and document the version explicitly.
+  evolves, and new requests get added over time. We pin to a
+  version of the spec for v1, and matching the latest spec is a
+  rolling effort. The lean is to pin to DAP 1.65, the current version as of the
+  v1 design, and document the version explicitly.

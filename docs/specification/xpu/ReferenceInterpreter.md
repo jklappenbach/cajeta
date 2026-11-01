@@ -32,7 +32,7 @@ argument is passed as its bits.
   collective. Once every live member of the rendezvous's scope has arrived,
   the collective is computed and they all continue.
 - A cooperative matrix is the wave's object, so a tile operation that reads
-  memory (`load`, `fromWords`, the epilogue verbs) is a wave collective: it
+  memory (`load`, `fromWords`, the epilogue verbs) is a wave collective. It
   reads once every lane of the wave has arrived, so what the lanes stored
   just before it, with no barrier between, is there, as on a wave that runs
   in lockstep. A kernel that uses a tile is a wave kernel and needs the width.
@@ -42,13 +42,13 @@ argument is passed as its bits.
   `Barrier.deviceMemory` order nothing.
 - Each `Shared<T>` declaration has one array per workgroup, which every
   work-item of that workgroup binds. A `Swizzled<T, S>` array is a `Shared`
-  array: its XOR permutation of physical slots is an involution the program
+  array. Its XOR permutation of physical slots is an involution the program
   never observes, so logical index `a` is element `a`. A `BlockPadded<T, Block, Pad>` array is
-  the same with the backend's layout: element `a` lives at slot
+  the same with the backend's layout. Element `a` lives at slot
   `a + (a / Block) · Pad`, the declared size counts slots, and the bound is on
   the slot, so a logical index that lands past the end is out of bounds.
 - A work-item's linear index is `x + y·dimX + z·dimX·dimY`.
-- Lane and wave come from the linear index and the wave width: the lane is
+- Lane and wave come from the linear index and the wave width. The lane is
   `linear % W` and the wave is `linear / W`. Lanes that have returned are
   inactive.
 - The wave width is the launch's `waveWidth`. When that is 0, the width comes
@@ -77,8 +77,8 @@ Arithmetic follows the host compiler's rules (`BinaryOpExpression`).
   `float64`.
 - `!=` on floats is true when either operand is NaN.
 - A conversion from float to integer truncates toward zero.
-- `c ? a : b` evaluates the condition and then ONE arm, as the kernel
-  lowering branches; the untaken arm never reads.
+- `c ? a : b` evaluates the condition and then one arm, as the kernel
+  lowering branches. The untaken arm never reads.
 
 ## Built-ins
 
@@ -227,15 +227,15 @@ in another order.
 The scale is the largest finite reference magnitude the launch wrote, over the
 whole buffer when it wrote nothing. An element the launch left as it was (a
 fill pattern, a row it did not reach) does not set it, and nor does a
-sentinel, a magnitude at or above a quarter of the type's largest value (an
-attention kernel's -3e38 for an empty partition). Both still have to match;
-they only do not make a relative bound vacuous.
+sentinel, which is a magnitude at or above a quarter of the type's largest value (an
+attention kernel's -3e38 for an empty partition). Both still have to match.
+They only do not make a relative bound vacuous.
 
 With `CAJETA_XPU_CONFORMANCE_DUMP` set, a failed launch leaves the reference's
 bytes of each allocation a parameter reads beside the backend's, as `a<i>.ref`.
 
 A relative bound is for results whose error scales with the buffer rather than
-with the element: a `@FastMath` kernel, which the backend may reassociate,
+with the element. That is a `@FastMath` kernel, which the backend may reassociate,
 contract and flush to zero, and a function such as `sin` near one of its
 zeros. There a count of ulps is huge for an error the buffer cannot see, and a
 ulp bound wide enough to admit it would also admit a real defect elsewhere. A

@@ -1,13 +1,13 @@
 # `cajeta.io.file.FileReader` — streaming byte reader
 
-Returned by `File.openRead(path)`. The caller hands in a
+`File.openRead(path)` returns a `FileReader`. The caller hands in a
 destination `int8[]` and asks for up to N bytes per call. There is
-no user-space buffer — the destination array is passed straight to
-the `read(2)` syscall; the runtime loops past partial OS reads so a
-call fills the request fully (or stops at EOF). EOF surfaces as a
-zero return — no `EndOfFileException` unless the caller opts into
-"all-or-error" behavior via a helper layer (Tier-2, not yet
-shipped).
+no user-space buffer. The destination array is passed straight to
+the `read(2)` syscall, and the runtime loops past partial OS reads
+so a call fills the request fully or stops at EOF. EOF surfaces as
+a zero return. There is no `EndOfFileException` unless the caller
+opts into "all-or-error" behavior via a helper layer, which is
+Tier-2 and not yet shipped.
 
 ## Surface
 
@@ -25,28 +25,30 @@ public class FileReader {
 
 ## Notes
 
-- **`read(buf, max)`** — fills up to `max` bytes into `buf[0..max)`,
-  returns the count. A return of 0 means EOF; the file remains
-  open and re-read attempts return 0 forever. Because the runtime
-  loops past partial OS reads, a non-zero return *shorter* than
-  `max` means EOF was reached mid-fill — the next call returns 0.
-  Either way the `while (n > 0)` loop below terminates correctly.
-- **`readString(maxBytes)`** — reads up to `maxBytes` bytes and
-  wraps them in a freshly-allocated `#String` (owned, so closing
-  the reader doesn't invalidate the text). Bytes are taken as
-  UTF-8 with no charset decode at this layer; transcode via
-  `Encoding` if the file isn't UTF-8. EOF mid-read returns
-  whatever was read (possibly empty).
-- **`position()`** — bytes consumed since open. Streaming model,
-  not seekable; for seek/lock, open via `File.open(path, mode)`
-  (Phase E).
-- **Buffer ownership** — `buf` is the caller's array. The reader
+- **`read(buf, max)`** fills up to `max` bytes into `buf[0..max)`
+  and returns the count. A return of 0 means EOF. The file remains
+  open, and re-read attempts return 0 forever. Because the runtime
+  loops past partial OS reads, a non-zero return shorter than
+  `max` means EOF was reached mid-fill, and the next call returns
+  0. Either way the `while (n > 0)` loop below terminates
+  correctly.
+- **`readString(maxBytes)`** reads up to `maxBytes` bytes and
+  wraps them in a freshly-allocated `#String`. The string is
+  owned, so closing the reader does not invalidate the text. Bytes
+  are taken as UTF-8 with no charset decode at this layer, so
+  transcode via `Encoding` if the file is not UTF-8. EOF mid-read
+  returns whatever was read, which may be empty.
+- **`position()`** is the count of bytes consumed since open. This
+  is a streaming model and is not seekable. For seek and lock,
+  open via `File.open(path, mode)` (Phase E).
+- **Buffer ownership.** `buf` is the caller's array. The reader
   never retains a reference past the call.
-- **Close** — `close()` is idempotent (sets `fd = -1`). The class
+- **Close.** `close()` is idempotent and sets `fd = -1`. The class
   does not yet declare a `~FileReader()` destructor, so auto-close
-  on scope exit is *planned*, not wired — call `close()`
+  on scope exit is planned and not wired. Call `close()`
   explicitly today.
-- **No charset.** Bytes only. Decode externally via `String`.
+- **No charset.** The reader handles bytes only. Decode externally
+  via `String`.
 
 ## Idiomatic loop
 

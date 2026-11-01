@@ -1,7 +1,7 @@
 # Wave prefix scans: `Wave.prefixSum` / `Wave.prefixProduct`
 
-An **exclusive** prefix scan turns one `uint32` per lane into a per-lane partial:
-lane `i` receives the sum (or product) of the values from lanes `0..i-1`; lane 0
+An **exclusive** prefix scan turns one `uint32` per lane into a per-lane partial.
+Lane `i` receives the sum (or product) of the values from lanes `0..i-1`, and lane 0
 receives the identity (`0` for sum, `1` for product).
 
 ```
@@ -11,18 +11,18 @@ uint32 pp     = Wave.prefixProduct(x);   // exclusive running product
 
 ## What it's for
 
-The exclusive prefix sum is the workhorse of **lane compaction / allocation**:
-each lane computes how many items it wants to emit, and `prefixSum` gives it the
-exact slot offset where its items go — no atomics, no contention.
+The exclusive prefix sum is the workhorse of lane compaction and allocation.
+Each lane computes how many items it wants to emit, and `prefixSum` gives it the
+exact slot offset where its items go, with no atomics and no contention.
 
-- **KernelStream compaction** — keep the lanes that pass a predicate, packed: `slot =
+- **KernelStream compaction.** Keep the lanes that pass a predicate, packed: `slot =
   prefixSum(keep ? 1 : 0)`.
-- **Per-wave allocation** — sub-allocate from a shared buffer by reserving
+- **Per-wave allocation.** Sub-allocate from a shared buffer by reserving
   `reduceSum(n)` once and indexing with `prefixSum(n)`.
-- **Sorting / histogram** — the per-digit offset step of a radix sort.
+- **Sorting / histogram.** The per-digit offset step of a radix sort.
 
-(`prefixSum(1)` per lane yields the lane's index within the wave — the scan's
-"hello world".)
+`prefixSum(1)` per lane yields the lane's index within the wave. That is the scan's
+"hello world".
 
 ## How it lowers — native on Vulkan, a portable scan elsewhere
 
@@ -33,17 +33,17 @@ exact slot offset where its items go — no atomics, no contention.
 | **NVIDIA** | the same Hillis-Steele scan over **`shfl`**. |
 | **CPU** | an in-lane exclusive scan in the kernel's vectorized VFABI variant. |
 
-Only Vulkan exposes a single-instruction subgroup scan; AMD and NVIDIA have *no*
-scan intrinsic (only the shuffle primitives), so the portable default builds the
+Only Vulkan exposes a single-instruction subgroup scan. AMD and NVIDIA have no
+scan intrinsic, only the shuffle primitives, so the portable default builds the
 scan from `log2(width)` shuffle steps. Cajeta carries the scan on a `waveScan`
-seam: the **base default is the Hillis-Steele algorithm** built on a new
-`waveShuffleDivergent` seam (AMD overrides it to `ds_bpermute`, since its normal
-`shuffleSync` is `readlane`, which needs a *uniform* source lane); **Vulkan
-overrides** `waveScan` to the native op; **CPU overrides** to the VFABI variant.
+seam. The base default is the Hillis-Steele algorithm built on a new
+`waveShuffleDivergent` seam. AMD overrides that seam to `ds_bpermute`, since its normal
+`shuffleSync` is `readlane`, which needs a uniform source lane. Vulkan
+overrides `waveScan` to the native op, and CPU overrides it to the VFABI variant.
 
-The fork addition is only the Vulkan reach — the `llvm.spv.wave.prefix.*`
-intrinsics + GlobalISel selection — carried on `cajeta-spirv` (no in-tree
-producer, so not an upstream PR). Everything else is portable cajeta lowering.
+The fork addition is only the Vulkan reach, which is the `llvm.spv.wave.prefix.*`
+intrinsics and their GlobalISel selection, carried on `cajeta-spirv`. There is no in-tree
+producer, so it is not an upstream PR. Everything else is portable cajeta lowering.
 
 ## Caveats
 
@@ -57,10 +57,10 @@ producer, so not an upstream PR). Everything else is portable cajeta lowering.
 ---
 
 **Rules.** `Wave.prefixSum(uint32) -> uint32` and `Wave.prefixProduct(uint32) ->
-uint32` are device-only, wave-cooperative **exclusive** scans (lane 0 = identity).
-Native `OpGroupNonUniform … ExclusiveScan` on Vulkan (a `cajeta-spirv` fork
-intrinsic); a `ds_bpermute` / `shfl` Hillis-Steele scan on AMD/NVIDIA; a VFABI
-scan on CPU. Device-verified bit-exact on RADV (native) + gfx1151 (ds_bpermute)
-(`XpuWaveDeviceTests.*PrefixScan*`); CPU exercised in `samples/tour/gpu`
+uint32` are device-only, wave-cooperative exclusive scans (lane 0 = identity).
+Vulkan uses the native `OpGroupNonUniform … ExclusiveScan` through a `cajeta-spirv` fork
+intrinsic. AMD/NVIDIA use a `ds_bpermute` / `shfl` Hillis-Steele scan, and CPU uses a VFABI
+scan. The ops are device-verified bit-exact on RADV (native) and gfx1151 (ds_bpermute)
+(`XpuWaveDeviceTests.*PrefixScan*`), and CPU is exercised in `samples/tour/gpu`
 (`wavePrefix`). See `WaveReductions.md` for the reduce family and `Wave`
 (`runtime/.../core/Wave.cajeta`) for the rest of the surface.

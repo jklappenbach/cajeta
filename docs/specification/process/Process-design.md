@@ -1,16 +1,17 @@
 # `cajeta.process` — Subprocess management (design)
 
-Sibling of `cajeta.io` and `cajeta.thread`, not nested under either —
-a subprocess is its own concern (fork/exec lifecycle, signal model,
-exit status). Stdin / stdout / stderr stream through the same
-`InputStream` / `OutputStream` interfaces used everywhere else, so
-the pumps are fiber-aware automatically.
+`cajeta.process` is a sibling of `cajeta.io` and `cajeta.thread`, and it is
+nested under neither, because a subprocess is its own concern, with a
+fork/exec lifecycle, a signal model and an exit status. Stdin, stdout and
+stderr stream through the same `InputStream` / `OutputStream` interfaces
+used everywhere else, so the pumps are fiber-aware automatically.
 
-Status: **design document — superseded in part.** `cajeta.process` shipped v1
-with a different surface (`Command` / `ProcessResult`, blocking waits); see
-[`Process.md`](Process.md) for what exists. This document keeps the
-fiber-aware direction (fiber-parking `waitFor`, `Stdio` plumbing over
-[`cajeta.io.pipe`](../io/Pipes.md), capability gating) that v1 deferred.
+This is a design document, and it is superseded in part. `cajeta.process`
+shipped v1 with a different surface, `Command` / `ProcessResult` with blocking
+waits, and [`Process.md`](Process.md) describes what exists. This document
+keeps the fiber-aware direction that v1 deferred, which is a fiber-parking
+`waitFor`, `Stdio` plumbing over [`cajeta.io.pipe`](../io/Pipes.md), and
+capability gating.
 
 ## Surface
 
@@ -71,21 +72,21 @@ if (!st.success()) {
 }
 ```
 
-`@capability("process")` gates `start()` — running subprocesses is a
+`@capability("process")` gates `start()`, because running subprocesses is a
 distinct capability from filesystem or network access.
 
 ## Stdio plumbing
 
 `Stdio.PIPE` is backed by the anonymous-pipe primitive in
-[`cajeta.io.pipe`](../io/Pipes.md): the builder creates a `Pipe`, hands the child
-the far end at fork/exec, and exposes the parent end as `stdin()` (an
-`OutputStream`) / `stdout()` / `stderr()` (`InputStream`s). `Stdio.FILE`
-redirects to a file fd; `Stdio.INHERIT` shares the parent's; `Stdio.NULL` uses
-`/dev/null`. See `Pipes.md` for the pipe ends, EOF/backpressure, and the
-`SIGPIPE`→`IoException` behavior.
+[`cajeta.io.pipe`](../io/Pipes.md). The builder creates a `Pipe`, hands the child
+the far end at fork/exec, and exposes the parent end as `stdin()`, an
+`OutputStream`, and `stdout()` / `stderr()`, which are `InputStream`s.
+`Stdio.FILE` redirects to a file fd, `Stdio.INHERIT` shares the parent's, and
+`Stdio.NULL` uses `/dev/null`. See `Pipes.md` for the pipe ends, EOF and
+backpressure, and the `SIGPIPE`→`IoException` behavior.
 
 ## Open items
 
-The fiber-aware pieces land with the fiber reactor (subprocess waits park
-the calling fiber on SIGCHLD). v1 shipped without them — see
-[`Process.md`](Process.md) § v1 limits.
+The fiber-aware pieces land with the fiber reactor, where subprocess waits
+park the calling fiber on SIGCHLD. v1 shipped without them, as
+[`Process.md`](Process.md) § v1 limits records.

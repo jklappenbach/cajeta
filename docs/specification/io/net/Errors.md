@@ -1,29 +1,30 @@
 # `cajeta.io.net` — error taxonomy (the consolidated chart)
 
-The complete networking error hierarchy, rooted at
+This is the complete networking error hierarchy, rooted at
 [`cajeta.io.net.NetException`](../../../../runtime/src/cajeta/io/net/NetException.cajeta).
-This is the networking peer of
-[`cajeta.io.file`'s `Errors.md`](../file/Errors.md) — same shape,
-same throws-clause discipline, a parallel-but-separate tree (file I/O
-and network I/O share the fiber model but nothing else; see
-[`Networking.md`](Networking.md) §Design principles).
+It is the networking peer of
+[`cajeta.io.file`'s `Errors.md`](../file/Errors.md), with the same
+shape and the same throws-clause discipline in a parallel and
+separate tree. File I/O and network I/O share the fiber model and
+nothing else (see [`Networking.md`](Networking.md) §Design
+principles).
 
 > **Status — this is the NET-11.6 consolidation.** The whole
-> networking taxonomy is gathered here: **every** phase's exceptions
+> networking taxonomy is gathered here. Every phase's exceptions
 > hang off the single [`NetException`](../../../../runtime/src/cajeta/io/net/NetException.cajeta)
 > root, exactly as the `cajeta.io.file` subtypes hang off `IoException`.
-> The chart is intentionally written **ahead** of the later phases so
-> each phase's exception subtypes have a named home before they land —
-> the [§Hierarchy](#hierarchy-by-phase) table flags each row as **built**
-> (in the tree today) or **planned** (the phase that introduces it). As
-> each phase ships, flip its rows from *planned* to *built*; the
-> hierarchy shape does not change. The errno → exception **mapping
-> chart** below is complete and authoritative today (Phase 1 / NET-1.8
-> is fully built).
+> The chart is intentionally written ahead of the later phases so
+> each phase's exception subtypes have a named home before they land.
+> The [§Hierarchy](#hierarchy-by-phase) table flags each row as built
+> (in the tree today) or planned (the phase that introduces it). As
+> each phase ships, flip its rows from planned to built. The
+> hierarchy shape does not change. The errno → exception mapping
+> chart below is complete and authoritative today, since Phase 1 /
+> NET-1.8 is fully built.
 
 ## The two-stage funnel
 
-A platform error code reaches a typed cajeta exception in **two**
+A platform error code reaches a typed cajeta exception in two
 stages, by design:
 
 ```
@@ -39,30 +40,30 @@ stages, by design:
   NetException subtype                         (typed, catchable)
 ```
 
-Stage 1 keeps every platform `#if` in C (where `EAGAIN`,
-`WSAEWOULDBLOCK`, … are defined). Stage 2 keeps the class hierarchy in
-cajeta. Neither side knows the other's spelling — only the shared
-ordinal contract below. The ordinals are **append-only**: never
-renumber an existing value (they are an ABI between the native shim
-and the stdlib).
+Stage 1 keeps every platform `#if` in C, where `EAGAIN`,
+`WSAEWOULDBLOCK` and the rest are defined. Stage 2 keeps the class
+hierarchy in cajeta. Neither side knows the other's spelling, and
+the shared ordinal contract below is the only thing they agree on.
+The ordinals are append-only. Never renumber an existing value,
+because they are an ABI between the native shim and the stdlib.
 
-This funnel only governs the **socket-layer** failures (the ones that
-originate as a platform errno). The higher-layer subtypes — DNS, TLS,
-URI, HTTP, WebSocket — are raised directly by their own cajeta code
-from a logical condition (a malformed URI, a chunk-encoding violation,
-a bad WebSocket opcode), not via the errno map. They still root at the
-same `NetException` so a single `catch (NetException e)` at a request
-boundary catches *every* networking failure regardless of which layer
-produced it.
+This funnel only governs the socket-layer failures, the ones that
+originate as a platform errno. The higher-layer subtypes for DNS,
+TLS, URI, HTTP and WebSocket are raised directly by their own cajeta
+code from a logical condition, such as a malformed URI, a
+chunk-encoding violation or a bad WebSocket opcode, and they do not
+go through the errno map. They still root at the same `NetException`,
+so a single `catch (NetException e)` at a request boundary catches
+every networking failure regardless of which layer produced it.
 
 ## Hierarchy (by phase)
 
-The single tree, grouped by the phase that introduces each subtype.
-**Built** = a `.cajeta` file exists under
-[`runtime/src/cajeta/io/net/`](../../../../runtime/src/cajeta/io/net/) today;
-**planned** = the named phase adds it (its file extends `NetException`
-when it lands — for the already-built URI exception, NET-6.5 reparents
-it, see the note below).
+This is the single tree, grouped by the phase that introduces each
+subtype. Built means a `.cajeta` file exists under
+[`runtime/src/cajeta/io/net/`](../../../../runtime/src/cajeta/io/net/) today.
+Planned means the named phase adds it, and its file extends
+`NetException` when it lands. For the already-built URI exception,
+NET-6.5 reparents it; see the note below.
 
 ```cajeta
 public class NetException                    extends RecoverableException;  // root; carries `int32 kind`
@@ -107,32 +108,33 @@ public class MessageTooLargeException        extends WebSocketException; // carr
 public class ConnectionClosedException       extends WebSocketException; // carries the RFC 6455 close code (+ reason); kind = KIND_OTHER (99)
 ```
 
-Three intermediate roots — `TlsException` (NET-5.6), `HttpException`
-(NET-7.7) and `WebSocketException` (NET-10.8) — group the TLS, HTTP and
-WS families so a handler can `catch (HttpException e)` for *any*
-protocol-layer fault without also swallowing a transport-layer
-`ConnectionResetException`. All three still descend from `NetException`,
-so the request-boundary `catch (NetException e)` remains the universal
-net-out. (`CertificateInvalidException` extends `TlsException`, not
+Three intermediate roots group the TLS, HTTP and WS families. They
+are `TlsException` (NET-5.6), `HttpException` (NET-7.7) and
+`WebSocketException` (NET-10.8). So a handler can
+`catch (HttpException e)` for any protocol-layer fault without also
+swallowing a transport-layer `ConnectionResetException`. All three
+still descend from `NetException`, so the request-boundary
+`catch (NetException e)` remains the universal net-out.
+`CertificateInvalidException` extends `TlsException` rather than
 `NetException` directly, so `catch (TlsException e)` covers both the
-generic handshake/protocol fault and the certificate-rejection case.)
+generic handshake/protocol fault and the certificate-rejection case.
 
-Every instance carries an `int32 kind` — the `cajeta_net_err` ordinal
-it was classified to — so a single `catch (NetException e)` can branch
-on `e.kind` without a chain of `instanceof` tests, and so the
-unmapped-ordinal fallback still preserves the cause. Higher-layer
+Every instance carries an `int32 kind`, the `cajeta_net_err` ordinal
+it was classified to. So a single `catch (NetException e)` can branch
+on `e.kind` without a chain of `instanceof` tests, and the
+unmapped-ordinal fallback still preserves the cause. The higher-layer
 subtypes (DNS / URI / HTTP / WS) are primarily discriminated by their
-**type**, but they still set a *coarse* `kind` so the `e.kind` branch
-remains total: the parse-failure subtypes
+type, but they still set a coarse `kind` so the `e.kind` branch
+remains total. The parse-failure subtypes
 (`MalformedAddressException`, `MalformedUriException`) classify to
-`KIND_INVALID` (12, the "invalid input" bucket); the rest default to
-`KIND_OTHER` (99). Their fine-grained discriminant is the structured
-detail they carry (`position`, `reason`, close code, …), tabulated
-below.
+`KIND_INVALID` (12, the "invalid input" bucket), and the rest default
+to `KIND_OTHER` (99). Their fine-grained discriminant is the
+structured detail they carry (`position`, `reason`, close code, …),
+tabulated below.
 
 ## Mapping chart (socket layer, stage 2 — authoritative today)
 
-`NetErrors.fromErrno(ordinal, detail)` — total over the
+`NetErrors.fromErrno(ordinal, detail)` is total over the
 `cajeta_net_err` ordinal space:
 
 | `cajeta_net_err` (ordinal) | POSIX errno | Winsock | `NetException` subtype | `kind` |
@@ -154,44 +156,46 @@ below.
 | `IN_PROGRESS` (14) | `EINPROGRESS` | `WSAEINPROGRESS` / `WSAEALREADY` | `NetException` ⁴ | 14 |
 | `OTHER` (99) | anything else | anything else | `NetException` | 99 |
 
-¹ **`WouldBlock` is surfaced as a *value*, not thrown, on the reactor
-/ non-blocking hot path** (see [`docs/Net.md`](Networking.md)
-§Sockets and NET-1.7): a non-blocking `recv` on an empty socket returns
-a distinct "would block" result so the reactor can drive its readiness
-loop without a throw. `WouldBlockException` exists so the taxonomy is
-total (every ordinal has a subtype) and for the rare caller that
-explicitly asks for the throwing variant; the `*Async` forms and the
-reactor never raise it.
+¹ `WouldBlock` is surfaced as a value rather than thrown on the
+reactor / non-blocking hot path (see [`docs/Net.md`](Networking.md)
+§Sockets and NET-1.7). A non-blocking `recv` on an empty socket
+returns a distinct "would block" result so the reactor can drive its
+readiness loop without a throw. `WouldBlockException` exists so the
+taxonomy is total, with every ordinal having a subtype, and for the
+rare caller that explicitly asks for the throwing variant. The
+`*Async` forms and the reactor never raise it.
 
-² **`MalformedUriException`** carries an `int64 position` (the byte
-offset where the parse failed) and classifies to `KIND_INVALID` (12).
-It is **built today** and (as of NET-6.5) already extends
-`NetException` directly — its `(message, position)` constructor
-contract is identical to the NET-6.1 placeholder that rooted on
-`RecoverableException`. See the in-file
+² `MalformedUriException` carries an `int64 position`, the byte
+offset where the parse failed, and classifies to `KIND_INVALID` (12).
+It is built today and, as of NET-6.5, already extends `NetException`
+directly. Its `(message, position)` constructor contract is identical
+to the NET-6.1 placeholder that rooted on `RecoverableException`. See
+the in-file
 [hierarchy note](../../../../runtime/src/cajeta/io/net/uri/MalformedUriException.cajeta).
 `MalformedAddressException` (NET-1.2) follows the same pattern.
 
-³ **`INTERRUPTED`** (`EINTR`) is normally handled by the socket layer
-retrying the syscall, not surfaced; it has no dedicated subtype.
+³ `INTERRUPTED` (`EINTR`) is normally handled by the socket layer
+retrying the syscall, and it is not surfaced. It has no dedicated
+subtype.
 
-⁴ **`IN_PROGRESS`** (`EINPROGRESS`) is the expected outcome of a
-non-blocking `connect`; the reactor (NET-3) waits for writability and
+⁴ `IN_PROGRESS` (`EINPROGRESS`) is the expected outcome of a
+non-blocking `connect`. The reactor (NET-3) waits for writability and
 checks `SO_ERROR` rather than treating it as a failure. It has no
 dedicated subtype.
 
 ## Mapping chart (DNS resolve layer — NET-2.5)
 
-`getaddrinfo` reports an `EAI_*` code in a **separate ordinal space**
-from socket `errno`, which the NET-2.1 native shim
+`getaddrinfo` reports an `EAI_*` code in a separate ordinal space
+from socket `errno`. The NET-2.1 native shim
 ([`cajeta_net_getaddrinfo.c`](../../../../runtime/native/cajeta_net_getaddrinfo.c))
-normalizes into `enum cajeta_resolve_err`. The DNS layer keeps its own
-total mapper —
-[`ResolveErrors.fromResolveErrno`](../../../../runtime/src/cajeta/io/net/dns/ResolveErrors.cajeta)
-— rather than folding that space into `NetErrors.fromErrno` (whose
-ordinal `1` means `WOULDBLOCK`, not `NONAME`). It splits the space into
-two leaves; the precise ordinal rides on each leaf's `resolveErrno`
-field (the coarse `kind` is `KIND_OTHER` 99 for both):
+normalizes it into `enum cajeta_resolve_err`. The DNS layer keeps its
+own total mapper,
+[`ResolveErrors.fromResolveErrno`](../../../../runtime/src/cajeta/io/net/dns/ResolveErrors.cajeta),
+rather than folding that space into `NetErrors.fromErrno`, whose
+ordinal `1` means `WOULDBLOCK` and never `NONAME`. It splits the
+space into two leaves. The precise ordinal rides on each leaf's
+`resolveErrno` field, and the coarse `kind` is `KIND_OTHER` 99 for
+both:
 
 | `cajeta_resolve_err` (ordinal) | POSIX `getaddrinfo` | Winsock | subtype | `resolveErrno` |
 |---|---|---|---|---|
@@ -207,15 +211,16 @@ field (the coarse `kind` is `KIND_OTHER` 99 for both):
 | `SERVICE` (9) | `EAI_SERVICE` | `WSATYPE_NOT_FOUND` | `ResolutionFailedException` | 9 |
 | `OTHER` (99) | any other `EAI_*` | any other | `ResolutionFailedException` | 99 |
 
-`Dns.resolve` (NET-2.2) raises these on a failed/empty lookup, citing
-the host in the message; the NET-2.4 `DnsCache` still raises the base
-`NetException` on a cached negative (its typed-narrowing is a tracked
-follow-up).
+`Dns.resolve` (NET-2.2) raises these on a failed or empty lookup,
+citing the host in the message. The NET-2.4 `DnsCache` still raises
+the base `NetException` on a cached negative, and its typed narrowing
+is a tracked follow-up.
 
 ## Discriminants carried by the higher-layer subtypes
 
-The non-socket subtypes don't classify a platform errno, so instead of
-a `kind` ordinal they each carry the structured detail a caller needs:
+The non-socket subtypes do not classify a platform errno. Instead of
+a `kind` ordinal they each carry the structured detail a caller
+needs:
 
 | Subtype | Phase | Carried detail | Why |
 |---|---|---|---|
@@ -226,35 +231,35 @@ a `kind` ordinal they each carry the structured detail a caller needs:
 | `ConnectionClosedException` (WS) | NET-10.8 | RFC 6455 close code (+ reason) | distinguish a clean 1000 from a 1002 protocol close |
 | `HeadersTooLargeException` | NET-7.7 | the limit that was exceeded | actionable abuse diagnostic |
 
-These mirror the proven NET-6.1 pattern: a recoverable parse/validation
-failure sets the inherited `message` / `cause` and its own typed field
-directly in its constructor (the compiler still rejects `super(...)`
-chaining for `Throwable` subtypes — see
-[`cajeta.error.Throwable`](../../../../runtime/src/cajeta/error/Throwable.cajeta)).
+These mirror the proven NET-6.1 pattern. A recoverable parse or
+validation failure sets the inherited `message` / `cause` and its
+own typed field directly in its constructor. The compiler still
+rejects `super(...)` chaining for `Throwable` subtypes; see
+[`cajeta.error.Throwable`](../../../../runtime/src/cajeta/error/Throwable.cajeta).
 
 ## Recoverable, not Unrecoverable
 
 `NetException extends RecoverableException` (see
-[`docs/specification/error/ErrorModel.md`](../../error/ErrorModel.md)) — and so does
-**every** subtype above, transitively. Every networking call site
-either:
+[`docs/specification/error/ErrorModel.md`](../../error/ErrorModel.md)),
+and so does every subtype above, transitively. Every networking
+call site does one of two things:
 
-- catches the relevant subtype (or an intermediate root like
+- it catches the relevant subtype (or an intermediate root like
   `HttpException`, or the `NetException` root) explicitly, or
-- declares it in its `throws` clause and propagates upward.
+- it declares it in its `throws` clause and propagates upward.
 
-The compiler's uncaught-throws check keeps the discipline visible. The
-single-rooted tree is what makes the throws clause tractable: a façade
-method (`HttpClient.send`, `WebSocket.connect`) declares `throws
-NetException` and that one clause covers every fault its transport,
-TLS, DNS, and protocol layers can raise.
+The compiler's uncaught-throws check keeps the discipline visible.
+The single-rooted tree is what makes the throws clause tractable. A
+façade method (`HttpClient.send`, `WebSocket.connect`) declares
+`throws NetException`, and that one clause covers every fault its
+transport, TLS, DNS and protocol layers can raise.
 
 ## Using the map (socket layer, NET-1.3+)
 
 After an intrinsic returns its failure sentinel, the socket wrapper
-reads the normalized ordinal (each socket class exposes the native shim
-through a private `lastErrorNative()`) and raises the mapped subtype,
-citing the operation it was performing:
+reads the normalized ordinal and raises the mapped subtype, citing
+the operation it was performing. Each socket class exposes the
+native shim through a private `lastErrorNative()`.
 
 ```cajeta
 int64 n = TcpStream.recvNative(this.fd, buf, off, len);
@@ -263,10 +268,11 @@ if (n < 0) {
 }
 ```
 
-`NetErrors.fromErrno(ordinal, detail)` is **total** over the ordinal
-space and returns a freshly heap-allocated, *unthrown* exception — the
-caller decides whether to `throw` it (the throwing path) or inspect it
-(rarely, e.g. logging then continuing).
+`NetErrors.fromErrno(ordinal, detail)` is total over the ordinal
+space and returns a freshly heap-allocated, unthrown exception. The
+caller decides whether to `throw` it on the throwing path or to
+inspect it, which is rare, for example when logging and then
+continuing.
 
 ## Catch-granularity guidance
 

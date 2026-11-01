@@ -1,14 +1,14 @@
 # `cajeta.io.file` — exceptions + capability gating + async forms
 
-Cross-cutting concerns for the file API: the exception hierarchy
-(implemented), the capability annotation that is planned to gate
-every I/O method, and the planned `*Async` forms that mirror the
-sync surface.
+This page covers the cross-cutting concerns of the file API. They are
+the exception hierarchy, which is implemented, the capability
+annotation that is planned to gate every I/O method, and the planned
+`*Async` forms that mirror the sync surface.
 
 ## Exception hierarchy
 
 All of these classes exist in `cajeta.io.file`. Each subtype's only
-constructor takes a `String message`; the message is carried on the
+constructor takes a `String message`. The message is carried on the
 inherited `Throwable.message` field and read as `e.message`.
 
 ```cajeta
@@ -39,20 +39,20 @@ public class EndOfFileException      extends IoException;
 
 ### Not yet thrown from the I/O paths
 
-The hierarchy is **defined and catchable**, but the file/path
-runtime helpers do not yet raise these exceptions — today they
-return sentinels instead (`null` from `readAllBytes`, `-1` from
-writes / instance reads, `false` from the stat predicates, an
-empty-bytes `Path` from `canonical()`). The throwing wrappers that
-map errno → the classes above land once the hierarchy is wired
-end-to-end. The catch-side shape below is what those wrappers will
-feed.
+The hierarchy is defined and catchable, but the file and path
+runtime helpers do not yet raise these exceptions. Today they
+return sentinels instead. Those are `null` from `readAllBytes`,
+`-1` from writes and instance reads, `false` from the stat
+predicates, and an empty-bytes `Path` from `canonical()`. The
+throwing wrappers that map errno to the classes above land once the
+hierarchy is wired end-to-end. The catch-side shape below is what
+those wrappers will feed.
 
 ### Recoverable, not Unrecoverable
 
 `IoException` extends `RecoverableException` (see
 `docs/specification/error/ErrorModel.md`). The intended discipline at every
-IO-using call site:
+IO-using call site is one of two choices:
 - catch the relevant subtype explicitly, or
 - declare it in the `throws` clause and propagate upward.
 
@@ -74,10 +74,10 @@ is planned.
 ## Capability gating (planned)
 
 The design intent is that every I/O-effecting method carries a
-`@capability("filesystem")` annotation, so a program that doesn't
+`@capability("filesystem")` annotation, so a program that does not
 declare the filesystem capability in its manifest fails at compile
-time. **This is not implemented** — no `@capability` annotation
-exists in the codebase yet; treat the table below as the planned
+time. This is not implemented, and no `@capability` annotation
+exists in the codebase yet. Treat the table below as the planned
 split between always-allowed pure-path operations and gated
 filesystem operations. See `docs/BuildTool.md` for the manifest
 shape.
@@ -92,8 +92,8 @@ shape.
 ## Async forms (planned)
 
 The plan is for every blocking method to gain a `*Async` form
-returning `Task<T>`. **Not implemented** — there is no `Task` class
-yet and the I/O API ships sync-only.
+returning `Task<T>`. This is not implemented. There is no `Task`
+class yet, and the I/O API ships sync-only.
 
 ```cajeta
 // Planned shape, not yet available:
@@ -103,9 +103,10 @@ Task<FileInfo> t3 = p.infoAsync();
 ```
 
 The async forms land after the async runtime
-(`docs/specification/concurrent/AsyncStatus.md`) gates them in — adding them without
-breaking sync callers is mechanical (each `void xxx(args)` gains a
-`Task<void> xxxAsync(args)` sibling run on a worker pool).
+(`docs/specification/concurrent/AsyncStatus.md`) gates them in.
+Adding them without breaking sync callers is mechanical, since each
+`void xxx(args)` gains a `Task<void> xxxAsync(args)` sibling run on
+a worker pool.
 
 ## See also
 

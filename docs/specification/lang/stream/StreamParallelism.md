@@ -1,88 +1,88 @@
 # Stream Parallelism — Design
 
-Spec for the parallel-evaluation surface on `cajeta.lang.stream.Stream<T>`.
-v1 targets Java-style **fork/join parallel terminals over the existing
-pull protocol** — split the source once, run each split on its own fiber,
-combine partials once. The pull contract doesn't change; existing single-
-threaded streams keep working unchanged.
+This is the spec for the parallel-evaluation surface on `cajeta.lang.stream.Stream<T>`.
+v1 targets Java-style fork/join parallel terminals over the existing
+pull protocol. The driver splits the source once, runs each split on its own
+fiber, and combines the partials once. The pull contract does not change, and
+existing single-threaded streams keep working unchanged.
 
 **Companion documents:**
-  - `StreamParallelism.Examples.md` — example/error catalogue and
+  - `StreamParallelism.Examples.md` is the example/error catalogue and
     landed-feature errata.
-  - `StreamParallelism.ErrorHandling.md` — exception semantics
-    (default fail-fast + user-side tolerance patterns).
+  - `StreamParallelism.ErrorHandling.md` covers exception semantics,
+    the default fail-fast and the user-side tolerance patterns.
 
 > **Implementation status.** The fork/join driver is wired and the
 > chain-aware terminals (`reduce`, `fold<R>` 3-arg, `collect<R>`,
 > `anyMatch`/`allMatch`/`noneMatch`, `forEach`, `findFirst`→`findAny`)
 > fan out via `scope { spawn worker<...> }` over a `Splittable` root.
-> The scheduler today is **single-carrier (cooperative)**, so workers
-> are fibers that interleave rather than run on separate cores — the
-> structured-concurrency shape is in place and yields wall-clock
-> parallelism unchanged once a multi-carrier scheduler lands. Splittable
-> roots: `ArrayStream`, `ArrayList.stream()`, and the three HashMap
-> stream views. The older `countParallel` entry still walks
-> sequentially. Driver: `runtime/src/cajeta/lang/stream/ParallelDriver.cajeta`.
+> The scheduler today is single-carrier and cooperative, so workers
+> are fibers that interleave on one core. The structured-concurrency
+> shape is in place, and it yields wall-clock parallelism unchanged once
+> a multi-carrier scheduler lands. The Splittable roots are `ArrayStream`,
+> `ArrayList.stream()`, and the three HashMap stream views. The older
+> `countParallel` entry still walks sequentially. The driver is
+> `runtime/src/cajeta/lang/stream/ParallelDriver.cajeta`.
 
-> Reactor-style reactive (push + async + backpressure + per-element
-> scheduler hand-off) is explicitly out of scope here — that would
+> Reactor-style reactive, with push, async, backpressure and per-element
+> scheduler hand-off, is explicitly out of scope here. It would
 > parallel the pull protocol rather than reuse it, and the demand-signal
 > model needs a different ownership story for in-flight elements. If
-> there's a use case later, it lands as a sibling `Flux<T>` type, not
-> a retrofit on `Stream<T>`.
+> there is a use case later, it lands as a sibling `Flux<T>` type and
+> never as a retrofit on `Stream<T>`.
 
 ## Goals
 
 1. **Composes with the existing fluent surface.** `xs.stream().parallel().
-   filter(p).map(f).reduce(0, +)` works; calling `.parallel()` on any
-   stream is legal even when the underlying source can't split (it
-   degenerates to sequential — the contract is "may parallelize," not
-   "must").
+   filter(p).map(f).reduce(0, +)` works. Calling `.parallel()` on any
+   stream is legal even when the underlying source cannot split, and it
+   then degenerates to sequential, because the contract is "may
+   parallelize."
 2. **Reuses the structured-concurrency machinery from Concurrency.md.** Each
-   parallel terminal is itself a `scope { ... }` body — workers are
+   parallel terminal is itself a `scope { ... }` body. Workers are
    `spawn`'d fibers, the terminal returns only after every worker
-   completes, exceptions propagate via the scope's existing escalation.
+   completes, and exceptions propagate via the scope's existing escalation.
 3. **No new ownership rules.** A worker's split is a disjoint subrange
-   of the source; one element is owned by at most one worker. Partial
+   of the source, so one element is owned by at most one worker. Partial
    results return to the orchestrator via `#` transfer. The borrow
-   checker already accepts borrows captured into scoped tasks (a worker
+   checker already accepts borrows captured into scoped tasks. A worker
    reading from `int32[] xs` borrowed by the source is sound because the
-   scope joins before the borrow expires).
+   scope joins before the borrow expires.
 4. **Composable with the cancellation model.** A failing worker triggers
-   the scope's cancellation; siblings observe at their next pull-loop
+   the scope's cancellation, and siblings observe at their next pull-loop
    `await` checkpoint and abandon early.
-5. **No GIL, no extra runtime.** Lowers to the existing
-   `__cajeta_task_run` + work-stealing scheduler + per-fiber drop chain.
+5. **No GIL, no extra runtime.** It lowers to the existing
+   `__cajeta_task_run`, the work-stealing scheduler and the per-fiber drop chain.
 
 ## Non-goals (v1)
 
 - **Custom executors.** v1 always uses the built-in work-stealing pool.
 - **Ordered findFirst across splits.** The encounter-order variant of
-  `findFirst` becomes `findAny` under parallel; explicit
-  `parallel().findFirstOrdered()` is a v2 conversation if there's
+  `findFirst` becomes `findAny` under parallel. An explicit
+  `parallel().findFirstOrdered()` is a v2 conversation if there is
   demand. Java's `forEachOrdered` is similarly v2.
 - **Stateful intermediate combinators in parallel** (`take`, `skip`).
-  v1 rejects them at the terminal site with a clear error;
+  v1 rejects them at the terminal site with a clear error.
   `parallel().take(n).count()` either falls back to sequential or
   errors with a remediation message. v2 can add an ordered-merge step.
-- **Parallel sources that don't implement `Splittable`.** No
-  "buffered-arbitrary-stream" splitter — fast splitting is the only
+- **Parallel sources that don't implement `Splittable`.** There is no
+  "buffered-arbitrary-stream" splitter, because fast splitting is the only
   splitting. A user wanting parallel on a non-splittable source first
-  collects to an ArrayList (which is splittable), then parallels.
+  collects to an ArrayList, which is splittable, then parallels.
 - **Tunable split granularity.** v1 picks `isqrt(estimateSize())`
   splits per call, capped at `MAX_SPLITS = 8` and floored to sequential
-  when the source has fewer than `MIN_PER_SPLIT * 2 = 64` elements (both
-  constants on `ParallelDriver`). Manual threshold
-  (`parallel(minBatchSize)`) is a v2 tuning knob.
+  when the source has fewer than `MIN_PER_SPLIT * 2 = 64` elements, with both
+  constants on `ParallelDriver`. A manual threshold,
+  `parallel(minBatchSize)`, is a v2 tuning knob.
 
 ## Surface API
 
 ### `Stream<T>.parallel(): Stream<T>`
 
-Marks the stream as parallel-eligible by setting an `isParallel` flag
-and returning `this` (no wrapper allocation, no `#` transfer). The bit
+This marks the stream as parallel-eligible by setting an `isParallel` flag
+and returning `this`, with no wrapper allocation and no `#` transfer. The bit
 is read by the terminal, which decides whether to fork. Calling
-`.parallel()` on an already-parallel stream is a no-op; `.sequential()`
+`.parallel()` on an already-parallel stream is a no-op, and `.sequential()`
 clears the flag.
 
 ```cajeta
@@ -94,8 +94,8 @@ int32 total = xs.stream()
                 .reduce(0, (a, b) -> a + b);
 ```
 
-Internally `parallel()` returns the SAME stream with an `isParallel`
-flag set on the head — no wrapper allocation. Stateless intermediate
+Internally `parallel()` returns the same stream with an `isParallel`
+flag set on the head, and there is no wrapper allocation. Stateless intermediate
 combinators (`filter`, `map`, `peek`, `flatMap`) propagate the flag
 through their construction. Terminals branch on it.
 
@@ -120,19 +120,19 @@ public interface Splittable<T> extends Stream<T> {
 ```
 
 Stdlib sources implementing `Splittable<T>` in v1:
-- `ArrayStream<T>` — splits by halving the index range. O(1).
-- `ArrayList<T>.stream()` — same, since it's an ArrayStream over the
+- `ArrayStream<T>` splits by halving the index range in O(1).
+- `ArrayList<T>.stream()` does the same, since it is an ArrayStream over the
   backing buffer.
-- `HashMap<K,V>.keys() / values() / entries()` — splits by halving the
-  slot-array range. O(1).
+- `HashMap<K,V>.keys() / values() / entries()` split by halving the
+  slot-array range in O(1).
 
 Wrapper streams (`FilterStream`, `MapStream`, `PeekStream`,
-`FlatMapStream`, `TakeStream`, `SkipStream`) do **not** implement
+`FlatMapStream`, `TakeStream`, `SkipStream`) do not implement
 `Splittable`. They wrap a source by reference and inherit splittability
-through it — the orchestrator unwinds the wrapper chain at terminal
+through it. The orchestrator unwinds the wrapper chain at terminal
 time, splits the underlying `Splittable`, then re-wraps each split
-with copies of the intermediate ops (cheap — `FilterStream` etc. are
-24-byte structs over a Stream+fn pair).
+with copies of the intermediate ops. That is cheap, because `FilterStream`
+and the others are 24-byte structs over a Stream+fn pair.
 
 ### Terminal dispatch
 
@@ -198,17 +198,17 @@ R drive(Stream<T> head, R seed, (T -> X), (R, X -> R), (R, R -> R) combiner) {
 
 Each worker:
 1. Owns a `Stream<T>` covering its split (transferred via `#`).
-2. Re-wraps with copies of the pipeline's intermediate combinators
-   (each MapStream / FilterStream is reconstructed pointing at the
-   worker's split — cheap, no source data copied).
+2. Re-wraps with copies of the pipeline's intermediate combinators.
+   Each MapStream / FilterStream is reconstructed pointing at the
+   worker's split, which is cheap because no source data is copied.
 3. Walks `next()` to exhaustion on its own fiber.
 4. Hands its partial back to the orchestrator's slot.
 
 The orchestrator never touches an element directly until the workers
 have all transferred their partials at scope exit. The borrow
-checker is satisfied because the source data (e.g. the `int32[] xs`
-buffer) is borrowed by `ArrayStream<int32>` which is owned by the
-orchestrator's stream chain — the workers' splits are sub-streams
+checker is satisfied because the source data, such as the `int32[] xs`
+buffer, is borrowed by `ArrayStream<int32>`, which is owned by the
+orchestrator's stream chain. The workers' splits are sub-streams
 over the same backing buffer, valid for the scope's lifetime, and the
 scope joins before the orchestrator can drop them.
 
@@ -240,8 +240,8 @@ public class Collector<T, R> {
 }
 ```
 
-A per-worker `supplier()` (rather than a single shared `seed`) is what
-makes a mutable `R` like `ArrayList` safe under parallel — each worker
+A per-worker `supplier()` in place of a single shared `seed` is what
+makes a mutable `R` like `ArrayList` safe under parallel. Each worker
 accumulates into its own instance with no aliasing. `Collectors.toList<T>()`
 supplies `() -> heap ArrayList<T>()` with an `appendAll`-based combiner.
 
@@ -251,36 +251,36 @@ A parallel terminal opens a `scope { }` block. Each worker is a
 `spawn` inside that scope, so:
 
 - **Captures from the orchestrator's frame** (the source array, the
-  intermediate-op closures, the seed value) are valid borrows — the
-  scope joins before they expire.
-- **The accumulator `R`** is captured by-value (primitive) or by-borrow
-  (class). For a class-typed accumulator used in a collector, each
-  worker needs ITS OWN instance. The driver resolves this by calling
-  `Collector.supplier: () -> #R` per worker rather than sharing one
-  instance. `Collectors.toList` passes `() -> heap ArrayList<T>()` —
+  intermediate-op closures, the seed value) are valid borrows, because
+  the scope joins before they expire.
+- **The accumulator `R`** is captured by value for a primitive or by borrow
+  for a class. For a class-typed accumulator used in a collector, each
+  worker needs its own instance. The driver resolves this by calling
+  `Collector.supplier: () -> #R` per worker instead of sharing one
+  instance. `Collectors.toList` passes `() -> heap ArrayList<T>()`,
   one fresh list per worker.
 - **Partials returning to the orchestrator** travel via `#` transfer.
-  The combiner takes ownership; the worker's partial is dropped from
+  The combiner takes ownership, and the worker's partial is dropped from
   the worker's drop chain at hand-off.
 
 The per-fiber drop chain promotion that landed in R5 already gives
-each worker its own chain, so a worker's `__cajeta_drop_push` doesn't
+each worker its own chain, so a worker's `__cajeta_drop_push` does not
 touch the orchestrator's. The live-set is process-global with atomic
-claim semantics — already correct under workers running in parallel.
+claim semantics, which is already correct under workers running in parallel.
 
 ## Lint and diagnostics
 
 Two new compile-time signals:
 
-1. **`[parallel-stateful-op]`** — using `take`/`skip` AFTER `parallel()`
-   in the same chain. Suggestion: `xs.stream().parallel().filter(…)
+1. **`[parallel-stateful-op]`** fires on using `take`/`skip` after `parallel()`
+   in the same chain. The suggestion is `xs.stream().parallel().filter(…)
    .sequential().take(n)`.
-2. **`[parallel-collector-no-combiner]`** — `collect(c)` on a parallel
-   stream where `c.combiner == null`. Suggestion: add a combiner to
-   the collector OR drop the `.parallel()` call.
+2. **`[parallel-collector-no-combiner]`** fires on `collect(c)` on a parallel
+   stream where `c.combiner == null`. The suggestion is to add a combiner to
+   the collector or drop the `.parallel()` call.
 
-Runtime exception (only if the static check is bypassed by dynamic
-shape construction):
+The runtime exceptions, raised only if the static check is bypassed by
+dynamic shape construction, are:
 
 - `CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL`
 - `CAJETA_ERROR_STREAM_PARALLEL_NO_COMBINER`
@@ -316,9 +316,9 @@ shape construction):
 - `HashMap` stream views become Splittable. **Shipped.**
   `HashMapKeyStream` / `HashMapValueStream` / `HashMapEntryStream`
   each `implements Splittable<T>` and override
-  `trySplit / estimateSize / splittableSize / trySplitRoot` —
-  halving the slot-array index range, same disjoint-share model as
-  `ArrayStream`. Verified end-to-end across count / reduce / fold-
+  `trySplit / estimateSize / splittableSize / trySplitRoot`,
+  halving the slot-array index range with the same disjoint-share model as
+  `ArrayStream`. This is verified end-to-end across count / reduce / fold-
   with-combiner / anyMatch / allMatch / noneMatch / forEach
   terminals in `test/collections/HashMapStreamParallelTests.cpp`.
 - Lint passes for `[parallel-stateful-op]` /
@@ -330,52 +330,52 @@ shape construction):
 - `pickSplitCount` reads scheduler core count.
 - `findAny` semantics for `findFirst` under parallel; lint warns
   about ordering loss.
-- Scope-cancellation hookup for short-circuiting terminals (workers
-  poll a flag inside their pull loop; first match flips it and the
-  others bail at their next checkpoint).
+- Scope-cancellation hookup for short-circuiting terminals. Workers
+  poll a flag inside their pull loop, the first match flips it, and the
+  others bail at their next checkpoint.
 
 ## Out-of-scope edge cases (documented decisions)
 
 - **Nested parallelism.** A parallel stream that produces a parallel
-  stream via flatMap. v1 sequentializes the inner — only the outer
+  stream via flatMap. v1 sequentializes the inner, and only the outer
   parallelizes. The scheduler's work-stealing makes nested parallel
-  flatten naturally if we ever lift this; the restriction is for the
+  flatten naturally if we ever lift this, and the restriction is for the
   v1 driver's bookkeeping simplicity.
-- **Reduction with non-associative ops.** Programmer responsibility,
-  same as Java's contract. No runtime check.
+- **Reduction with non-associative ops.** This is the programmer's
+  responsibility, the same as Java's contract. There is no runtime check.
 - **`Stream<T>` where `T` is a non-`Send` type.** Cajeta's existing
-  `#` transfer rule already governs cross-thread handoff; the
+  `#` transfer rule already governs cross-thread handoff, and the
   parallel driver inherits whatever the language enforces. A worker
   pulling a class-typed `T` from its split owns it for the worker's
-  fiber lifetime; transferring to the orchestrator only happens if
-  the terminal accumulates `T` into the partial (reduce / collect of
-  class-typed Ts), in which case the partial transfer must use `#`.
-- **Source mutation during traversal.** Same contract as sequential:
-  undefined behavior. The HashMap stream views already specify
-  snapshot semantics; that property carries over.
+  fiber lifetime. Transferring to the orchestrator only happens if
+  the terminal accumulates `T` into the partial, as in reduce / collect of
+  class-typed Ts, in which case the partial transfer must use `#`.
+- **Source mutation during traversal.** The contract is the same as
+  sequential, which is undefined behavior. The HashMap stream views already
+  specify snapshot semantics, and that property carries over.
 
 ## Locked decisions (2026-05-22)
 
-- **findFirst** silently becomes findAny under parallel; lint
-  `[parallel-findfirst-unordered]` warns about ordering loss. Fluent
+- **findFirst** silently becomes findAny under parallel, and the lint
+  `[parallel-findfirst-unordered]` warns about ordering loss. The fluent
   surface stays intact.
-- **OOM at spawn** always raises `SystemResourceException` — no
-  silent fallback. Surfaces brittle workloads early.
+- **OOM at spawn** always raises `SystemResourceException`, with no
+  silent fallback. This surfaces brittle workloads early.
 - **`Collector<T, R>` combiner is REQUIRED.** The shipped ctor is
-  3-arg `(supplier, accumulator, combiner)` — note `supplier: () -> #R`
+  3-arg `(supplier, accumulator, combiner)`. Note that `supplier: () -> #R`
   replaced the originally-planned `seed` field so each parallel worker
   gets its own accumulator instance (see Examples.md § 7.9 errata).
-  Existing 2-arg call sites were swept in the P1 prep commit
-  (Collectors.toList + CollectorTests sites).
+  Existing 2-arg call sites were swept in the P1 prep commit, at the
+  Collectors.toList and CollectorTests sites.
 - **Worker stack-trace frames** named `<parallel worker N>` using
   the split index.
 
 ## Open design questions
 
-(Out of scope for v1 — listed for future tracking.)
+These are out of scope for v1 and listed for future tracking.
 
 - **Tree-reduce of partials** instead of orchestrator-linear sweep.
-  v1's linear sweep is fine for the split counts the driver picks
-  (4–32). Defer to v2 when measurements demand it.
-- **Custom executor surface.** `parallel(Executor e)` overload.
-  Out of scope for v1; the Executor type itself isn't designed yet.
+  v1's linear sweep is fine for the split counts the driver picks,
+  4–32. Defer it to v2 when measurements demand it.
+- **Custom executor surface.** A `parallel(Executor e)` overload.
+  It is out of scope for v1, and the Executor type itself is not designed yet.

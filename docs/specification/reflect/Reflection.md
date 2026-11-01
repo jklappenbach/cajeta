@@ -1,35 +1,35 @@
 # Reflection — `cajeta.reflect`
 
 `cajeta.reflect` is the stdlib package for runtime type introspection. It
-reads the per-class RTTI tables the compiler already emits (see
-`StructureMetadata` in the compiler: `#VTable`, `#RttiGlobal`, and a cached
-`#ClassObject` exist for every class today) and surfaces them through a
-user-facing API.
+reads the per-class RTTI tables the compiler already emits and surfaces them
+through a user-facing API. See `StructureMetadata` in the compiler, where
+`#VTable`, `#RttiGlobal`, and a cached `#ClassObject` exist for every class
+today.
 
-> **Two layers, read this first.** A first slice — **REFL-1** — *ships today*,
+> **Two layers, read this first.** A first slice, REFL-1, ships today,
 > but its shape differs from the Java-mirror design that fills most of this
-> document. The shipped surface is **index-based and minimal** (you walk
-> members by integer index; there are no `Field[]` / `Method[]` array returns,
-> no `Object`-boxed `get`/`set` by default, no `@Reflectable`, no
-> `UnsafeReflect`, no `MethodHandle`). The detailed `Class` / `Field` /
+> document. The shipped surface is index-based and minimal. You walk
+> members by integer index, and there are no `Field[]` / `Method[]` array
+> returns, no `Object`-boxed `get`/`set` by default, no `@Reflectable`, no
+> `UnsafeReflect`, and no `MethodHandle`. The detailed `Class` / `Field` /
 > `Method` / `Constructor` / `Parameter` / `Annotation` sections further down
-> describe the **intended Java-style API** (`java.lang.reflect` /
-> `System.Reflection` flavored, with generic retention and fiber-aware
-> invocation) — treat those as the design target, not the current signatures.
+> describe the intended Java-style API, flavored by `java.lang.reflect` and
+> `System.Reflection`, with template retention and fiber-aware invocation.
+> Treat those as the design target and not as the current signatures.
 > The next section documents exactly what ships.
 
-Lives in stdlib because it's foundational — DI containers, JSON
+It lives in stdlib because it is foundational. DI containers, JSON
 serializers, ORMs, mocking frameworks, debuggers, and most
 metaprogramming tools cajeta will grow need it, and the RTTI
-cost is already paid (every cajeta binary carries `#RttiGlobal`
-entries today regardless). User code reaches for it via
+cost is already paid, because every cajeta binary carries `#RttiGlobal`
+entries today regardless. User code reaches for it via
 `import cajeta.reflect.*`.
 
 ## Shipped surface (REFL-1)
 
-What actually exists today, in `runtime/src/cajeta/reflect/` — verify against
-those sources, not the design sections below. Members are addressed by
-**integer index**; accessors take that index directly.
+This is what actually exists today, in `runtime/src/cajeta/reflect/`. Verify
+against those sources and not against the design sections below. Members are
+addressed by integer index, and accessors take that index directly.
 
 ```cajeta
 public final class Class<T> {            // phantom T; layout is { vtable, rtti }
@@ -95,38 +95,38 @@ public final class Class<T> {            // phantom T; layout is { vtable, rtti 
 `Field`, `Method`, `Constructor`, `Parameter`, and `Annotation` are likewise
 index-addressed wrappers over the raw `#Rtti` pointer:
 
-- `Field` — `getName`, `getModifiers`, `getTypeFlags`, typed `getInt32`/`setInt32`/… +
-  `getBoxed`, annotation queries. Reads/writes go through a `checkAccess()`
+- `Field` has `getName`, `getModifiers`, `getTypeFlags`, typed `getInt32`/`setInt32`/… +
+  `getBoxed`, and annotation queries. Reads/writes go through a `checkAccess()`
   gate (see below).
-- `Method` — `getName`, `getParameterCount`, `getParameter(i)`, `getModifiers`,
+- `Method` has `getName`, `getParameterCount`, `getParameter(i)`, `getModifiers`,
   and `invokeScalar` / `invokeInt32` / `invokeFloat32` / `invokeFloat64` /
   `invokeObject` / `invokeBoxed`, each taking an `int64[] args` (small-arity
-  overloads exist) — **not** Java's `Object... args`.
-- `Constructor` — `getParameterCount`, `getParameter(i)`, `getModifiers`,
+  overloads exist). This differs from Java's `Object... args`.
+- `Constructor` has `getParameterCount`, `getParameter(i)`, `getModifiers`,
   `heapInstance()` / `heapInstance(int64[] args)`.
-- `Parameter` — `getName`, `getTypeName`, annotation queries.
-- `Annotation` — args by index (`getArgKind`/`getArgInt`/`getArgBool`/`getArgString`,
-  list variants) **and** by key (`getInt(key)`, `getString(key)`, `getBool(key)`,
+- `Parameter` has `getName`, `getTypeName`, and annotation queries.
+- `Annotation` has args by index (`getArgKind`/`getArgInt`/`getArgBool`/`getArgString`,
+  list variants) and by key (`getInt(key)`, `getString(key)`, `getBool(key)`,
   `getClassRef(key)`).
-- `Modifiers` — `isPublic` / `isPrivate` / `isProtected` / `isStatic` /
+- `Modifiers` has `isPublic` / `isPrivate` / `isProtected` / `isStatic` /
   `isFinal` / `isSealed` / `isRetained` / `isPackagePrivate` over a raw flag
-  int. (No `isOverride` / `isTransient` / `isInternal` / `isEnum` yet.)
+  int. There is no `isOverride` / `isTransient` / `isInternal` / `isEnum` yet.
 
-**Access control as shipped:** there is no `@Reflectable` annotation and no
+**Access control as shipped.** There is no `@Reflectable` annotation and no
 `UnsafeReflect`. The `checkAccess()` gate blocks a member only when it is
-`private` **and** its declaring class is `@Sealed` (the native
-`__cajeta_reflect_field_blocked` / `_ctor_blocked` probes back this); otherwise
+`private` and its declaring class is `@Sealed`. The native
+`__cajeta_reflect_field_blocked` / `_ctor_blocked` probes back this. Otherwise
 access is allowed. Exceptions live in
 `IllegalAccessException.cajeta` / `UnsupportedReflectionException.cajeta`.
 
-**Not yet shipped from the design below:** `Object`-boxed `get`/`set` as the
+**Not yet shipped from the design below.** `Object`-boxed `get`/`set` as the
 primary path, `Class<?>[] getFields()`/`getMethods()` array enumerations,
 `MethodHandle` / `bindCallSite`, `UnsafeReflect`, `@Reflectable`, `Class.forName`
 that throws, and the constant-folding fast paths.
 
 ## Why now
 
-The infrastructure exists, and the REFL-1 API above now reads it; the richer
+The infrastructure exists, and the REFL-1 API above now reads it. The richer
 Java-mirror surface is still landing. The compiler emits RTTI for every
 class:
 - Canonical class name
@@ -137,65 +137,66 @@ class:
 - Vtable pointer
 
 `AspectModel.md` uses this for pointcut matching at compile time. The REFL-1
-runtime surface above now reads it too (introspection, typed field access,
-`heapInstance`, annotation queries); the richer ergonomics the rest of this
-doc describes — array enumerations, boxed `get`/`set`, `MethodHandle`,
-`forName`-by-string with retention — are what remains to make a hand-written
-per-class JSON serializer or a runtime DI container unnecessary.
+runtime surface above now reads it too, for introspection, typed field access,
+`heapInstance`, and annotation queries. The richer ergonomics the rest of this
+doc describes are what remains to make a hand-written per-class JSON
+serializer or a runtime DI container unnecessary. Those are array
+enumerations, boxed `get`/`set`, `MethodHandle`, and `forName`-by-string with
+retention.
 
 ## Goals
 
 - **Read-only introspection of every class.** Name, package,
   modifiers, fields, methods, constructors, annotations,
-  superclass, implemented interfaces, type parameters. Available
-  for any class without opt-in — the RTTI tables exist
-  regardless.
-- **Generic retention, not erasure.** Java erases generic
-  information at runtime; cajeta retains it. A `Box<int32>`
-  instance reports `int32` as its type argument; the substitution
-  info already lives in the compiler at instantiation time and
-  costs nothing to keep in RTTI.
+  superclass, implemented interfaces, type parameters. This is
+  available for any class without opt-in, because the RTTI tables
+  exist regardless.
+- **Template retention.** Java erases generic information at runtime,
+  and cajeta retains it. A `Box<int32>` instance reports `int32` as
+  its type argument. The substitution info already lives in the
+  compiler at instantiation time and costs nothing to keep in RTTI.
 - **Annotation introspection.** Read annotations on classes,
-  fields, methods, parameters, and type parameters; access their
-  element values by name. Same data AspectModel already consumes
-  for advice matching; cajeta.reflect generalizes the API.
+  fields, methods, parameters, and type parameters, and access their
+  element values by name. This is the same data AspectModel already
+  consumes for advice matching, and cajeta.reflect generalizes the
+  API.
 - **Reflective invocation.** `Method.invoke`, `Constructor.
-  newInstance`, `Field.get` / `Field.set`. Slower than static
-  dispatch (vtable lookup by hash + argument marshalling) but
-  the right tool for framework code.
-- **Annotation-controlled access to private members.** Default
-  is "reflection respects visibility" — `Field.get` on a
+  newInstance`, `Field.get` / `Field.set`. It is slower than static
+  dispatch, because of the vtable lookup by hash and the argument
+  marshalling, and it is the right tool for framework code.
+- **Annotation-controlled access to private members.** The default
+  is that reflection respects visibility, so `Field.get` on a
   `private` field throws unless the declaring class is marked
   `@Reflectable`. Two opt-in paths exist for callers that
   need broader access (see "Access control" below).
 - **Class lookup by name.** `Class.forName("com.example.User")`
   resolves a string at runtime to a `Class<?>` for any class
   the binary still contains. AOT-compiled cajeta strips unused
-  classes by default; `@Retained` marks classes that must
+  classes by default, and `@Retained` marks classes that must
   survive even if no static reference reaches them.
 - **Fiber-safe reflection.** Reflective invocation respects
-  cajeta.thread's scheduling — invoke runs in the caller's
-  fiber, no thread-hop, no separate "reflection executor."
+  cajeta.thread's scheduling. Invoke runs in the caller's
+  fiber, with no thread-hop and no separate "reflection executor."
 
 ## Non-goals (v1)
 
-- **Dynamic class generation.** No emitting new classes at
-  runtime, no `Proxy.newProxyInstance` equivalent, no bytecode-
-  style emission. Cajeta is AOT-compiled; runtime codegen is a
-  separate (much larger) effort that would need a JIT backend.
-- **Class loading from external sources.** No reading a `.cajeta`
-  file from disk and adding its types to the running process.
+- **Dynamic class generation.** There is no emitting of new classes at
+  runtime, no `Proxy.newProxyInstance` equivalent, and no bytecode-
+  style emission. Cajeta is AOT-compiled, and runtime codegen is a
+  separate and much larger effort that would need a JIT backend.
+- **Class loading from external sources.** There is no reading of a
+  `.cajeta` file from disk and adding its types to the running process.
   Plugins / hot-reload land later, separately.
 - **MethodHandle-style call-site caching.** Java's `MethodHandle`
   and `LambdaMetafactory` provide reflection-fast-path performance
-  comparable to direct invocation; v1 ships the slow-but-simple
-  `Method.invoke` path. Fast-path is a follow-up.
+  comparable to direct invocation. v1 ships the slow-but-simple
+  `Method.invoke` path, and the fast path is a follow-up.
 - **Constant folding of reflective constants.** Reading
-  `Color.RED` reflectively returns a real lookup, not a compile-
-  time constant. The static-known case (where you'd want
-  constant folding) just uses the static reference directly.
-- **Unsafe memory access.** No `sun.misc.Unsafe` equivalent. The
-  `UnsafeReflect` class in this design exposes private members
+  `Color.RED` reflectively returns a real lookup and never a compile-
+  time constant. The static-known case, where you would want
+  constant folding, just uses the static reference directly.
+- **Unsafe memory access.** There is no `sun.misc.Unsafe` equivalent.
+  The `UnsafeReflect` class in this design exposes private members
   via reflection but doesn't bypass type safety, the garbage
   collector, or memory bounds.
 
@@ -289,11 +290,11 @@ public final class Class<T> {
 
 The `forName` lookup goes through the process-wide registry built
 at link time by the compiler. Classes that no static code path
-references can be stripped by the AOT linker (binary-size win),
-so `forName` doesn't see them. `@Retained` (see "Access control")
+references can be stripped by the AOT linker, which is a binary-size
+win, so `forName` doesn't see them. `@Retained` (see "Access control")
 keeps a class in the registry regardless of static use.
 
-Access via `T.class` (compile-time, for any type) or
+You reach a class via `T.class` (compile-time, for any type) or
 `instance.getClass()` (runtime, returns the dynamic type):
 
 ```cajeta
@@ -384,7 +385,7 @@ method call would, with the canonical-signature-hash lookup in
 the receiver's vtable (the same path `__cajeta_vtable_lookup`
 takes). Static methods resolve directly to the declaring class's
 function. The cost is one runtime hash lookup + argument
-marshalling; direct dispatch is one vtable load instead.
+marshalling. Direct dispatch is one vtable load instead.
 
 ---
 
@@ -428,10 +429,10 @@ public final class Parameter {
 ```
 
 The `this` parameter shows up in the parameter list for non-
-static methods (Method.parameterList includes it after Method::
-generatePrototype runs); `Parameter.isThis()` discriminates.
-Callers iterating `getParameters()` for a non-static method
-typically skip the first one.
+static methods, because Method.parameterList includes it after
+Method::generatePrototype runs, and `Parameter.isThis()`
+discriminates. Callers iterating `getParameters()` for a non-static
+method typically skip the first one.
 
 ---
 
@@ -475,12 +476,12 @@ are `Annotation`.
 > **Shipped names are `TemplateParameter` / `TemplateArgument`** (and
 > `Class.getTemplateParameter(i)` / `getTemplateArgument(i)` /
 > `isTemplateInstantiation()`). The `Type*` spelling and the array-returning
-> `getTypeParameters()` / `getTypeArguments()` here are the design target; map
+> `getTypeParameters()` / `getTypeArguments()` here are the design target. Map
 > them onto the index-based `Template*` accessors when reading current code.
 
-Cajeta retains generic information at runtime (departure from
-Java's erasure). A `Box<int32>` instance reports `int32` as its
-type argument; the compile-time substitution lives in RTTI.
+Cajeta retains generic information at runtime, which is a departure from
+Java's erasure. A `Box<int32>` instance reports `int32` as its
+type argument, and the compile-time substitution lives in RTTI.
 
 ```cajeta
 // Declaration-side: `class Box<T extends Comparable<T>> { ... }`
@@ -512,8 +513,7 @@ String       deepName = innerT.getResolvedType().getName();  // "int32"
 
 Generic retention means a JSON serializer can ask `List<int32>`
 "what's your element type?" at runtime and pick `Int32.toString`
-for each element, instead of falling back to `Object.toString`
-the way Java would.
+for each element. Java would fall back to `Object.toString`.
 
 ---
 
@@ -541,20 +541,20 @@ public final class Modifiers {
 
 ## Access control
 
-> **Design target — differs from what ships.** The `@Reflectable` opt-in and
-> `UnsafeReflect` escape hatch below are **not implemented**. The shipped
-> REFL-1 model (see *Shipped surface*) gates on `@Sealed`: a member is blocked
-> only when it is `private` *and* its declaring class is `@Sealed`. The
+> **Design target, differs from what ships.** The `@Reflectable` opt-in and
+> `UnsafeReflect` escape hatch below are not implemented. The shipped
+> REFL-1 model (see *Shipped surface*) gates on `@Sealed`. A member is blocked
+> only when it is `private` and its declaring class is `@Sealed`. The
 > annotation-driven model here is the intended evolution.
 
-Defaults are restrictive; opt-in widens the surface.
+Defaults are restrictive, and opt-in widens the surface.
 
-**Default:** `Field.get` / `Field.set` / `Method.invoke` /
+**Default.** `Field.get` / `Field.set` / `Method.invoke` /
 `Constructor.newInstance` respect declared visibility. Reflective
 access to a `private` member from outside its declaring class
 throws `IllegalAccessException`.
 
-**Opt-in path A — `@Reflectable` on the declaring class.** Marks
+**Opt-in path A, `@Reflectable` on the declaring class.** This marks
 the class as having explicitly consented to broader reflective
 access. Reflection can read / write / invoke private members of
 `@Reflectable` classes.
@@ -571,7 +571,7 @@ Field pwd = User.class.getDeclaredField("passwordHash");
 String h = (String) pwd.get(userInstance);    // works because @Reflectable
 ```
 
-**Opt-in path B — `UnsafeReflect` for the framework case.**
+**Opt-in path B, `UnsafeReflect` for the framework case.**
 Sometimes the framework code (a DI container, a serializer)
 needs to reach private members of classes it doesn't control.
 `UnsafeReflect` is the explicit escape hatch:
@@ -599,11 +599,11 @@ for (field in someClass.getDeclaredFields()) {
 ```
 
 The construction-time warning is logged through
-`cajeta.thread.log` and surfaces in process telemetry —
-framework authors can use it without surprise but it's
+`cajeta.thread.log` and surfaces in process telemetry.
+Framework authors can use it without surprise, and it is
 visible in the audit trail.
 
-**`@Retained`** — orthogonal to access control, addresses
+**`@Retained`** is orthogonal to access control and addresses
 AOT-stripping. Cajeta's AOT linker removes classes no static
 code path reaches, which is correct for binary size but breaks
 `Class.forName("com.example.PluginX")` when nothing else
@@ -615,69 +615,68 @@ the registry regardless:
 public class JsonSerializer { ... }      // forName-discoverable
 ```
 
-Use sparingly — `@Retained` defeats stripping for that class
+Use it sparingly, because `@Retained` defeats stripping for that class
 plus everything it transitively references.
 
 ---
 
 ## Performance
 
-Reflection was one of Java's downfalls — first-call costs in the
+Reflection was one of Java's downfalls. It had first-call costs in the
 microseconds, per-call argument-array allocation, JIT inflation
-overhead, opaque to the optimizer. None of those costs are
-fundamental to "reflection" the concept; they were specific
-choices Java made for reasons cajeta doesn't share (dynamic class
-loading, JIT compilation, type erasure, security manager). The
+overhead, and it was opaque to the optimizer. None of those costs are
+fundamental to reflection as a concept. They were specific
+choices Java made for reasons cajeta doesn't share, namely dynamic class
+loading, JIT compilation, type erasure, and the security manager. The
 design below sidesteps each one.
 
 ### Java's specific pain points (none of which apply to cajeta)
 
-1. **JIT inflation.** First reflective call goes through a slow
+1. **JIT inflation.** The first reflective call goes through a slow
    JNI bridge while the JIT decides whether the call site is
-   hot enough to "inflate" into generated bytecode. Tens of
+   hot enough to "inflate" into generated bytecode. That is tens of
    microseconds on the cold path.
 2. **Argument-array allocation per call.** `Method.invoke(obj,
-   42, "foo")` allocates an `Object[]`, boxes `42` to
-   `Integer.valueOf(42)`. Two-to-three allocations for a one-
+   42, "foo")` allocates an `Object[]` and boxes `42` to
+   `Integer.valueOf(42)`. That is two-to-three allocations for a one-
    arg int call.
 3. **Symbolic-name lookups at runtime.** `Class.getField("name")`
    is a hash table walk over interned strings. Cajeta knows the
    field's index at compile time and never walks strings on the
    hot path.
 4. **No inlining.** Java's JIT can't see through `Method.invoke`'s
-   vtable indirection; reflection blocks escape analysis, scalar
+   vtable indirection, so reflection blocks escape analysis, scalar
    replacement, and constant propagation.
-5. **Per-call accessibility check.** `setAccessible` flags +
-   module exports + security manager consulted on every reflective
-   access.
+5. **Per-call accessibility check.** `setAccessible` flags,
+   module exports, and the security manager are consulted on every
+   reflective access.
 
 ### Cajeta's structural advantages
 
-- **AOT-compiled.** No JIT inflation; the reflective dispatch code
-  is compiled once and lives in the binary like any other function.
+- **AOT-compiled.** There is no JIT inflation. The reflective dispatch
+  code is compiled once and lives in the binary like any other function.
 - **No dynamic class loading.** Every class in the binary is known
-  at link time; no "is this class loaded?" check per lookup, no
-  class-loader hierarchy to walk.
+  at link time. There is no "is this class loaded?" check per lookup
+  and no class-loader hierarchy to walk.
 - **Static memory model.** Field offsets are compile-time
   constants. The compiler can emit per-class adapters that bake
-  in the offsets directly — no JVM-style indirection through a
+  in the offsets directly, with no JVM-style indirection through a
   reflective `Field.offset` field.
 - **No security manager.** Access control is a compile-time
   `@Reflectable` check plus `UnsafeReflect`'s construction-time
-  audit log, not a per-call check.
-- **Monomorphic generics with retention.** No type-erased
+  audit log. There is no per-call check.
+- **Monomorphic generics with retention.** There are no type-erased
   cast-back-to-Object roundtrips.
 
 ### The seven strategies that close the gap
 
-**1. Pre-built integer-indexed RTTI tables.** Replace string-keyed
-lookups with compact arrays. The compiler knows each field's
-ordinal index in its declaring class; `Class.getField("name")`
-resolves the name to an index at lookup time (one perfect-hash
-probe over a per-class table) and then returns a `Field` whose
-internal representation is just the index. The `Field` carries
-no string. Subsequent `Field.get(obj)` calls don't touch a string
-at all.
+**1. Pre-built integer-indexed RTTI tables.** Compact arrays replace
+string-keyed lookups. The compiler knows each field's ordinal index in
+its declaring class. `Class.getField("name")` resolves the name to an
+index at lookup time, with one perfect-hash probe over a per-class
+table, and then returns a `Field` whose internal representation is just
+the index. The `Field` carries no string, so subsequent
+`Field.get(obj)` calls don't touch a string at all.
 
 **2. Compiler-synthesized per-class reflection adapters.** For
 every class, the compiler emits a hidden accessor pair:
@@ -699,14 +698,14 @@ User_reflect_invokeMethod(User* obj, int32 methodIdx, Object[] args) -> Object
   }
 ```
 
-`Field.get(obj)` dispatches to the adapter via one vtable hop
-(the adapter is reached through the RttiGlobal). Each field
-access is **one vtable load + one switch + one direct load** —
-the same shape as a virtual method call. That's the floor for
-"the dispatch target wasn't statically known"; Java pays orders
+`Field.get(obj)` dispatches to the adapter via one vtable hop,
+because the adapter is reached through the RttiGlobal. Each field
+access is one vtable load + one switch + one direct load, which is
+the same shape as a virtual method call. That is the floor for a
+dispatch target that wasn't statically known. Java pays orders
 of magnitude more because the JIT can't see this pattern.
 
-**3. Typed accessors that skip boxing.** Already in the design
+**3. Typed accessors that skip boxing.** These are already in the design
 (`Field.getInt32`, `Method.invokeInt64`). For each combination
 of (declaring class, field/method, primitive type) the compiler
 emits a specialized variant whose body is a direct field load
@@ -717,10 +716,10 @@ Field idField #= User.class.getField("id");
 int64 id = idField.getInt64(user);   // emits: load + return, no Object
 ```
 
-**4. `MethodHandle`-style cached call sites — promoted into v1.**
+**4. `MethodHandle`-style cached call sites, promoted into v1.**
 A `Method` produces a `MethodHandle` once via `bindCallSite()`.
-The handle is a typed function pointer wrapped in a small struct;
-calling it is one vtable hop + direct call. Java's
+The handle is a typed function pointer wrapped in a small struct,
+and calling it is one vtable hop + direct call. Java's
 `MethodHandle.invokeExact` already proves this approach hits
 ~95% of direct-call speed.
 
@@ -758,30 +757,30 @@ for one-off reflective calls where building a handle isn't
 worth it.
 
 **5. Constant folding of statically-known reflection.** When all
-inputs to a reflective call are compile-time constants —
+inputs to a reflective call are compile-time constants, such as
 `User.class.getField("name").get(user)` with `"name"` as a
-literal — the compiler folds the call to a direct field access
-in the same pass it does for `String.equals("literal")`. Same
-machinery, applied to reflective lookups. Caveat: gives up
-visibility checks at the call site, so the fold only fires when
-the access would be permitted anyway.
+literal, the compiler folds the call to a direct field access
+in the same pass it does for `String.equals("literal")`. It is the
+same machinery, applied to reflective lookups. The caveat is that
+this gives up visibility checks at the call site, so the fold only
+fires when the access would be permitted anyway.
 
-**6. Fiber-stack argument buffers, not heap allocations.** When
+**6. Fiber-stack argument buffers instead of heap allocations.** When
 the argument count is small and the call site is statically
 typed (`method.invoke(obj, a, b)` with 2 args), the args
 collection uses fiber-stack-allocated storage instead of a heap
-`Object[]`. Cajeta's existing alloca path covers this — the
+`Object[]`. Cajeta's existing alloca path covers this, and the
 compiler picks stack vs heap based on count and lifetime. For
 large or escaping arg lists, heap fallback is identical to
 Java's shape.
 
-**7. Cached `Class<?>` instances.** One `Class<?>` per declared
+**7. Cached `Class<?>` instances.** There is one `Class<?>` per declared
 type in the process, reused across every `getClass()` and
 `T.class` call. The instance lives in static storage next to
-the RttiGlobal; no allocation. (Java does this too in
+the RttiGlobal, with no allocation. Java does this too in
 HotSpot's `Klass::java_mirror`, but the indirection through
 the JVMTI machinery hides it from optimization. Cajeta's
-single-step access doesn't.)
+single-step access doesn't.
 
 ### Realistic performance ceiling
 
@@ -798,10 +797,10 @@ Combining the above:
 | `Constructor.newInstance(args)`        | ~2× direct `new` (mostly arg marshalling) |
 | Reflective enumeration of fields       | array iteration; constant per field |
 
-The slow path stays available for one-off cases; the fast paths
+The slow path stays available for one-off cases, and the fast paths
 (typed accessors, MethodHandles) cover everything inside a tight
 loop. Frameworks built on cajeta.reflect can be as fast as
-manual code generation — without users writing the manual code.
+manual code generation, without you writing the manual code.
 
 ### Compile-time codegen as the alternative
 
@@ -821,9 +820,9 @@ User_toJson(User obj) -> String     // generated by the macro
 ```
 
 instead of using reflection at all. Reflection is the
-discoverable, general-purpose path; codegen is the escape hatch
+discoverable, general-purpose path. Codegen is the escape hatch
 for the hot paths that can amortize compile-time work. Both ship,
-neither is "the answer" — the user picks based on the workload.
+and neither is "the answer", so you pick based on the workload.
 
 ---
 
@@ -884,74 +883,75 @@ public boolean deepEquals(Object a, Object b) {
 
 ## Implementation sequence
 
-> **Note on the shipped path.** REFL-1 took a **data-driven** route, not the
-> per-class synthesized adapters of Strategy 2 below: typed field access goes
-> through generic native helpers keyed on `(rtti, fieldIndex)` —
+> **Note on the shipped path.** REFL-1 took a data-driven route instead of
+> the per-class synthesized adapters of Strategy 2 below. Typed field access
+> goes through generic native helpers keyed on `(rtti, fieldIndex)`, namely
 > `__cajeta_field_get_i32` / `_set_i32` / … reading at the field's recorded
-> byte offset, with *no* per-class codegen. The `MethodHandle` fast path
+> byte offset, with no per-class codegen. The `MethodHandle` fast path
 > (step 5 / Strategy 4) is not built. The ordering below remains the design
 > target for the richer surface.
 
-A reasonable order, given the existing RTTI infrastructure. The
-v1 scope includes the performance paths described above —
-typed accessors, MethodHandle, the per-class synthesized
-adapters — because they're the difference between "Java
+This is a reasonable order, given the existing RTTI infrastructure. The
+v1 scope includes the performance paths described above, meaning
+typed accessors, MethodHandle, and the per-class synthesized
+adapters, because they're the difference between "Java
 reflection" and "useful reflection," and skipping them would
 land a slow API that nobody uses.
 
 1. **`Class<T>` + the basic introspection surface.** `getName`,
    `getPackage`, `getModifiers`, `getSuperclass`, `getInterfaces`,
-   `getFields`, `getMethods`, `getConstructors`. Reads existing
-   RTTI tables; no codegen changes. The Class registry
+   `getFields`, `getMethods`, `getConstructors`. This reads existing
+   RTTI tables, with no codegen changes. The Class registry
    (`cajeta.reflect.registry`) is built from the same data the
    compiler already emits. Per-class integer-indexed lookup
    tables land here (Strategy 1 from "Performance").
 2. **Compiler-synthesized per-class reflection adapters.**
    `User_reflect_getField` / `User_reflect_invokeMethod` /
    `User_reflect_newInstance` emitted per class as part of
-   normal codegen. Switch over field/method index; direct field
-   load / direct call for each case. Foundation for steps 3-5.
+   normal codegen. Each switches over field/method index, with a direct
+   field load / direct call for each case. This is the foundation for
+   steps 3-5.
 3. **`Field` read/write.** Reflective `get` / `set` plus the
-   typed primitive accessors. Dispatches through the per-class
-   adapter from step 2. Respects visibility; throws on private
+   typed primitive accessors. These dispatch through the per-class
+   adapter from step 2. They respect visibility and throw on private
    without `@Reflectable`.
 4. **`Method.invoke` + `Constructor.newInstance` slow paths.**
-   Reuse the vtable lookup path + per-class adapter. Argument
-   marshalling is the new code; fiber-stack-allocated arg
+   These reuse the vtable lookup path + per-class adapter. Argument
+   marshalling is the new code, with fiber-stack-allocated arg
    buffers for small calls (Strategy 6 from "Performance").
 5. **`MethodHandle.bindCallSite`.** Per-signature-shape concrete
-   subclasses synthesized lazily on first `bindCallSite()` call
-   for each unique signature in the program. Caches per shape
-   so the binding cost is paid once. Fast-path invocation that
-   frameworks (DI, ORM, serializers) build at init and call
+   subclasses are synthesized lazily on first `bindCallSite()` call
+   for each unique signature in the program. They are cached per shape
+   so the binding cost is paid once. This is the fast-path invocation
+   that frameworks (DI, ORM, serializers) build at init and call
    forever.
-6. **Annotations.** RTTI already carries annotation metadata
-   (AspectModel reads it for advice matching); `cajeta.reflect.
+6. **Annotations.** RTTI already carries annotation metadata, since
+   AspectModel reads it for advice matching. `cajeta.reflect.
    Annotation` exposes it generally.
 7. **Generic retention.** Augment RTTI to record type-parameter
-   substitutions per instantiation. `TypeParameter` /
+   substitutions per instantiation. The `TypeParameter` /
    `TypeArgument` API reads them. Most generic-aware features
    (JSON serializer dtype inference, ORM column types) become
    reachable here.
-8. **`Class.forName` + the `@Retained` marker.** Process-wide
-   registry built at link time from `@Retained` classes plus
-   every statically-referenced class. forName lookup is
+8. **`Class.forName` + the `@Retained` marker.** A process-wide
+   registry is built at link time from `@Retained` classes plus
+   every statically-referenced class. The forName lookup is a
    perfect-hash over canonical name.
-9. **`@Reflectable` + `UnsafeReflect`.** Access-control opt-in
-   paths. UnsafeReflect logs construction-time warnings through
+9. **`@Reflectable` + `UnsafeReflect`.** These are the access-control
+   opt-in paths. UnsafeReflect logs construction-time warnings through
    cajeta.thread.log.
 10. **Package / annotation queries.** `Class.classesInPackage`,
-    `Class.classesAnnotated`. Linear scan over the registry
-    initially; tree- or trie-indexed if it becomes a hot path.
-11. **Constant-fold known reflection.** Compiler pass that
+    `Class.classesAnnotated`. These start as a linear scan over the
+    registry, and become tree- or trie-indexed if it becomes a hot path.
+11. **Constant-fold known reflection.** A compiler pass that
     folds `User.class.getField("name").get(user)` to direct
     field access when all inputs are statically known and
     visibility permits. Strategy 5 from "Performance."
 
 Deferred (separate efforts, post-v1):
-- Compile-time codegen escape hatch (the `@JsonSerializable`-
+- The compile-time codegen escape hatch, meaning the `@JsonSerializable`-
   style annotation processor that emits per-class direct-
-  dispatch code at compile time). Useful for workloads where
+  dispatch code at compile time. It is useful for workloads where
   even MethodHandle-level overhead is too much.
 - Dynamic class generation / proxies.
 - Plugin / hot-reload class loading.
@@ -962,39 +962,39 @@ Deferred (separate efforts, post-v1):
 ## Open questions
 
 - **Private-access default.** The proposal above defaults
-  restrictive (`@Reflectable` opt-in for private members). The
-  alternative — default open, `@Sealed` opt-out — is more
+  restrictive, with `@Reflectable` opt-in for private members. The
+  alternative is default open with `@Sealed` opt-out, which is more
   Java-like and friendlier to frameworks. Java moved toward
-  restrictive over time (the JEP 396 / modules story); cajeta
-  starts there. Worth pressure-testing against the DI / ORM
+  restrictive over time (the JEP 396 / modules story), and cajeta
+  starts there. It is worth pressure-testing against the DI / ORM
   / serializer use cases before locking in.
 - **Generic retention overhead.** Every instantiated generic
   class carries an extra few words of RTTI for its type
-  arguments. Negligible for most programs but real for code
+  arguments. That is negligible for most programs but real for code
   that instantiates many distinct generics. An optional
   `-noGenericRetention` flag could strip the per-instantiation
-  RTTI for binary-size-critical builds, at the cost of
+  RTTI for binary-size-critical builds, at the cost of the
   `TypeArgument` API throwing at runtime.
-- **`Class.forName` failure mode.** Strict (throws if the class
-  was stripped) or lenient (returns `null`)? Java throws
-  `ClassNotFoundException`; the design above provides both
+- **`Class.forName` failure mode.** Should it be strict (throws if the
+  class was stripped) or lenient (returns `null`)? Java throws
+  `ClassNotFoundException`. The design above provides both
   `forName` (throws) and `forNameOrNull` (returns null). Pick
   one as the primary in documentation.
 - **Reflection invocation through fibers.** A reflective invoke
   inherits the calling fiber's scheduling, the same as any
-  static call would. But what about reflectively invoking
-  `async`-marked methods (when async lands as a first-class
-  feature)? Worth a placeholder design — probably the same
+  static call would. The open question is reflectively invoking
+  `async`-marked methods, once async lands as a first-class
+  feature. It is worth a placeholder design, probably the same
   fiber-pool dispatch async non-reflective calls use.
 - **`Object.getClass()` performance.** Every reflective entry
   point starts with a vtable-pointer-to-RttiGlobal load. Java
-  caches `Class` instances aggressively; cajeta should too —
-  one `Class<?>` per declared type, reused on every getClass
-  call. Worth confirming the implementation does this rather
+  caches `Class` instances aggressively, and cajeta should too,
+  with one `Class<?>` per declared type, reused on every getClass
+  call. It is worth confirming the implementation does this rather
   than allocating per call.
-- **Generic methods (not classes).** `<T> T pick(T[] arr)` —
-  the type parameter lives only on the method, not the class.
-  RTTI doesn't currently emit per-method type parameters;
+- **Generic methods (not classes).** In `<T> T pick(T[] arr)`
+  the type parameter lives only on the method and never on the class.
+  RTTI doesn't currently emit per-method type parameters.
   `Method.getTypeParameters()` is in the API but the underlying
-  data needs to land. Worth deciding now whether v1 ships this
+  data needs to land. It is worth deciding now whether v1 ships this
   or punts to v2.

@@ -1,85 +1,87 @@
 # numpy → cajeta — `cajeta.math` porting surface & placement spec
 
-> **Status: spec (requirements + classification + placement decision).** The "porting
-> report": a survey of numpy's full API surface, classified by where each subsystem lands
-> in cajeta, with the stdlib boundary **resolved** (not just surveyed). The `Tensor`
-> keystone + the core op layers get built per the companion plan
-> (`numpy-porting-plan.md`); `cajeta.math.{linalg,fft,random}` are later phases there;
-> scipy/sklearn (`cajeta.sci`/`cajeta.learn`) are out of scope (separate efforts).
+> **Status: spec (requirements + classification + placement decision).** This is the
+> "porting report". It surveys numpy's full API surface, classifies where each subsystem
+> lands in cajeta, and resolves the stdlib boundary rather than only surveying it. The
+> `Tensor` keystone and the core op layers get built per the companion plan
+> (`numpy-porting-plan.md`). `cajeta.math.{linalg,fft,random}` are later phases there, and
+> scipy/sklearn (`cajeta.sci`/`cajeta.learn`) are out of scope as separate efforts.
 
 ## 1. The decision (what this resolves)
 
-cajeta is a numerical/ML-first language: the GPU substrate (`cajeta.xpu` + `cajeta.xpu.xpu`)
-exists to be the thing numpy/torch/keras-style work runs on. numpy is the **foundational
-n-dimensional array** the whole scientific/ML ecosystem is built on. The question is not
-*whether* to provide it but *how much is stdlib and where the rest lives*. Resolved:
+cajeta is a numerical/ML-first language. The GPU substrate (`cajeta.xpu` + `cajeta.xpu.xpu`)
+exists to be the thing numpy/torch/keras-style work runs on. numpy is the foundational
+n-dimensional array the whole scientific and ML ecosystem is built on. The question is how
+much of it is stdlib and where the rest lives, and that question is resolved here:
 
-- **`cajeta.math` (bundled stdlib) = the full numpy-equivalent.** The canonical `Tensor`
-  (ndarray) + the core ops **and** the `cajeta.math.{linalg, fft, random, stats}`
-  submodules — mirroring numpy's own module layout (`numpy.linalg`/`numpy.fft`/
-  `numpy.random` are numpy submodules, not separate packages).
+- **`cajeta.math` (bundled stdlib) = the full numpy-equivalent.** That is the canonical
+  `Tensor` (ndarray), the core ops, and the `cajeta.math.{linalg, fft, random, stats}`
+  submodules. This mirrors numpy's own module layout, where `numpy.linalg`/`numpy.fft`/
+  `numpy.random` are numpy submodules and never separate packages.
 - **`cajeta.sci` / `cajeta.learn` (separate official libs) = the scipy / sklearn tier.**
-  The huge, churny, opinionated, domain-specific surface — built on the stdlib `Tensor`,
-  versioned independently.
-- **`cajeta.xpu.xpu` = the GPU compute-primitive substrate** the math layer *lowers onto*
-  (`CooperativeMatrix`/`CoopStage`, elementwise/reduction/scan kernels). Not an API home.
-- **torch / keras = separate opinionated frameworks** (autograd, `nn`). Out of scope.
+  This is the huge, churny, opinionated, domain-specific surface. It is built on the stdlib
+  `Tensor` and versioned independently.
+- **`cajeta.xpu.xpu` = the GPU compute-primitive substrate** the math layer lowers onto
+  (`CooperativeMatrix`/`CoopStage`, elementwise/reduction/scan kernels). It is not an API home.
+- **torch / keras = separate opinionated frameworks** (autograd, `nn`). They are out of scope.
 
 ### Why the whole numpy-equivalent is stdlib (the two arguments that moved the line)
 Earlier reasoning kept only "Tensor + core" in stdlib and pushed `linalg`/`fft`/`random`
 out. Two facts overturn that:
 
 1. **Optimal linkage removes the bloat objection.** cajeta's output is dead-code-eliminated
-   (`-Wl,--gc-sections`; the JIT compiles only referenced code) **and whole-program
-   optimized across the stdlib/user boundary**. So **unused stdlib costs nothing in the
-   binary, and used stdlib inlines across the boundary.** The historical reason to keep a
-   numerical library external (dependency weight — the Rust/Python concern) does not apply.
-2. **The BLAS/LAPACK/numpy API is frozen.** BLAS has been a fixed standard since the 1980s;
-   LAPACK's backward-compat is sacrosanct (existing signatures essentially never change;
-   releases are ~yearly bug-fixes + *added* routines), and numpy's own API is decades-stable.
-   A stdlib is a forever-API commitment — and committing to an API that is *already* a
-   forever-API in the field is safe. So the **churn / API-stability objection does not apply**
-   to the numpy-equivalent. (It *does* apply one tier up — sklearn churns; scipy moves
-   moderately — which is exactly why those stay separate.)
+   (`-Wl,--gc-sections`; the JIT compiles only referenced code) and whole-program optimized
+   across the stdlib/user boundary. So unused stdlib costs nothing in the binary, and used
+   stdlib inlines across the boundary. The historical reason to keep a numerical library
+   external, which is the dependency weight that Rust and Python worry about, does not apply.
+2. **The BLAS/LAPACK/numpy API is frozen.** BLAS has been a fixed standard since the 1980s.
+   LAPACK's backward-compat is sacrosanct, since existing signatures essentially never change
+   and releases are ~yearly bug-fixes plus added routines, and numpy's own API is
+   decades-stable. A stdlib is a forever-API commitment, and committing to an API that is
+   already a forever-API in the field is safe. So the churn / API-stability objection does
+   not apply to the numpy-equivalent. It does apply one tier up, where sklearn churns and
+   scipy moves moderately, which is exactly why those stay separate.
 
-What's left after those two fall away is **governance, not footprint** — and on governance
-the numpy-equivalent is safe (frozen API), while scipy/sklearn is not (churn). Hence the line.
+What is left after those two fall away is governance rather than footprint. On governance
+the numpy-equivalent is safe, because its API is frozen, while scipy/sklearn is not, because
+it churns. Hence the line.
 
 ### The one real cost that remains: the LAPACK *backend form*
-The LAPACK-class **factorizations** (`svd`/`eig`/`qr`/`cholesky`/`lu`/`solve`) are
-host-orchestrated, numerically delicate, and traditionally a **Fortran + per-arch assembly**
-backend (OpenBLAS bundles LAPACK; reference LAPACK is ~1,700 Fortran routines, ~10–20 MB
-compiled — *less than the `libLLVM` cajeta already links*, so size is not the issue). The
-issue is **form**: bundling a real LAPACK means the cajeta build carries a Fortran/asm
-dependency, OR cajeta reimplements LAPACK natively (a large, multi-phase numerical effort).
-**BLAS itself is a non-issue — cajeta already owns GEMM** (`CooperativeMatrix`/tiled) and
-Level-1/2 are trivial kernels. So the factorization backend is the single piece whose
-*how* (wrap vs. reimplement) is deferred to its plan phase; everything else in the
-numpy-equivalent is native-cajeta and kernel-expressible.
+The LAPACK-class factorizations (`svd`/`eig`/`qr`/`cholesky`/`lu`/`solve`) are
+host-orchestrated, numerically delicate, and traditionally a Fortran + per-arch assembly
+backend. OpenBLAS bundles LAPACK, and reference LAPACK is ~1,700 Fortran routines at
+~10–20 MB compiled, which is less than the `libLLVM` cajeta already links, so size is not
+the issue. The issue is form. Bundling a real LAPACK means the cajeta build carries a
+Fortran/asm dependency, OR cajeta reimplements LAPACK natively, which is a large,
+multi-phase numerical effort. BLAS itself is a non-issue, because cajeta already owns GEMM
+(`CooperativeMatrix`/tiled) and Level-1/2 are trivial kernels. So the factorization backend
+is the single piece whose *how* (wrap vs. reimplement) is deferred to its plan phase.
+Everything else in the numpy-equivalent is native-cajeta and kernel-expressible.
 
 ### The gating prerequisite: lazy stdlib parsing
-The stdlib is currently **embedded and eagerly parsed at compiler startup**
-(`CAJETA_STDLIB_DIRS`). Bundling the whole numpy-equivalent there would slow *every*
-`cajeta` invocation and bloat the compiler binary — a *compiler-side* cost that optimal
-*linkage* (of the output) does not address. **Lazy / on-import stdlib parsing is therefore
-a prerequisite** for landing `cajeta.math` at scale (plan Phase 1).
+The stdlib is currently embedded and eagerly parsed at compiler startup
+(`CAJETA_STDLIB_DIRS`). Bundling the whole numpy-equivalent there would slow every
+`cajeta` invocation and bloat the compiler binary. That is a compiler-side cost that optimal
+linkage of the output does not address. Lazy / on-import stdlib parsing is therefore a
+prerequisite for landing `cajeta.math` at scale (plan Phase 1).
 
 ## 2. Placement buckets
-- **M — `cajeta.math` (bundled stdlib).** The numpy-equivalent: the `Tensor` + core ops +
-  `cajeta.math.{linalg, fft, random, stats}`. Two execution tiers inside M (see §3.12):
-  *kernel-expressible* (the bulk — elementwise/reductions/scans/contraction/sort/fft/RNG)
-  and *host-orchestrated* (the LAPACK factorizations — the foreign-backend piece).
+- **M — `cajeta.math` (bundled stdlib).** The numpy-equivalent, which is the `Tensor`, the
+  core ops and `cajeta.math.{linalg, fft, random, stats}`. There are two execution tiers
+  inside M (see §3.12). The kernel-expressible tier is the bulk
+  (elementwise/reductions/scans/contraction/sort/fft/RNG), and the host-orchestrated tier
+  is the LAPACK factorizations, the foreign-backend piece.
 - **S — separate official lib.** `cajeta.sci` (scipy-shaped: optimize/integrate/interpolate/
-  sparse/special/advanced-signal) and `cajeta.learn` (sklearn-shaped estimators). Churny,
-  huge, opinionated; built on the stdlib `Tensor`.
-- **X — `cajeta.xpu.xpu` substrate.** GPU compute primitives the M layer lowers onto. Not
-  a numpy-API home.
-- **N — not applicable.** numpy-isms cajeta replaces or omits (`object` dtype, `vectorize`,
-  `numpy.testing`, the `np.lib` Python helpers).
+  sparse/special/advanced-signal) and `cajeta.learn` (sklearn-shaped estimators). These are
+  churny, huge and opinionated, and they are built on the stdlib `Tensor`.
+- **X — `cajeta.xpu.xpu` substrate.** The GPU compute primitives the M layer lowers onto. It
+  is not a numpy-API home.
+- **N — not applicable.** The numpy-isms cajeta replaces or omits (`object` dtype,
+  `vectorize`, `numpy.testing`, the `np.lib` Python helpers).
 
 ## 3. The full numpy surface, classified
 
-Bucket in **bold**; `M:sub` names the `cajeta.math` submodule.
+The bucket is in **bold**, and `M:sub` names the `cajeta.math` submodule.
 
 ### 3.1 Array object & dtype — **M** (this *is* the `Tensor`)
 | numpy | bucket | notes |
@@ -133,13 +135,14 @@ Basic slicing, `newaxis`, ellipsis; boolean-mask; fancy/advanced; `take`/`put`/
 | `qr`/`cholesky`/`lu`/`svd`/`eig`/`eigh`/`eigvals` | **M:linalg, host-orchestrated** | The factorization beast — the foreign-LAPACK-backend question. |
 
 ### 3.9 FFT — **M:fft** (kernel-expressible)
-`fft`/`ifft`/`fft2`/`fftn`/`rfft`/`hfft`/`irfft`, `fftfreq`/`fftshift`. Butterfly kernels;
-native cajeta, GPU-accelerable. (Cohesive subsystem → its own submodule, still in `cajeta.math`.)
+`fft`/`ifft`/`fft2`/`fftn`/`rfft`/`hfft`/`irfft`, `fftfreq`/`fftshift`. These are butterfly
+kernels, native cajeta and GPU-accelerable. It is a cohesive subsystem, so it gets its own
+submodule, still in `cajeta.math`.
 
 ### 3.10 Random — **M:random** (kernel-expressible)
-`Generator`/`BitGenerator` (PCG64, **Philox/counter-based** — the GPU-friendly ones), the
-distribution set (uniform/normal/binomial/poisson/exponential/gamma/beta/dirichlet/…),
-`permutation`/`shuffle`/`choice`, seeding/parallel streams.
+`Generator`/`BitGenerator` (PCG64, and Philox/counter-based, which are the GPU-friendly
+ones), the distribution set (uniform/normal/binomial/poisson/exponential/gamma/beta/
+dirichlet/…), `permutation`/`shuffle`/`choice`, seeding/parallel streams.
 
 ### 3.11 The rest
 | numpy area | bucket | notes |
@@ -154,27 +157,32 @@ distribution set (uniform/normal/binomial/poisson/exponential/gamma/beta/dirichl
 | ML estimators (regression/clustering/trees/…) | **S** (`cajeta.learn`) | sklearn tier — the churny one. |
 
 ### 3.12 Execution model — kernel-expressible vs host-orchestrated
-Inside `cajeta.math`, two regimes (this is *implementation*, both still in the package):
-- **Data-parallel — *is* a kernel.** elementwise, reductions, prefix scans,
+Inside `cajeta.math` there are two regimes. This is implementation, and both are still in
+the package:
+- **Data-parallel — *is* a kernel.** This covers elementwise, reductions, prefix scans,
   `matmul`/contraction (tensor cores), gather/scatter/mask indexing, sort, fft butterflies,
-  counter-based RNG. The bulk of M — rides the `cajeta.xpu` substrate directly, with a CPU
-  floor (cajeta.math is **CPU-first**: every op also has a portable path).
-- **Host-orchestrated algorithm — *not* a kernel.** The LAPACK factorizations: host control
-  flow, pivoting, convergence loops, many kernel launches (cuSOLVER/MAGMA shape), possibly
-  a foreign BLAS/LAPACK backend. The lone non-kernel tier — and the only deferred *how*.
+  and counter-based RNG. It is the bulk of M, and it rides the `cajeta.xpu` substrate
+  directly with a CPU floor. cajeta.math is CPU-first, so every op also has a portable path.
+- **Host-orchestrated algorithm — *not* a kernel.** This covers the LAPACK factorizations.
+  They need host control flow, pivoting, convergence loops, many kernel launches
+  (cuSOLVER/MAGMA shape), and possibly a foreign BLAS/LAPACK backend. It is the lone
+  non-kernel tier and the only deferred *how*.
 
 ## 4. What the `Tensor` must nail (the forever-API)
-Because the stdlib `Tensor` is a permanent commitment, settle up front:
-1. **dtype model** — native numeric set (incl. fp4/fp6/fp8/bf16) + **type-based** promotion
-   (NEP-50 style, not value-based) + `RoundingMode`-aware cast (cajeta already has the brick).
-2. **shape / strides / views** — view-vs-copy contract, C/F order, broadcasting rules,
-   aliasing/overlap rules.
-3. **indexing** — basic + boolean + fancy, and the view-vs-copy each yields.
-4. **device placement** — **CPU-first**; default host storage; lowers to `cajeta.xpu` for
-   GPU execution; fully usable with **no GPU** (the reason it's `cajeta.math`, not `gpu.*`).
-5. **interop protocol** — a `Tensor` protocol/trait (array-protocol / DLPack analogue) so
-   external libs + the torch port share one array, zero-copy. The anti-fragmentation seam.
-6. **lowering seam** — how a `cajeta.math` op picks CPU vs `cajeta.xpu` and lowers `matmul`
+Because the stdlib `Tensor` is a permanent commitment, settle these up front:
+1. **dtype model.** The native numeric set (incl. fp4/fp6/fp8/bf16), type-based promotion
+   (NEP-50 style rather than value-based), and a `RoundingMode`-aware cast, which is a brick
+   cajeta already has.
+2. **shape / strides / views.** The view-vs-copy contract, C/F order, broadcasting rules,
+   and aliasing/overlap rules.
+3. **indexing.** Basic, boolean and fancy, and the view-vs-copy each yields.
+4. **device placement.** CPU-first, with default host storage. It lowers to `cajeta.xpu` for
+   GPU execution and is fully usable with no GPU, which is the reason it is `cajeta.math`
+   and never `gpu.*`.
+5. **interop protocol.** A `Tensor` protocol/trait (array-protocol / DLPack analogue) so
+   external libs and the torch port share one array, zero-copy. This is the
+   anti-fragmentation seam.
+6. **lowering seam.** How a `cajeta.math` op picks CPU vs `cajeta.xpu` and lowers `matmul`
    onto `cajeta.xpu.xpu.CooperativeMatrix`.
 
 ## 5. Goals / Non-goals
@@ -186,18 +194,18 @@ separate); the torch/keras frameworks.
 
 ## 6. Acceptance criteria
 1. Every major numpy subsystem appears in §3 with a bucket.
-2. The `cajeta.math` boundary is unambiguous: the numpy-equivalent (core + `linalg`/`fft`/
-   `random`/`stats`) is **M**; scipy/sklearn is **S**.
+2. The `cajeta.math` boundary is unambiguous. The numpy-equivalent (core + `linalg`/`fft`/
+   `random`/`stats`) is **M**, and scipy/sklearn is **S**.
 3. The two arguments for bundling (optimal linkage; frozen API) and the two residual
    concerns (LAPACK backend form; lazy-parse prerequisite) are stated.
-4. `cajeta.xpu.xpu`'s role is the acceleration substrate, not an API home.
+4. `cajeta.xpu.xpu`'s role is the acceleration substrate, and it is not an API home.
 5. The `Tensor` forever-API (§4) is enumerated as the gate for the plan's Phase 2.
 
 ## 7. Recommendation (the answer to "should numpy live in math?")
-**Yes — the whole numpy-equivalent lives in `cajeta.math`** (bundled stdlib: `Tensor` +
-core + `linalg`/`fft`/`random`/`stats`), because optimal linkage removes the bloat cost and
-the frozen BLAS/LAPACK/numpy API removes the churn cost. **scipy/sklearn do not** — they are
-`cajeta.sci`/`cajeta.learn`, separate official libs on the stdlib `Tensor`. Two follow-ups
-gate execution, not placement: **lazy stdlib parsing** (prerequisite) and the **LAPACK
-factorization backend form** (wrap vs. native reimpl — decided in its plan phase). Build
-order is in `numpy-porting-plan.md`.
+Yes. The whole numpy-equivalent lives in `cajeta.math` as bundled stdlib, which is
+`Tensor` + core + `linalg`/`fft`/`random`/`stats`, because optimal linkage removes the
+bloat cost and the frozen BLAS/LAPACK/numpy API removes the churn cost. scipy/sklearn do
+not. They are `cajeta.sci`/`cajeta.learn`, separate official libs on the stdlib `Tensor`.
+Two follow-ups gate execution rather than placement. The first is lazy stdlib parsing, the
+prerequisite. The second is the LAPACK factorization backend form (wrap vs. native reimpl),
+which is decided in its plan phase. The build order is in `numpy-porting-plan.md`.

@@ -2,19 +2,19 @@
 
 ## Goals
 
-- **First-class function types.** `(T1, T2) -> R` is a primitive type-former — a value of that type is callable. No `Runnable`, no `Callable`, no `@FunctionalInterface` indirection.
+- **First-class function types.** `(T1, T2) -> R` is a primitive type-former, and a value of that type is callable. There is no `Runnable`, no `Callable`, and no `@FunctionalInterface` indirection.
 - **No boxing.** Primitives flow through function types directly. `(int32) -> int32` is not `Function<Integer, Integer>` in disguise.
-- **No erasure.** Function types monomorphize like every other generic. `(T) -> R` instantiates per `(T, R)` pair.
-- **Capture rules fall out of the memory model.** No "effectively-final" footgun, no Java `int[1]` workaround, no `[&]` vs `[=]` C++ ambiguity. Default is borrow, `#name` transfers ownership — same vocabulary the rest of the language uses.
+- **No erasure.** Function types monomorphize like every other template. `(T) -> R` instantiates per `(T, R)` pair.
+- **Capture rules fall out of the memory model.** There is no "effectively-final" footgun, no Java `int[1]` workaround, and no `[&]` vs `[=]` C++ ambiguity. The default is borrow, and `#name` transfers ownership, which is the same vocabulary the rest of the language uses.
 - **Method references are sugar.** `obj::method` desugars to `(args) -> obj.method(args)`. No special machinery.
 - **Zero-cost for non-capturing forms.** A lambda with no captures lowers to a bare function pointer.
 
 ## Non-goals (v1)
 
-- Per-lambda type parameters (`<U> (U) -> U`). Lambdas with their own type-parameter list aren't supported; the lambda would need its own vtable concern in addition to the captures it already carries. (Method-level templates on `final` / `static` methods *do* work — see `docs/specification/lang/templates/MethodLevelTemplate.md`. The vtable concern for those is sidestepped by the templating itself excluding the method from the vtable, and the mandatory `final` / `static` modifier makes the non-virtuality explicit at the declaration site.) Class-level `<T>` referenced inside a lambda body is fine; T is bound by the enclosing class.
-- Target-type inference for ambiguous method references. The LHS function type or method-parameter type must disambiguate; if it can't, the user writes an explicit lambda.
+- Per-lambda type parameters (`<U> (U) -> U`). Lambdas with their own type-parameter list aren't supported, because the lambda would need its own vtable concern in addition to the captures it already carries. Method-level templates on `final` / `static` methods do work, per `docs/specification/lang/templates/MethodLevelTemplate.md`. The vtable concern for those is sidestepped by the templating itself excluding the method from the vtable, and the mandatory `final` / `static` modifier makes the non-virtuality explicit at the declaration site. Class-level `<T>` referenced inside a lambda body is fine, since T is bound by the enclosing class.
+- Target-type inference for ambiguous method references. The LHS function type or method-parameter type must disambiguate. If it can't, you write an explicit lambda.
 - "By-reference" capture of primitives. Primitives capture by value. If you need shared mutable primitive state across closures, wrap it in a heap value.
-- Variadic lambdas (`(T...) -> R`). Out of scope for v1; revisit if there's demand.
+- Variadic lambdas (`(T...) -> R`). They are out of scope for v1, and will be revisited if there's demand.
 
 ---
 
@@ -27,7 +27,7 @@
 add(2, 3);   // 5
 ```
 
-Zero-parameter form: `() -> R`. Returning void: `() -> void` (or just `void`-returning).
+The zero-parameter form is `() -> R`. A void return is `() -> void` (or just `void`-returning).
 
 Function types are first-class:
 - They can be variable types.
@@ -43,23 +43,23 @@ Function types are first-class:
 int32 y = pipeline[0](21);                              // -> 42
 ```
 
-**Array-of-function types need grouping parens.** `((T) -> R)[]` is an array whose
-elements are `(T) -> R`. Without the parens, `(T) -> R[]` is a *function returning*
-`R[]` — the `[]` binds to the return type, not the array. So the dispatch-table
+Array-of-function types need grouping parens. `((T) -> R)[]` is an array whose
+elements are `(T) -> R`. Without the parens, `(T) -> R[]` is a function returning
+`R[]`, because the `[]` binds to the return type. So the dispatch-table
 shape is always written `((int32) -> int32)[]`, and an element is invoked by
-indexing then calling: `pipeline[i](x)`. (Grammar: `typeType` gained a
-`'(' functionType ')' ('[' ']')*` alternative — the inner `->` is what
-disambiguates the grouping parens from a C-style cast.)
+indexing and then calling, as `pipeline[i](x)`. In the grammar, `typeType` gained a
+`'(' functionType ')' ('[' ']')*` alternative, and the inner `->` is what
+disambiguates the grouping parens from a C-style cast.
 
-Function types are NOT classes — there's no inheritance, no methods on the function value beyond invocation. If you need OO machinery on top of a callable, wrap the function value in a class.
+Function types are not classes. There is no inheritance, and there are no methods on the function value beyond invocation. If you need OO machinery on top of a callable, wrap the function value in a class.
 
 ### On device (`@Kernel` / `@Device` bodies)
 
-Function-typed values work inside kernels, but **bounded**: a device function-typed
+Function-typed values work inside kernels, in a bounded form. A device function-typed
 value is an `i32` tag over a closed, compile-time-known set of non-capturing
-`@Device`-static candidates, and a call lowers to an **if/else-if chain of direct
-calls** — SPIR-V (Vulkan compute) has no function pointers, so this is the only
-shape that's portable across all four backends (CPU, Vulkan, AMD, NVPTX), with no
+`@Device`-static candidates, and a call lowers to an if/else-if chain of direct
+calls. SPIR-V (Vulkan compute) has no function pointers, so this is the only
+shape that's portable across all four backends (CPU, Vulkan, AMD, NVPTX) with no
 backend-specific code. The array-of-function surface is the dispatch table:
 
 ```
@@ -74,15 +74,15 @@ backend-specific code. The array-of-function surface is the dispatch table:
 }
 ```
 
-An out-of-range index is a **defined no-op** (the zero-initialized result is
-returned — no trap, no UB). Captures, host→kernel function-pointer kernel
-arguments, and bound/instance method refs are host-only / deferred (the device set
-must be statically resolvable). On host, an array-of-function is a genuine
+An out-of-range index is a defined no-op. The zero-initialized result is
+returned, with no trap and no UB. Captures, host→kernel function-pointer kernel
+arguments, and bound/instance method refs are host-only or deferred, because the
+device set must be statically resolvable. On host, an array-of-function is a genuine
 first-class dispatch table of closure pointers (real indirect calls).
 
 ### Lowering
 
-A function-typed value is a struct of `{ fn_ptr, captures_ptr }`. The captures pointer is null when the lambda has no captures, in which case the runtime call path skips the indirection and dispatches directly through `fn_ptr` — non-capturing lambdas are free.
+A function-typed value is a struct of `{ fn_ptr, captures_ptr }`. The captures pointer is null when the lambda has no captures, in which case the runtime call path skips the indirection and dispatches directly through `fn_ptr`, so non-capturing lambdas are free.
 
 ---
 
@@ -102,13 +102,13 @@ Where `body` is either an expression or a block. Parameter types may be omitted 
 () -> void greet = () -> { print("hi"); };                 // block body
 ```
 
-If a lambda's parameter types aren't pinned by context AND aren't written explicitly, that's a compile error — `(a, b) -> a + b` standing alone has no type.
+If a lambda's parameter types aren't pinned by context AND aren't written explicitly, that's a compile error, since `(a, b) -> a + b` standing alone has no type.
 
 ---
 
 ## Method references
 
-`obj::method`, `MyClass::staticMethod`, `MyClass::instanceMethod`, `MyClass::heap`. Each desugars to a lambda; the desugaring determines what gets captured.
+`obj::method`, `MyClass::staticMethod`, `MyClass::instanceMethod`, `MyClass::heap`. Each desugars to a lambda, and the desugaring determines what gets captured.
 
 ### Static method reference
 
@@ -135,7 +135,7 @@ Stringifier s = heap Stringifier();
 fn(someRecord);
 ```
 
-Desugars to `(r) -> s.toJson(r)`. `s` is captured — see the capture rules below; default is borrow.
+Desugars to `(r) -> s.toJson(r)`. `s` is captured, and the default is a borrow. See the capture rules below.
 
 ### Unbound instance method reference
 
@@ -148,7 +148,7 @@ class Person {
 String n = getName(somePerson);
 ```
 
-Desugars to `(self) -> self.name()`. No captures — `self` is the first parameter.
+Desugars to `(self) -> self.name()`. There are no captures, since `self` is the first parameter.
 
 ### Constructor reference
 
@@ -198,9 +198,9 @@ A capture is a name from outer scope referenced in the lambda body. Capture rule
 
 > **Enforcement status.** The borrow-lifetime violations shown below as
 > `ERROR` describe the *intended* semantics. Today closure-capture of a
-> borrow (like field-store of a borrow) is accepted by the type checker;
-> the safety net is an interim lint pass plus debug-runtime checks, not
-> strict compile-time type enforcement. Strict rejection lands with
+> borrow (like field-store of a borrow) is accepted by the type checker,
+> and the safety net is an interim lint pass plus debug-runtime checks.
+> Strict compile-time type enforcement is not in place. Strict rejection lands with
 > reference types. The value-captured-primitive write error (Rule 5) and
 > the `#name` / `this` transfer rules are real today.
 
@@ -232,7 +232,7 @@ fn(5);   // returns 100 — closure sees updated state through the borrow
 
 ### Rule 2 — Heap values capture by borrow (default)
 
-Class instances, arrays, strings, and any other heap-allocated owner — the closure holds a borrow. The original local still owns the value; the closure must not outlive the borrow's scope.
+For class instances, arrays, strings, and any other heap-allocated owner, the closure holds a borrow. The original local still owns the value, and the closure must not outlive the borrow's scope.
 
 ```
 StringBuilder sb = heap StringBuilder();
@@ -242,7 +242,7 @@ sb.append("hello");
 fn();                                     // "hello" — closure sees live state via the borrow
 ```
 
-The borrow checker enforces lifetime: a function returning a closure that borrows a local is a compile-time error.
+The borrow checker enforces the lifetime, so a function returning a closure that borrows a local is a compile-time error.
 
 ```
 () -> int32 makeCounter() {
@@ -253,21 +253,21 @@ The borrow checker enforces lifetime: a function returning a closure that borrow
 
 Three legitimate cases pass automatically:
 
-- **Sync inline use** — the closure is consumed within the call and goes out of scope before the borrow does.
+- **Sync inline use.** The closure is consumed within the call and goes out of scope before the borrow does.
   ```
   list.forEach(x -> processWith(x, sb));    // forEach runs the closure inline; sb outlives the call
   ```
-- **Scoped spawn** — `scope { spawn ... }` guarantees children complete before the scope returns, so a borrow into a spawned task lives as long as the scope.
+- **Scoped spawn.** `scope { spawn ... }` guarantees children complete before the scope returns, so a borrow into a spawned task lives as long as the scope.
   ```
   scope {
       spawn () -> async void { await processWith(sb); };
   }
   ```
-- **Stored briefly, used briefly** — the closure is held in a variable that goes out of scope before its captures do.
+- **Stored briefly, used briefly.** The closure is held in a variable that goes out of scope before its captures do.
 
 ### Rule 3 — `#name` transfers ownership into the closure
 
-To make a closure outlive its captures' original scope, transfer ownership. Same `#` operator as everywhere else in the language.
+To make a closure outlive its captures' original scope, transfer ownership. It is the same `#` operator as everywhere else in the language.
 
 ```
 () -> int32 makeCounter() {
@@ -281,9 +281,9 @@ fn();   // 1
 fn();   // 2 — the closure owns c and mutates it across calls
 ```
 
-When the closure itself drops, its captured `c` drops with it — same drop-chain machinery as ordinary owners.
+When the closure itself drops, its captured `c` drops with it, through the same drop-chain machinery as ordinary owners.
 
-For `detach`, transfer is mandatory (no scope to anchor borrows):
+For `detach`, transfer is mandatory, because there is no scope to anchor borrows:
 
 ```
 async void main() {
@@ -299,7 +299,7 @@ A `detach` body containing a borrow capture is a compile error.
 
 ### Rule 4 — `this` captures as a borrow; `#this` to transfer
 
-When a lambda appears inside an instance method, `this` is implicitly in scope. The default capture is a borrow of the receiver; if the closure needs to outlive `this`, transfer it.
+When a lambda appears inside an instance method, `this` is implicitly in scope. The default capture is a borrow of the receiver. If the closure needs to outlive `this`, transfer it.
 
 ```
 class Counter {
@@ -316,11 +316,11 @@ class Counter {
 }
 ```
 
-Reading sugar: `() -> value` inside an instance method is implicit-this, captured as a borrow. To transfer self, the `#this` form is explicit; there's no `() -> #value` shorthand (the marker has to be on `this`, not on the field).
+There is reading sugar. `() -> value` inside an instance method is implicit-this, captured as a borrow. To transfer self, the `#this` form is explicit. There's no `() -> #value` shorthand, because the marker has to be on `this`.
 
 ### Rule 5 — Mutating captures of heap values works; mutating captured primitives is a compile error
 
-Heap-value captures are borrows (Rule 2). Mutating through a borrow is governed by the existing aliasing rules: an exclusive-mutable borrow precludes other access for its lifetime. So a lambda that mutates a heap-value capture is automatically safe — the compiler refuses any conflicting read of the same value while the closure exists.
+Heap-value captures are borrows (Rule 2). Mutating through a borrow is governed by the existing aliasing rules, where an exclusive-mutable borrow precludes other access for its lifetime. So a lambda that mutates a heap-value capture is automatically safe, because the compiler refuses any conflicting read of the same value while the closure exists.
 
 ```
 StringBuilder buf = heap StringBuilder();
@@ -335,7 +335,7 @@ appendDot();
 
 Drop `appendDot` (let it go out of scope) before reading `buf` again, and the conflict resolves.
 
-For **primitives**, this would be confusing. Rule 1 says primitives capture by value (the closure has its own copy), so a write to the captured name would modify the closure's private copy and never propagate back. Rather than allow code that looks like it mutates the outer variable but doesn't, Cajeta makes this a compile error:
+For primitives, this would be confusing. Rule 1 says primitives capture by value (the closure has its own copy), so a write to the captured name would modify the closure's private copy and never propagate back. Code that looks like it mutates the outer variable but doesn't would mislead you, so Cajeta makes this a compile error:
 
 ```
 int32 counter = 0;
@@ -361,7 +361,7 @@ inc();   // 1
 inc();   // 2
 ```
 
-This eliminates Java's "effectively-final" rule via a different route: instead of forbidding all writes silently, Cajeta rejects writes to value-captured primitives with a clear error and a clear remedy. Writes to heap captures work without ceremony because the borrow checker keeps them honest.
+This eliminates Java's "effectively-final" rule via a different route. Java forbids all writes silently, and Cajeta rejects writes to value-captured primitives with a clear error and a clear remedy. Writes to heap captures work without ceremony because the borrow checker keeps them honest.
 
 ---
 
@@ -388,7 +388,7 @@ class List<T> {
 }
 ```
 
-(`map<U>` is a method-level template — supported via `final <U> List<U> map((T) -> U fn)` per `docs/specification/lang/templates/MethodLevelTemplate.md`. Each (T, U) pair gets its own monomorphization; the templating itself excludes the method from the vtable, and the mandatory `final` modifier makes that explicit at the declaration site. Call sites can rely on inference or spell `xs.map<int64>(...)` explicitly — Form C, type args after the identifier.)
+`map<U>` is a method-level template, supported via `final <U> List<U> map((T) -> U fn)` per `docs/specification/lang/templates/MethodLevelTemplate.md`. Each (T, U) pair gets its own monomorphization. The templating itself excludes the method from the vtable, and the mandatory `final` modifier makes that explicit at the declaration site. Call sites can rely on inference or spell `xs.map<int64>(...)` explicitly, which is Form C, with type args after the identifier.
 
 Use sites:
 
@@ -432,7 +432,7 @@ list.sort((a, b) -> a.score - b.score);
 list.sort(MyClass::byScore);
 ```
 
-Where Java would define a `Predicate<T>` interface, Cajeta uses `(T) -> boolean`. `Supplier<T>` → `() -> T`. `Consumer<T>` → `(T) -> void`. `Function<T, R>` → `(T) -> R`. `BiFunction<A, B, R>` → `(A, B) -> R`. The functional-interface zoo collapses into the type system.
+Where Java would define a `Predicate<T>` interface, Cajeta uses `(T) -> boolean`. `Supplier<T>` becomes `() -> T`, `Consumer<T>` becomes `(T) -> void`, `Function<T, R>` becomes `(T) -> R`, and `BiFunction<A, B, R>` becomes `(A, B) -> R`. The functional-interface zoo collapses into the type system.
 
 ### Currying and partial application
 
@@ -444,7 +444,7 @@ There's no built-in `curry`, but the rules above compose freely:
 add5(7);   // 12
 ```
 
-The outer `adder` takes an int32 and returns a closure. The returned closure captures `a` — by value, since it's primitive. No special "curry" keyword needed.
+The outer `adder` takes an int32 and returns a closure. The returned closure captures `a` by value, since it's primitive. No special "curry" keyword is needed.
 
 ---
 
@@ -478,7 +478,7 @@ detach () -> async void {
 
 ### Capturing actor references
 
-Actor references are heap values; they capture by borrow by default. If the closure outlives the actor's scope, transfer:
+Actor references are heap values, so they capture by borrow by default. If the closure outlives the actor's scope, transfer:
 
 ```
 async void wireUp() {
@@ -489,11 +489,11 @@ async void wireUp() {
 }
 ```
 
-(The worker's constructor takes a `#Logger`, declaring it consumes ownership.)
+The worker's constructor takes a `#Logger`, declaring that it consumes ownership.
 
 ### Mutex / RwLock / Semaphore in a closure
 
-A LockGuard holds a borrow of the locked value; capturing it into a lambda follows the same rules.
+A LockGuard holds a borrow of the locked value, and capturing it into a lambda follows the same rules.
 
 ```
 Mutex<Stats> stats = heap Mutex<>(heap Stats());
@@ -510,13 +510,13 @@ async void recordAll(List<Event> events) {
 }
 ```
 
-A LockGuard escaping its acquiring scope (returned, stored in a long-lived structure) is a compile error — same lifetime rule as any other borrow.
+A LockGuard escaping its acquiring scope (returned, stored in a long-lived structure) is a compile error, under the same lifetime rule as any other borrow.
 
 ---
 
 ## Compile-time errors — what you'd see
 
-The lifetime / aliasing rules from the memory model produce error messages tied to lambda capture. Examples of what's rejected and what the error looks like:
+The lifetime / aliasing rules from the memory model produce error messages tied to lambda capture. These are examples of what's rejected and what the error looks like:
 
 ```
 () -> int32 makeFn() {
@@ -559,8 +559,8 @@ detach () -> async void {
 
 ## Open design notes / deferred
 
-- **Anonymous function types in declarations.** Today the syntax `(int32) -> int32 fn = ...` reuses the function-type grammar in variable-declaration position. Possible future addition: `fn` keyword to introduce a function-typed local with type inference (`fn add = (a, b) -> a + b;`). Not in v1.
-- **Higher-rank function types.** Function types whose parameter or return is itself a function type (`((int32) -> int32) -> boolean`) work today by composition; no special syntax. Naming them with a typealias is a separate language addition.
-- **Comparison / equality.** Two lambdas are NOT comparable for equality — function values have identity-only semantics (two captures of the same source produce indistinguishable values). No `equals` method.
-- **Serialization.** A closure with captures can't be serialized — its captures aren't necessarily representable on the wire. This is a hard rule, not a deferred feature.
-- **Re-entrant lambdas / Y combinator.** A lambda referencing itself by name needs the name to be in scope first. Top-level function-typed bindings can self-reference; locally-bound lambdas need a forward declaration or the `Y`-combinator pattern. Possible future addition: `fn name = ... name(...) ...;` allowed by hoisting the name's binding before the initializer. Not in v1.
+- **Anonymous function types in declarations.** Today the syntax `(int32) -> int32 fn = ...` reuses the function-type grammar in variable-declaration position. A possible future addition is a `fn` keyword to introduce a function-typed local with type inference (`fn add = (a, b) -> a + b;`). It is not in v1.
+- **Higher-rank function types.** Function types whose parameter or return is itself a function type (`((int32) -> int32) -> boolean`) work today by composition, with no special syntax. Naming them with a typealias is a separate language addition.
+- **Comparison / equality.** Two lambdas are not comparable for equality, because function values have identity-only semantics (two captures of the same source produce indistinguishable values). There is no `equals` method.
+- **Serialization.** A closure with captures can't be serialized, because its captures aren't necessarily representable on the wire. This is a hard rule. It is not a deferred feature.
+- **Re-entrant lambdas / Y combinator.** A lambda referencing itself by name needs the name to be in scope first. Top-level function-typed bindings can self-reference, and locally-bound lambdas need a forward declaration or the `Y`-combinator pattern. A possible future addition is `fn name = ... name(...) ...;`, allowed by hoisting the name's binding before the initializer. It is not in v1.

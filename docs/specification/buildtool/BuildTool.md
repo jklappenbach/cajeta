@@ -2,57 +2,59 @@
 
 The cajeta toolchain ships a single binary, `cajeta`, that handles
 project initialization, dependency management, builds, tests,
-docs, formatting, linting, and publication. One tool to install,
-consistent flag semantics across operations, no plugin
-fragmentation for the common case.
+docs, formatting, linting, and publication. You install one tool,
+the flags mean the same thing across every operation, and the
+common case needs no plugins.
 
-The model is **task-based, not lifecycle-based**. There is no
-fixed `validate → compile → test → package → install → deploy`
-sequence the tool enforces (that was Maven's downfall — projects
-that didn't fit the lifecycle fought it forever). Instead, the
-manifest declares **tasks** the project defines, each composed of
-**actions** that the tool runs in order:
+The model is task-based. The tool enforces no fixed
+`validate → compile → test → package → install → deploy`
+sequence. That sequence was Maven's downfall, because projects
+that did not fit the lifecycle fought it forever. Instead, the
+manifest declares the tasks the project defines, and each task is
+composed of actions that the tool runs in order:
 
 - **Tasks** are entries in the manifest's `tasks` block. A task
   is a named, declarative sequence of action invocations.
 - **Actions** come in two flavors:
-  - **Native actions** — built into the build tool
+  - **Native actions** are built into the build tool
     (`build`, `copy`, `upload`, `sign`, `test`, ...).
-  - **Plugin actions** — provided by plugins declared in the
-    manifest, resolved through the same repository machinery as
-    runtime dependencies.
+  - **Plugin actions** are provided by plugins declared in the
+    manifest, and they resolve through the same repository
+    machinery as runtime dependencies.
   The manifest's `actions` block lets the project register
-  **action presets** (named partial bindings of a native or
-  plugin action) to DRY up repeated invocations.
-- **Pipelining** — each action declares the outputs it produces
-  (file paths, hashes, URLs, status codes). Subsequent actions
-  in the same task consume those outputs via `${id.field}`
-  substitution. A `build` action produces `${art.path}`; a
-  `sign` action takes it as `input`; an `upload` action takes
-  it (and the resulting `.sig`) and posts to S3/HTTP/SFTP/etc.
+  action presets, which are named partial bindings of a native or
+  plugin action, so that repeated invocations are written once.
+- **Pipelining** means each action declares the outputs it
+  produces, such as file paths, hashes, URLs and status codes.
+  Subsequent actions in the same task consume those outputs via
+  `${id.field}` substitution. A `build` action produces
+  `${art.path}`. A `sign` action takes it as `input`. An `upload`
+  action takes it, along with the resulting `.sig`, and posts it
+  to S3, HTTP, SFTP or another destination.
 
-Project-level CLI invocations are task names:
-`cajeta build`, `cajeta test`, `cajeta release` — each runs the
-task by that name from the manifest. `cajeta init` ships a
-default `tasks` block that implements the Maven-style lifecycle
-as a starter set; **everything in the template is editable**.
-A project that needs a custom release flow rewrites `tasks.release`;
-one that doesn't need documentation generation deletes
-`tasks.doc`.
+Project-level CLI invocations are task names. `cajeta build`,
+`cajeta test` and `cajeta release` each run the task by that name
+from the manifest. `cajeta init` ships a default `tasks` block
+that implements the Maven-style lifecycle as a starter set, and
+everything in the template is editable. A project that needs a
+custom release flow rewrites `tasks.release`. A project that does
+not need documentation generation deletes `tasks.doc`.
 
-Lessons taken from Maven, Gradle, Cargo, npm, pip, Bazel, and
-Nix — see [Comparative analysis](#comparative-analysis) near the
-end for which patterns came from where, what worked, what
-didn't, and why we made the tradeoffs we made. The task model is
-Gradle's contribution — minus the Turing-complete script.
+The design takes lessons from Maven, Gradle, Cargo, npm, pip,
+Bazel, and Nix. See [Comparative analysis](#comparative-analysis)
+near the end for which patterns came from where, what worked,
+what did not, and why we made the tradeoffs we made. The task
+model is Gradle's contribution, without the Turing-complete
+script.
 
-The compiler (`cajetac` — the binary at `build/src/cajeta` in the
-current source tree, see [Compilation.md](Compilation.md)) is the
-back end. The `cajeta` build tool wraps it: discovers the project,
-resolves dependencies, materializes the build graph, drives
-parallel compilation, runs the linker, and ships the result. The
-compiler is fully usable without the build tool — but the build
-tool is what users normally invoke.
+The compiler is the back end. It is `cajetac`, the binary at
+`build/src/cajeta` in the current source tree, and
+[Compilation.md](Compilation.md) describes it. The `cajeta` build
+tool wraps it. The build tool discovers the project, resolves
+dependencies, materializes the build graph, drives parallel
+compilation, runs the linker, and ships the result. The compiler
+is fully usable without the build tool, and the build tool is
+what users normally invoke.
 
 ## Table of contents
 
@@ -91,96 +93,99 @@ tool is what users normally invoke.
 - **One tool covers the common case.** `cajeta build`,
   `cajeta test`, `cajeta run`, `cajeta doc`, `cajeta add <dep>`,
   `cajeta publish` cover ~95% of what a developer does day-to-day.
-  No separate `cajetafmt`, `cajetadoc`, `cajeta-deps` binaries to
-  install.
+  There are no separate `cajetafmt`, `cajetadoc` or `cajeta-deps`
+  binaries to install.
 - **No fixed lifecycle.** The build tool does not enforce a
   fixed `validate → compile → test → package → install →
-  deploy` ordering. Projects define their own tasks; the
+  deploy` ordering. Projects define their own tasks. The
   default template provides a Maven-shaped starter set that
-  exists only as editable task files, not as engine-enforced
-  phases. The escape valve is "edit the task," not "configure
-  the lifecycle".
-- **Declarative all the way down.** Tasks and actions are JSON;
-  there is no embedded scripting language. Compositions of
-  actions are themselves declarative (user-defined actions
+  exists only as editable task files, and the engine enforces no
+  phases. When the default does not fit, you edit the task.
+- **Declarative all the way down.** Tasks and actions are JSON,
+  and there is no embedded scripting language. Compositions of
+  actions are themselves declarative, since user-defined actions
   compose built-in actions through parameter passing and output
-  threading). The escape hatch is the `exec` action — explicit
-  shell-out, sandboxed, no pretense at being part of the
-  analyzable surface.
-- **JSON everywhere.** Manifest (`cajeta.json`), lockfile
-  (`cajeta.lock`), capability declarations, registry API
-  responses — all JSON. JSONC (JSON-with-comments) for the
-  manifest (which humans edit); strict JSON for machine-only.
-  Tasks, action presets, and plugin declarations all live as
-  blocks within the manifest — one document, not a directory
-  tree.
-- **Repository-based dependency resolution.** Manifest declares
-  ordered repository list; resolution walks repositories in
-  priority order until each `name@Version` is found. Standard
-  Maven / npm / Cargo pattern. Local file:// repos for dev
-  overrides; corporate Nexus-style internal repos for inner-source;
-  public registry as the bottom tier.
+  threading. The escape hatch is the `exec` action. It is an
+  explicit, sandboxed shell-out, and it makes no pretense at
+  being part of the analyzable surface.
+- **JSON everywhere.** The manifest (`cajeta.json`), the lockfile
+  (`cajeta.lock`), capability declarations and registry API
+  responses are all JSON. The manifest, which humans edit, is
+  JSONC (JSON-with-comments), and machine-only files are strict
+  JSON. Tasks, action presets, and plugin declarations all live
+  as blocks within the manifest, so a project is one document
+  rather than a directory tree.
+- **Repository-based dependency resolution.** The manifest
+  declares an ordered repository list, and resolution walks the
+  repositories in priority order until each `name@Version` is
+  found. This is the standard Maven / npm / Cargo pattern. Local
+  file:// repos serve dev overrides, corporate Nexus-style
+  internal repos serve inner-source, and the public registry is
+  the bottom tier.
 - **Capabilities as a first-class security model.** Every library
   declares which capabilities (`network`, `filesystem`, etc.) it
   needs. The compiler statically computes the actually-used set
-  and rejects builds where declared ≠ actual. Lockfile records
-  capabilities per dependency; capability changes between versions
-  surface during `cajeta upgrade` as review prompts. Actions and
-  plugins are capability-gated too — an action declares what it
-  touches, the build tool sandboxes accordingly.
+  and rejects builds where declared ≠ actual. The lockfile records
+  capabilities per dependency, and capability changes between
+  versions surface during `cajeta upgrade` as review prompts.
+  Actions and plugins are capability-gated too. An action
+  declares what it touches, and the build tool sandboxes
+  accordingly.
 - **Reproducible builds.** Same source + same lockfile + same
-  compiler version → byte-identical artifact. SLSA-style build
-  attestation generated by the `publish` action. Cross-org cache
-  via repositories serving pre-built artifacts (no Bazel-style
-  build cache; see [Repositories](#repositories) for rationale).
+  compiler version → byte-identical artifact. The `publish`
+  action generates a SLSA-style build attestation. Cross-org
+  caching works through repositories serving pre-built
+  artifacts. There is no Bazel-style build cache, and
+  [Repositories](#repositories) gives the rationale.
 - **Workspace / monorepo support as first-class.** Multi-package
   projects share a single lockfile, share dependency resolution
-  across members, build incrementally across the workspace graph.
-  Tasks at the workspace root are workspace-wide; per-member
-  tasks shadow workspace tasks of the same name.
-- **Open specifications.** Every interface — manifest schema,
-  lockfile format, task/action schema, repository HTTP protocol,
-  capability schema, archive format — is published, versioned,
-  machine-readable. Third parties can build alternative
-  implementations (IDE integrations, CI runners, alternative
-  registries, build visualizers) without reverse-engineering.
+  across members, and build incrementally across the workspace
+  graph. Tasks at the workspace root are workspace-wide, and
+  per-member tasks shadow workspace tasks of the same name.
+- **Open specifications.** Every interface is published,
+  versioned and machine-readable. That covers the manifest
+  schema, the lockfile format, the task/action schema, the
+  repository HTTP protocol, the capability schema and the archive
+  format. Third parties can build alternative implementations,
+  such as IDE integrations, CI runners, alternative registries
+  and build visualizers, without reverse-engineering.
 
 ## Non-goals
 
 - **Turing-complete task or action definitions.** Tasks compose
-  actions; actions compose other actions; nothing in the chain is
-  an embedded programming environment (Gradle's failure mode).
-  No conditionals beyond simple property-driven action skipping,
-  no loops, no expression language beyond `${property}`
-  substitution. The 5% of projects that need real logic use the
-  `exec` action — explicit, sandboxed, no pretense at being
-  analyzable.
+  actions, and actions compose other actions. Nothing in the
+  chain is an embedded programming environment, which was
+  Gradle's failure mode. There are no conditionals beyond simple
+  property-driven action skipping, no loops, and no expression
+  language beyond `${property}` substitution. The 5% of projects
+  that need real logic use the `exec` action, which is explicit,
+  sandboxed, and makes no pretense at being analyzable.
 - **Engine-enforced lifecycle.** The tool does not declare
   built-in phases that projects extend or override. Projects
-  define whatever tasks they want; `cajeta <name>` runs the task
-  by that name. Maven's lifecycle inverted the priority — the
-  framework decided the order, projects bent themselves to fit.
-  Cajeta's task-on-task `depends-on` lets projects declare
+  define whatever tasks they want, and `cajeta <name>` runs the
+  task by that name. Maven's lifecycle inverted the priority. The
+  framework decided the order, and projects bent themselves to
+  fit. Cajeta's task-on-task `depends-on` lets projects declare
   ordering when they want it, without imposing one.
 - **Embedded build cache competing with the repository model.**
   Bazel / Buck-style content-addressed build caches are a
-  different mechanism than repositories — and we picked
+  different mechanism than repositories, and we picked
   repositories. A local download cache for already-fetched
-  artifacts exists; a remote build cache for "I just compiled X,
+  artifacts exists. A remote build cache for "I just compiled X,
   let me share the artifact with my coworkers" is explicitly out
   of scope. Coworkers publish to an internal repository if
   artifact sharing is desired.
 - **Multi-language build orchestration.** The cajeta build tool
   is a cajeta-language tool. Calling out to a C++ build or
-  bundling JavaScript assets is done via the `exec` action, not
-  via core build-graph integration. A separate "polyglot"
-  build tool would compete with Bazel / Pants — out of scope
-  for v1.
+  bundling JavaScript assets is done via the `exec` action, and
+  there is no core build-graph integration for it. A separate
+  "polyglot" build tool would compete with Bazel / Pants, and
+  that is out of scope for v1.
 - **Hosted registry as part of v1.** The repository protocol is
   specified, but running the public `repo.cajeta.org` registry
-  is its own (separate-RFC, separate-team) infrastructure
-  project. Local and self-hosted Nexus-equivalent repositories
-  are sufficient for v1.
+  is its own infrastructure project, with a separate RFC and a
+  separate team. Local and self-hosted Nexus-equivalent
+  repositories are sufficient for v1.
 
 ---
 
@@ -198,8 +203,8 @@ cajeta -- <task>        Disambiguate when <task> collides with a
 
 Bare invocations like `cajeta build`, `cajeta test`, `cajeta run`
 each run the like-named task. There is no built-in `build`
-subcommand the tool implements — `tasks.build` (shipped by
-`cajeta init`) is the implementation, and the project owns it.
+subcommand the tool implements. `tasks.build`, shipped by
+`cajeta init`, is the implementation, and the project owns it.
 
 ### Built-in subcommands (separate from tasks)
 
@@ -237,32 +242,33 @@ cajeta sandbox-info          Print the resolved sandbox/capability policy
 `ls -t build/archive/<name>-*.cja | head -1`, which breaks as soon as a
 project sets `settings.output` (build-output-layout §3.3). It reads the
 `build` task's build action (`--task=<name>` selects another) and reports
-where that action writes — the same resolution the action itself uses, so
-the two cannot disagree. `--flavor=<name>` resolves `${flavor}` in an
-`output-path` the way the task runner would; the default layout does not
-vary by flavor. Exits non-zero when the manifest declares no artifact.
+where that action writes. That is the same resolution the action itself
+uses, so the two cannot disagree. `--flavor=<name>` resolves `${flavor}`
+in an `output-path` the way the task runner would, and the default layout
+does not vary by flavor. It exits non-zero when the manifest declares no
+artifact.
 
 This is the set `dispatchBuildTool` claims directly
-(`src/cajeta/buildtool/BuildToolCommands.cpp`). `cajeta vendor` (copy
-transitive deps into `./vendor` for offline builds) is **planned** —
-not yet a recognized built-in. Anything not in this list and not
+(`src/cajeta/buildtool/BuildToolCommands.cpp`). `cajeta vendor`, which
+would copy transitive deps into `./vendor` for offline builds, is planned
+and is not yet a recognized built-in. Anything not in this list and not
 prefixed with `-` (`build`, `test`, `run`, …) is dispatched as a
-*task* from the manifest's `tasks` block.
+task from the manifest's `tasks` block.
 
 ### Inspecting the dependency tree — `cajeta deps`
 
-`cajeta deps` prints the dependencies the project builds against: the
-direct dependencies, and under each one the dependencies it brings in,
-to any depth. It runs the same resolver `build` runs (overrides, melts,
-declared repositories, the `~/.olla` store first), so the tree never
-disagrees with the classpath.
+`cajeta deps` prints the dependencies the project builds against. It
+lists the direct dependencies, and under each one the dependencies it
+brings in, to any depth. It runs the same resolver `build` runs, with
+overrides, melts, declared repositories and the `~/.olla` store first,
+so the tree never disagrees with the classpath.
 
 ```
 cajeta deps [--format=text|json|csv] [--json] [--depth=N] [--no-dedupe]
             [--ascii] [--manifest=<path>]
 ```
 
-Text is an indented tree; a node's parent is the node above it.
+Text is an indented tree, and a node's parent is the node above it.
 
 ```
 myapp 1.0.0
@@ -303,17 +309,18 @@ myapp,dev.cajeta.logging,0.7.0,0.7.0,olla,sha256:…,1,repeated
 Children are listed in name order at every level, so two runs on the
 same inputs are byte-identical. Cycles are reported on stderr after the
 tree, one line each (`dependency cycle detected: a -> b -> a`), and the
-exit code is 1 when any was found, so CI can gate on it. Exit codes: 0
-acyclic; 1 a cycle was found or resolution failed; 2 usage error.
+exit code is 1 when any was found, so CI can gate on it. The exit code
+is 0 when the tree is acyclic, 1 when a cycle was found or resolution
+failed, and 2 on a usage error.
 
-Not listed: built-in stdlib packages (`cajeta.*`), which are part of the
-toolchain rather than resolved, and `dev-dependencies`, which the tool
-does not resolve today.
+Two kinds of package are not listed. Built-in stdlib packages
+(`cajeta.*`) are part of the toolchain rather than resolved, and
+`dev-dependencies` are not resolved by the tool today.
 
-These aren't tasks because they're tool-state operations, not
-project behavior the user customizes. A project that genuinely
-wanted to customize `cajeta add`'s behavior wraps it in a task
-of its own.
+These are built-in subcommands rather than tasks because they operate
+on tool state, and tool state is not project behavior the user
+customizes. A project that genuinely wanted to customize `cajeta add`'s
+behavior wraps it in a task of its own.
 
 Every built-in subcommand and every task accepts
 `--manifest=<path>` (default `./cajeta.json`), `-v`/`--verbose`,
@@ -323,20 +330,20 @@ Every built-in subcommand and every task accepts
 invokes.
 
 `--diag-format=text|json` (default `text`) forwards to the compiler
-subprocesses that `build` actions spawn: `json` makes them emit one
-machine-readable NDJSON diagnostic per line on stderr (severity,
-code, message, file, line, column — see
-`docs/CompilerModes.md § --diag-format`), which passes straight
-through for tools/IDEs to consume. It is output-only and never
-affects the built artifact.
+subprocesses that `build` actions spawn. `json` makes them emit one
+machine-readable NDJSON diagnostic per line on stderr, carrying the
+severity, code, message, file, line and column, and the build tool
+passes it straight through for tools and IDEs to consume. See
+`docs/CompilerModes.md § --diag-format` for the record shape. It is
+output-only and never affects the built artifact.
 
 ---
 
 ## Project layout
 
-A cajeta project's on-disk layout comes in four shapes — single
-package, workspace (monorepo), melt-only package, and the
-workstation-wide bits that sit in `$HOME`.
+A cajeta project's on-disk layout comes in four shapes. They are the
+single package, the workspace (monorepo), the melt-only package, and
+the workstation-wide bits that sit in `$HOME`.
 
 ### Single package
 
@@ -426,7 +433,7 @@ platform-melt/
 └── cajeta.lock                      # records the melt's own (transitive) melt imports
 ```
 
-That's the entire tree. A melt is consumed by reference;
+That is the entire tree. A melt is consumed by reference, and
 publishing emits a `.cja` containing only the manifest.
 
 ### Workstation-wide (per user, not per project)
@@ -454,8 +461,8 @@ publishing emits a `.cja` containing only the manifest.
     └── upstream-cajeta-org.pem
 ```
 
-Plus the system-wide layer (managed by the OS package manager,
-locked-down read-only):
+A system-wide layer sits beside it. The OS package manager manages
+that layer, and it is locked down read-only:
 
 ```
 /etc/cajeta/trust/keys/              # Linux/macOS
@@ -464,9 +471,9 @@ locked-down read-only):
 
 ### Source-tree conventions
 
-The four source roots follow the Maven/Gradle pattern,
-parallelized: production and test each have a `cajeta/` source
-tree and a `resources/` tree.
+The four source roots follow the Maven/Gradle pattern.
+Production and test each have a `cajeta/` source tree and a
+`resources/` tree.
 
 | Path | Default | Configurable via |
 |---|---|---|
@@ -489,8 +496,8 @@ test:
 - Test code calling `Resources.loadBytes("fixtures/sample.json")`
   reads from `src/test/resources/`.
 - When the test build runs, `src/test/resources/` is overlaid on
-  `src/main/resources/`. Both are visible; **test resources take
-  precedence** on path conflict so tests can stub production
+  `src/main/resources/`. Both are visible, and test resources take
+  precedence on a path conflict, so tests can stub production
   config without touching the real file.
 - Production builds (anything but the `test` action) bundle ONLY
   `src/main/resources/`. Test resources never leak into a
@@ -504,10 +511,11 @@ test:
 3. Network fetch:               configured repository      ← only when both miss
 ```
 
-Every successful fetch writes through to both project AND
-workstation caches. Each layer is content-addressed, so write
--through can never produce a conflict — either keys match
-(same answer) or they don't (different bucket).
+Every successful fetch writes through to both the project and
+the workstation cache. Each layer is content-addressed, so a
+write-through can never produce a conflict. Either the keys match
+and the answer is the same, or they differ and land in different
+buckets.
 
 ### Fixed vs. configurable paths
 
@@ -547,14 +555,15 @@ dist/                # distribution staging (CI usually doesn't commit)
 
 ## Manifest — `cajeta.json`
 
-JSONC format (strict JSON's data model + `//` and `/* */`
-comments + trailing commas). The cajeta toolchain reads it;
-third-party tooling that prefers strict JSON can pre-strip
-comments via the single-pass preprocessor.
+The manifest is JSONC, which is strict JSON's data model plus
+`//` and `/* */` comments and trailing commas. The cajeta
+toolchain reads it directly. Third-party tooling that prefers
+strict JSON can pre-strip the comments via the single-pass
+preprocessor.
 
 The manifest has six core blocks plus two specialty blocks. A
 package is either a regular project, a workspace coordinator, or
-a melt — `workspace` and `melt` are mutually exclusive with
+a melt. `workspace` and `melt` are mutually exclusive with
 each other and with `tasks`/source content.
 
 | Block        | What it contains                                                            |
@@ -566,7 +575,7 @@ each other and with `tasks`/source content.
 | `plugins`    | Plugin declarations (see [Plugins](#plugins))                                |
 | `tasks`      | Task definitions — named sequences of action invocations the user runs via `cajeta <task>` |
 | `workspace`  | Multi-package coordinator (see [Workspaces](#workspaces)). Present only on workspace-root manifests; mutually exclusive with `tasks` and `melt`. |
-| `melt`       | Curated dependency / property / action / repository exports (see [Melts](#melts)). Present only on melt packages; mutually exclusive with `tasks` and `workspace`. Named for the caramel metaphor — a melt fuses many curated ingredients into one cohesive consumable unit. |
+| `melt`       | Curated dependency / property / action / repository exports (see [Melts](#melts)). Present only on melt packages; mutually exclusive with `tasks` and `workspace`. The name comes from the caramel metaphor, since a melt fuses many curated ingredients into one cohesive consumable unit. |
 
 ```jsonc
 {
@@ -781,16 +790,16 @@ each other and with `tasks`/source content.
 Field-level conventions:
 
 - **`details.name`** uses reverse-DNS form (`com.example.foo`).
-  Matches the package namespace in source; repositories index
-  by this name. The leading segments are the **group**
-  (organizational namespace, e.g. `com.example`); the last
-  segment is the **library** (artifact name, e.g. `foo`).
-  Same coordinate scheme as Maven's `groupId:artifactId`,
-  flattened into one dotted string. `${details.group}` and
-  `${details.library}` are computed properties for the split
-  form. Public-name registration follows Maven Central's
-  convention: the group's reverse-DNS prefix must be one the
-  publisher controls.
+  It matches the package namespace in source, and repositories
+  index by this name. The leading segments are the group, which
+  is the organizational namespace such as `com.example`. The
+  last segment is the library, which is the artifact name such
+  as `foo`. This is the same coordinate scheme as Maven's
+  `groupId:artifactId`, flattened into one dotted string.
+  `${details.group}` and `${details.library}` are computed
+  properties for the split form. Public-name registration
+  follows Maven Central's convention, so the group's reverse-DNS
+  prefix must be one the publisher controls.
 - **Versions** use semver-2.0 (`MAJOR.MINOR.PATCH[-prerelease][+build]`).
   Constraints support `*` wildcards, range operators (`>=1.2.0`,
   `<2.0.0`), and combinations.
@@ -800,30 +809,30 @@ Field-level conventions:
   capability the compiler computes as actually used causes a
   build error naming the call site.
 - **Repositories** (under `settings.repositories`) are ordered
-  by `priority` (descending). Ties broken by declaration order.
-  The build tool walks the list per dependency.
+  by `priority` (descending). Ties are broken by declaration
+  order. The build tool walks the list per dependency.
 - **Overrides** (under `settings.overrides`) force a specific
-  resolution for transitive deps. Applied after MVS; see
+  resolution for transitive deps. They are applied after MVS. See
   [Overriding transitive dependencies](#overriding-transitive-dependencies).
 - **Profiles** in cajeta are per-task literals on the `build`
-  action, not a manifest-overlay activation mechanism. Each
+  action. There is no manifest-overlay activation mechanism. Each
   task declares its profile in its own `build` action
-  invocation (see [Profiles](#profiles) for the rationale and
-  the source-level `@Profile` connection).
+  invocation. See [Profiles](#profiles) for the rationale and
+  the source-level `@Profile` connection.
 
 The major blocks (`details`, `properties`, `settings`, `actions`,
-`plugins`, `tasks`) are all top-level; nothing in the manifest
-nests deeper than three levels. This is deliberate — flatter
-JSON survives schema versioning better than deep nesting
-(adding a sibling under `settings` doesn't move existing
-fields, whereas adding a parent layer would).
+`plugins`, `tasks`) are all top-level, and nothing in the manifest
+nests deeper than three levels. This is deliberate. Flatter
+JSON survives schema versioning better than deep nesting, because
+adding a sibling under `settings` does not move existing fields,
+whereas adding a parent layer would.
 
 ### Subsections of the manifest
 
 The following sections of this doc each cover one top-level
 block in detail:
 
-- [Properties](#properties) — the `properties` block.
+- [Properties](#properties) covers the `properties` block.
 - [Settings details follow](#dependency-resolution) below
   ([Dependency resolution](#dependency-resolution),
   [Overrides](#overriding-transitive-dependencies),
@@ -831,21 +840,21 @@ block in detail:
   [Capability system](#capability-system),
   [Build flavors](#build-flavors),
   [Profiles](#profiles)).
-- [Action catalog](#action-catalog) — what `actions` block
+- [Action catalog](#action-catalog) covers what `actions` block
   entries can extend and compose.
-- [Action pipelining](#action-pipelining) — output→input
+- [Action pipelining](#action-pipelining) covers output→input
   threading through `id` references and `${id.field}`.
-- [Plugins](#plugins) — the `plugins` block.
+- [Plugins](#plugins) covers the `plugins` block.
 - [Default `cajeta init` manifest](#default-cajeta-init-manifest)
-  — what `cajeta init` writes by default.
+  covers what `cajeta init` writes by default.
 
 The Tasks structure is covered in the next subsection.
 
 ### `tasks` block
 
-A task is a named, declarative sequence of actions; each is an
-entry in `manifest.tasks` keyed by task name (the name you'd
-pass to `cajeta <name>` on the CLI).
+A task is a named, declarative sequence of actions. Each task is
+an entry in `manifest.tasks` keyed by task name, which is the
+name you pass to `cajeta <name>` on the CLI.
 
 ```jsonc
 "tasks": {
@@ -895,13 +904,13 @@ Task field reference:
 
 Each `actions[]` entry is one of:
 
-1. **Action invocation** — object with `action` field naming a
+1. **Action invocation.** An object whose `action` field names a
    native action, plugin action, or `actions`-block preset:
    ```jsonc
    { "action": "copy", "from": "build/exe/my-service", "to": "./dist/" }
    ```
 
-2. **Parallel group** — children run concurrently:
+2. **Parallel group.** The children run concurrently:
    ```jsonc
    { "parallel": [
        { "action": "test", "filter": "Unit*" },
@@ -909,8 +918,9 @@ Each `actions[]` entry is one of:
    ]}
    ```
 
-3. **Task invocation** — call another task by name; equivalent
-   to listing it in `depends-on` but inline at the call site:
+3. **Task invocation.** This calls another task by name. It is
+   equivalent to listing it in `depends-on`, written inline at
+   the call site:
    ```jsonc
    { "run-task": "build", "params": { "flavor": "release" } }
    ```
@@ -922,42 +932,42 @@ Conditional skipping at the action level uses `when` /
 { "action": "upload", "target": "s3", ..., "skip-when": "${params.skip-upload}" }
 ```
 
-`when` runs the action if the expression is truthy; `skip-when`
-runs unless truthy. The expression is one substituted string;
-`true`/`false`/`null`/`""` have boolean meaning. No `&&`/`||`
-chaining, no nested expressions — if you need real logic, write
-a preset in the `actions` block that wraps `exec`, or call a
-sub-task.
+`when` runs the action if the expression is truthy, and `skip-when`
+runs it unless the expression is truthy. The expression is one
+substituted string, and `true`/`false`/`null`/`""` have boolean
+meaning. There is no `&&`/`||` chaining and there are no nested
+expressions. If you need real logic, write a preset in the
+`actions` block that wraps `exec`, or call a sub-task.
 
 #### Task dependencies and ordering
 
-`depends-on` declares hard ordering — `tasks.release` with
+`depends-on` declares hard ordering. `tasks.release` with
 `depends-on: ["test"]` always runs `test` first. The build tool
 walks the task DAG, ignores already-satisfied deps within one
-invocation, parallelizes independent branches.
+invocation, and parallelizes independent branches.
 
 Failure modes:
 
 - An action returning non-zero aborts its task, which aborts
   any dependent tasks queued behind it.
-- `--continue-on-error` runs queued dependents anyway; the
+- `--continue-on-error` runs queued dependents anyway, and the
   overall exit code still reflects the failure.
-- `--keep-going` continues within a task — subsequent actions
+- `--keep-going` continues within a task, so subsequent actions
   run even if an earlier one fails. The task's exit is the
   worst of any.
 
 ### `actions` block (presets)
 
-The manifest's `actions` block holds **action presets** — partial
-bindings of an underlying native or plugin action that DRY up
-repeated invocations, plus named compositions of multiple
-actions.
+The manifest's `actions` block holds action presets. A preset is
+a partial binding of an underlying native or plugin action, so
+that a repeated invocation is written once, or a named
+composition of multiple actions.
 
 Two shapes:
 
-**1. Partial binding** — `extends` names the base action;
-`params` supplies bound values. Callers fill in whatever isn't
-bound.
+**1. Partial binding.** `extends` names the base action, and
+`params` supplies the bound values. Callers fill in whatever is
+not bound.
 
 ```jsonc
 "actions": {
@@ -978,10 +988,10 @@ Callers invoke it like any action, supplying the unbound params:
 { "action": "upload-to-releases", "input": "${art.path}", "also": "${sig.path}" }
 ```
 
-The caller's params override bound params on a per-field basis;
-the bound `region` is replaced if the caller specifies its own.
+The caller's params override bound params on a per-field basis,
+so the bound `region` is replaced if the caller specifies its own.
 
-**2. Composition** — `actions` (an array) names a sequence of
+**2. Composition.** `actions` (an array) names a sequence of
 inner action invocations. Outputs are exposed to the caller via
 the preset's `outputs` block.
 
@@ -1022,16 +1032,16 @@ Recursion across presets is a hard error at manifest-load time.
 
 A single `cajeta.json` is what the user, IDE, and reviewer all
 look at to understand the project. Splitting tasks and actions
-into a directory tree was Gradle's path (the `build.gradle` plus
-plugins-and-imports-and-applied-files maze); the cost is
-real — a non-trivial build requires opening five files to follow
-one task. One document with clear top-level sections wins
-readability without losing modularity (tasks can call other
-tasks, actions can extend other actions — the composition
-mechanisms are inside the document rather than across files).
+into a directory tree was Gradle's path, with `build.gradle` plus
+the maze of plugins, imports and applied files. The cost is
+real, because a non-trivial build requires opening five files to
+follow one task. One document with clear top-level sections wins
+readability without losing modularity. Tasks can call other
+tasks and actions can extend other actions, so the composition
+mechanisms live inside the document rather than across files.
 
 Workspaces (multi-package projects, [Workspaces](#workspaces))
-do split: each member has its own `cajeta.json`. A workspace
+do split, and each member has its own `cajeta.json`. A workspace
 root's `cajeta.json` has its own `tasks` block that operates at
 the workspace level, calling member tasks via `run-task`. Even
 there, each manifest is one file.
@@ -1040,14 +1050,14 @@ there, each manifest is one file.
 
 ## Properties
 
-Manifests routinely need the same value in many places — a stdlib
-version pinned to a single number used by half a dozen
-dependencies, a base URL shared by several repositories, a prefix
-used by multiple distribution actions. The `properties` block
-centralizes these values; any string in the manifest can reference
-them with `${PROPERTY}` substitution. Pattern is exactly Maven's
-`${property}` and Gradle's `${prop}` — direct prior art, no
-surprises.
+Manifests routinely need the same value in many places. A stdlib
+version is pinned to a single number used by half a dozen
+dependencies, a base URL is shared by several repositories, and a
+prefix is used by multiple distribution actions. The `properties`
+block centralizes these values, and any string in the manifest can
+reference them with `${PROPERTY}` substitution. The pattern is
+exactly Maven's `${property}` and Gradle's `${prop}`, so it is
+direct prior art with no surprises.
 
 ```jsonc
 {
@@ -1075,17 +1085,17 @@ surprises.
 }
 ```
 
-The win: bumping `stack-version` once updates every dependency on
-the cajeta stdlib that depends on it.
+Bumping `stack-version` once updates every dependency on the
+cajeta stdlib that depends on it.
 
 ### Substitution rules
 
 - `${NAME}` expands to the value of `properties.NAME`.
-- Substitution is purely textual — the resolved string is what
+- Substitution is purely textual, so the resolved string is what
   downstream parsers see. A property holding `"1.4.7"` substituted
-  into `"${stack-version}"` produces `"1.4.7"`; substituted into
-  `">=${stack-version}"` produces `">=1.4.7"`.
-- Substitution is **eager** — properties are resolved when the
+  into `"${stack-version}"` produces `"1.4.7"`, and substituted into
+  `">=${stack-version}"` it produces `">=1.4.7"`.
+- Substitution is eager. Properties are resolved when the
   manifest loads, before any subsequent processing. Cyclic
   references are detected and rejected with a clear error citing
   the cycle.
@@ -1099,26 +1109,26 @@ the cajeta stdlib that depends on it.
   ```
   Resolution is by topological order of the cross-reference
   graph.
-- Missing property is a hard error citing the reference site. No
-  silent empty-string substitution — that turned out badly in
-  Make and shell, and we don't repeat it.
-- `$$` is the literal `$` escape — needed only when a literal
+- A missing property is a hard error citing the reference site.
+  There is no silent empty-string substitution. That turned out
+  badly in Make and shell, and we do not repeat it.
+- `$$` is the literal `$` escape. It is needed only when a literal
   `${` would otherwise be misread.
 - **Where it applies.** `settings` and `plugins` are rewritten when
-  the manifest loads, before anything parses them — so a
+  the manifest loads, before anything parses them, so a
   `${...}` version under `settings.dependencies`, or a path in a
-  plugin's `config` block, resolves. `tasks` is NOT rewritten
-  then: a task's action params carry late-bound references a
-  property table cannot answer (`${id.field}` is another
-  action's output, `${params.x}` an invocation argument), and
-  those resolve at run time against the task context, which
+  plugin's `config` block, resolves. `tasks` is not rewritten
+  then. A task's action params carry late-bound references a
+  property table cannot answer, since `${id.field}` is another
+  action's output and `${params.x}` is an invocation argument.
+  Those resolve at run time against the task context, which
   layers them over these same properties. `details` is skipped
   because the `${package.*}` built-ins are derived from it.
 
 ### Built-in properties
 
-These are always available without declaration; user properties
-cannot shadow them.
+These are always available without declaration, and user
+properties cannot shadow them.
 
 | Property                | Resolves to                                                      |
 |-------------------------|------------------------------------------------------------------|
@@ -1135,31 +1145,32 @@ cannot shadow them.
 | `${cajeta.version}`     | Cajeta toolchain version building this project                   |
 
 A property name colliding with a built-in is a hard error at
-manifest load — the developer must rename their property.
+manifest load, and the developer must rename their property.
 
 ### Override precedence
 
 External overrides apply in precedence order (highest wins):
 
 1. **CLI flag.** `cajeta build --property stack-version=1.5.0`
-   (short form `-P stack-version=1.5.0`). Useful for one-off
-   builds (security patches, A/B comparisons, CI matrices).
+   (short form `-P stack-version=1.5.0`). This is useful for
+   one-off builds such as security patches, A/B comparisons and
+   CI matrices.
 2. **Environment variable.** `CAJETA_PROPERTY_STACK_VERSION=1.5.0`
-   — uppercase + underscores, matching POSIX conventions. Dots in
-   property names map to underscores.
+   is uppercase with underscores, matching POSIX conventions. Dots
+   in property names map to underscores.
 3. **Manifest.** The `properties` block in `cajeta.json`.
 
 The resolved property set is materialized once per build,
 recorded in `cajeta.lock` under `"properties"`, and surfaced via
 `cajeta info --properties` for inspection. Reproducible builds
-depend on the resolved set — a property changed at the CLI for
+depend on the resolved set, so a property changed at the CLI for
 one build but not another is detectable at lockfile diff time.
 
 ### Where properties can be used
 
-Anywhere a JSON string appears in the manifest, with one
-exception: keys are not substituted (it would break manifest
-indexing). Concretely:
+Properties can be used anywhere a JSON string appears in the
+manifest, with one exception. Keys are not substituted, because
+that would break manifest indexing. Concretely:
 
 - ✓ dependency version constraints
 - ✓ repository URLs, paths, auth references
@@ -1170,18 +1181,19 @@ indexing). Concretely:
 - ✓ post-build hook commands
 - ✓ override target versions / paths
 - ✗ property NAMES themselves (the keys of `properties`)
-- ✗ dependency name keys (`"dev.cajeta.http"` is a key, not a value)
+- ✗ dependency name keys (`"dev.cajeta.http"` is a key rather than a value)
 
-The not-in-keys rule is the only material restriction; everything
-else is uniform.
+The not-in-keys rule is the only material restriction, and
+everything else is uniform.
 
 ---
 
 ## Lockfile — `cajeta.lock`
 
-Generated by `cajeta build` / `cajeta upgrade` / `cajeta add`.
-Committed to version control. Strict JSON (no comments — it's
-machine-only, comments would just create merge conflicts).
+The lockfile is generated by `cajeta build` / `cajeta upgrade` /
+`cajeta add` and committed to version control. It is strict JSON
+with no comments, because it is machine-only and comments would
+just create merge conflicts.
 
 ```json
 {
@@ -1213,15 +1225,15 @@ machine-only, comments would just create merge conflicts).
 
 `cajeta build` rewrites the file only when the manifest checksum, the
 properties or a package's name, version or checksum changed, so rebuilding an
-unchanged graph leaves it byte-identical; `resolved-from` records the
+unchanged graph leaves it byte-identical. `resolved-from` records the
 repository of the first fetch and is not a reason to rewrite. A workspace
 member's build leaves it to the workspace root's single lockfile. The skill
 search reads dependencies from it (`docs/specification/mcp/Skills.md`).
 
 `manifest-checksum` lets `cajeta build` detect whether the
-manifest changed since the lockfile was generated; mismatch
-triggers an automatic `cajeta upgrade` (or warns, depending on
-config).
+manifest changed since the lockfile was generated. A mismatch
+triggers an automatic `cajeta upgrade`, or warns, depending on
+config.
 
 `capabilities` per package is the authoritative record of what
 that version requires. `cajeta upgrade` compares old-vs-new
@@ -1236,7 +1248,7 @@ acme.metrics 1.0.7 -> 1.1.0
 
 Refusing the prompt rolls the upgrade back. Forcing through (`-y`
 or environment override) records the new capability set in the
-lockfile; future builds run with the new permissions.
+lockfile, and future builds run with the new permissions.
 
 ---
 
@@ -1251,11 +1263,12 @@ dependency graph by:
 3. Recursing into that artifact's transitive dependencies (each
    `.cja` archive carries its own `cajeta.json` in its manifest
    section).
-4. Resolving version conflicts via **minimum-version selection**
-   (MVS): when two paths through the graph constrain the same
-   package differently, pick the **lowest version that satisfies
-   all constraints**. Cargo's algorithm. Predictable; avoids the
-   "latest patch broke us" surprise.
+4. Resolving version conflicts via minimum-version selection
+   (MVS). When two paths through the graph constrain the same
+   package differently, the tool picks the lowest version that
+   satisfies all constraints. This is Cargo's algorithm. It is
+   predictable, and it avoids the "latest patch broke us"
+   surprise.
 5. Recording the resolved graph in `cajeta.lock`.
 
 Conflict resolution prefers explicit pinning over inference:
@@ -1289,22 +1302,22 @@ through `overrides`.
 Three places read a bare version as `=` instead, because they force or
 pick rather than solve. An entry in `overrides` forces its version
 (below). Plugin resolution and the notebook kernel's dependency loader
-take the **highest** satisfying version, so a floor there would float to
+take the highest satisfying version, so a floor there would float to
 the newest release in the major.
 
-Constraint solver runs in O(N log N) for typical graphs; the
-worst case (large conflict surface) is exposed via `cajeta info
+The constraint solver runs in O(N log N) for typical graphs. The
+worst case, a large conflict surface, is exposed via `cajeta info
 --resolve-time` for debugging.
 
 **Cycles.** The registry does not forbid a package that depends, at any
 distance, on a package that depends on it, and the solver tolerates the
-loop (constraints only tighten, so the fixed point terminates). The tool
-follows Java's conventions. A cycle among **workspace members** is
-refused, as Maven refuses a cyclic reactor: `cyclic workspace-member
-dependency among: …`. A cycle that arrives through **published
-artifacts** is tolerated, as Maven and Gradle tolerate it — the resolved
-classpath is flat, and the project owner cannot fix someone else's
-manifest — but `build` names it once per cycle on stderr
+loop, because constraints only tighten and the fixed point terminates.
+The tool follows Java's conventions. A cycle among workspace members is
+refused, as Maven refuses a cyclic reactor, with `cyclic workspace-member
+dependency among: …`. A cycle that arrives through published artifacts
+is tolerated, as Maven and Gradle tolerate it, because the resolved
+classpath is flat and the project owner cannot fix someone else's
+manifest. `build` names it once per cycle on stderr
 (`warning: dependency cycle detected: a -> b -> a`) and proceeds, and
 `cajeta deps` reports the same chain and exits 1.
 
@@ -1312,11 +1325,11 @@ manifest — but `build` names it once per cycle on stderr
 
 ## Overriding transitive dependencies
 
-MVS picks the lowest version satisfying all constraints — but
-sometimes you need to force a specific version across the entire
-graph (apply a security patch ahead of upstream, ship a vendored
-fork, pin away from a known-bad release). The manifest's
-`overrides` block does that:
+MVS picks the lowest version satisfying all constraints. Sometimes
+you need to force a specific version across the entire graph, to
+apply a security patch ahead of upstream, ship a vendored fork, or
+pin away from a known-bad release. The manifest's `overrides`
+block does that:
 
 ```jsonc
 "overrides": {
@@ -1348,28 +1361,27 @@ fork, pin away from a known-bad release). The manifest's
 }
 ```
 
-Equivalent in concept to Maven's `<dependencyManagement>`,
+This is equivalent in concept to Maven's `<dependencyManagement>`,
 Gradle's `resolutionStrategy.force`, and Cargo's `[patch]` /
 `[replace]` combined. Differences:
 
-- Overrides apply **after** MVS, last-write-wins. Multiple
+- Overrides apply after MVS, and the last write wins. Multiple
   overrides for the same package in nested workspaces resolve in
   workspace-root-then-member order.
 - An override that drops a major version (`1.x` forced when some
   transitive needs `2.x`) emits a hard error naming the
-  conflicting transitive and the path that reaches it. Override
-  this anyway by adding `"allow-major-downgrade": true` on the
-  override object — the build tool then surfaces a prominent
-  warning each build.
+  conflicting transitive and the path that reaches it. You can
+  override this anyway by adding `"allow-major-downgrade": true`
+  on the override object, and the build tool then surfaces a
+  prominent warning each build.
 - Overrides are recorded in `cajeta.lock` under a top-level
   `"overrides"` array so reviewers see them on every PR that
   touches the lockfile.
 
-Override-vs-direct-dep precedence: a direct dependency in the
-top-level `dependencies` block wins over an override of the same
-package. Overrides exist for **transitive** dependencies; if
-you're picking your own direct version, you don't need an
-override.
+A direct dependency in the top-level `dependencies` block wins
+over an override of the same package. Overrides exist for
+transitive dependencies. If you are picking your own direct
+version, you do not need an override.
 
 ---
 
@@ -1379,18 +1391,18 @@ A **melt** is a curated bundle of dependency versions, properties,
 action presets, and repositories that consumers import as one
 unit. Spring users would call this a BOM. Maven users would call
 it dependency management. Gradle users would call it a version
-catalog. Cajeta calls it a melt because the metaphor matches:
-cajeta is caramel; a melt is how the ingredients fuse into one
+catalog. Cajeta calls it a melt because the metaphor matches.
+Cajeta is caramel, and a melt is how the ingredients fuse into one
 cohesive consumable thing. The name extends naturally to its
-purpose — a single named entity carrying versions, properties,
-presets, repos blended into one curated set.
+purpose, which is a single named entity carrying versions,
+properties, presets and repos blended into one curated set.
 
 ### Anatomy of a melt package
 
-A melt is a regular cajeta package whose purpose is to **export
-curated configuration** rather than executable code. It's
-distinguished by a top-level `melt` block; its manifest has no
-`tasks`, no source, no build output. Publishing a melt produces
+A melt is a regular cajeta package whose purpose is to export
+curated configuration rather than executable code. It is
+distinguished by a top-level `melt` block, and its manifest has no
+`tasks`, no source, and no build output. Publishing a melt produces
 a `.cja` containing only the manifest.
 
 ```jsonc
@@ -1459,9 +1471,10 @@ a `.cja` containing only the manifest.
 | `tasks` | ✗ | Tasks are how YOU build; not for a third party to inject |
 | `settings.build` flavor / target / sanitizer | ✗ | Per-consumer build choice |
 
-Mirror of the workspace inheritance rule: **inert inherits, active
-doesn't.** A consumer importing a melt gets version curation and
-convenient presets — never silent plugin activation or capability
+This mirrors the workspace inheritance rule, where inert
+configuration inherits and active configuration does not. A
+consumer importing a melt gets version curation and convenient
+presets. It never gets silent plugin activation or capability
 broadening.
 
 ### Consuming a melt
@@ -1495,7 +1508,7 @@ broadening.
 }
 ```
 
-**`"*"` means "use whatever the melt says."** Explicit version
+`"*"` means "use whatever the melt says." An explicit version
 always wins. `"*"` for a dep that no imported melt curates is a
 hard error citing the dep name.
 
@@ -1518,8 +1531,8 @@ Lowest:   MVS-selected lowest acceptable                (resolver default)
 ```
 
 If a member explicitly pins `1.4.0` while a melt says `1.5.*`, the
-explicit pin wins **and** the build emits a warning so the
-developer knows they've deviated from the curated set.
+explicit pin wins, and the build emits a warning so the
+developer knows they have deviated from the curated set.
 
 ### Transitive melt imports
 
@@ -1530,12 +1543,12 @@ A melt that imports another melt resolves recursively:
    recursively process its `melt.melts`.
 3. Flatten into a single ordered constraint set via post-order
    traversal. Later positions override earlier ones.
-4. Cycle detection — a melt importing itself transitively fails
+4. Cycle detection. A melt importing itself transitively fails
    the resolve with a citation.
 
 ### Relationship to `workspace.shared-dependencies`
 
-These are the **same idea applied at different scopes:**
+These are the same idea applied at different scopes:
 
 | | `workspace.shared-dependencies` | Melt |
 |---|---|---|
@@ -1544,10 +1557,11 @@ These are the **same idea applied at different scopes:**
 | Scope | Members of one workspace | Any project, anywhere |
 | Use case | Internal monorepo coordination | Cross-org / ecosystem curation |
 
-You'd typically have both: a monorepo uses `workspace.shared-dependencies`
-for its internal libs (no publish ceremony) and imports external
-melts (a stdlib melt, a Spring-equivalent web-stack melt) for
-public-ecosystem version curation.
+You would typically have both. A monorepo uses
+`workspace.shared-dependencies` for its internal libs, with no
+publish ceremony, and imports external melts, such as a stdlib
+melt or a Spring-equivalent web-stack melt, for public-ecosystem
+version curation.
 
 ### Lockfile
 
@@ -1581,8 +1595,8 @@ resolved melts alongside resolved packages:
 
 `provided-by` carries either the melt that supplied the version,
 or `"explicit"` when the manifest pinned it directly. Lockfile
-diffs in code review then surface "this version moved because of
-a melt bump" vs "this version was explicitly bumped."
+diffs in code review then show whether a version moved because of
+a melt bump or because it was explicitly bumped.
 
 ### CLI
 
@@ -1597,14 +1611,15 @@ cajeta publish --as-melt         # publish a melt-only package (no source/tasks)
 
 `"*"` already means "any version" elsewhere in version
 constraints. Reusing it for "the melt will pin this" reads
-naturally: the consumer is saying "any version — whichever the
-melt curates." Alternative spellings considered and rejected:
+naturally, because the consumer is saying "any version, whichever
+the melt curates." Three alternative spellings were considered
+and rejected:
 
-- `"from-melt"` literal — explicit but verbose.
-- Omit the version entirely — Maven-style, but it makes a
+- A `"from-melt"` literal is explicit but verbose.
+- Omitting the version entirely is Maven-style, but it makes a
   semver-shaped consumer surface (`"dev.cajeta.http": "*"`)
   inconsistent with the rest of `dependencies`.
-- Special syntax (`"@melt"`) — extra notation to learn.
+- Special syntax (`"@melt"`) is extra notation to learn.
 
 The hard error when no imported melt provides a `"*"`-declared
 dep keeps the sentinel from being silently broken.
@@ -1614,8 +1629,8 @@ dep keeps the sentinel from being silently broken.
 ## Repositories
 
 A repository is anything the build tool can ask for an artifact
-named `<name>@<version>` and get back a `.cja`. Three concrete
-types in v1:
+named `<name>@<version>` and get back a `.cja`. There are three
+concrete types in v1:
 
 ### Filesystem repository
 
@@ -1638,8 +1653,8 @@ The path contains a tree:
 └── index.json                 # { "packages": ["dev.cajeta.http", "cajeta.math", ...] }
 ```
 
-Used for dev overrides, vendoring, and CI scenarios that pre-stage
-artifacts.
+A filesystem repository serves dev overrides, vendoring, and CI
+scenarios that pre-stage artifacts.
 
 A release may carry three sidecars beside its `.cja`:
 
@@ -1650,28 +1665,28 @@ dev.cajeta.http-1.0.0.cja.sig           # detached ed25519 signature
 dev.cajeta.http-1.0.0.release.json      # root-signed release metadata
 ```
 
-plus, at the repository root, the key documents its organizations
+The repository root also holds the key documents its organizations
 publish:
 
 ```
 .well-known/org-keys/dev.cajeta.json
 ```
 
-**The `.sha256` sidecar is a weaker guarantee than it looks.** It
+The `.sha256` sidecar is a weaker guarantee than it looks. It
 catches a corrupted or truncated download, which is what a checksum
-alone was ever good for. It cannot catch a hostile mirror: anyone
-able to change the bytes can change the sidecar next to them. When
-`release.json` is present its hash is covered by the repository root's
-signature, that hash is the one an install is held to, and the
+alone was ever good for. It cannot catch a hostile mirror, because
+anyone able to change the bytes can change the sidecar next to them.
+When `release.json` is present its hash is covered by the repository
+root's signature, that hash is the one an install is held to, and the
 `.sha256` sidecar beside it is ignored rather than compared. A local
-tree that ships only `.sha256` keeps working exactly as before —
-just understand that it is protecting you from disk and network
-faults, not from whoever served the tree.
+tree that ships only `.sha256` keeps working exactly as before. You
+should understand that it protects you from disk and network faults,
+and that it does not protect you from whoever served the tree.
 
 ### HTTP repository
 
-Default for public + corporate registries. Wire protocol is a
-minimal REST API:
+The HTTP repository is the default for public and corporate
+registries. The wire protocol is a minimal REST API:
 
 ```
 GET /index.json
@@ -1695,12 +1710,13 @@ POST /<name>/<version>/<name>-<version>.cja   (auth required)
 ```
 
 Authentication is bearer-token or mutual-TLS, configurable per
-repository. Auth tokens come from environment variables (never
-embedded in `cajeta.json`).
+repository. Auth tokens come from environment variables and are
+never embedded in `cajeta.json`.
 
 ### Git repository
 
-For private / pre-release deps not yet in a registry:
+A Git repository serves private or pre-release deps that are not
+yet in a registry:
 
 ```json
 {
@@ -1751,16 +1767,17 @@ Cajeta can consume them via a compatibility shim:
 ```
 
 The shim translates cajeta's `<name>@<version>` requests into
-Maven's group-path layout (last `.` segment becomes the artifact
-id, preceding segments become the group path), fetches the
-`.cja` (Maven Central will only carry cajeta artifacts once
-they're published; Maven Central can also serve mirror copies
-of cajeta's own central registry).
+Maven's group-path layout, where the last `.` segment becomes the
+artifact id and the preceding segments become the group path, and
+fetches the `.cja`. Maven Central will only carry cajeta artifacts
+once they are published, and Maven Central can also serve mirror
+copies of cajeta's own central registry.
 
-Practically: any HTTPS-served, path-addressable artifact
+In practice, any HTTPS-served, path-addressable artifact
 repository works without custom code. Cajeta's native HTTP
-protocol exists for the richer metadata endpoints (capability
-sets, deprecation flags) that Maven Central can't serve.
+protocol exists for the richer metadata endpoints, such as
+capability sets and deprecation flags, that Maven Central cannot
+serve.
 
 ### Local download cache
 
@@ -1768,7 +1785,7 @@ Every artifact fetched from a remote repository lands in the
 shared local cache at `.cajeta/cache/artifacts/<sha256>.cja`,
 keyed by content hash. Repeated builds across projects on the
 same machine reuse cached artifacts without re-fetching. The
-cache survives `cajeta clean`; only `cajeta clean --deep`
+cache survives `cajeta clean`, and only `cajeta clean --deep`
 clears it.
 
 Cache layout:
@@ -1787,52 +1804,53 @@ Cache layout:
 
 A workstation-wide cache directory (`~/.cajeta/cache/`) is also
 consulted when the project-local cache misses, before falling
-back to the network. Useful for cold-clone CI runs that pre-warm
+back to the network. This helps cold-clone CI runs that pre-warm
 the workstation cache.
 
 ### Local repository (`~/.olla/`)
 
-`~/.olla/` is the machine-global **local repository** — the
+`~/.olla/` is the machine-global local repository, and it is the
 Maven-`.m2` analog. It uses the filesystem-repository layout
 (`<name>/<version>/<name>-<version>.cja` + a `cajeta.json` manifest
-sidecar + per-package `versions.json`) and is consulted **first** on
-every resolution, ahead of any declared remote: a local hit
+sidecar + per-package `versions.json`) and is consulted first on
+every resolution, ahead of any declared remote, so a local hit
 short-circuits the network entirely. Artifacts fetched from a remote
-are **written through** into `~/.olla/` so the next resolve — in this
-or any other project — is a local hit. The root honours `$OLLA_HOME`,
+are written through into `~/.olla/` so the next resolve, in this
+or any other project, is a local hit. The root honours `$OLLA_HOME`,
 defaulting to `~/.olla`.
 
 Because `~/.olla/` is always an available source, a project may
-declare a dependency with **no** `settings.repositories` at all and
+declare a dependency with no `settings.repositories` at all and
 still resolve it, provided it was installed locally first.
 
 `cajeta install` publishes the current project's library `.cja` into
-`~/.olla/` (the local sibling of `cajeta publish`, which uploads to a
-remote registry):
+`~/.olla/`. It is the local sibling of `cajeta publish`, which uploads
+to a remote registry:
 
 ```
 $ cd my-lib && cajeta install        # build → ~/.olla/<name>/<version>/
 $ cajeta install ./some-lib.cja      # verify a built archive, then install it
 ```
 
-A plain `cajeta build` never writes to `~/.olla/`; only `install`
-and resolver write-through do. Installing an executable project (one
-that declares an `entry-method`) is rejected — only libraries are
-installable. The legacy `path` override still works for local
-development but `cajeta install` is now the recommended way to
+A plain `cajeta build` never writes to `~/.olla/`. Only `install`
+and resolver write-through do. Installing an executable project, one
+that declares an `entry-method`, is rejected, because only libraries
+are installable. The legacy `path` override still works for local
+development, but `cajeta install` is now the recommended way to
 consume an unpublished sibling library.
 
 ### Repository protocol — v2 enhancements (deferred)
 
-The v1 protocol above (one GET per artifact) is what cajeta's
-own central registry ships first. It's intentionally Maven-Central-
+The v1 protocol above, with one GET per artifact, is what cajeta's
+own central registry ships first. It is intentionally Maven-Central-
 shaped so existing CDN infrastructure, proxies, and mirroring tools
 work unchanged.
 
 v2 adds opt-in endpoints that fix Maven Central's two structural
-pain points: piecemeal transfer (50 deps = 50+ round trips) and
-URL-addressed bytes (path collisions, CDN-invalidation thrash,
-weak trust roots). Servers advertise v2 support via:
+pain points. The first is piecemeal transfer, where 50 deps cost 50+
+round trips. The second is URL-addressed bytes, which bring path
+collisions, CDN-invalidation thrash and weak trust roots. Servers
+advertise v2 support via:
 
 ```
 GET /.well-known/cajeta-capabilities.json
@@ -1853,8 +1871,9 @@ v1 stays available as the fallback / compatibility surface.
 
 #### Bundle endpoint
 
-One round trip for an arbitrary-sized dep graph, with client-cache
-awareness so already-fetched bytes don't move:
+The bundle endpoint fetches an arbitrary-sized dep graph in one
+round trip. It is aware of the client cache, so already-fetched
+bytes do not move:
 
 ```
 POST /v2/bundle
@@ -1883,17 +1902,17 @@ Properties:
 - `have` lets the server omit bytes the client already has. A
   build that bumped one dep transfers only that dep + any new
   transitives.
-- Streamed response — the server starts writing tar.zst entries
-  as it reads them from storage; the client can start unpacking
-  before the transfer finishes.
+- The response is streamed. The server starts writing tar.zst
+  entries as it reads them from storage, and the client can start
+  unpacking before the transfer finishes.
 - Idempotent on `(have-set ∪ want-set)`, so common request shapes
   are CDN-cacheable when the request body hashes into a key.
 
 #### Content-addressed storage
 
 v1 is path-addressed (`<name>/<version>/<name>-<version>.cja`),
-inheriting Maven Central's cache-invalidation problem: a republish
-collides at the same URL.
+and it inherits Maven Central's cache-invalidation problem, where a
+republish collides at the same URL.
 
 v2 puts bytes under their sha256, with a small metadata indirection
 on top:
@@ -1916,30 +1935,31 @@ GET /v2/blob/<sha256>
 
 Consequences:
 - The blob's URL never changes once published. CDNs cache it
-  forever; invalidation is no longer a concept.
+  forever, and invalidation is no longer a concept.
 - Mirrors, Bazel-style remote caches, and corporate proxies key
   on the same sha256 the workstation cache already uses
-  (`.cajeta/cache/artifacts/<sha256>.cja`) — no translation layer.
-- Retractions stay byte-addressable: the bytes remain reachable
-  (downstream builds with the old sha256 in their lockfile keep
-  working) but the metadata flips `retracted: true` so new
+  (`.cajeta/cache/artifacts/<sha256>.cja`), so there is no
+  translation layer.
+- Retractions stay byte-addressable. The bytes remain reachable,
+  so downstream builds with the old sha256 in their lockfile keep
+  working, but the metadata flips `retracted: true` so new
   resolves emit a warning.
-- `retracted` lives INSIDE the signed release metadata, so
+- `retracted` lives inside the signed release metadata, so
   retracting re-signs it. The copy in the plain resolve body is
-  advisory — a mirror can clear it — and a verifying client reads
-  only the signed one.
+  advisory, since a mirror can clear it, and a verifying client
+  reads only the signed one.
 - Unlike the organization key document, release metadata carries
   no expiry of its own, so a cached resolve can keep serving a
   release as un-retracted after it has been withdrawn. A
   repository that wants retraction to be timely keeps its resolve
-  responses uncacheable or short-lived: a retraction nobody
-  re-fetches is a retraction that did not happen.
+  responses uncacheable or short-lived, because a retraction
+  nobody re-fetches is a retraction that did not happen.
 
 #### Pre-computed common bundles
 
-For widely-used dep sets (the stdlib, popular frameworks) the
-registry pre-computes bundles and serves them via plain GETs
-that the CDN caches:
+For widely-used dep sets, such as the stdlib and popular
+frameworks, the registry pre-computes bundles and serves them via
+plain GETs that the CDN caches:
 
 ```
 GET /v2/bundle/well-known/cajeta-stdlib-1.0.7.tar.zst
@@ -1952,10 +1972,10 @@ unit of pre-computation.
 
 #### Differential lockfile fetch
 
-Lockfiles encode the full resolved graph; two builds N days apart
-have lockfiles that differ in a small subset. The differential
-endpoint takes the old + new lockfile sha256 and returns only the
-diff:
+Lockfiles encode the full resolved graph, and two builds N days
+apart have lockfiles that differ in a small subset. The
+differential endpoint takes the old + new lockfile sha256 and
+returns only the diff:
 
 ```
 POST /v2/lockfile-diff
@@ -1966,10 +1986,10 @@ POST /v2/lockfile-diff
 → application/cajeta-bundle  (only artifacts in the diff)
 ```
 
-If the server hasn't snapshotted the old lockfile, the client
+If the server has not snapshotted the old lockfile, the client
 falls back to a regular `/v2/bundle` request. Both lockfiles must
-be publicly resolvable (i.e., already published or part of a
-publish operation); private project lockfiles use the bundle
+be publicly resolvable, meaning already published or part of a
+publish operation. Private project lockfiles use the bundle
 endpoint with an explicit `have` set instead.
 
 #### Cross-file compression (opt-in)
@@ -1979,23 +1999,24 @@ many of them gets concatenation-level compression only. For
 pre-computed common bundles where the CPU cost is paid once, an
 opt-in "super-compress" mode decompresses each .cja, concatenates,
 and re-compresses as one stream. Cross-file zstd captures shared
-symbols / class names / strings — 10-30% smaller in practice on
-mono-language ecosystems.
+symbols, class names and strings, and the result is 10-30% smaller
+in practice on mono-language ecosystems.
 
 ```
 POST /v2/bundle
 { ..., "format": "supercompress.zst" }
 ```
 
-Server-CPU-expensive, so it's gated to pre-computed bundles or
-explicit request. The recipient inverts (decompress whole stream,
-split, re-compress each .cja to land in the workstation cache).
+This is expensive in server CPU, so it is gated to pre-computed
+bundles or explicit request. The recipient inverts the process. It
+decompresses the whole stream, splits it, and re-compresses each
+.cja to land in the workstation cache.
 
 #### Transparency log
 
-Maven Central trusts per-publisher PGP keys; key compromise
+Maven Central trusts per-publisher PGP keys, so a key compromise
 allows undetectable malicious publishes. v2 adds a sigstore-style
-append-only log: every publication appends a record that clients
+append-only log. Every publication appends a record that clients
 can independently verify.
 
 ```
@@ -2012,8 +2033,8 @@ GET /v2/transparency-log/<sha256>
 A malicious key works exactly once before the log entry is public,
 after which the publisher (or community) can revoke and
 investigate. The signing-launcher (see "Signing & launching")
-already verifies per-artifact signatures; the transparency check
-slots in alongside.
+already verifies per-artifact signatures, and the transparency
+check slots in alongside.
 
 #### Mirror federation
 
@@ -2024,20 +2045,20 @@ regional mirrors without ad-hoc HTTP proxy configuration.
 
 #### Namespace verification at publish
 
-Maven Central's namespace squatting (any unclaimed `groupId` was
-free for the taking) cost the ecosystem years of cleanup. v2
-requires DNS-proof or GitHub-proof of group ownership at publish
+Maven Central's namespace squatting cost the ecosystem years of
+cleanup, because any unclaimed `groupId` was free for the taking.
+v2 requires DNS-proof or GitHub-proof of group ownership at publish
 time:
 
-- `com.example.foo` — TXT record at `_cajeta-publish.example.com`
+- For `com.example.foo`, a TXT record at `_cajeta-publish.example.com`
   containing the publisher's verification token, OR
 - `.github/cajeta-publish.txt` in `github.com/example`'s repo
   root, OR
 - For non-DNS namespaces (e.g. `gh.<user>.<project>` for personal
   packages), GitHub OIDC at publish time.
 
-Verified once per publisher; the registry then trusts that
-publisher for the entire group prefix.
+Ownership is verified once per publisher, and the registry then
+trusts that publisher for the entire group prefix.
 
 #### Data-rate impact
 
@@ -2052,16 +2073,16 @@ payload ~10 MB, 50 ms RTT, 50 Mbps downlink:
 | v2 `/bundle` warm (one dep bumped)             | 1           | ~0.1s |
 | v2 pre-built well-known bundle                 | 1, CDN hit  | ~0.5s |
 
-The warm case is where bundle + content-addressing pay off most:
-incremental builds today re-validate every artifact in the graph
-even when the answer is "nothing changed."
+The warm case is where bundle + content-addressing pay off most,
+because incremental builds today re-validate every artifact in the
+graph even when the answer is "nothing changed."
 
 #### Roadmap
 
-v2 ships as a separate, post-v1 phase. v1 is what initial release
-needs; v2 lands once there's enough traffic to justify the
+v2 ships as a separate, post-v1 phase. v1 is what the initial
+release needs. v2 lands once there is enough traffic to justify the
 registry-side compute and storage for bundle pre-computation.
-Backward compatibility is permanent — a v1-only client and a
+Backward compatibility is permanent, so a v1-only client and a
 v2-only client both keep working against a server that advertises
 both.
 
@@ -2075,12 +2096,13 @@ actually-used set. Mismatch is a build error.
 
 ### The canonical capability list (v1)
 
-The full list below is the **specified** vocabulary. Only four
-capabilities are wired into the sandbox layer today — `Sandbox.cpp`'s
-`capByName()` recognizes `filesystem`, `process`, `network`, and
-`env`. The remaining ten are **planned**: they are reserved names
-in the spec, but the build tool does not yet parse or enforce them
-(an unknown capability name currently has no sandbox effect).
+The full list below is the specified vocabulary. Only four
+capabilities are wired into the sandbox layer today, since
+`Sandbox.cpp`'s `capByName()` recognizes `filesystem`, `process`,
+`network`, and `env`. The remaining ten are planned. They are
+reserved names in the spec, but the build tool does not yet parse
+or enforce them, and an unknown capability name currently has no
+sandbox effect.
 
 | Capability         | Status (v1) | What it gates                                                                          |
 |--------------------|-------------|---------------------------------------------------------------------------------------|
@@ -2100,8 +2122,9 @@ in the spec, but the build tool does not yet parse or enforce them
 | `audio`            | planned     | Audio I/O (future).                                                                    |
 
 Future capabilities get added via spec amendments. Each
-capability has a stable name; renaming requires a compatibility
-shim (old name aliased to new, deprecation warning).
+capability has a stable name, and renaming requires a
+compatibility shim that aliases the old name to the new one with
+a deprecation warning.
 
 ### How the compiler knows what each API needs
 
@@ -2137,8 +2160,8 @@ required-set is the union over reachable methods.
 
 ### Build-time enforcement
 
-The build tool computes the required-set; compares to the
-manifest's declared set; enforces:
+The build tool computes the required-set, compares it to the
+manifest's declared set, and enforces three rules:
 
 1. **Required ⊆ Declared.** If the program calls into the network
    but `cajeta.json` doesn't declare `network`, the build fails
@@ -2153,10 +2176,10 @@ manifest's declared set; enforces:
    help: add "network" to the "capabilities" array in cajeta.json
    ```
 
-2. **Declared ⊇ Used** — lint warning if the manifest declares
-   capabilities that aren't actually used. Useful for noticing
-   when refactoring removed the last network call but the
-   declaration lingered.
+2. **Declared ⊇ Used.** A lint warning fires if the manifest
+   declares capabilities that are not actually used. This helps
+   you notice when a refactoring removed the last network call
+   but the declaration lingered.
 
 3. **Justification required** for `native-code` and `unsafe-memory`:
 
@@ -2172,14 +2195,14 @@ manifest's declared set; enforces:
    ```
 
    The build tool reads the `reason` and records it in the
-   lockfile; reviewers see it during PRs.
+   lockfile, and reviewers see it during PRs.
 
 ### Reflection is a known capability hole
 
 `Class.forName(...).getMethod(...).invoke()` lets a program reach
 any capability transitively. So `reflection` is effectively a
-trust transfer: declaring `reflection` implicitly admits the full
-capability set at deploy enforcement. The build emits a
+trust transfer, and declaring `reflection` implicitly admits the
+full capability set at deploy enforcement. The build emits a
 prominent warning:
 
 ```
@@ -2190,12 +2213,12 @@ note: package declares `reflection` capability.
   This is by design; documented for awareness.
 ```
 
-Most programs don't need reflection. The ones that do (DI
-containers, serializers, ORMs) declare it openly.
+Most programs do not need reflection. The ones that do, such as
+DI containers, serializers and ORMs, declare it openly.
 
 ### Interface method capability contracts
 
-An interface declares the **union** of its possible
+An interface declares the union of its possible
 implementations' capabilities:
 
 ```cajeta
@@ -2209,12 +2232,12 @@ public interface Sink {
 }
 ```
 
-Callers see the union: `Sink.write()` requires both `network`
-and `filesystem` (the worst case across implementations). A
-narrower form — `@capability-polymorphic` — would let the
-caller pay only for the implementation actually used at runtime,
-with a runtime check rejecting impls whose caps exceed; deferred
-to a v2 spec amendment.
+Callers see the union, so `Sink.write()` requires both `network`
+and `filesystem`, which is the worst case across implementations.
+A narrower form, `@capability-polymorphic`, would let the caller
+pay only for the implementation actually used at runtime, with a
+runtime check rejecting impls whose caps exceed. That form is
+deferred to a v2 spec amendment.
 
 ### Deploy-time enforcement (optional)
 
@@ -2227,20 +2250,21 @@ capability set:
 - macOS: process entitlements profile
 - Windows: AppContainer policy
 
-Enabled via `cajeta build --enforce-capabilities=strict`. Default
-is `--enforce-capabilities=record-only` — the build tool records
-the declared set in the binary's `.cajeta-manifest` section but
-doesn't activate any OS-level enforcement; a deployment tool
-(systemd unit, container runtime, k8s pod spec) can read the
-section and apply policy externally.
+This is enabled via `cajeta build --enforce-capabilities=strict`.
+The default is `--enforce-capabilities=record-only`. Under the
+default the build tool records the declared set in the binary's
+`.cajeta-manifest` section but does not activate any OS-level
+enforcement. A deployment tool, such as a systemd unit, a container
+runtime or a k8s pod spec, can read the section and apply policy
+externally.
 
 ---
 
 ## Build flavors
 
 A **flavor** is a named bundle of compiler properties. Two
-built-ins ship with the toolchain; everything else is either
-inline composition or a project-defined custom flavor.
+built-ins ship with the toolchain, and everything else is either
+an inline composition or a project-defined custom flavor.
 
 ### Built-in flavors
 
@@ -2249,16 +2273,16 @@ inline composition or a project-defined custom flavor.
 | `release` | `opt=O2 lto=thin strip-symbols=on debug-info=line bounds-check=off`                   |
 | `debug`   | `opt=O0 lto=off  strip-symbols=off debug-info=full bounds-check=on`                   |
 
-That's it for built-ins. The rest of what older toolchains call
-flavors (`fast`, `minimal`, `instrumented`, `debug-release`, …)
+Those are the only built-ins. The rest of what older toolchains
+call flavors (`fast`, `minimal`, `instrumented`, `debug-release`, …)
 becomes either an inline composition or a custom flavor the
-project names — both shown below.
+project names. Both are shown below.
 
 ### Property vocabulary
 
-The compiler's property names ARE the vocabulary; no shorthand
-macro layer above them. Unknown property keys are a hard error
-at manifest-load (catches typos).
+The compiler's property names are the vocabulary, and there is
+no shorthand macro layer above them. Unknown property keys are a
+hard error at manifest-load, which catches typos.
 
 | Property | Values |
 |---|---|
@@ -2277,11 +2301,11 @@ at manifest-load (catches typos).
 
 ### Two accepted forms — string or map
 
-Wherever a flavor value appears (task action parameter or
-custom-flavor definition), it's either a string (bare flavor
-name) or a map (composition).
+Wherever a flavor value appears, as a task action parameter or a
+custom-flavor definition, it is either a string naming a flavor
+or a map composing one.
 
-**String — bare named flavor:**
+**String, a bare named flavor:**
 
 ```jsonc
 "flavor": "release"
@@ -2289,7 +2313,7 @@ name) or a map (composition).
 "flavor": "integration"          // a custom flavor (declared elsewhere in the manifest)
 ```
 
-**Map — composition:**
+**Map, a composition:**
 
 ```jsonc
 "flavor": {
@@ -2303,10 +2327,10 @@ name) or a map (composition).
 Semantics:
 
 - **`base`** names the flavor whose property bundle is the
-  starting point. Required field when overrides are present.
-  Itself may be a built-in or a custom flavor.
-- Every other key is a property override; takes precedence over
-  the base's value for that property.
+  starting point. It is a required field when overrides are
+  present, and it may itself be a built-in or a custom flavor.
+- Every other key is a property override, and it takes precedence
+  over the base's value for that property.
 - Unknown property keys are a hard error at manifest-load time.
 - A custom flavor whose `base` cycles transitively through itself
   is a hard error.
@@ -2353,8 +2377,8 @@ Then tasks reference by name:
 
 ### Worked examples
 
-**One-off composition inline** — useful when investigating a
-release-only bug:
+**One-off composition inline.** This is useful when investigating
+a release-only bug:
 
 ```jsonc
 { "action":  "build",
@@ -2363,8 +2387,8 @@ release-only bug:
   "id":      "art" }
 ```
 
-**Named composition referenced from a task** — the typical case
-when the same composition appears in multiple tasks:
+**Named composition referenced from a task.** This is the typical
+case when the same composition appears in multiple tasks:
 
 ```jsonc
 // settings.build.custom-flavors.integration defines the composition
@@ -2384,7 +2408,8 @@ The map shape was chosen over alternatives like
 | Schema validation / IDE autocomplete | Strings with prefix conventions are hard to schema | Direct JSON schema against the property table |
 | Composition with named base | Awkward (`["custom-name", "+toggle"]`) | Natural (`{"base": "custom-name", …}`) |
 
-Map form covers every case the list form could, more rigorously.
+The map form covers every case the list form could, and it does
+so more rigorously.
 
 ---
 
@@ -2392,10 +2417,10 @@ Map form covers every case the list form could, more rigorously.
 
 A **profile** in cajeta is the string the `build` action passes
 to the compiler so source-level `@Profile`-annotated components
-resolve to the right wiring. Profiles are **per-task literals**
-in the manifest — not central state, not a CLI activation flag,
-not a sticky workstation default. Different builds (test,
-integration, release, …) are different tasks; each task names
+resolve to the right wiring. Profiles are per-task literals in
+the manifest. There is no central state, no CLI activation flag,
+and no sticky workstation default. Different builds (test,
+integration, release, …) are different tasks, and each task names
 its profile in its own `build` action invocation.
 
 ```jsonc
@@ -2431,18 +2456,19 @@ valid:
 | **`flavor`** | Compiler optimization, debug info, sanitizers — *how* the code is compiled | `release`, `debug`, custom names |
 | **`profile`** | Which `@Profile`-gated components get wired into the DI graph — *what* is wired | `dev`, `test`, `integration`, `release`, or any project-defined string |
 
-So `flavor: "debug"` + `profile: "test"` (fast-compile unit
-tests with mocked deps) is fine, as is `flavor: "release"` +
-`profile: "test"` (verify the optimized binary still passes
-the mocked-deps tests). Coverage instrumentation is not a flavor
-— it's a separate action from the `cajeta.coverage` plugin.
+So `flavor: "debug"` + `profile: "test"` is fine, and gives
+fast-compile unit tests with mocked deps. `flavor: "release"` +
+`profile: "test"` is also fine, and verifies the optimized binary
+still passes the mocked-deps tests. Coverage instrumentation is
+not a flavor. It is a separate action from the `cajeta.coverage`
+plugin.
 
 ### Profile names are arbitrary
 
 The compiler accepts any string as a profile name. The
 [`@Profile` source annotation](../lang/AspectModel.md#selecting-a-context-profile)
 already says "Profile names are arbitrary strings; there's no
-fixed enumeration"; the build-tool side mirrors that. Project
+fixed enumeration", and the build-tool side mirrors that. Project
 teams pick names that match their actual environments:
 
 ```
@@ -2458,8 +2484,8 @@ eu-west / us-east / ap-southeast-2  regional deployments
 tenant-acme / tenant-globex          per-tenant configurations
 ```
 
-The init template ships a few common starter tasks but doesn't
-claim the names are canonical — see
+The init template ships a few common starter tasks but does not
+claim the names are canonical. See
 [Default `cajeta init` manifest](#default-cajeta-init-manifest).
 
 ### Source-level `@Profile`
@@ -2476,45 +2502,45 @@ components and components annotated with `@Profile("release")`.
 @Component @Profile("release")     public class PostgresDatabase   implements Database { ... }
 ```
 
-Four implementations of `Database`; each task picks one via the
-profile string it passes to the compiler. Same source, four
-distinct binaries.
+There are four implementations of `Database`, and each task picks
+one via the profile string it passes to the compiler. The same
+source yields four distinct binaries.
 
 `@TestComponent` continues to handle per-class test overrides
-under whichever profile the test task uses (typically `test`);
-see [AspectModel.md](../lang/AspectModel.md#testcomponent).
+under whichever profile the test task uses (typically `test`).
+See [AspectModel.md](../lang/AspectModel.md#testcomponent).
 
 ### Why per-task and not an activated overlay
 
 Earlier drafts of this spec had a `settings.profiles` overlay
-block (Maven-style activation that mutates manifest fields when
-a profile is "active"). That model went away because:
+block, a Maven-style activation that mutates manifest fields when
+a profile is "active". That model went away for four reasons:
 
 - **Two concepts collided.** Maven's profile-overlay activation
   and Spring's `@Profile`-gated DI selection happen to share a
   name but solve different problems. Conflating them adds
-  precedence rules and surprises ("which active profile is
-  driving this resolution?").
+  precedence rules and surprises, such as asking which active
+  profile is driving a resolution.
 - **No central state to track.** With per-task literals, the
-  binary's wiring is determined by which task built it. Trace
-  any artifact back through `cajeta info` → which task ran →
-  which profile literal it passed. No global activation state
-  to consult.
-- **No precedence chain to learn.** No CLI flag vs env var vs
-  sticky file vs manifest-default ordering.
-- **Customization is just another task.** Different
-  environment? Add a task. Different settings for CI vs dev?
-  Different tasks. The task IS the build configuration.
+  binary's wiring is determined by which task built it. You can
+  trace any artifact back through `cajeta info` to the task that
+  ran and the profile literal it passed. There is no global
+  activation state to consult.
+- **No precedence chain to learn.** There is no CLI flag vs env
+  var vs sticky file vs manifest-default ordering.
+- **Customization is just another task.** A different environment
+  means adding a task. Different settings for CI and dev mean
+  different tasks. The task is the build configuration.
 
-The shape parallels how flavor works: each task picks its
-flavor in its own action invocation, not by activating an
+The shape parallels how flavor works. Each task picks its
+flavor in its own action invocation, and nothing activates an
 "active flavor" globally.
 
 ### Overriding the task's profile at the call site
 
 If a developer wants to invoke a task under a different profile
-once (e.g., to bisect a profile-specific bug), the task
-parameterizes its profile and the developer overrides via the
+once, for example to bisect a profile-specific bug, the task
+parameterizes its profile and the developer overrides it via the
 property mechanism:
 
 ```jsonc
@@ -2546,8 +2572,8 @@ edit the manifest.
 ## Incremental builds
 
 `cajeta build` is incremental by default. The unit of cache is a
-**per-file IR module** keyed by a content-derived discriminator.
-Cache lives under `.cajeta/cache/ir/<discriminator>.bc`.
+per-file IR module keyed by a content-derived discriminator. The
+cache lives under `.cajeta/cache/ir/<discriminator>.bc`.
 
 Compilation flow with cache:
 
@@ -2561,58 +2587,59 @@ Compilation flow with cache:
    )
    ```
    The flag-set is canonicalized (sorted, normalized) so flag
-   order doesn't bust the cache. The transitive-imports-digest
-   is computed recursively — depth-first walk of every type and
-   method this file references, hashing each referenced module's
-   own discriminator. Cycles are broken by post-order traversal
-   with fixed-point on the digest.
+   order does not bust the cache. The transitive-imports-digest
+   is computed recursively, by a depth-first walk of every type
+   and method this file references, hashing each referenced
+   module's own discriminator. Cycles are broken by post-order
+   traversal with fixed-point on the digest.
 
-2. Look up `.cajeta/cache/ir/<discriminator>.bc`. Cache hit
+2. Look up `.cajeta/cache/ir/<discriminator>.bc`. A cache hit
    means the IR module is byte-identical to what a fresh compile
-   would produce — load and emit it directly.
+   would produce, so the tool loads and emits it directly.
 
-3. Cache miss: compile to IR, write the cached module under the
-   computed discriminator, emit it.
+3. On a cache miss, compile to IR, write the cached module under
+   the computed discriminator, and emit it.
 
 4. Link as normal.
 
-This is the generalized form of C++'s precompiled headers:
-content-addressed rather than path-addressed, applied to every
-source file rather than just headers. Rebuilds across branches
-share cache hits as long as the byte content matches; changing
-one source file's content only forces a recompile of that file
-and its dependents (the dependents detect the change through
-the transitive-imports-digest).
+This is the generalized form of C++'s precompiled headers. It is
+content-addressed rather than path-addressed, and it applies to
+every source file rather than just headers. Rebuilds across
+branches share cache hits as long as the byte content matches.
+Changing one source file's content only forces a recompile of
+that file and its dependents, and the dependents detect the
+change through the transitive-imports-digest.
 
 ### The whole-artifact cache
 
 In front of the IR cache sits a whole-artifact cache under
-`.cajeta/cache/artifact/<sha256>/`: when nothing a build embeds has
+`.cajeta/cache/artifact/<sha256>/`. When nothing a build embeds has
 changed, the previous artifact is re-published without spawning the
 compiler (`[cache] hit`). Its key folds the compiler's cache
 discriminator (flags, emit, target, profile, classpath), the entry
 method, every source digest, every embedded resource digest (`skills/`),
-and every native input the build could bake or link: each search
-directory's path, in search order, and the content digest of every file
-directly under its platform subdirectories and of every shared library or
-static archive directly under it. The search directories are the
-project's own `native/` (passed to the compiler as `--native-dir`, from
-the manifest's root), `CAJETA_NATIVE_PATH`, then `~/.cajeta/native`. A
-shim provided, rebuilt, removed or added for another platform re-keys the
-artifact; a shim reverted to earlier bytes lands on its earlier slot.
-The live `@Native` set is not known before compiling, so everything
-findable counts, which over-invalidates only when some unrelated native
-file on the machine changes.
+and every native input the build could bake or link. The native inputs
+are each search directory's path, in search order, and the content
+digest of every file directly under its platform subdirectories and of
+every shared library or static archive directly under it. The search
+directories are the project's own `native/` (passed to the compiler as
+`--native-dir`, from the manifest's root), `CAJETA_NATIVE_PATH`, then
+`~/.cajeta/native`. A shim provided, rebuilt, removed or added for
+another platform re-keys the artifact, and a shim reverted to earlier
+bytes lands on its earlier slot. The live `@Native` set is not known
+before compiling, so everything findable counts, which over-invalidates
+only when some unrelated native file on the machine changes.
 
 ### Compared to Gradle's build cache
 
 Gradle's build cache works on task-level inputs / outputs and
 keys against the same content-discriminator idea. Cajeta's IR
-cache is finer-grained (per source file, not per task) and
-narrower (only the IR-emission step; linking is always re-run
-since its inputs are the union of every file's IR). The
-trade-off: smaller change blast radius (fewer files rebuild
-unnecessarily), at the cost of not caching the link step.
+cache is finer-grained, since it works per source file rather
+than per task. It is also narrower, since it covers only the
+IR-emission step, and linking is always re-run because its inputs
+are the union of every file's IR. The trade-off is a smaller
+change blast radius, so fewer files rebuild unnecessarily, at the
+cost of not caching the link step.
 
 ### Cache eviction
 
@@ -2628,25 +2655,25 @@ bound, then evicts LRU. Configure via `cajeta.json`:
 }
 ```
 
-`cajeta clean` removes `.cajeta/work/` (the incremental build
-output dir) but preserves `.cajeta/cache/`. To wipe the cache:
-`cajeta clean --deep` (and answer the y/N prompt — fully cold
-rebuilds are expensive enough to warrant a confirmation).
+`cajeta clean` removes `.cajeta/work/`, the incremental build
+output dir, but preserves `.cajeta/cache/`. To wipe the cache, run
+`cajeta clean --deep` and answer the y/N prompt. Fully cold
+rebuilds are expensive enough to warrant a confirmation.
 
 ### Cross-machine cache sharing
 
-Not in v1. The repository model serves the "share an artifact
-across machines" need at the archive grain; sharing IR modules
-at the file grain would require a remote-cache protocol Bazel-
-style. Deferred — see [Comparative
-analysis](#comparative-analysis) for the reasoning.
+Cross-machine cache sharing is not in v1. The repository model
+serves the "share an artifact across machines" need at the archive
+grain. Sharing IR modules at the file grain would require a
+Bazel-style remote-cache protocol, and that is deferred. See
+[Comparative analysis](#comparative-analysis) for the reasoning.
 
 ---
 
 ## Workspaces
 
 Multi-package projects share a single manifest at the workspace
-root + a per-package manifest in each member directory.
+root, plus a per-package manifest in each member directory.
 
 ```
 my-org/
@@ -2689,9 +2716,9 @@ Workspace manifest:
 }
 ```
 
-`cajeta build` from the workspace root builds every member;
-`cajeta build -p api` builds just one; cross-package deps are
-resolved through the workspace's local-path mechanism so members
+`cajeta build` from the workspace root builds every member, and
+`cajeta build -p api` builds just one. Cross-package deps are
+resolved through the workspace's local-path mechanism, so members
 see each other's sources directly without round-tripping through
 a repository.
 
@@ -2701,38 +2728,39 @@ a repository.
 
 ### Build sandbox
 
-`cajeta build` runs each compilation step in a sandbox by default
-(opt-out via `--no-sandbox` for debugging):
+`cajeta build` runs each compilation step in a sandbox by default.
+You can opt out via `--no-sandbox` for debugging.
 
-- **Filesystem** — the compiler sees only the project directory,
+- **Filesystem.** The compiler sees only the project directory,
   the source tree under `src/main/cajeta`, the dep cache, and
-  the build output directory. `/etc`, `/var`, user `$HOME` are
-  invisible.
-- **Network** — no network access from compilation steps. Build
-  is a function of declared inputs.
-- **Environment** — a clean environment with only `PATH`, `HOME`
-  (a fake), and any `cajeta.json`-declared env vars.
+  the build output directory. `/etc`, `/var` and the user's
+  `$HOME` are invisible.
+- **Network.** There is no network access from compilation
+  steps. The build is a function of declared inputs.
+- **Environment.** The compiler gets a clean environment with
+  only `PATH`, a fake `HOME`, and any `cajeta.json`-declared env
+  vars.
 
-Linux: `bwrap` (bubblewrap) or unprivileged user namespaces.
-macOS: `sandbox-exec` profile. Windows: Job objects with
-restricted descriptors.
+Linux uses `bwrap` (bubblewrap) or unprivileged user namespaces.
+macOS uses a `sandbox-exec` profile. Windows uses Job objects
+with restricted descriptors.
 
 ### Reproducible artifacts
 
 Same source + same lockfile + same compiler version → byte-
-identical `.cja` output. Build inputs that would otherwise
+identical `.cja` output. Three build inputs would otherwise
 contribute non-determinism:
 
-- **Build timestamps** — pinned via `SOURCE_DATE_EPOCH` environment
-  variable (the Reproducible Builds standard). `cajeta.json` can
-  set a project default; CI invokes with whatever is
-  appropriate.
-- **Path-dependent symbols** — debug info strips absolute paths;
-  the compiler's `-fdebug-prefix-map` equivalent rewrites paths
-  to repository-relative form.
-- **Random seeds** — any seed used during compilation reads from
-  a deterministic source seeded by the source content's hash,
-  not from OS entropy.
+- **Build timestamps** are pinned via the `SOURCE_DATE_EPOCH`
+  environment variable, which is the Reproducible Builds
+  standard. `cajeta.json` can set a project default, and CI
+  invokes with whatever is appropriate.
+- **Path-dependent symbols** are removed because debug info
+  strips absolute paths. The compiler's `-fdebug-prefix-map`
+  equivalent rewrites paths to repository-relative form.
+- **Random seeds** are deterministic. Any seed used during
+  compilation reads from a source seeded by the source content's
+  hash rather than from OS entropy.
 
 ### Build attestation
 
@@ -2772,22 +2800,22 @@ contribute non-determinism:
 }
 ```
 
-Optionally signed via cosign / sigstore. Consumers verify the
-signature before installing.
+The record is optionally signed via cosign / sigstore. Consumers
+verify the signature before installing.
 
 ---
 
 ## Action catalog
 
 Actions are the verbs that tasks invoke. Every action is either
-**native** (built into the build tool) or **plugin-provided**
-(supplied by a plugin declared in the manifest). User-defined
-**action presets** (in the manifest's `actions` block) are
-partial bindings or compositions of these underlying actions —
-they don't add new verbs, they wrap existing ones.
+native, meaning built into the build tool, or plugin-provided,
+meaning supplied by a plugin declared in the manifest.
+User-defined action presets, in the manifest's `actions` block,
+are partial bindings or compositions of these underlying actions.
+They add no new verbs, and they wrap existing ones.
 
 This section is the catalog of native actions. Plugin-provided
-actions are documented by each plugin; see [Plugins](#plugins)
+actions are documented by each plugin. See [Plugins](#plugins)
 for the discovery/sandboxing model.
 
 > **Shipped vs. planned.** The actions actually registered in the
@@ -2795,18 +2823,18 @@ for the discovery/sandboxing model.
 > `delete`, `mkdir`, `sign`, `verify-sig`, `version`, `download`,
 > `build`, `clean`, `test`, `package`, `upload`, `publish`.
 > Everything else described in this catalog (`lint`, `doc`, `fmt`,
-> `set-profile`, `install`) is **planned / not-yet-implemented** —
-> it is part of the design but not registered, so invoking it from
+> `set-profile`, `install`) is planned and not yet implemented.
+> It is part of the design but not registered, so invoking it from
 > a task today is an "unknown action" error. Planned rows are
 > flagged inline below.
 
 ### Native action catalog (v1)
 
 Action contracts use `required → optional → outputs` columns.
-**Required** params must be supplied at the call site (or bound
-in an `actions`-block preset). **Optional** have sensible
-defaults. **Outputs** are the named values an action publishes
-for downstream actions to consume via
+Required params must be supplied at the call site, or bound in
+an `actions`-block preset. Optional params have sensible
+defaults. Outputs are the named values an action publishes for
+downstream actions to consume via
 [pipelining](#action-pipelining).
 
 #### Compile / test / quality
@@ -2839,26 +2867,26 @@ Default `emit` selection (when not explicit):
 - No entry method configured → default is `archived-ir`
   (library).
 
-`exploded-ir` is always explicit — it's a tooling/inspection
-output, not a "deliverable."
+`exploded-ir` is always explicit. It is a tooling and inspection
+output rather than a deliverable.
 
 **Entry-method resolution (when emit is `executable` or an
 executable `archived-ir`):**
 
-1. `entry-method` param on the action — direct override
+1. The `entry-method` param on the action is a direct override
    (e.g. `"entry-method": "com.example.cli.Main::main"`).
-2. `binary` param on the action — name lookup in
+2. The `binary` param on the action is a name lookup in
    `settings.build.binaries`
    (e.g. `"binary": "cli"`).
-3. `settings.build.entry-method` — the manifest default.
+3. `settings.build.entry-method` is the manifest default.
 4. None of the above + `emit: "executable"` → hard error
    ("can't link an executable without a main"). With
    `emit: "archived-ir"` and no entry method, the archive is a
    library.
 
-**Multiple binaries from one source tree** — use
+**Multiple binaries from one source tree.** Use
 `settings.build.binaries` to register named binaries with their
-entry methods; tasks reference by name:
+entry methods, and tasks reference them by name:
 
 ```jsonc
 "settings": {
@@ -2880,8 +2908,8 @@ entry methods; tasks reference by name:
 { "action": "build", "binary": "migrate", "profile": "release", "id": "mig" }
 ```
 
-Three binaries from one source tree, three independent `.cja`
-or native exe outputs.
+That gives three binaries from one source tree, with three
+independent `.cja` or native exe outputs.
 
 **Outputs by `emit` type:**
 
@@ -2892,8 +2920,8 @@ or native exe outputs.
 | `executable`   | The native executable | `"elf"` / `"macho"` / `"pe"` |
 
 For `archived-ir`, the entry-method (if any) is recorded as
-metadata on the archive's manifest section; consumers (the
-launcher, `cajeta run`) read it from there.
+metadata on the archive's manifest section, and consumers such as
+the launcher and `cajeta run` read it from there.
 
 #### Filesystem
 
@@ -2916,9 +2944,9 @@ launcher, `cajeta run`) read it from there.
 `package` is the universal "transform a `build` output into a
 different format" verb. The `build` action produces one of three
 first-class compile artifacts (exploded-ir, archived-ir,
-executable); `package` repackages those into formats consumers
-or distribution systems expect. Format catalog organized by
-input type:
+executable), and `package` repackages those into formats
+consumers or distribution systems expect. The format catalog is
+organized by input type:
 
 ##### Inputs: IR (`exploded-ir` or `archived-ir`)
 
@@ -2964,8 +2992,8 @@ Many installer formats require platform-specific tooling
   `dmg`, `msi`.
 - **Post-v1:** `appimage`, `flatpak`, `snap`, mobile formats.
 
-Each deferred format is a self-contained slice; landing one
-doesn't gate any other phase.
+Each deferred format is a self-contained slice, and landing one
+does not gate any other phase.
 
 ##### `package` contract
 
@@ -2973,9 +3001,9 @@ doesn't gate any other phase.
 |-----------|-----------------|----------------------------------------------------------------|---------|
 | `package` | `input`, `format` | `spec` (metadata file), `output-path`, plus format-specific params | `path`, `format`, `sha256`, `size`, (`manifest`, `registry-url` for `container`) |
 
-Metadata for installer formats supplied two ways: inline params,
-or a spec file referenced via `spec`. Use whichever reads better
-at the call site.
+Metadata for installer formats can be supplied two ways, as inline
+params or as a spec file referenced via `spec`. Use whichever
+reads better at the call site.
 
 **Inline metadata example (`deb`):**
 
@@ -3014,11 +3042,11 @@ at the call site.
 
 ##### Input/format validation
 
-Validation runs at manifest-load when possible: `format:
+Validation runs at manifest-load when possible. `format:
 "obj-tree"` requires an IR input (`exploded-ir` directory or
-`archived-ir` `.cja`); `format: "deb"` requires an `executable`
-input. Mismatch is a hard error with a citation naming the
-expected vs. actual input shape.
+`archived-ir` `.cja`), and `format: "deb"` requires an
+`executable` input. A mismatch is a hard error with a citation
+naming the expected and the actual input shape.
 
 ##### Worked pipeline — full release flow
 
@@ -3064,8 +3092,8 @@ expected vs. actual input shape.
 }
 ```
 
-Same `package` action wearing three different format hats, all
-consuming the one executable the build produced.
+The same `package` action runs under three different formats,
+and all three consume the one executable the build produced.
 
 #### Distribution
 
@@ -3083,10 +3111,10 @@ discriminator. The protocol-specific params are below.
 | `publish`    | (n/a)           | `repository` (name from manifest)                 | `version` (default: `details.version`)                | `url`                    |
 
 The `also` array contains extra paths to upload alongside the
-primary input — typically the `.sig` produced by a preceding
+primary input, typically the `.sig` produced by a preceding
 `sign` action. Each gets uploaded under the same `prefix` /
-`path`; outputs include URLs for every file (the primary's URL
-is in `url`, the full set in `urls`).
+`path`. The outputs include URLs for every file. The primary's
+URL is in `url`, and the full set is in `urls`.
 
 #### State / profile
 
@@ -3096,13 +3124,14 @@ is in `url`, the full set in `urls`).
 
 #### Composition / control
 
-`run-task` and `parallel` are **not registry actions** — they are
-task-control constructs the TaskRunner interprets directly
-(`Task.h` `ActionEntry::Kind::{RunTask,Parallel}`). They appear as
-distinct shapes inside a task's `actions[]` array (a `{ "run-task":
-... }` or `{ "parallel": [...] }` object), not as an `{ "action":
-... }` invocation, and so are not looked up in the `ActionRegistry`.
-`exec` *is* a real registered action.
+`run-task` and `parallel` are task-control constructs that the
+TaskRunner interprets directly (`Task.h`
+`ActionEntry::Kind::{RunTask,Parallel}`), and they are not registry
+actions. They appear as distinct shapes inside a task's `actions[]`
+array, as a `{ "run-task": ... }` or `{ "parallel": [...] }`
+object rather than an `{ "action": ... }` invocation, and so they
+are not looked up in the `ActionRegistry`. `exec` is a real
+registered action.
 
 | Construct    | Required                       | Optional             | Outputs           |
 |--------------|--------------------------------|----------------------|-------------------|
@@ -3121,9 +3150,9 @@ context for an action includes:
   `${flavor}`, `${env.NAME}`, etc.).
 - Task parameters (`${params.<name>}`).
 - Outputs from prior actions in the same task
-  (`${<id>.<output>}`) — see [Action pipelining](#action-pipelining).
+  (`${<id>.<output>}`). See [Action pipelining](#action-pipelining).
 
-Missing property is a hard error citing the action.
+A missing property is a hard error citing the action.
 
 ### `exec` — the escape hatch
 
@@ -3136,42 +3165,42 @@ Missing property is a hard error citing the action.
 ```
 
 The build tool spawns the command, captures stdout/stderr,
-honors the timeout, sandboxes the subprocess according to the
-task's declared capabilities. Non-zero exit aborts the task
-(unless `--continue-on-error` is set). Outputs (`stdout`,
+honors the timeout, and sandboxes the subprocess according to the
+task's declared capabilities. A non-zero exit aborts the task
+unless `--continue-on-error` is set. The outputs (`stdout`,
 `stderr`, `exit-code`) are captured for downstream actions.
 
-`command` names the program and `args` its arguments; no shell is
+`command` names the program and `args` its arguments. No shell is
 involved, so `"command": "rm -rf build"` would look for a program by
 that whole name. A `command` carrying whitespace with no `args` is
 rejected when the manifest loads, and the error names the split form
 (`"command": "rm", "args": ["-rf", "build"]`). A command holding a
 `${...}` substitution or naming an existing file is left alone.
 
-Use sparingly — every declarative alternative gets sandboxing,
+Use it sparingly. Every declarative alternative gets sandboxing,
 retry, structured logging, parallelization, and cross-platform
-behavior for free; `exec` opts out of all of that.
+behavior for free, and `exec` opts out of all of that.
 
 ### Cache and idempotence
 
 Actions declare their inputs (param values + referenced files)
 and outputs. The build tool computes a cache discriminator per
-action invocation; if the discriminator matches a prior
+action invocation. If the discriminator matches a prior
 invocation's recorded outputs, the action is skipped and its
 prior outputs are reused.
 
-Cacheable by default: `build`, `copy`, `sign`, `mkdir`, `fmt`,
-`doc`, `lint`. Re-run by default (network or side-effecting):
-`upload`, `publish`, `download`, `exec`, `delete`, `version`,
-`set-profile`. Each action's caching policy is part of its
-contract (the open spec `action-catalog-v1.json` documents this
-precisely).
+`build`, `copy`, `sign`, `mkdir`, `fmt`, `doc` and `lint` are
+cacheable by default. `upload`, `publish`, `download`, `exec`,
+`delete`, `version` and `set-profile` re-run by default, because
+they reach the network or have side effects. Each action's
+caching policy is part of its contract, and the open spec
+`action-catalog-v1.json` documents this precisely.
 
 Override:
-- `--force` — skip the cache entirely for this run.
-- `--force-action=<name>` — force one named action.
-- `--no-cache` — disable caching for this run (don't read, but
-  do write).
+- `--force` skips the cache entirely for this run.
+- `--force-action=<name>` forces one named action.
+- `--no-cache` disables caching for this run, so the tool does not
+  read the cache but does write it.
 
 ### Why declarative rather than shell
 
@@ -3192,19 +3221,19 @@ preferred for everything else:
 
 ## Action pipelining
 
-The chain that connects actions is: an action **declares
-outputs**, a downstream action **consumes them as inputs** via
-`${id.field}` substitution. The build tool checks the connection
-at manifest-load time — if an action references `${art.path}`
-but no preceding action assigned `id: "art"` to a result
-publishing `path`, the manifest fails to load with a citation.
+An action declares outputs, and a downstream action consumes them
+as inputs via `${id.field}` substitution. That chain is what
+connects actions. The build tool checks the connection at
+manifest-load time. If an action references `${art.path}` but no
+preceding action assigned `id: "art"` to a result publishing
+`path`, the manifest fails to load with a citation.
 
 ### The threading model
 
 Three pieces:
 
 **1. `id` on the producer.** An action can take an optional
-`id` field naming its result. The id is task-scoped — each task
+`id` field naming its result. The id is task-scoped, so each task
 has its own namespace.
 
 ```jsonc
@@ -3221,9 +3250,9 @@ output object.
 
 **3. Action contracts.** Each action's `Outputs` column in the
 catalog defines the field names it produces. `build` publishes
-`path`, `sha256`, `size`; `sign` publishes `path`, `sha256`;
-`upload` publishes `url`, possibly `urls` and `status`. The
-catalog is the contract; consumers know which fields exist
+`path`, `sha256` and `size`. `sign` publishes `path` and `sha256`.
+`upload` publishes `url`, and possibly `urls` and `status`. The
+catalog is the contract, so consumers know which fields exist
 without reading the producer's implementation.
 
 ### Worked example: package → sign → upload
@@ -3262,15 +3291,15 @@ without reading the producer's implementation.
 }
 ```
 
-The graph is mechanically derivable from the references:
+The graph is mechanically derivable from the references, as
 `art → sign`, `art → upload`, `sig → upload`, `upload → exec`.
 Independent branches run in parallel where the action's
-parallelism policy allows; the build tool generates the
+parallelism policy allows, and the build tool generates the
 parallel schedule automatically.
 
 ### Sftp variant of the upload
 
-Same `upload` action, different `target`:
+This is the same `upload` action with a different `target`:
 
 ```jsonc
 { "action":  "upload",
@@ -3283,9 +3312,9 @@ Same `upload` action, different `target`:
   "id":      "pub" }
 ```
 
-The outputs are the same shape (`url`, `urls`) so downstream
-actions don't care which transport was used. This is the model
-for any future upload target — adding `target: "ftps"` or
+The outputs are the same shape (`url`, `urls`), so downstream
+actions do not care which transport was used. This is the model
+for any future upload target. Adding `target: "ftps"` or
 `target: "swift"` extends the catalog without changing the
 pipeline shape.
 
@@ -3311,10 +3340,10 @@ to use for the file part).
 ### Output objects across `parallel` and `run-task`
 
 - **Parallel groups** publish each child's outputs under the
-  child's `id`. The order in the parallel sub-array doesn't
-  matter for visibility; what matters is that an action
-  referencing `${id.field}` comes after (in the task's
-  flattened ordering) the action that produced it.
+  child's `id`. The order in the parallel sub-array does not
+  matter for visibility. What matters is that an action
+  referencing `${id.field}` comes after the action that produced
+  it in the task's flattened ordering.
 - **`run-task`** publishes the called task's `outputs` block
   under the invocation's `id`. The calling task sees them as
   `${invocationId.fieldName}` like any other action.
@@ -3323,22 +3352,22 @@ to use for the file part).
 
 A reference to an undefined `id` is a hard error at manifest-
 load time, with a citation of the action that referenced it
-and (if any close-named id exists) a fix-it hint.
+and a fix-it hint when a close-named id exists.
 
-A cycle in the implicit graph (action A's input references B's
-output and B's input references A's output) is a hard error.
+A cycle in the implicit graph, where action A's input references
+B's output and B's input references A's output, is a hard error.
 The build tool detects cycles before any action runs.
 
 ### Why this matters
 
-This is the design's load-bearing piece: a task is not a free-
-form list of commands but a structured graph of producers and
-consumers. The references through `${id.field}` make the graph
-explicit; the action catalog makes the graph type-checked. Pre-
-build validation catches "the sign action expected
-`${art.path}` but no `build` action with id `art` exists" — the
-class of error that's intermittent runtime failures in shell
-scripts becomes a load-time error here.
+This is the design's load-bearing piece. A task is a structured
+graph of producers and consumers rather than a free-form list of
+commands. The references through `${id.field}` make the graph
+explicit, and the action catalog makes the graph type-checked.
+Pre-build validation catches "the sign action expected
+`${art.path}` but no `build` action with id `art` exists". That
+class of error is an intermittent runtime failure in a shell
+script, and here it becomes a load-time error.
 
 ---
 
@@ -3346,23 +3375,23 @@ scripts becomes a load-time error here.
 
 `cajeta init <name>` scaffolds a new project. It writes a
 `cajeta.json` with a starter `tasks` block, a starter `actions`
-block (one preset — a `ship` composition), and reasonable
-defaults under `settings`. **Every entry is editable.** Delete
-what you don't need; rewrite what doesn't fit; add what's
+block holding one preset, a `ship` composition, and reasonable
+defaults under `settings`. Every entry is editable. Delete what
+you do not need, rewrite what does not fit, and add what is
 missing. The build tool ships no opinion about which tasks a
-project should have — `cajeta init` provides sensible
-starters, the project owns them from that point on.
+project should have. `cajeta init` provides sensible starters,
+and the project owns them from that point on.
 
 ### Profile and flavor: per-task literals
 
-The starter tasks demonstrate the per-task pattern: each build
-task hard-codes both its **flavor** (compile/optimize knobs)
-and its **profile** (`@Profile`-driven DI wiring) in its
-`build` action. The starter profile names below — `dev`,
-`test`, `integration`, `release` — are common conventions, not
-a canonical set. **Rename them, drop them, or add others** to
-match your project's environments (`staging`, `canary`, `e2e`,
-`perf`, `eu-west`, `tenant-acme`, anything).
+The starter tasks demonstrate the per-task pattern. Each build
+task hard-codes both its flavor, the compile and optimize knobs,
+and its profile, the `@Profile`-driven DI wiring, in its `build`
+action. The starter profile names below, `dev`, `test`,
+`integration` and `release`, are common conventions rather than a
+canonical set. Rename them, drop them, or add others to match
+your project's environments (`staging`, `canary`, `e2e`, `perf`,
+`eu-west`, `tenant-acme`, anything).
 
 ```jsonc
 {
@@ -3546,7 +3575,7 @@ match your project's environments (`staging`, `canary`, `e2e`,
 
 > **Note — planned actions in this template.** The `lint`, `doc`,
 > `fmt`, and `install` tasks above invoke native actions that are
-> **not yet registered** (`lint`, `doc`, `fmt`, `install`; see the
+> not yet registered (`lint`, `doc`, `fmt`, `install`; see the
 > Action catalog's shipped-vs-planned note). They illustrate the
 > intended starter set, but running them against the current build
 > tool errors with "unknown action" until those actions land.
@@ -3554,45 +3583,46 @@ match your project's environments (`staging`, `canary`, `e2e`,
 ### What this template demonstrates
 
 - **Profile-as-property pattern.** Each build task names its
-  profile literally. No central activation state.
+  profile literally. There is no central activation state.
 - **Override path.** Each task parameterizes its profile, so
   `cajeta test -P profile=integration` is the one-off-different-profile
   invocation without editing the manifest.
-- **Flavor / profile orthogonality.** `build` uses `debug`+`dev`;
-  `test` uses `debug`+`test`; `integration` uses a custom
-  flavor + `integration`; `release` uses `release`+`release`.
-  Any combination is valid; the template just shows common
+- **Flavor / profile orthogonality.** `build` uses `debug`+`dev`,
+  `test` uses `debug`+`test`, `integration` uses a custom
+  flavor + `integration`, and `release` uses `release`+`release`.
+  Any combination is valid, and the template just shows common
   pairings.
-- **Custom flavor as named composition.** `integration` flavor
+- **Custom flavor as named composition.** The `integration` flavor
   lives in `settings.build.custom-flavors` so multiple tasks
   can reference it by name rather than restating the
   composition map.
 - **Dependency gates.** `tasks.release` `depends-on` both
-  `test` and `integration` so a release can't ship without
-  both passing. The dependency is "tests must succeed first,"
-  not "reuse the test build's binary" — `release` builds its
-  own binary with the right profile.
+  `test` and `integration` so a release cannot ship without
+  both passing. The dependency means the tests must succeed
+  first. It does not reuse the test build's binary, and
+  `release` builds its own binary with the right profile.
 
 ### Customizing the template
 
 Four common patterns:
 
 - **Edit in place.** Change `tasks.test`'s profile, add a
-  coverage threshold, switch parallelism — the manifest is the
+  coverage threshold, or switch parallelism. The manifest is the
   truth.
 - **Rename profiles.** `dev` / `test` / `integration` /
-  `release` are conventions, not requirements. If your project
-  uses `local` / `unit` / `sandbox` / `prod`, just rename them.
-- **Delete.** A project that doesn't ship docs deletes
-  `tasks.doc`; `cajeta doc` then errors with "no such task,"
-  surfacing the intent.
+  `release` are conventions rather than requirements. If your
+  project uses `local` / `unit` / `sandbox` / `prod`, just rename
+  them.
+- **Delete.** A project that does not ship docs deletes
+  `tasks.doc`, and `cajeta doc` then errors with "no such task,"
+  which surfaces the intent.
 - **Add.** A project with bespoke flows adds new tasks freely.
-  `cajeta tasks` lists them; `cajeta my-custom-task` runs them.
-  Common additions: `staging`, `canary`, `e2e`, `perf`,
-  regional builds, per-tenant builds.
+  `cajeta tasks` lists them, and `cajeta my-custom-task` runs
+  them. Common additions are `staging`, `canary`, `e2e`, `perf`,
+  regional builds and per-tenant builds.
 
 The build tool ships no opinion about what tasks a project
-should have. The template is convenience, not policy.
+should have. The template is a convenience rather than a policy.
 
 ---
 
@@ -3602,8 +3632,8 @@ A signed `.cja` carries an ed25519 signature over the archive
 bytes. ArchiveManagement.md §8 specifies the on-disk signature
 format (detached `.sig` today, header-flag bit reserved for
 embedded) and the `cajeta archive sign` / `cajeta archive verify-sig`
-subcommands. This section covers how the **build tool** and
-**runtime launcher** interact with signing — the build-time
+subcommands. This section covers how the build tool and the
+runtime launcher interact with signing. That means the build-time
 production of signatures, runtime verification before code
 execution, and the trust store.
 
@@ -3642,13 +3672,13 @@ cajeta run --verify-signature=strict ./dist/my-service-1.2.3.cja
 
 Verification modes:
 
-- **`off`** (default for `cajeta run` of a local build) — skip
+- **`off`** (default for `cajeta run` of a local build) skips
   verification entirely.
-- **`warn`** — verify if a `.sig` is present (sidecar or
-  embedded); warn-and-proceed if absent.
-- **`strict`** — refuse to load any archive that doesn't carry a
-  valid signature against a trusted public key. Refuse to load
-  an archive whose `key-id` isn't in the trust store.
+- **`warn`** verifies if a `.sig` is present (sidecar or
+  embedded), and warns and proceeds if it is absent.
+- **`strict`** refuses to load any archive that does not carry a
+  valid signature against a trusted public key. It also refuses
+  to load an archive whose `key-id` is not in the trust store.
 
 Verification flow in `strict` mode:
 
@@ -3666,7 +3696,7 @@ Verification flow in `strict` mode:
 ### Fetch-time verification (publisher-trust)
 
 Every archive a declared repository serves is verified when it is fetched,
-before anything stores or loads it: `cajeta build`, `deps`, plugins, melts and
+before anything stores or loads it. `cajeta build`, `deps`, plugins, melts and
 a notebook's `Packages.install` all run the same check
 (`buildtool/FetchVerification`).
 
@@ -3678,18 +3708,18 @@ a notebook's `Packages.install` all run the same check
    the root signs that names the online keys allowed to sign release
    metadata (olla's is `release-1`).
 3. **Release metadata.** `/v2/resolve` carries a signed envelope naming the
-   release's sha256 and owning organization. The bytes must hash to it; a
-   mismatch discards them. Metadata that is present and does not verify is
+   release's sha256 and owning organization. The bytes must hash to it, and
+   a mismatch discards them. Metadata that is present and does not verify is
    refused under every policy.
 4. **Archive signature.** When the repository publishes one, it is checked
-   against the owning organization's key document; with no document, against
-   the trust store below.
+   against the owning organization's key document. With no document, it is
+   checked against the trust store below.
 
-A repository's policy is its `verification` field in `settings.repositories`:
-`"publisher"`, the default, requires step 3; `"checksum"` accepts a repository
+A repository's policy is its `verification` field in `settings.repositories`.
+`"publisher"`, the default, requires step 3. `"checksum"` accepts a repository
 that serves no signed metadata on its own sha256, for that repository only.
 A repository a melt contributes cannot be relaxed. `~/.olla` is a verified
-store, outside the policy: a fetched release is mirrored into it only after
+store, outside the policy. A fetched release is mirrored into it only after
 it passes, with its envelope beside it as `<name>-<version>.release.json`, and
 the machine's own `cajeta install` builds are admitted as local builds. The
 lockfile's sha256 pins what was verified, so offline builds keep working.
@@ -3700,16 +3730,18 @@ lockfile's sha256 pins what was verified, so offline builds keep working.
 Public keys the launcher will accept come from three locations,
 in precedence order:
 
-1. **`$CAJETA_TRUST_KEYS_DIR`** — additional trust dir specified
-   via environment. First-match-wins. Useful for CI runners that
-   pre-stage org-specific keys without modifying system state.
-2. **`~/.cajeta/trust/keys/`** — per-user trust store. Each file
-   is a PEM ed25519 public key; the filename (sans `.pem`) is
-   the `key-id` that identifies it. Used for personal trust
-   decisions.
+1. **`$CAJETA_TRUST_KEYS_DIR`** is an additional trust dir
+   specified via the environment. The first match wins. It helps
+   CI runners that pre-stage org-specific keys without modifying
+   system state.
+2. **`~/.cajeta/trust/keys/`** is the per-user trust store. Each
+   file is a PEM ed25519 public key, and the filename (sans
+   `.pem`) is the `key-id` that identifies it. It holds personal
+   trust decisions.
 3. **`/etc/cajeta/trust/keys/`** (Windows: `%ProgramData%\cajeta\trust\keys\`)
-   — system-wide trust store. Managed by the OS package manager
-   or org-admin; typically locked-down read-only.
+   is the system-wide trust store. It is managed by the OS
+   package manager or an org admin, and it is typically locked
+   down read-only.
 
 ### Subcommand: `cajeta trust`
 
@@ -3727,16 +3759,16 @@ cajeta trust pin <repository> <key-id> # verify that repository only against thi
 cajeta trust verify-document <file> [--origin <url>]  # will a client accept this document?
 ```
 
-Roots and keys are different anchors: a root verifies documents (key
-documents, delegations, release metadata), a trusted key verifies an archive
-signature directly. Trusted keys are additive to the document model, and when
-both could verify an archive the organization's key document wins.
+Roots and keys are different anchors. A root verifies documents, meaning key
+documents, delegations and release metadata, and a trusted key verifies an
+archive signature directly. Trusted keys are additive to the document model,
+and when both could verify an archive the organization's key document wins.
 
-`cajeta trust add` writes into the per-user store by default;
-`--system` writes into the system store (typically requires
-elevation). `cajeta trust remove --system` likewise. The CLI is
-a thin wrapper around the filesystem layout — shell scripts can
-equivalently `cp` files into the trust dirs.
+`cajeta trust add` writes into the per-user store by default, and
+`--system` writes into the system store, which typically requires
+elevation. `cajeta trust remove --system` works the same way. The
+CLI is a thin wrapper around the filesystem layout, so shell
+scripts can equivalently `cp` files into the trust dirs.
 
 ### Deploy-time: forcing signature requirements
 
@@ -3749,27 +3781,28 @@ of how the launcher is invoked:
 - **Kubernetes**: env var in the container definition.
 
 When `CAJETA_REQUIRE_SIGNATURE=strict` is set, the launcher
-ignores any laxer `--verify-signature` CLI flag. Useful for
+ignores any laxer `--verify-signature` CLI flag. This helps in
 locked-down production environments where the security posture
 should not be downgradable by a misconfigured launch script.
 
 ### What the signature does NOT do
 
-- **It does not authenticate publisher identity.** That's a PKI
-  / web-of-trust problem. The trust store is "keys I've decided
-  to accept artifacts from"; key distribution and revocation are
-  out of scope for cajeta itself. Sigstore / cosign-style
-  transparency-log integration is a possible extension (see
-  Comparative analysis).
+- **It does not authenticate publisher identity.** That is a PKI
+  / web-of-trust problem. The trust store holds the keys you have
+  decided to accept artifacts from, and key distribution and
+  revocation are out of scope for cajeta itself. Sigstore /
+  cosign-style transparency-log integration is a possible
+  extension (see Comparative analysis).
 - **It does not enforce capability constraints.** A signed
-  artifact is still subject to the capability declaration;
-  signing means "this is the artifact the publisher meant to
-  ship", not "this artifact is safe to grant any capability".
+  artifact is still subject to the capability declaration.
+  Signing means "this is the artifact the publisher meant to
+  ship". It does not mean "this artifact is safe to grant any
+  capability".
 - **It does not gate dependency loading.** A signed top-level
   archive may transitively load unsigned archives from the local
   download cache. Closing this hole requires signature-checking
-  on every load, which is feasible but adds complexity; deferred
-  to v2.
+  on every load, which is feasible but adds complexity, and it
+  is deferred to v2.
 
 ---
 
@@ -3780,18 +3813,18 @@ without naming which JDK distribution from which vendor.
 Different Java vendors (Eclipse Temurin, Amazon Corretto,
 Oracle, GraalVM, Azul Zulu) ship the same major version with
 different bytecode JITs, GC defaults, native-image support, and
-bug patches — and the ecosystem lacked a first-class mechanism
+bug patches, and the ecosystem lacked a first-class mechanism
 for builds to declare which one they need. The result was
 years of "works on my JDK" failures, SDKMAN, jenv, jabba, asdf,
 and eventually Gradle's `toolchain { languageVersion = JavaLanguageVersion.of(17) }`
 band-aid layered on top.
 
 Cajeta's answer is to pin the toolchain from day one. The
-manifest names the toolchain version + distribution; if the
-running toolchain doesn't match, the build tool **auto-fetches
-the right one and transparently dispatches** into it. The
-ergonomic model is `rustup`: developers don't switch toolchains
-manually; the toolchain manager does it.
+manifest names the toolchain version + distribution. If the
+running toolchain does not match, the build tool auto-fetches
+the right one and transparently dispatches into it. The
+ergonomic model is `rustup`. Developers do not switch toolchains
+manually, because the toolchain manager does it.
 
 ### The pin: `settings.toolchain`
 
@@ -3821,10 +3854,10 @@ Field semantics:
 
 **`fetch` modes:**
 
-- **`auto`** (default) — download to `~/.cajeta/toolchains/<dist>/<version>/`, re-exec transparently. The rustup model.
-- **`warn`** — print a warning and proceed with the running toolchain. Useful for environments where downloads aren't desired but a hard error would block too much.
-- **`error`** — refuse to build until the user installs the right one. Standard for locked-down CI.
-- **`off`** — skip the check entirely. Escape hatch for tooling that knows what it's doing.
+- **`auto`** (default) downloads to `~/.cajeta/toolchains/<dist>/<version>/` and re-execs transparently. This is the rustup model.
+- **`warn`** prints a warning and proceeds with the running toolchain. It suits environments where downloads are not desired but a hard error would block too much.
+- **`error`** refuses to build until the user installs the right one. This is standard for locked-down CI.
+- **`off`** skips the check entirely. It is the escape hatch for tooling that knows what it is doing.
 
 ### Language version vs toolchain version
 
@@ -3856,21 +3889,21 @@ A project that wants "compile with the latest 1.0.x bugfix" pins `cajeta-lang-ve
     └── 1.0.3-fast-math/bin/cajeta
 ```
 
-Parallel to `~/.cajeta/cache/` (artifact + IR cache) and
-`~/.cajeta/trust/` (signature trust store). Each distribution
-holds its own versions; toolchains across distributions are
-independent and don't conflict.
+The store sits parallel to `~/.cajeta/cache/` (artifact + IR
+cache) and `~/.cajeta/trust/` (signature trust store). Each
+distribution holds its own versions, and toolchains across
+distributions are independent and do not conflict.
 
 ### Transparent dispatch — the rustup trick
 
-When `cajeta` on PATH is invoked, here's what happens:
+When `cajeta` on PATH is invoked, four steps follow:
 
 1. Read `settings.toolchain` from the manifest (if there is one).
    No manifest, no override, no env var → run the PATH binary
    directly.
 2. Locate the right toolchain in `~/.cajeta/toolchains/<dist>/<version>/`.
-3. If found and it isn't the running build, **re-exec into it**
-   with the original argv. The user sees no difference; the
+3. If found and it is not the running build, re-exec into it
+   with the original argv. The user sees no difference, and the
    right toolchain runs.
 4. If not found:
    - `fetch: auto` → download, verify, install, then re-exec.
@@ -3878,21 +3911,22 @@ When `cajeta` on PATH is invoked, here's what happens:
    - `fetch: error` → refuse with a suggested install command.
    - `fetch: off` → run the running binary without comment.
 
-The PATH `cajeta` becomes a thin dispatcher; the real toolchains
-live in the store. Same model `cargo` uses on top of `rustup`.
+The PATH `cajeta` becomes a thin dispatcher, and the real
+toolchains live in the store. This is the same model `cargo` uses
+on top of `rustup`.
 
-**Escape hatch:** `CAJETA_NO_DISPATCH=1` skips the re-exec
-entirely and runs whatever's on PATH. Useful for tooling that
-needs to know exactly which binary is running (debuggers,
-profilers, recursive cajeta invocations from a build script that
-shouldn't re-dispatch).
+**Escape hatch.** `CAJETA_NO_DISPATCH=1` skips the re-exec
+entirely and runs whatever is on PATH. It helps tooling that
+needs to know exactly which binary is running, such as debuggers,
+profilers, and recursive cajeta invocations from a build script
+that should not re-dispatch.
 
 ### Project-local override file
 
-For cases where editing the manifest is the wrong granularity
-(bisecting toolchain versions, CI matrix testing, temporary
-local overrides), a one-line file at the project root takes
-precedence:
+Sometimes editing the manifest is the wrong granularity, as when
+bisecting toolchain versions, running a CI matrix, or making a
+temporary local override. For those cases a one-line file at the
+project root takes precedence:
 
 ```
 .cajeta-toolchain                    # one of these forms:
@@ -3901,10 +3935,10 @@ official:1.0.3                       # explicit distribution
 nightly:2026-06-01                   # date-stamped nightly
 ```
 
-Same precedence chain as for properties:
-**CLI flag > env var > project-local override file > manifest pin.**
+The precedence chain is the same as for properties:
+CLI flag > env var > project-local override file > manifest pin.
 
-Not committed to VCS.
+The file is not committed to VCS.
 
 ### CLI
 
@@ -3924,9 +3958,10 @@ cajeta toolchain show                    # the manifest's pin + the resolved bin
 
 ### Toolchain registry protocol
 
-Separate from artifact repositories (different content,
-different protocol). The cajeta-org registry serves the official
-distribution; companies / forks host their own.
+The toolchain registry is separate from artifact repositories,
+with different content and a different protocol. The cajeta-org
+registry serves the official distribution, and companies and
+forks host their own.
 
 ```
 GET  /toolchains/<dist>/index.json
@@ -3952,7 +3987,7 @@ Platforms follow standard target triples: `x86_64-linux-gnu`,
 | `system` | Whatever the OS package manager installed (PATH `cajeta` with no version pin); resolves to the running binary without re-dispatch. |
 
 Third parties claim distinct distribution names. The cajeta-org
-registry doesn't gatekeep distribution names that don't conflict
+registry does not gatekeep distribution names that do not conflict
 with reserved ones, but communities are encouraged to namespace
 distinctively.
 
@@ -3968,7 +4003,7 @@ Toolchain downloads are verified before install:
    and the binary's sha256 against the checksums file.
 4. Mismatch → refuse to install; cite the digest pair.
 
-Same trust-store machinery used by archive signing
+This is the same trust-store machinery used by archive signing
 ([Archive signing and launcher verification](#archive-signing-and-launcher-verification)).
 A toolchain's release key is just another key-id in
 `~/.cajeta/trust/keys/`.
@@ -3992,35 +4027,36 @@ toolchain itself is detectable:
 }
 ```
 
-Lockfile drift detection now covers three sources: manifest
-content, melt versions, **and toolchain version**. A toolchain
-bump is visible in PR review.
+Lockfile drift detection now covers three sources, which are the
+manifest content, the melt versions, and the toolchain version. A
+toolchain bump is visible in PR review.
 
 ### IR cache discriminator
 
 The toolchain version + distribution is already part of the IR
 cache key (see [Incremental builds](#incremental-builds)). Pinning
-the toolchain pins the cache: switching toolchain bumps the
+the toolchain pins the cache. Switching toolchain bumps the
 discriminator and forces a fresh compile, as it should.
 
 ### Cross-compilation
 
 `settings.toolchain` and `settings.build.target` are
 independent. The toolchain knows how to cross-compile to various
-target triples; the toolchain version + target combo is what
+target triples, and the toolchain version + target combo is what
 matters for reproducibility. A single toolchain build serves
 multiple targets.
 
 ### What this does NOT do
 
-- **It doesn't manage runtime JVMs / JDKs.** Cajeta is not Java
-  hosted; there's no separate runtime to provision. The toolchain
-  binary is the compiler AND it ships the cajeta runtime.
-- **It doesn't manage LLVM.** The toolchain binary statically
+- **It does not manage runtime JVMs / JDKs.** Cajeta is not Java
+  hosted, so there is no separate runtime to provision. The
+  toolchain binary is the compiler, and it ships the cajeta
+  runtime.
+- **It does not manage LLVM.** The toolchain binary statically
   links its LLVM. Different toolchain versions may carry
-  different LLVMs (the cajeta toolchain release notes call out
-  the LLVM major version); users don't pin LLVM separately.
-- **It doesn't manage other languages.** A cajeta toolchain
+  different LLVMs, and the cajeta toolchain release notes call
+  out the LLVM major version. Users do not pin LLVM separately.
+- **It does not manage other languages.** A cajeta toolchain
   manages cajeta. Polyglot projects use the OS or asdf to manage
   their other-language toolchains.
 
@@ -4029,42 +4065,42 @@ multiple targets.
 ## Plugins
 
 `cajeta lint` and `cajeta test` ship built-in checks and
-coverage probes. Real projects need more — project-specific
-banned APIs, license-header validation, security linters
-tracking known-bad patterns, custom test-coverage
-configurations, third-party policy enforcement. Plugins are the
-extension point.
+coverage probes. Real projects need more. They need
+project-specific banned APIs, license-header validation, security
+linters tracking known-bad patterns, custom test-coverage
+configurations, and third-party policy enforcement. Plugins are
+the extension point.
 
-A plugin is a cajeta package that **ships actions** — named
+A plugin is a cajeta package that ships actions. Those are named
 verbs invokable from tasks, alongside the native action catalog.
-Plugins resolve through the standard repository machinery (same
-as runtime dependencies) and are declared in the manifest's
+Plugins resolve through the standard repository machinery, the
+same as runtime dependencies, and are declared in the manifest's
 `plugins` block.
 
 ### What plugins can do, and can't
 
-Deliberate constraints — Maven and Gradle's plugin proliferation
-is the failure mode to avoid.
+The constraints are deliberate. Maven and Gradle's plugin
+proliferation is the failure mode to avoid.
 
-Plugins **cannot**:
+Plugins cannot:
 
-- Customize the build graph or task DAG. Plugins ship actions;
-  the user wires those actions into tasks. There is no plugin-
-  driven side-effect that bypasses the manifest's declared task
-  list.
+- Customize the build graph or task DAG. Plugins ship actions,
+  and the user wires those actions into tasks. There is no
+  plugin-driven side-effect that bypasses the manifest's declared
+  task list.
 - Modify source files or generated IR.
 - Influence dependency resolution.
-- Run automatically as "lifecycle hooks" — the task author
+- Run automatically as "lifecycle hooks". The task author
   decides when each plugin action runs.
 
-Plugins **can**:
+Plugins can:
 
-- Provide actions in any catalog category — analysis, validation,
-  measurement, reporting, transport, codegen of supplementary
-  artifacts, etc. The actions appear in tasks with the plugin's
-  namespace prefix (`cajeta.coverage.report`,
+- Provide actions in any catalog category, such as analysis,
+  validation, measurement, reporting, transport, and codegen of
+  supplementary artifacts. The actions appear in tasks with the
+  plugin's namespace prefix (`cajeta.coverage.report`,
   `cajeta.lint.security.scan`, etc.).
-- Carry their own capability declarations; the build tool
+- Carry their own capability declarations. The build tool
   sandboxes plugin processes against the consuming project's
   `settings.plugins-allowed-capabilities` allowlist.
 
@@ -4119,8 +4155,8 @@ it).
 ### Actions plugins provide
 
 Each plugin's documentation lists the actions it ships, their
-required and optional params, and the outputs they publish —
-exactly the same contract as native actions. Tasks invoke them
+required and optional params, and the outputs they publish. That
+is exactly the same contract as native actions. Tasks invoke them
 by name with the plugin's namespace:
 
 ```jsonc
@@ -4154,22 +4190,22 @@ by name with the plugin's namespace:
 ```
 
 Plugin actions participate in [pipelining](#action-pipelining)
-identically to native actions; their outputs are documented by
+identically to native actions. Their outputs are documented by
 the plugin and consumable via `${id.field}`.
 
 Multiple plugin actions invoked from the same task run according
-to the task's structure — sequential by default, parallel when
-wrapped in a `parallel` group. Two plugin actions in a parallel
-group run concurrently; there's no implicit "all analyzers in
-parallel, then all reporters" phase scheduling. The task author
-controls ordering.
+to the task's structure. They are sequential by default and
+parallel when wrapped in a `parallel` group. Two plugin actions
+in a parallel group run concurrently, and there is no implicit
+"all analyzers in parallel, then all reporters" phase scheduling.
+The task author controls ordering.
 
 Findings from analyzer-style plugin actions merge into a unified
 report keyed by source location when the task uses the native
-`lint` action (which collects findings from any prior plugin
-actions that published `findings` outputs). Two plugins flagging
-the same line at different severities both appear; consumers
-(CI, IDE) decide which to surface.
+`lint` action, which collects findings from any prior plugin
+actions that published `findings` outputs. Two plugins flagging
+the same line at different severities both appear, and consumers
+such as CI and the IDE decide which to surface.
 
 ### Code coverage: the `dev.cajeta.coverage` plugin
 
@@ -4177,8 +4213,8 @@ Coverage ships as `dev.cajeta.coverage`, a thin build-tool
 adapter over `dev.cajeta.coco` (cajeta-coco), which is the
 engine. The user guide chapter
 [23 — Code coverage](../../guide/23-code-coverage.md) is the
-task-oriented reference; this section places it in the action
-catalog. A worked project with one class per finding is
+task-oriented reference, and this section places it in the
+action catalog. A worked project with one class per finding is
 cajeta-coco's `samples/tour`.
 
 ```jsonc
@@ -4203,7 +4239,7 @@ cajeta-coco's `samples/tour`.
 }
 ```
 
-The plugin ships **three** actions:
+The plugin ships three actions:
 
 | Action                       | Purpose                                                                                                                        |
 |------------------------------|--------------------------------------------------------------------------------------------------------------------------------|
@@ -4211,7 +4247,7 @@ The plugin ships **three** actions:
 | `cajeta.coverage.report`     | Render HTML / lcov / SARIF / CRAP ranking from the run's artifacts, then apply the `min` gate.                                    |
 | `cajeta.coverage.mutate`     | Mutation-test a completed run: one `icmp` predicate swapped at a time, relinked and re-run; applies the `min-score` gate.         |
 
-There is no separate `collect` action: instrumenting and
+There is no separate `collect` action. Instrumenting and
 running are one step, because the probe dump is written by the
 measured program itself when the entry method returns.
 
@@ -4244,47 +4280,48 @@ Config keys, all of which a task may override per-action:
 
 **Instrument once, report many times.** coco persists the probe
 map beside the instrumented IR, so `cajeta.coverage.report`
-never rebuilds or re-runs: switching a threshold, re-rendering,
+never rebuilds or re-runs. Switching a threshold, re-rendering,
 or an IDE re-reading the run are all cheap.
 
-**`exclude` removes code from measurement, not from the
+**`exclude` removes code from measurement and leaves it in the
 program.** An excluded module is still lowered and still
-linked. Three kinds: `file` (glob over the source path),
-`package` (`a.b.c`, or `a.b.c.*` for subpackages) and `symbol`
-(`owner.method`, dropped per FUNCTION since a module holds
-many). `reason` is mandatory and checked against the same
+linked. There are three kinds. `file` is a glob over the source
+path, `package` is `a.b.c`, or `a.b.c.*` for subpackages, and
+`symbol` is `owner.method`, dropped per function since a module
+holds many. `reason` is mandatory and checked against the same
 generic list `cajeta coverage ignore` refuses to write. A bare
-string still means `kind=file` with no reason, but matches as a
-SUBSTRING rather than a glob — an anchored glob would match
-nothing and silently un-exclude every project using the old
-spelling. (It was not always: dropping excluded modules from the
-link built a *different program* than the one under
-measurement, and cajeta-coco's `samples/tour` — which excludes its own
-test package — lost nine of twelve tests to it and reported a
+string still means `kind=file` with no reason, but it matches as
+a substring rather than a glob, because an anchored glob would
+match nothing and silently un-exclude every project using the
+old spelling. It was not always so. Dropping excluded modules
+from the link built a different program than the one under
+measurement, and cajeta-coco's `samples/tour`, which excludes its
+own test package, lost nine of twelve tests to it and reported a
 plausible-looking 12%. Nothing failed, which is what made it
-dangerous.)
+dangerous.
 
 **`classpath` is derived from the project's dependencies.** The
 plugin request's `context.classpath` carries the same
 comma-joined resolved-dependency string `BuildAction` passes as
 `--classpath`, so a plugin that compiles the consumer's sources
 sees the consumer's dependencies. It is omitted when the project
-has none or resolution fails — a plugin that compiles nothing
-should not stop working because a dependency is unreachable.
+has none or resolution fails, because a plugin that compiles
+nothing should not stop working when a dependency is
+unreachable.
 
 **`mutate` replays the link line rather than rebuilding it.**
 `instrument` records every link input, in order, as `link.tsv`
-(`coco-link v1`); a mutant is that line with exactly one object
+(`coco-link v1`), and a mutant is that line with exactly one object
 swapped. A mutant must be the measured program and not a
 near-miss of it, and a separate invocation cannot otherwise know
 whether per-test attribution applied or which classpath archives
 contributed objects.
 
-Beyond a percentage, coco reports what the percentage cannot:
-uncovered code split into statically-unreachable (delete) versus
-reachable-but-untested (test), per-test attribution, a CRAP risk
-ranking, and mutation survivors. Those surface in the IDE's coco
-tool window; see the guide chapter.
+Beyond a percentage, coco reports what the percentage cannot. It
+splits uncovered code into statically-unreachable (delete) versus
+reachable-but-untested (test), and it adds per-test attribution,
+a CRAP risk ranking, and mutation survivors. Those surface in the
+IDE's coco tool window, and the guide chapter covers them.
 
 #### Not yet built
 
@@ -4293,9 +4330,10 @@ was never implemented, and are recorded here as design intent
 rather than as available configuration:
 
 - **`grain`** (`line` / `branch` / `region`). coco instruments
-  line and branch sites; there is no knob to select among them.
-- **`min-per-file`** — a per-file floor under the aggregate.
-- **`report: ["html","sarif","lcov","console"]`** — coco emits
+  line and branch sites, and there is no knob to select among
+  them.
+- **`min-per-file`**, a per-file floor under the aggregate.
+- **`report: ["html","sarif","lcov","console"]`**. coco emits
   HTML, annotated HTML, lcov and SARIF unconditionally.
 - **`cajeta.coverage.collect`** as a separate action.
 - **`@nocoverage("reason")`** on a class or method, and the
@@ -4318,26 +4356,26 @@ consuming project's `plugins-allowed-capabilities` allowlist:
 
 A plugin declaring a capability not in the allowlist fails the
 build before it runs, citing the plugin name and the missing
-capability. Default allowlist is `["filesystem"]` — most plugins
-need to read source / IR to do their job, but few need network
-or process spawn.
+capability. The default allowlist is `["filesystem"]`, because
+most plugins need to read source / IR to do their job, but few
+need network or process spawn.
 
 First-party plugins (`cajeta.*` namespace, shipped with the
 toolchain) inherit a less restrictive default. User-installed
-plugins always hit the explicit allowlist — supply-chain attacks
-in the build path are exactly the failure mode the capability
-system exists to prevent.
+plugins always hit the explicit allowlist, because supply-chain
+attacks in the build path are exactly the failure mode the
+capability system exists to prevent.
 
 ### Plugin conflicts
 
 Two plugins claiming the same `plugin.id` field (declared in
 their own manifest) conflict and fail the build. There is no
-last-write-wins behavior — "the wrong analyzer silently took
-over" is too painful to debug.
+last-write-wins behavior, because "the wrong analyzer silently
+took over" is too painful to debug.
 
 A plugin shadowing a built-in lint check ID (`unused-import`,
-`deprecated-api`, etc.) similarly fails; built-ins can be
-disabled via `lint.allow` but not silently replaced.
+`deprecated-api`, etc.) similarly fails. Built-ins can be
+disabled via `lint.allow`, and they cannot be silently replaced.
 
 ### `lint` task and plugin actions
 
@@ -4381,31 +4419,32 @@ $ cajeta lint --fail-on-severity=warning
 
 The built-in checks (cyclic types, unused imports, deprecated
 APIs, capability mismatches, dead code) are implemented as
-first-party plugins under the hood — not special-cased — so the
-unified report shape works regardless of plugin source.
+first-party plugins under the hood, with no special casing, so
+the unified report shape works regardless of plugin source.
 
 ### Why not Maven/Gradle-shaped plugins
 
-Maven has hundreds of plugins, Gradle thousands. Cajeta's plugin
-system is deliberately narrower:
+Maven has hundreds of plugins, and Gradle has thousands. Cajeta's
+plugin system is deliberately narrower:
 
 - **No build-graph customization.** Maven/Gradle plugins inject
   themselves into the lifecycle and can rewrite the build.
-  Cajeta plugins ship named actions; the task author invokes
+  Cajeta plugins ship named actions, and the task author invokes
   those actions wherever they make sense in their tasks.
-- **No DSL surface.** Plugins ship JSON-declared actions. No
-  plugin-specific DSL fragment for users to learn per plugin.
+- **No DSL surface.** Plugins ship JSON-declared actions. There
+  is no plugin-specific DSL fragment for users to learn per
+  plugin.
 - **Capability-gated.** A Maven plugin can do anything the JVM
-  can do; a cajeta plugin runs in a sandbox with declared caps.
-- **No phase scheduling.** Plugins don't auto-run at "the right
-  point in the lifecycle" — there is no lifecycle. The task
-  author writes the action invocations explicitly.
+  can do. A cajeta plugin runs in a sandbox with declared caps.
+- **No phase scheduling.** Plugins do not auto-run at "the right
+  point in the lifecycle", because there is no lifecycle. The
+  task author writes the action invocations explicitly.
 
-The trade: cajeta plugins can't reshape the build itself, which
-is why we have first-class tasks, action presets, properties,
-profiles, overrides, and capability declarations — the cases
-where Maven/Gradle users reach for plugins, cajeta provides as
-manifest constructs.
+The trade is that cajeta plugins cannot reshape the build itself.
+That is the reason for first-class tasks, action presets,
+properties, profiles, overrides, and capability declarations.
+The cases where Maven/Gradle users reach for plugins, cajeta
+provides as manifest constructs.
 
 ---
 
@@ -4427,14 +4466,14 @@ toolchain.
 
 Specifications are versioned independently. A new manifest field
 in `manifest-v2.json` is opt-in via a `"schema-version": 2`
-declaration at the top of `cajeta.json`; v1-only tools ignore
+declaration at the top of `cajeta.json`, and v1-only tools ignore
 v2-tagged manifests with a clear error.
 
 The cajeta toolchain ships one reference implementation of each
-spec; nothing prevents a third party from shipping their own
+spec. Nothing prevents a third party from shipping their own
 build tool that reads `cajeta.json` and produces compatible
 artifacts. The official `cajeta` binary is dominant by default,
-not exclusive.
+and it is not exclusive.
 
 ---
 
@@ -4443,7 +4482,7 @@ not exclusive.
 Cajeta's build tool is informed by a deliberate study of prior
 art. This section catalogs the trade-offs of each major
 ecosystem, what cajeta adopts, and what cajeta does differently
-and why. Read it as the reasoning behind the design — every
+and why. Read it as the reasoning behind the design, since every
 choice above is traceable to a lesson from one of these tools.
 
 ### Maven (Java, 2004)
@@ -4452,116 +4491,118 @@ choice above is traceable to a lesson from one of these tools.
 - Repository-based dependency resolution with transitive
   graphs. The model of "declare what you need, the tool fetches
   it transitively" set the standard.
-- The group:artifact:version coordinate system —
-  organization-prefixed namespace + a stable artifact name +
-  semver. Maven Central scales globally on this.
+- The group:artifact:version coordinate system, which is an
+  organization-prefixed namespace plus a stable artifact name
+  plus semver. Maven Central scales globally on this.
 - Public Maven Central as a universal distribution mechanism.
-  One global namespace, anyone can publish (with controlled
-  namespace ownership).
-- The `<dependencyManagement>` block — a way to pin transitive
+  There is one global namespace, and anyone can publish, with
+  controlled namespace ownership.
+- The `<dependencyManagement>` block, a way to pin transitive
   versions across the graph without rewriting every direct dep.
 - `${property}` substitution centralizing repeated values
-  (versions, paths, group names) in a `<properties>` block. The
-  single biggest readability win Maven has, and cajeta carries
-  it forward verbatim — see [Properties](#properties).
+  (versions, paths, group names) in a `<properties>` block. It is
+  the single biggest readability win Maven has, and cajeta
+  carries it forward verbatim. See [Properties](#properties).
 
 **What didn't:**
-- XML pom files. Verbose, human-hostile, change-noisy. Comparing
-  two poms in a code review is unpleasant.
-- Plugin proliferation — every build concern (compile, test,
+- XML pom files. They are verbose, human-hostile and
+  change-noisy. Comparing two poms in a code review is
+  unpleasant.
+- Plugin proliferation. Every build concern (compile, test,
   package, resources, codegen, deployment) is a separate plugin
-  with its own DSL fragment, its own version, its own
+  with its own DSL fragment, its own version, and its own
   documentation. Reading a non-trivial pom requires understanding
   10+ plugin schemas. Cajeta's [plugin system](#plugins) keeps
   the extension hook for the cases that genuinely need it
   (analysis, validation, coverage) but constrains plugins to
-  four phases with structured findings, denying them the
+  four phases with structured findings. It denies them the
   build-graph customization that turned Maven plugins into a
   per-project DSL cocktail.
 - Slow incremental builds. Maven re-runs lifecycle phases
   liberally rather than tracking what actually changed.
 - "Convention over configuration" works for the common case but
-  becomes hostile when you need to deviate; the escape valves
-  are awkward (parent poms, multiple profiles).
+  becomes hostile when you need to deviate, and the escape
+  valves (parent poms, multiple profiles) are awkward.
 
-**What cajeta keeps:** repository model (priority-ordered),
+**What cajeta keeps:** the repository model (priority-ordered),
 the group/library/version coordinate system (cajeta's reverse-
 DNS name flattens group:library, see
-[Manifest](#manifest--cajetajson) field conventions), public-
-registry pattern, the `dependencyManagement`-equivalent (cajeta's
-[overrides](#overriding-transitive-dependencies)).
+[Manifest](#manifest--cajetajson) field conventions), the public-
+registry pattern, and the `dependencyManagement`-equivalent
+(cajeta's [overrides](#overriding-transitive-dependencies)).
 
-**What cajeta changes:** JSONC over XML; no plugin system in the
+**What cajeta changes:** JSONC over XML, no plugin system in the
 declarative path (post-build hooks for escape, declarative
 [distribution actions](#distribution-actions) for the common
-case); content-addressed incremental cache.
+case), and a content-addressed incremental cache.
 
 ### Gradle (Java/Android, 2007)
 
 **What worked:**
 - The Gradle Build Cache made incremental + distributed builds
-  fast — a huge improvement over Maven's "rerun the lifecycle"
+  fast, a huge improvement over Maven's "rerun the lifecycle"
   model. Tasks are cached on content-derived input keys.
-- Hierarchical task definition: the project graph is a DAG of
-  tasks, each task declares its inputs / outputs / dependencies.
-  The DAG is inspectable, parallelizable, and reproducibly
-  cacheable. This was Gradle's real innovation.
+- Hierarchical task definition. The project graph is a DAG of
+  tasks, and each task declares its inputs / outputs /
+  dependencies. The DAG is inspectable, parallelizable, and
+  reproducibly cacheable. This was Gradle's real innovation.
 - First-class IDE integration through a model-protocol API.
-- Configuration caching: even Gradle's expensive build-config
+- Configuration caching. Even Gradle's expensive build-config
   evaluation phase gets cached on subsequent runs.
 
 **What didn't:**
 - Build scripts are Turing-complete (Groovy or Kotlin DSL). A
-  non-trivial build is a real program — debug it with a real
-  debugger. Reading someone else's `build.gradle` to understand
-  the build is high-effort.
-- Plugin compatibility hell — DSL changes between Gradle
-  versions break third-party plugins; users get caught in
+  non-trivial build is a real program, and you debug it with a
+  real debugger. Reading someone else's `build.gradle` to
+  understand the build is high-effort.
+- Plugin compatibility hell. DSL changes between Gradle
+  versions break third-party plugins, and users get caught in
   compatibility matrices. The plugin API surface is so wide
-  that holding compatibility is a structural problem, not a
-  matter of discipline.
+  that holding compatibility is a structural problem rather
+  than a matter of discipline.
 - The Gradle daemon and configuration cache get stale in
   confusing ways. "Stop the Gradle daemon and rerun" is a
   routine debugging step that should never be necessary.
-- IDE integration depends on a sync step that's slow and
+- IDE integration depends on a sync step that is slow and
   occasionally fails opaquely.
 
 **What cajeta keeps:**
-- **The task DAG model itself.** Cajeta's `tasks` block IS
+- **The task DAG model itself.** Cajeta's `tasks` block is
   Gradle's task graph, rendered as JSON. Tasks have
   `depends-on` (Gradle's `dependsOn`), tasks produce outputs
-  consumable by other tasks (Gradle's task inputs/outputs),
+  consumable by other tasks (Gradle's task inputs/outputs), and
   tasks compose into pipelines. This is Gradle's primary
   contribution and cajeta takes it whole.
-- **Content-addressed incremental cache** — see
+- **Content-addressed incremental cache.** See
   [Incremental builds](#incremental-builds). The IR cache is
   Gradle's build-cache lesson at a finer grain.
-- **Output threading from one task to the next** — Gradle's
+- **Output threading from one task to the next.** Gradle's
   `task.outputs.files` for declared outputs maps to cajeta's
   `${id.field}` pipelining mechanism.
 
 **What cajeta changes:**
-- **No Turing-complete script.** Tasks compose actions; actions
-  compose other actions; nothing is an embedded programming
+- **No Turing-complete script.** Tasks compose actions, actions
+  compose other actions, and nothing is an embedded programming
   environment. The `exec` action is the only escape, explicitly
   outside the analyzable surface.
 - **No fixed lifecycle phases.** Gradle inherited Maven's
   phase-based "everything fits into the lifecycle or you fight
-  the framework" model. Cajeta drops it: there is no
+  the framework" model. Cajeta drops it. There is no
   `validate → compile → test → package → install` order the
   tool enforces. Projects declare their own tasks with their
-  own dependencies; `cajeta init` provides a Maven-shaped
+  own dependencies, `cajeta init` provides a Maven-shaped
   starter set, and projects edit it freely.
 - **No plugin DSL surface.** Gradle plugins extend the build
   language itself, which is what creates the
   compatibility-matrix problem. Cajeta plugins ship JSON-
-  declared actions — no DSL fragment, no per-plugin syntax,
-  no version-coupled language extensions.
-- **No daemon.** No configuration-cache state to manage; the
-  manifest loads on every invocation. Faster startup ceiling
-  but no warm-cache amortization across runs (the IR cache
-  amortizes per-file content; the manifest is small enough that
-  re-parsing is cheap).
+  declared actions, with no DSL fragment, no per-plugin syntax,
+  and no version-coupled language extensions.
+- **No daemon.** There is no configuration-cache state to
+  manage, and the manifest loads on every invocation. The
+  startup ceiling is faster, and there is no warm-cache
+  amortization across runs. The IR cache amortizes per-file
+  content, and the manifest is small enough that re-parsing is
+  cheap.
 - **Single document.** Gradle's build is `build.gradle` plus
   `settings.gradle` plus `gradle.properties` plus
   `*.gradle.kts` plus version catalogs plus init scripts plus
@@ -4571,49 +4612,52 @@ case); content-addressed incremental cache.
 ### Cargo (Rust, 2014)
 
 **What worked:**
-- Single binary owning the whole toolchain (compile, test, doc,
-  fmt, dep management, publish). This single-tool ergonomic is
-  the strongest argument against the Maven/Gradle plugin
+- A single binary owning the whole toolchain (compile, test,
+  doc, fmt, dep management, publish). This single-tool ergonomic
+  is the strongest argument against the Maven/Gradle plugin
   fragmentation model.
-- Lockfile committed to VCS — reproducible builds without a
-  heavy apparatus.
-- MVS (minimum version selection) — predictable conflict
-  resolution, no "latest patch broke us" surprise.
-- Subcommand UX (`cargo build`, `cargo test`, etc.) —
-  discoverable, consistent flag semantics.
-- Workspaces as a first-class feature, not a bolt-on.
+- A lockfile committed to VCS, giving reproducible builds
+  without a heavy apparatus.
+- MVS (minimum version selection), giving predictable conflict
+  resolution with no "latest patch broke us" surprise.
+- Subcommand UX (`cargo build`, `cargo test`, etc.), which is
+  discoverable and has consistent flag semantics.
+- Workspaces as a first-class feature rather than a bolt-on.
 - `[patch]` and `[replace]` for transitive dependency overrides.
 
 **What didn't:**
-- Monolithic crate granularity — adding one function from a
-  large crate pulls in the whole crate. (Cajeta's archive can
-  ship at a finer per-module grain — see Compilation.md.)
-- No capability model — anything in the dep graph can call
-  anything; supply-chain attacks have to be caught at code
+- Monolithic crate granularity. Adding one function from a
+  large crate pulls in the whole crate. Cajeta's archive can
+  ship at a finer per-module grain, as Compilation.md describes.
+- No capability model. Anything in the dep graph can call
+  anything, so supply-chain attacks have to be caught at code
   review. This is Cargo's biggest weakness vs cajeta's design.
-- First-time fetch of a large dep graph is slow; no equivalent
-  of Maven's parallel-fetch.
+- First-time fetch of a large dep graph is slow, and there is no
+  equivalent of Maven's parallel-fetch.
 
 **What cajeta keeps:** essentially all the structural decisions
-above — single binary, lockfile, MVS, subcommand UX, workspaces,
-override mechanism. Cargo is the closest prior art to cajeta's
-build tool, and the deliberate design point is "Cargo, but
-with capabilities, JSON, and a richer distribution surface."
+above, meaning the single binary, the lockfile, MVS, the
+subcommand UX, workspaces, and the override mechanism. Cargo is
+the closest prior art to cajeta's build tool, and the deliberate
+design point is "Cargo, but with capabilities, JSON, and a richer
+distribution surface."
 
-**What cajeta changes:** capability declarations as first-class.
-Per-module archive grain (specified in
-[Compilation.md](Compilation.md)). JSONC manifest over TOML.
+**What cajeta changes:** capability declarations as first-class,
+a per-module archive grain (specified in
+[Compilation.md](Compilation.md)), and a JSONC manifest over
+TOML.
 
 ### Bazel / Buck (Google/Meta, 2010+)
 
 **What worked:**
-- Hermetic, sandboxed build steps — builds are reproducible by
+- Hermetic, sandboxed build steps, so builds are reproducible by
   construction.
-- Content-addressed remote build cache shared across the org —
-  large monorepos see huge wall-clock wins.
-- Strict dependency graph: every input is declared, including
-  transitive headers / files. No accidental dependencies.
-- Selective builds — "build only what's affected by this change"
+- A content-addressed remote build cache shared across the org.
+  Large monorepos see huge wall-clock wins.
+- A strict dependency graph. Every input is declared, including
+  transitive headers / files, so there are no accidental
+  dependencies.
+- Selective builds. "Build only what's affected by this change"
   is mechanically computable from the DAG.
 
 **What didn't:**
@@ -4623,36 +4667,36 @@ Per-module archive grain (specified in
 - BUILD files are verbose and fragile to refactoring. Renaming
   a target involves updating every reverse-dep's BUILD file.
 - Setting up the remote cache + executor infrastructure is a
-  significant operational investment; "you need a tools team to
+  significant operational investment. "You need a tools team to
   run Bazel" is real.
-- Per-language rules are owned by separate communities; the
+- Per-language rules are owned by separate communities, and the
   ecosystem of rule sets varies in quality.
 
 **What cajeta keeps:** sandboxed build steps (see
 [Sandboxing and reproducibility](#sandboxing-and-reproducibility)),
-hermetic execution as the default, reproducible builds.
+hermetic execution as the default, and reproducible builds.
 
-**What cajeta changes:** repositories — not remote build caches
-— serve the "share an artifact across the org" purpose without
-the layered-cache complexity. No Starlark; no BUILD files; the
-manifest IS the build graph (because the build graph is
-mechanically derivable from the manifest + source tree, without
-user-authored task definitions). This is a deliberate v1 trade:
-we lose the ability to reuse build outputs at the file grain
-across machines, we gain a build that doesn't require operator
-investment to set up.
+**What cajeta changes:** repositories serve the "share an
+artifact across the org" purpose, in place of remote build
+caches, and without the layered-cache complexity. There is no
+Starlark and there are no BUILD files. The manifest is the build
+graph, because the build graph is mechanically derivable from the
+manifest + source tree, without user-authored task definitions.
+This is a deliberate v1 trade. We lose the ability to reuse build
+outputs at the file grain across machines, and we gain a build
+that does not require operator investment to set up.
 
 ### CMake / Meson / Ninja (C/C++, 1990s–2010s)
 
 **What worked:**
-- Ninja is fast — minimal-rebuild graph execution that
-  outperforms make by an order of magnitude on touch-one-file
-  rebuilds. The Ninja file format is a deliberately constrained
-  DSL: a graph of `build out: rule deps` rules with no
-  conditionals. That constraint is what makes it fast.
-- Meson is a meaningful UX improvement over CMake (declarative
-  rather than macro-soup).
-- **Precompiled headers** — once a header's translation cost is
+- Ninja is fast. Its minimal-rebuild graph execution outperforms
+  make by an order of magnitude on touch-one-file rebuilds. The
+  Ninja file format is a deliberately constrained DSL, a graph
+  of `build out: rule deps` rules with no conditionals. That
+  constraint is what makes it fast.
+- Meson is a meaningful UX improvement over CMake, since it is
+  declarative rather than macro-soup.
+- Precompiled headers. Once a header's translation cost is
   paid, every translation unit including it skips it. The
   win is large for C++ where header inclusion is expensive.
 
@@ -4660,15 +4704,15 @@ investment to set up.
 - CMake's macro-soup syntax is famously hostile. Reading a
   non-trivial CMakeLists is a recreational sport.
 - No dependency management. Every C/C++ project rolls its own
-  combination of git submodules, vcpkg, Conan, FetchContent —
-  none of which integrate cleanly.
-- Two-stage generation: CMake → Ninja → exe. Debugging build
+  combination of git submodules, vcpkg, Conan and FetchContent,
+  and none of them integrate cleanly.
+- Two-stage generation, CMake → Ninja → exe. Debugging build
   issues requires understanding both layers.
 - Per-target flag customization syntax is bizarre even after
   understanding the model.
 
-**What cajeta keeps:** Ninja's minimal-rebuild discipline — only
-the changed source's IR module is recompiled. The
+**What cajeta keeps:** Ninja's minimal-rebuild discipline, where
+only the changed source's IR module is recompiled. The
 [IR cache](#incremental-builds) is cajeta's equivalent of
 precompiled headers, generalized to all source files rather
 than just headers, and content-addressed rather than
@@ -4677,58 +4721,59 @@ machines (within the local cache) share cache hits as long as
 content matches.
 
 **What cajeta changes:** integrated dependency management
-(repositories), no two-stage generation, declarative manifest
-that's the only file the user touches.
+(repositories), no two-stage generation, and a declarative
+manifest that is the only file the user touches.
 
 ### npm / pnpm / yarn (JavaScript, 2010+)
 
 **What worked:**
-- `npm install <pkg>` is fast and intuitive — the `cajeta add
-  <dep>` UX is directly modeled on this.
+- `npm install <pkg>` is fast and intuitive, and the `cajeta add
+  <dep>` UX is directly modeled on it.
 - pnpm's content-addressed store saves disk relative to npm's
   duplicated `node_modules` tree.
-- Vast ecosystem; the registry pattern works at scale.
+- A vast ecosystem. The registry pattern works at scale.
 
 **What didn't:**
 - Micro-package culture (`left-pad`, `is-odd`) makes dep graphs
   enormous and supply-chain attacks viable. The Russian-doll
   transitive structure means a typical app pulls thousands of
   packages.
-- **No capability model.** Anything in the dep graph can
+- No capability model. Anything in the dep graph can
   `require('fs')` and read your `.ssh/`. This is the
   load-bearing argument for cajeta's capability declarations.
 - npm's lockfile / `package.json` divergence has had multiple
-  redesigns; trust eroded.
-- Hoisting / phantom dependencies — code can `require` packages
-  it didn't declare.
+  redesigns, and trust eroded.
+- Hoisting / phantom dependencies. Code can `require` packages
+  it did not declare.
 
-**What cajeta keeps:** the `cajeta add <dep>` UX, the
+**What cajeta keeps:** the `cajeta add <dep>` UX, and the
 content-addressed download cache (pnpm's contribution).
 
-**What cajeta changes:** capability declarations and enforcement;
+**What cajeta changes:** capability declarations and enforcement,
 package granularity at the language-module level rather than
-the micro-utility level (no `is-odd` equivalents — the stdlib is
-expected to cover the building blocks); strict lockfile with
-manifest checksum for divergence detection.
+the micro-utility level (there are no `is-odd` equivalents, and
+the stdlib is expected to cover the building blocks), and a
+strict lockfile with a manifest checksum for divergence
+detection.
 
 ### pip / Python packaging (Python, 1998+)
 
 **What worked:**
-- Simple repository protocol (HTTP + predictable URLs); PyPI
+- A simple repository protocol (HTTP + predictable URLs). PyPI
   scales reasonably.
 - Wheels (precompiled distributions) avoid build-from-source-on-
   every-install pain.
 
 **What didn't:**
 - Multiple competing tools (pip, conda, poetry, uv, pip-tools,
-  pipx, ...) — the dep-management story is fractured, and
+  pipx, ...). The dep-management story is fractured, and
   recommended tooling shifts every few years.
-- Virtualenv requirement is a global-state workaround. The
+- The virtualenv requirement is a global-state workaround. The
   notion that "the system Python environment is shared and
   fragile" leaks into every workflow.
-- No lockfile in pip itself for years; arrived in pip-tools and
-  others, with various semi-incompatible formats.
-- Native dependencies are platform-specific; Python deals with
+- There was no lockfile in pip itself for years. It arrived in
+  pip-tools and others, with various semi-incompatible formats.
+- Native dependencies are platform-specific. Python deals with
   this via wheels per (OS, Python version, arch), an N×M×K
   matrix.
 
@@ -4736,36 +4781,37 @@ manifest checksum for divergence detection.
 predictable URLs).
 
 **What cajeta changes:** one tool (`cajeta`), one lockfile, no
-virtualenv equivalent (the project directory IS the
-environment), single-cross-platform archive (cross-compilation
-handled by the compiler, not separate wheels per arch).
+virtualenv equivalent (the project directory is the
+environment), and a single cross-platform archive
+(cross-compilation handled by the compiler rather than separate
+wheels per arch).
 
 ### Nix (functional package manager, 2003+)
 
 **What worked:**
 - Hermetic builds via content-addressed inputs.
-- Atomic install / rollback; multiple versions coexist on a
+- Atomic install / rollback. Multiple versions coexist on a
   single system without interference.
-- Build expression language is a real (declarative) language —
-  the closest mainstream attempt at "declarative but
-  expressive."
+- The build expression language is a real (declarative)
+  language, and the closest mainstream attempt at "declarative
+  but expressive."
 
 **What didn't:**
 - The Nix language is its own thing to learn (Haskell-flavored
   but not Haskell).
 - Nixpkgs is large enough that build-from-source for a
-  non-trivial config takes hours; binary substitutes solve
+  non-trivial config takes hours. Binary substitutes solve
   this but bring their own caching layer.
-- Operator complexity is real — `/nix/store` is a global system
-  install, channel management is its own discipline.
+- Operator complexity is real. `/nix/store` is a global system
+  install, and channel management is its own discipline.
 
-**What cajeta keeps:** content-addressed cache discipline,
+**What cajeta keeps:** content-addressed cache discipline, and
 hermetic builds.
 
-**What cajeta changes:** no Nix-language equivalent. Cajeta's
-manifest is JSONC for users; the build graph it derives is
-internal to the tool. The trade vs Nix: less expressiveness,
-much lower cognitive load.
+**What cajeta changes:** there is no Nix-language equivalent.
+Cajeta's manifest is JSONC for users, and the build graph it
+derives is internal to the tool. The trade vs Nix is less
+expressiveness and much lower cognitive load.
 
 ### Summary of cajeta's deliberate trade-offs
 
@@ -4799,100 +4845,103 @@ much lower cognitive load.
 
 A reasonable order, given the existing compiler:
 
-1. **`cajeta build` over an existing source tree.** Reads
-   `cajeta.json`, invokes the compiler with the right flags,
-   produces output in `build/`. No dependency resolution yet —
-   `cajeta.json` declares dependencies but they have to be
+1. **`cajeta build` over an existing source tree.** It reads
+   `cajeta.json`, invokes the compiler with the right flags, and
+   produces output in `build/`. There is no dependency resolution
+   yet. `cajeta.json` declares dependencies but they have to be
    pre-staged in a local repository. The lifecycle subcommands
    (`build`, `clean`, `init`, `test`) land in this first slice.
-2. **Properties + `${PROPERTY}` substitution.** Manifest
-   resolution layer; built-ins available from day one. Lands
-   here because every subsequent step (lockfile, repositories,
-   distribute) can reference resolved properties without
-   special-casing.
-3. **`cajeta.lock` generation + reading.** Lockfile produced on
-   first build; subsequent builds use the locked versions
-   verbatim. Records the resolved property set.
-4. **Incremental builds + IR cache.** Per-file IR module cache
-   keyed by content discriminator; cache hits skip the
-   IR-emission step. The single biggest win for day-to-day
-   iteration speed; lands early so the rest of the pipeline
-   benefits from it.
-5. **Filesystem repositories.** The simplest case — point at a
-   directory tree, find artifacts by name + version. Validates
-   the resolution machinery without a network layer.
+2. **Properties + `${PROPERTY}` substitution.** This is the
+   manifest resolution layer, with built-ins available from day
+   one. It lands here because every subsequent step (lockfile,
+   repositories, distribute) can reference resolved properties
+   without special-casing.
+3. **`cajeta.lock` generation + reading.** The lockfile is
+   produced on first build, and subsequent builds use the locked
+   versions verbatim. It records the resolved property set.
+4. **Incremental builds + IR cache.** A per-file IR module cache
+   keyed by content discriminator, where cache hits skip the
+   IR-emission step. It is the single biggest win for day-to-day
+   iteration speed, and it lands early so the rest of the
+   pipeline benefits from it.
+5. **Filesystem repositories.** This is the simplest case. Point
+   at a directory tree and find artifacts by name + version. It
+   validates the resolution machinery without a network layer.
 6. **MVS dependency resolution.** The constraint solver handles
-   transitive deps. Output is the resolved graph; lockfile
-   captures it.
-7. **Transitive dependency overrides.** The `overrides` block;
-   applies after MVS, last-write-wins; recorded in lockfile.
+   transitive deps. The output is the resolved graph, and the
+   lockfile captures it.
+7. **Transitive dependency overrides.** The `overrides` block. It
+   applies after MVS, the last write wins, and it is recorded in
+   the lockfile.
 8. **`cajeta add` / `cajeta upgrade` / `cajeta remove`.** Manifest
-   + lockfile mutation. Capability change prompts during upgrade.
+   + lockfile mutation, with capability change prompts during
+   upgrade.
 9. **HTTP repositories.** The wire protocol from
-   [Repositories](#repositories). Auth, caching, retry. Public
-   `repo.cajeta.org` infrastructure ships separately. Maven-
-   compat shim lands alongside.
-10. **Build flavors.** Two built-in flavors (`release`, `debug`);
-    map-form composition (`{ base, ...overrides }`); custom
+   [Repositories](#repositories), with auth, caching and retry.
+   The public `repo.cajeta.org` infrastructure ships separately.
+   The Maven-compat shim lands alongside.
+10. **Build flavors.** Two built-in flavors (`release`, `debug`),
+    map-form composition (`{ base, ...overrides }`), and custom
     flavors in `settings.build.custom-flavors`. The `build`
     action accepts a `profile` string param and passes it
-    through to the compiler as `--profile=<name>`; profile
-    itself is a per-task literal, no central activation
+    through to the compiler as `--profile=<name>`. The profile
+    itself is a per-task literal, with no central activation
     machinery.
-11. **Capability annotations + static verification.** Compiler
-    tracks `@capability` annotations, computes required-set per
-    module, build tool diffs against declared set and produces
-    the citation-style error.
+11. **Capability annotations + static verification.** The
+    compiler tracks `@capability` annotations and computes the
+    required-set per module. The build tool diffs it against the
+    declared set and produces the citation-style error.
 12. **Plugin runtime + first-party `analyze`/`validate` plugins.**
     Plugin discovery, lockfile entry, sandboxed subprocess
-    execution, structured-findings collection. First-party
+    execution, and structured-findings collection. First-party
     plugins (the built-in lint checks reimplemented on the
     plugin runtime) ship as the validation.
-13. **`cajeta.coverage` plugin + test instrumentation.** Compiler
-    `--instrument=coverage` flag, line/branch/region probes, test
-    runner reduction, HTML/SARIF/console reporters. The
-    canonical `measure`-phase plugin; bottom-N coverage gate at
-    CI; per-file floor.
-14. **Sandboxing.** bwrap on Linux first; macOS / Windows
+13. **`cajeta.coverage` plugin + test instrumentation.** The
+    compiler `--instrument=coverage` flag, line/branch/region
+    probes, test runner reduction, and HTML/SARIF/console
+    reporters. It is the canonical `measure`-phase plugin, with a
+    bottom-N coverage gate at CI and a per-file floor.
+14. **Sandboxing.** bwrap on Linux first, and macOS / Windows
     sandboxes follow.
 15. **Reproducible builds.** `SOURCE_DATE_EPOCH`, debug-prefix-
-    map, seeded RNG. Verified by automated rebuild + compare in
-    CI.
-16. **Workspaces.** Workspace manifest, multi-member resolution,
-    cross-package incremental builds.
-17. **Distribution actions.** Declarative catalog —
+    map, and seeded RNG, verified by automated rebuild + compare
+    in CI.
+16. **Workspaces.** The workspace manifest, multi-member
+    resolution, and cross-package incremental builds.
+17. **Distribution actions.** The declarative catalog of
     `copy` / `upload-s3` / `upload-azure` / `upload-gcs` /
-    `upload-http` / `shell`. Replaces ad-hoc post-build shell
+    `upload-http` / `shell`. It replaces ad-hoc post-build shell
     hooks for the common cases.
 18. **Archive signing + `cajeta trust` + launcher verification.**
     The `sign` action wires into the existing
-    `cajeta archive sign` machinery (ArchiveManagement.md §8);
-    the trust store and launcher verification mode round out
+    `cajeta archive sign` machinery (ArchiveManagement.md §8),
+    and the trust store and launcher verification mode round out
     the runtime side. Sigstore / cosign-style transparency-log
     integration is an optional extension.
 19. **`cajeta publish` + SLSA attestation.** Sigstore integration
-    or equivalent. Repository protocol's POST endpoint.
+    or equivalent, and the repository protocol's POST endpoint.
 20. **Git repositories.** The clone-and-build-locally path.
-21. **Build attestation verification.** Consumer side: `cajeta
-    install` verifies signature + provenance.
+21. **Build attestation verification.** On the consumer side,
+    `cajeta install` verifies signature + provenance.
 
 Deferred (separate efforts, post-v1):
-- Hosted public registry (`repo.cajeta.org`) — infrastructure,
-  not toolchain.
-- Plugin / extension API for third-party post-build steps
+- The hosted public registry (`repo.cajeta.org`), which is
+  infrastructure rather than toolchain.
+- A plugin / extension API for third-party post-build steps
   beyond shell commands.
 - `cajeta vendor` advanced flows (selective vendoring, vendored
   archives signed).
-- IDE protocol — language server, hover info from manifest.
+- The IDE protocol, meaning a language server and hover info
+  from the manifest.
 
 ---
 
 ## `cajeta tasks --json` — the IDE discovery contract
 
-`cajeta tasks` lists manifest tasks for humans; `cajeta tasks --json
+`cajeta tasks` lists manifest tasks for humans. `cajeta tasks --json
 [--manifest=<path>]` emits a stable machine-readable document the IDE plugin's
 build-tool tool window parses to populate its task tree (see
-`specs/archive/buildtool-widget-spec.md` §3). Shape:
+`specs/archive/buildtool-widget-spec.md` §3). The shape is:
 
 ```jsonc
 {
@@ -4917,56 +4966,58 @@ build-tool tool window parses to populate its task tree (see
 }
 ```
 
-Contract notes: object key order is not significant (consumers parse, not
-string-match); optional task fields (`description`, `artifact`, param
-`default`/`doc`) are omitted when absent while `dependsOn`/`params`/`runnable`
-are always present (`runnable` is `false` for a task with no build/exec/run
-action). `runnable` lets the IDE offer Debug on a task; the **document-level
-`build` object** carries what `cajeta dap` actually consumes — it JIT-runs an
-`entryMethod` from a `sourceRoot`, it does **not** load the prebuilt `artifact`
-binary — so the IDE forms a runnable task's Debug launch from `build`, not from
-`artifact` (widget §5.2.2). The `build` object is emitted only when
-`settings.build` declares an entry method; without it Debug stays disabled.
-`artifact` remains the build action's `output-path`, surfaced for display/Run.
-A non-zero exit or load error writes a diagnostic to stderr and emits no
-JSON — the plugin treats that as "discovery failed" and degrades gracefully.
-The emission core is `renderTasksJson` (`src/cajeta/buildtool/Task.{h,cpp}`),
-golden-tested in `test/buildtool/TasksJsonTests.cpp`.
+Object key order is not significant, because consumers parse rather than
+string-match. Optional task fields (`description`, `artifact`, param
+`default`/`doc`) are omitted when absent, while `dependsOn`/`params`/`runnable`
+are always present, and `runnable` is `false` for a task with no
+build/exec/run action. `runnable` lets the IDE offer Debug on a task. The
+document-level `build` object carries what `cajeta dap` actually consumes. It
+JIT-runs an `entryMethod` from a `sourceRoot`, and it does not load the
+prebuilt `artifact` binary, so the IDE forms a runnable task's Debug launch
+from `build` rather than from `artifact` (widget §5.2.2). The `build` object
+is emitted only when `settings.build` declares an entry method, and without
+it Debug stays disabled. `artifact` remains the build action's
+`output-path`, surfaced for display/Run. A non-zero exit or load error writes
+a diagnostic to stderr and emits no JSON, and the plugin treats that as
+"discovery failed" and degrades gracefully. The emission core is
+`renderTasksJson` (`src/cajeta/buildtool/Task.{h,cpp}`), golden-tested in
+`test/buildtool/TasksJsonTests.cpp`.
 
 ---
 
 ## Open questions
 
-- **Public registry governance.** Who owns it, how do
-  malicious-package takedowns work, what's the namespace
-  reservation policy (prevent typo-squatting). Major non-toolchain
-  problem; this spec doesn't decide it.
+- **Public registry governance.** Who owns it, how
+  malicious-package takedowns work, and what the namespace
+  reservation policy is (to prevent typo-squatting). This is a
+  major non-toolchain problem, and this spec does not decide it.
 - **Capability minor-version drift.** A package adds a
   capability between 1.2.3 and 1.2.4 (semver-patch). Pure
-  semver says patch can't break compat; capability addition is
-  arguably breaking (it changes the security posture).
-  Lean: treat capability addition as a minor-version bump
-  even if semantically the API is unchanged. Worth a
-  decision before the first stdlib release.
+  semver says a patch cannot break compat, and capability
+  addition is arguably breaking because it changes the security
+  posture. We lean toward treating capability addition as a
+  minor-version bump even if semantically the API is unchanged.
+  It is worth a decision before the first stdlib release.
 - **Cross-toolchain compatibility.** Cajeta toolchain N produces
   archives that toolchain N+1 may or may not be able to consume.
   We need an explicit compatibility-window policy (e.g.
   "archives from N can be consumed by N, N+1, N+2"; older N-2
-  generates a warning; N-3 fails). Lean: N±2 window matching
-  the cajeta-lang-version field.
-- **Repository CDN model.** Public registry will serve gigabytes
-  of artifacts. CDN integration (CloudFront / Fastly / static-
-  origin patterns) is an operational concern that affects the
-  repository protocol (range requests for partial downloads,
-  ETag caching). Defer detailed design until the registry
-  infrastructure RFC.
+  generates a warning; N-3 fails). We lean toward an N±2 window
+  matching the cajeta-lang-version field.
+- **Repository CDN model.** The public registry will serve
+  gigabytes of artifacts. CDN integration (CloudFront / Fastly /
+  static-origin patterns) is an operational concern that affects
+  the repository protocol, through range requests for partial
+  downloads and ETag caching. Detailed design is deferred until
+  the registry infrastructure RFC.
 - **Multi-version transitive deps.** Cargo allows the same
   package at multiple major versions in the same dep tree (X
-  uses `foo@1`, Y uses `foo@2`). Maven doesn't. Lean toward
-  Cargo's model — fewer "everything must use the same version"
-  conflicts — at the cost of larger lockfiles and binaries that
-  carry multiple major versions of a dep.
+  uses `foo@1`, Y uses `foo@2`). Maven does not. We lean toward
+  Cargo's model, which has fewer "everything must use the same
+  version" conflicts, at the cost of larger lockfiles and
+  binaries that carry multiple major versions of a dep.
 - **Deprecation lifecycle.** `@Deprecated` in source is one
-  signal; deprecating an entire repository version is another.
-  Should `cajeta upgrade` skip deprecated versions by default?
-  Lean: yes, warn loudly when locking against one.
+  signal, and deprecating an entire repository version is
+  another. Should `cajeta upgrade` skip deprecated versions by
+  default? We lean toward yes, and toward warning loudly when
+  locking against one.

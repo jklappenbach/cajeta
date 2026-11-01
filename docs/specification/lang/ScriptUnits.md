@@ -1,8 +1,8 @@
 # Script units
 
 A compilation unit does not need a class. A file containing loose
-statements — optionally mixed with method and type declarations — is a
-**script unit**, and `cajeta run` executes it directly:
+statements, optionally mixed with method and type declarations, is a
+script unit, and `cajeta run` executes it directly:
 
 ```cajeta
 // tool.cajeta
@@ -30,8 +30,8 @@ total = 42
 There is no mode flag or special file extension. A unit with at least one
 loose statement or top-level method takes the script shape; a unit made
 only of type declarations parses exactly as before. Script units compile
-through the same pipeline as everything else — statically typed,
-borrow-checked, monomorphized, JIT-compiled — and the same source also
+through the same pipeline as everything else. They are statically typed,
+borrow-checked, monomorphized and JIT-compiled, and the same source also
 runs as a notebook cell under the Jupyter kernel.
 
 ## The model
@@ -46,25 +46,26 @@ types.
 With no `package` declaration, the implicit class lands in the reserved
 `cajeta.script` package (user code cannot declare it, so collisions are
 impossible). A declared package is honored. Reflection sees the implicit
-class but marks it synthetic; diagnostics and stack traces never show it —
-errors carry the script file and line, and trace frames render as
+class but marks it synthetic. Diagnostics and stack traces never show it.
+Errors carry the script file and line, and trace frames render as
 `<script>`.
 
 ## Session bindings
 
 Top-level declarations do not live in the entry's stack frame. They bind
-into a **session** whose lifetime the host controls: for `cajeta run` the
-session is the program run, for the Jupyter kernel it spans cells. The
-memory model applies unchanged — one owner, borrows by default, `#`
-transfers, drops in reverse binding order when the session ends.
+into a session whose lifetime the host controls. For `cajeta run` the
+session is the program run, and for the Jupyter kernel it spans cells. The
+memory model applies unchanged. There is one owner, borrows are the
+default, `#` transfers, and values drop in reverse binding order when the
+session ends.
 
 Three rules follow from the binding outliving the unit's frame:
 
 - **`heap` only at top level.** A `stack` allocation cannot bind to a
-  session name (`CAJETA_ERROR_SESSION_STACK_BINDING`); use `heap`, or
+  session name (`CAJETA_ERROR_SESSION_STACK_BINDING`). Use `heap`, or
   declare inside a `{ }` block for ordinary frame-local lifetime.
 - **No top-level borrows.** `Point q = p;` at top level is rejected
-  (`CAJETA_ERROR_SESSION_BORROW_ESCAPE`) — the borrowed owner could drop
+  (`CAJETA_ERROR_SESSION_BORROW_ESCAPE`). The borrowed owner could drop
   or rebind in a later unit while `q` still points at it. Borrow inside a
   block, or transfer ownership (`q #= p`).
 - **Rebinding drops the old value.** `xs = heap ArrayList<int32>()` on an
@@ -73,19 +74,19 @@ Three rules follow from the binding outliving the unit's frame:
   (last-write-wins).
 
 Moving a session binding away (`sink.take(#xs)`) behaves as it does for
-any local within the unit. Across units the rule is stricter: a binding
-moved out in one cell is unreadable in later cells until rebound — the
-error names the transfer site and the cell that moved it.
+any local within the unit. Across units the rule is stricter. A binding
+moved out in one cell is unreadable in later cells until it is rebound,
+and the error names the transfer site and the cell that moved it.
 
-Block-nested declarations are ordinary locals: they drop at block exit,
+Block-nested declarations are ordinary locals. They drop at block exit,
 and the session never sees them.
 
 ## Exit code and results
 
 An explicit `return <int32>;` at top level ends the unit and, under
-`cajeta run`, becomes the process exit code; a script without one exits 0.
-A trailing expression statement is the unit *result* — the notebook
-renders it (`Out[N]`), the script host ignores it. An uncaught throw
+`cajeta run`, becomes the process exit code. A script without one exits 0.
+A trailing expression statement is the unit result. The notebook
+renders it (`Out[N]`), and the script host ignores it. An uncaught throw
 prints the message and a `<script>`-frame trace and exits non-zero.
 
 ## Arguments
@@ -105,36 +106,36 @@ $ cajeta run greet.cajeta world
 hello, world
 ```
 
-`count()` returns `int64`; `get(i)` returns a `String`, or **null** past the
-end — the same shape `System.env.get` uses for an unset variable, so one
-idiom covers both. It is read-only: argv reports how the process was
-invoked, and a program that could rewrite it would be lying to anything
-that read it afterwards (`CAJETA_ERROR_ARGS_READ_ONLY`).
+`count()` returns `int64`. `get(i)` returns a `String`, or null past the
+end, which is the same shape `System.env.get` uses for an unset variable,
+so one idiom covers both. It is read-only (`CAJETA_ERROR_ARGS_READ_ONLY`).
+Argv reports how the process was invoked, and a program that could
+rewrite it would be lying to anything that read it afterwards.
 
-It is **ambient** on purpose. A helper several frames below the top-level
+It is ambient on purpose. A helper several frames below the top-level
 statements reads argv without it being threaded down, exactly as it reads
-the environment — which is the case a `String[] args` parameter serves
-badly and the reason the accessor was chosen over injecting a name.
+the environment. A `String[] args` parameter serves that case badly, so
+the accessor was chosen over injecting a name.
 
 **One store, two spellings.** A class entry declared
 `static int32 main(String[] args)` still receives its `String[]`, and that
 array is built from the same store `System.args` reads. The two cannot
 report different arguments. This matters because the hosts do not agree
-naturally: a compiled binary must slice `argv[0]` (the program name) while
+naturally. A compiled binary must slice `argv[0]`, the program name, while
 the JIT never had it, and when each host marshalled its own vector, one
 spelling could disagree with the other about `args[0]`. The slicing
 decision now happens once, at install.
 
-Every host installs — `cajeta run`, `cajeta jit-run`, a compiled binary's
-`main` shim, and the Jupyter kernel, which installs an EMPTY vector because
-a notebook cell has no argv. Stating that explicitly is deliberate: a store
-left uninitialized would report zero arguments, which is indistinguishable
-from a program invoked with none.
+Every host installs. `cajeta run`, `cajeta jit-run`, a compiled binary's
+`main` shim, and the Jupyter kernel all do, and the kernel installs an
+empty vector because a notebook cell has no argv. Stating that explicitly
+is deliberate. A store left uninitialized would report zero arguments,
+which is indistinguishable from a program invoked with none.
 
 ## Projects and dependencies
 
-A script run inside a project — any ancestor directory holding
-`cajeta.json` — gets the manifest's resolved dependencies on its
+A script run inside a project, meaning any ancestor directory holding
+`cajeta.json`, gets the manifest's resolved dependencies on its
 classpath, exactly as `cajeta build` would. A standalone script sees the
 stdlib.
 

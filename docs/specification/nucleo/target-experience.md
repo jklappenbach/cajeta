@@ -1,28 +1,29 @@
 # Núcleo — Target Experience (the destination, in code)
 
-> Status: vision draft (2026-06-22). This paints **what finished Cajeta code looks like**
-> when núcleo + the façades + the language sugar are all in place. It is the *destination*;
-> the three sequencing paths (language-first / method-now / pragmatic-split) differ only in
-> the **order** each line below becomes real, and in which method-call fallbacks stand in
+> Status: vision draft (2026-06-22). This paints what finished Cajeta code looks like
+> when núcleo, the façades and the language sugar are all in place. It is the destination.
+> The three sequencing paths (language-first / method-now / pragmatic-split) differ only in
+> the order each line below becomes real, and in which method-call fallbacks stand in
 > during the interim. Companion to `python-stack-analysis.md`.
 
 ### Feature-dependency legend
 Every snippet is tagged with what it leans on, so the picture stays honest:
-- ✅ **in hand** — works on today's language.
-- ➕ **cheap** — small grammar/codegen add (`@` matmul, `**`, unary `-`, bracket slicing,
+- ✅ **in hand** works on today's language.
+- ➕ **cheap** is a small grammar/codegen add (`@` matmul, `**`, unary `-`, bracket slicing,
   multi-index, `...`/newaxis, tuple destructuring, type aliases).
-- 🔨 **foundational** — a real language project (records → typed schemas; annotation-transform
+- 🔨 **foundational** is a real language project (records → typed schemas; annotation-transform
   hook → `@Grad`/`@Jit`/`@Vmap`; compile-time string DSL → `einsum`).
 
-What is *already* true and load-bearing for the whole picture: **named arguments + defaults**
-(✅), **operator overloading** (✅), **monomorphized dtype** so `Tensor<MXFP4>` is real packed
-storage (✅), **const-generic fixed-size shapes** (✅), `var` inference (✅), method chaining (✅).
+Several features are already true and load-bearing for the whole picture. They are named
+arguments with defaults (✅), operator overloading (✅), monomorphized dtype so that
+`Tensor<MXFP4>` is real packed storage (✅), const-generic fixed-size shapes (✅), `var`
+inference (✅) and method chaining (✅).
 
 ---
 
 ## 1. The unification — one set of bytes, four views
 
-The thesis made concrete: a Parquet column, a tensor, and a render input are the same buffer.
+This makes the thesis concrete. A Parquet column, a tensor, and a render input are the same buffer.
 
 ```cajeta
 import dev.cajeta.nucleo.frame.Table;
@@ -78,10 +79,11 @@ for (var batch : loader) {
 ```
 
 What changed from PyTorch, on purpose:
-- `requires_grad` bools and the global `.grad` accumulator → **explicit grads returned by the
-  `@Grad` transform** (the footgun is gone; the familiar `zeroGrad()` still exists).
-- the tape → a **compiled, fused backward pass** (the cost-to-run win).
-- dtype/device live in the type, so a host/device mix is a **compile error**, not a 2 a.m. stack trace.
+- The `requires_grad` bools and the global `.grad` accumulator become explicit grads returned
+  by the `@Grad` transform. The footgun is gone, and the familiar `zeroGrad()` still exists.
+- The tape becomes a compiled, fused backward pass, which is the cost-to-run win.
+- dtype and device live in the type, so a host/device mix is a compile error rather than a
+  2 a.m. stack trace.
 
 ---
 
@@ -110,8 +112,9 @@ var spread = ticks.price.max() - ticks.price.min();
 var minuteBars #= ticks.resample(col.ts, every: 1.minutes).agg(col.price.last());
 ```
 
-Gone, deliberately: the `Index`/`MultiIndex`, `inplace=`, `object` dtype, NaN-as-missing
-(real nullable `float64?` columns instead), and the copy/view ambiguity.
+These are gone, deliberately: the `Index`/`MultiIndex`, `inplace=`, the `object`
+dtype, NaN-as-missing (real nullable `float64?` columns take its place), and the copy/view
+ambiguity.
 
 ---
 
@@ -215,19 +218,18 @@ var packed = column.as<MXFP4>();               // tools that don't know MXFP4 st
 ## What the picture tells us about the paths
 
 Read the tags down the page:
-- The **substrate, math, units, interop, fixed-size shapes, named-arg APIs** (✅) are reachable
-  on today's language — a large, useful surface exists *now*.
-- The **numpy *feel*** — `@`, `a[1:5, ::2]`, `a[..., None]`, `(q, r) = ...` (➕) — is a small,
-  bounded grammar effort that makes everything above read like Python instead of Java.
-- The **moat** — typed schemas (`Table<Tick>`), `@Grad`/`@Jit`/`@Vmap`, compile-time `einsum`
-  (🔨) — is gated on exactly three language projects: **records**, the **annotation-transform
-  hook**, and a **compile-time string DSL**. Nothing in the flagship (§4) is reachable without
+- The substrate, math, units, interop, fixed-size shapes and named-arg APIs (✅) are reachable
+  on today's language. A large, useful surface exists now.
+- The numpy feel (➕), meaning `@`, `a[1:5, ::2]`, `a[..., None]` and `(q, r) = ...`, is a
+  small, bounded grammar effort that makes everything above read like Python instead of Java.
+- The moat (🔨), meaning typed schemas (`Table<Tick>`), `@Grad`/`@Jit`/`@Vmap` and compile-time
+  `einsum`, is gated on exactly three language projects: records, the annotation-transform
+  hook, and a compile-time string DSL. Nothing in the flagship (§4) is reachable without
   the first two.
 
-So the destination is firm and singular; the paths differ only in whether we make the ➕ and 🔨
-features real *before* the façades (sugary + typed from day one, slower first demo), *after*
-(method-call fallbacks now, re-touch later), or *split* (➕ now, 🔨 scheduled as the moat
-projects, flagship riding the transform-hook track). That is the decision `python-stack-analysis.md`
-§5 leaves open — and this document is what it's choosing *between paths to*, not between
-destinations.
-```
+So the destination is firm and singular. The paths differ only in whether we make the ➕ and 🔨
+features real before the façades (sugary and typed from day one, slower first demo), after
+them (method-call fallbacks now, re-touch later), or split (➕ now, 🔨 scheduled as the moat
+projects, flagship riding the transform-hook track). That is the decision
+`python-stack-analysis.md` §5 leaves open. This document is the destination those paths lead
+to, and the choice is between paths rather than between destinations.

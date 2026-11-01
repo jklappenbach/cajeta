@@ -1,18 +1,18 @@
 # Cajeta XPU — the launch & kernel-arg FFI contract
 
-This is the **frozen C ABI** that external code — the numerics stack, the
-PyTorch/Keras ports, the Caramelo/SPELA trainer — registers kernels and dispatches
-compute through. It is the Stage-12 deliverable of
+This is the frozen C ABI that external code registers kernels and dispatches
+compute through. That external code is the numerics stack, the
+PyTorch/Keras ports, and the Caramelo/SPELA trainer. It is the Stage-12 deliverable of
 `../../../plans/gpu/xpu/cajeta-xpu-plan.md`.
 The single source of truth for every declaration here is the header
-[`runtime/native/cajeta_xpu_abi.h`](../../../runtime/native/cajeta_xpu_abi.h);
-this document is the prose contract around it.
+[`runtime/native/cajeta_xpu_abi.h`](../../../runtime/native/cajeta_xpu_abi.h).
+This document is the prose contract around it.
 
-> **Scope.** What is frozen here is the **launch + kernel-arg marshalling**
-> contract and **per-launch device targeting**. Device *enumeration/selection*
-> and the alloc/buffer/texture FFI are `cajeta-gpu` concerns (their `__cajeta_xpu_*`
+> **Scope.** What is frozen here is the launch + kernel-arg marshalling
+> contract and per-launch device targeting. Device enumeration/selection
+> and the alloc/buffer/texture FFI are `cajeta-gpu` concerns. Their `__cajeta_xpu_*`
 > lifecycle entry points are listed under *Companion surface* below but specified
-> there).
+> there.
 
 ---
 
@@ -24,20 +24,20 @@ int32_t __cajeta_xpu_abi_version(void);   // the value compiled into the runtime
 ```
 
 - An external caller checks `__cajeta_xpu_abi_version()` against the
-  `CAJETA_XPU_ABI_VERSION` it compiled with **before** dispatching, to detect a
+  `CAJETA_XPU_ABI_VERSION` it compiled with before dispatching, to detect a
   runtime built against a different contract.
 - The version is bumped when the surface grows in a way a downstream may want to
   require (e.g. `>= 2` to use the spec-constant override of `__cajeta_xpu_launch_v3`).
-- **Two append-only rules keep older symbols stable as the surface grows:**
-  1. A launch needing a new field is added as a **new symbol suffix**
-     (`__cajeta_xpu_launch_v4`, …) — never by repurposing an existing argument.
+- Two append-only rules keep older symbols stable as the surface grows:
+  1. A launch needing a new field is added as a new symbol suffix
+     (`__cajeta_xpu_launch_v4`, …), never by repurposing an existing argument.
      Old symbols keep their exact signature and behavior (`_v2`/`_v1` are now thin
      shims over `_v3`).
-  2. The parameter-kind enum (`CajetaXpuParamKind`) is **append-only**: new kinds
-     are added at the end; existing wire values are never renumbered.
+  2. The parameter-kind enum (`CajetaXpuParamKind`) is append-only. New kinds
+     are added at the end, and existing wire values are never renumbered.
 
-**Version history:** v1 — register trio + `_v2` launcher (deviceId). v2 —
-`__cajeta_xpu_launch_v3` adds host **specialization-constant override**
+**Version history.** v1 is the register trio + `_v2` launcher (deviceId). v2 adds
+`__cajeta_xpu_launch_v3`, which adds the host specialization-constant override
 (`specCount`/`specValues`).
 
 ---
@@ -65,19 +65,19 @@ void __cajeta_xpu_launch_v3(const char* kernelName,
                             int32_t specCount, const int32_t* specValues);
 ```
 
-**`specCount` / `specValues` — host specialization-constant override.** A kernel's
-`Spec.geti(slot, default)` / `Spec.getf(slot, default)` reads user spec slot `slot`;
-the launch overrides it by supplying `specValues[i]` for slot `i` (`specCount` =
-how many leading slots are given; trailing/unset slots keep their compile-time
-default). Each value is a **raw 4-byte word** — `Spec.geti` reads it as i32,
-`Spec.getf` reinterprets it as f32 (the Cajeta frontend packs a float `spec:`
-element as its bit pattern; mixed `spec:[3, 1.5f]` packs each slot by its own
-type). `specCount == 0` / `NULL` = no override (every slot reads its default —
-identical to `_v2`). Honored as a genuine pipeline-time `OpSpecConstant` on Vulkan,
-a runtime read on CPU (identical observed results), and a read from per-launch
-constant-memory globals on CUDA/HIP/NVPTX/AMDGPU (set via `cu/hipModuleGetGlobal` +
-a host copy; safe-by-default — zero-init reads the compile-time default). The
-device-backend path is **emit-verified**; on-device execution is pending hardware
+**`specCount` / `specValues`, the host specialization-constant override.** A kernel's
+`Spec.geti(slot, default)` / `Spec.getf(slot, default)` reads user spec slot `slot`.
+The launch overrides it by supplying `specValues[i]` for slot `i`. `specCount` is
+how many leading slots are given, and trailing/unset slots keep their compile-time
+default. Each value is a raw 4-byte word. `Spec.geti` reads it as i32, and
+`Spec.getf` reinterprets it as f32. The Cajeta frontend packs a float `spec:`
+element as its bit pattern, and mixed `spec:[3, 1.5f]` packs each slot by its own
+type. `specCount == 0` / `NULL` means no override, so every slot reads its default,
+identical to `_v2`. The override is honored as a genuine pipeline-time `OpSpecConstant` on Vulkan,
+as a runtime read on CPU (identical observed results), and as a read from per-launch
+constant-memory globals on CUDA/HIP/NVPTX/AMDGPU. Those globals are set via `cu/hipModuleGetGlobal` +
+a host copy, and they are safe by default since zero-init reads the compile-time default. The
+device-backend path is emit-verified. On-device execution is pending hardware
 (AMD comgr / NVIDIA HW). The Cajeta launch surface is
 `kernel.launch(s, grid:[…], block:[…], spec:[v0,v1,…])(args)`.
 
@@ -92,11 +92,11 @@ void __cajeta_xpu_launch_v2(const char* kernelName,
 ```
 
 The `kind`/`byteSize` arrays passed to (b) must remain valid for the process
-lifetime (the runtime stores the pointers, not copies — matching how the compiler
-emits them as module constants).
+lifetime. The runtime stores the pointers rather than copies, which matches how the compiler
+emits them as module constants.
 
-A compat shim is retained for the compiler's own emit path (it has no
-device-targeting language surface yet); it is exactly `_v2` with `deviceId = -1`:
+A compat shim is retained for the compiler's own emit path, which has no
+device-targeting language surface yet. It is exactly `_v2` with `deviceId = -1`:
 
 ```c
 void __cajeta_xpu_launch(const char* kernelName,
@@ -109,8 +109,8 @@ void __cajeta_xpu_launch(const char* kernelName,
 
 ## 3. The `argv` marshalling contract
 
-`argv` points to an array of **one pointer per kernel parameter, in declaration
-order**. What each slot points at is determined by that parameter's
+`argv` points to an array of one pointer per kernel parameter, in declaration
+order. What each slot points at is determined by that parameter's
 `CajetaXpuParamKind` (the i-th entry of the `kind` array registered in (b)):
 
 | Kind (`CajetaXpuParamKind`) | value | `argv[i]` points at | `byteSize[i]` |
@@ -123,15 +123,15 @@ order**. What each slot points at is determined by that parameter's
 | `CAJETA_XPU_KP_IMAGE`        | 5 | an `int64` storage-image handle (writable `Image2D`) | 0 |
 | `CAJETA_XPU_KP_BUFFER_ARRAY` | 6 | a slot laid out `[int64 count, int64 h0, … h(count-1)]` (bindless) | 0 |
 
-- **`byteSize` must be computed against the host `DataLayout`** so the packed
+- **`byteSize`** must be computed against the host `DataLayout` so the packed
   footprint matches what the launch site writes and the runtime copies into a
-  transient SSBO (Vulkan) — a mismatch reads past the buffer.
-- **Lifetime:** every slot and the value it points at are **caller-owned** and
+  transient SSBO (Vulkan). A mismatch reads past the buffer.
+- **Lifetime.** Every slot and the value it points at are caller-owned and
   must outlive the launch call. The runtime copies what it needs during the call
   and retains nothing from `argv` afterward.
-- **Backend translation:** on Vulkan the runtime turns scalar/POD slots into
-  transient single-element SSBOs (driven by this metadata); buffers/textures/
-  images bind their existing descriptors; the bindless array binds a descriptor
+- **Backend translation.** On Vulkan the runtime turns scalar/POD slots into
+  transient single-element SSBOs, driven by this metadata. Buffers, textures and
+  images bind their existing descriptors, and the bindless array binds a descriptor
   array of `count`. CUDA/HIP pass the slots in the `cuLaunchKernel`/
   `hipModuleLaunchKernel` argument convention. CPU reads the aggregate directly.
 
@@ -139,27 +139,27 @@ order**. What each slot points at is determined by that parameter's
 
 ## 4. Streams & device targeting
 
-- **`streamHandle`** — `0` is the default stream. A non-zero handle (from
+- **`streamHandle`.** `0` is the default stream. A non-zero handle (from
   `__cajeta_xpu_stream_create`) orders the launch with the async copies queued on
-  that stream. Honored on CUDA/HIP; accepted-but-serialized on Vulkan/CPU
-  (concurrency is Stage 10, not this contract).
-- **`deviceId`** — selects the target device:
-  - `-1` — the current active device (no targeting; the pre-Stage-12 behavior).
-  - `0` — the default device on **every** backend (equivalent to `-1` for a
+  that stream. It is honored on CUDA/HIP, and accepted but serialized on Vulkan/CPU.
+  Concurrency is Stage 10 and is outside this contract.
+- **`deviceId`** selects the target device:
+  - `-1` is the current active device (no targeting; the pre-Stage-12 behavior).
+  - `0` is the default device on every backend (equivalent to `-1` for a
     single-device process).
-  - `>= 0` — an index into the active backend's enumerated devices. The index
-    space comes from `cajeta-gpu` device enumeration; xpu consumes the index.
-  - **Out of range** (`deviceId >= deviceCount`) is a **defined no-op**: a
-    diagnostic on `stderr`, no launch, never UB.
-- **v1 selection — "where it is cheap + correct":** HIP genuinely selects
-  `deviceId > 0` via `hipSetDevice` (then restores the default). Multi-device
+  - `>= 0` is an index into the active backend's enumerated devices. The index
+    space comes from `cajeta-gpu` device enumeration, and xpu consumes the index.
+  - **Out of range** (`deviceId >= deviceCount`) is a defined no-op. It gives a
+    diagnostic on `stderr` and no launch, and it is never UB.
+- **v1 selection, "where it is cheap + correct".** HIP genuinely selects
+  `deviceId > 0` via `hipSetDevice` and then restores the default. Multi-device
   `> 0` on CUDA/Vulkan needs per-device contexts not yet built and is a defined
-  *"not yet implemented"* (a diagnostic + no-op), **not** a silent wrong-device
+  "not yet implemented", which is a diagnostic + no-op. It is never a silent wrong-device
   launch.
-- **KernelBuffer-affinity contract (caller's responsibility):** every buffer/texture/
+- **KernelBuffer-affinity contract (caller's responsibility).** Every buffer/texture/
   image handle passed to a launch must already reside on the target device.
-  Cross-device residency/migration is a `cajeta-gpu` concern; this layer does
-  **not** silently migrate.
+  Cross-device residency/migration is a `cajeta-gpu` concern, and this layer does
+  not silently migrate.
 
 ---
 
@@ -199,6 +199,6 @@ __cajeta_xpu_launch_v2("saxpy",
 ```
 
 The compiler-emitted launch path is itself an in-tree consumer of exactly these
-symbols (it emits `__cajeta_xpu_register_module` + `__cajeta_xpu_register_kernel_params`
-+ the `__cajeta_xpu_launch` shim), so the entire `test/xpu/*` suite exercises this
-contract end to end on CPU + on-device AMD/Vulkan.
+symbols. It emits `__cajeta_xpu_register_module` + `__cajeta_xpu_register_kernel_params`
++ the `__cajeta_xpu_launch` shim, so the entire `test/xpu/*` suite exercises this
+contract end to end on CPU and on-device AMD/Vulkan.

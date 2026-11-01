@@ -1,13 +1,13 @@
 # Debugging a compiled binary with gdb
 
 `cajeta dap` debugs a program the compiler is running. This page is about the
-other case: a native binary produced by `cajeta build`, opened in gdb, with no
+other case, a native binary produced by `cajeta build`, opened in gdb, with no
 compiler anywhere.
 
 ## Why gdb alone shows you nothing
 
 Cajeta emits no DWARF. There is no `.debug_*` section in any artifact, and no
-`DIBuilder` in the compiler. So gdb's own verbs cannot help you:
+`DIBuilder` in the compiler. gdb's own verbs therefore cannot help you:
 
 ```
 (gdb) break Tour.cajeta:53
@@ -16,10 +16,10 @@ No source file named Tour.cajeta.
 No symbol table info available.
 ```
 
-That is by design, not an omission. DWARF is a host-only format in practice, and
-it cannot express the three things this language most needs a debugger to show:
-**ownership**, **allocation kind**, and **drop state**. Cajeta already emits its
-own encoding — a location table, a shadow stack, a debug frame chain, and RTTI —
+That is by design. DWARF is a host-only format in practice, and
+it cannot express the three things this language most needs a debugger to show,
+which are ownership, allocation kind, and drop state. Cajeta already emits its
+own encoding, made of a location table, a shadow stack, a debug frame chain, and RTTI,
 and that encoding works identically under the JIT, in an AOT binary, and on
 device targets. One mechanism serves every target. A DWARF path would be a second
 one to keep in sync, for the host only.
@@ -60,10 +60,10 @@ Measured on `samples/tour`, `--emit=exe`:
 | `line` | 6.3 MB | +19% |
 | `full` | 14.4 MB | +172% |
 
-`full` is large because it retains RTTI for every class — a debugger has to be
+`full` is large because it retains RTTI for every class. A debugger has to be
 able to decode a local of any type, including types the program itself never
-reflects on. That is the trade: `line` is cheap and gives you readable exception
-traces in production; `full` is for when you are going to attach a debugger.
+reflects on. That is the trade. `line` is cheap and gives you readable exception
+traces in production, and `full` is for when you are going to attach a debugger.
 
 ## Loading the bridge
 
@@ -94,8 +94,8 @@ cjbreak Tour.cajeta:53 -> breakpoint 2 on 1 statement(s)
 `cjbreak` needs the program running, because it reads the location table out of
 the inferior. Break on `main` and `run` first, as above.
 
-Two statements on one line get two ids, and both stop. A line that emits no code
-— a blank line, a comment, a bare declaration — has no id, and `cjbreak` tells
+Two statements on one line get two ids, and both stop. A line that emits no code,
+such as a blank line, a comment, or a bare declaration, has no id, and `cjbreak` tells
 you so rather than arming a breakpoint that never fires.
 
 ### `cjstack`
@@ -111,8 +111,8 @@ frames.
 
 ### `cjlocals [depth]`
 
-The current frame's locals. For each: its name, its **declared** type, the
-**dynamic** type of what it actually holds, its fields decoded from the RTTI's
+This shows the current frame's locals. For each it shows its name, its declared type, the
+dynamic type of what it actually holds, its fields decoded from the RTTI's
 byte offsets, and its three memory facets.
 
 ```
@@ -128,25 +128,25 @@ byte offsets, and its three memory facets.
 ```
 
 The bracketed facets are where the value lives, who is responsible for it, and
-its lifetime state **at this stop**. A local that has been moved out of says so,
+its lifetime state at this stop. A local that has been moved out of says so
 instead of showing you the stale value:
 
 ```
   owned : demo.Box = <moved-from — ownership transferred out>  [heap, owner, moved-out]
 ```
 
-That last line is the reason this encoding exists. The ownership *role* is static
-— an owner that `#` has moved out of is still declared an owner — so the live
+That last line is the reason this encoding exists. The ownership role is static,
+since an owner that `#` has moved out of is still declared an owner, so the live
 signal comes from the drop-chain entry, which the transfer deactivated. A
-DWARF-driven debugger has nowhere to put that fact, and would print the consumed
+DWARF-driven debugger has nowhere to put that fact, and it would print the consumed
 value as though it were live.
 
-Reference fields are followed to a depth of 3 by default; pass a depth to go
+Reference fields are followed to a depth of 3 by default, and you can pass a depth to go
 deeper. A cyclic object graph terminates and marks the revisited node.
 
 ### `cjstep` and `cjnext`
 
-`cjstep` runs to the next Cajeta **statement**, not the next machine instruction.
+`cjstep` runs to the next Cajeta statement rather than the next machine instruction.
 `cjnext` does the same but stays in the current frame, stepping over calls.
 
 ```
@@ -158,7 +158,7 @@ demo.Hello.run(demo/Hello.cajeta:16)
 
 ### `cjlist [n]`
 
-Source around the current line. The location table stores paths relative to the
+This shows the source around the current line. The location table stores paths relative to the
 build root, so run gdb from there.
 
 ## When it says to rebuild
@@ -172,15 +172,15 @@ records. Rebuild with `cajeta build --flavor=debug` (or pass --debug-info=full)
 and try again.
 ```
 
-A `line` build is the in-between case: `cjstack` works, because the shadow stack
+A `line` build is the in-between case. `cjstack` works, because the shadow stack
 is there, but there are no safepoints to break on and no local records to read.
 
 ## Limits
 
 - Reading only. Setting a value from gdb is not supported.
-- `release` builds are optimized; inlining and reordering will make stepping
+- `release` builds are optimized, so inlining and reordering will make stepping
   confusing. Debug an unoptimized build.
 - `cjbreak` reads the ABI's first integer-argument register, so it supports
   x86-64 and aarch64.
-- A static field (byte offset -1) lives in a global, not in the instance;
-  `cjlocals` reports it as unsupported rather than decoding a bogus offset.
+- A static field (byte offset -1) lives in a global rather than in the instance, so
+  `cjlocals` reports it as unsupported instead of decoding a bogus offset.

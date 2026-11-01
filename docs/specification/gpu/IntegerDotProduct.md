@@ -1,9 +1,10 @@
 # Quantized inner products: int8 dot product (DP4a)
 
-Quantized inference multiplies 8-bit weights by 8-bit activations and sums into a
-wide accumulator. The hardware has a dedicated unit for exactly this — four int8
-lanes multiplied and reduced in one instruction (NVIDIA `dp4a`, AMD `v_dot4`,
-Vulkan `OpSDot`/`OpUDot`). Cajeta exposes it as `dot` on an 8-bit vector:
+Quantized inference multiplies 8-bit weights by 8-bit activations and sums into
+a wide accumulator. The hardware has a dedicated unit for exactly this. It
+multiplies and reduces four int8 lanes in one instruction (NVIDIA `dp4a`, AMD
+`v_dot4`, Vulkan `OpSDot`/`OpUDot`). Cajeta exposes it as `dot` on an 8-bit
+vector:
 
 ```
 Vector<int8,4> a = ...;   Vector<int8,4> b = ...;
@@ -11,9 +12,9 @@ int32 d = a.dot(b);          // sum(a[i] * b[i]), accumulated in int32
 int32 e = a.dot(b, acc);     // acc + sum(a[i] * b[i])  — the fused dot-add
 ```
 
-The result is **`int32`, not `int8`** — int8·int8 sums overflow a byte almost
-immediately, so the accumulation is always wide. That widening is the whole point
-of the operation, and it is what the hardware unit does.
+The result is `int32`. An int8·int8 sum overflows a byte almost immediately, so
+the accumulation is always wide. That widening is the whole point of the
+operation, and it is what the hardware unit does.
 
 ## Signed vs unsigned comes from the element type
 
@@ -22,9 +23,9 @@ Vector<int8,4>  a = ...;  a.dot(b);   // OpSDot — lanes sign-extended
 Vector<uint8,4> u = ...;  u.dot(w);   // OpUDot — lanes zero-extended
 ```
 
-There is no signed/unsigned *flag*: the element type already carries it
+There is no signed/unsigned flag, because the element type already carries it
 (`int8` is signed, `uint8` is not). A byte of `200` reads as `+200` from a
-`uint8` vector and `-56` from an `int8` vector — pick the vector type that
+`uint8` vector and `-56` from an `int8` vector. Pick the vector type that
 matches your quantization scheme.
 
 ## The fused dot-add is the GEMM inner loop
@@ -40,8 +41,9 @@ for (uint32 k = 0; k < K; k = k + 4) {
 }
 ```
 
-`a.dot(b, acc)` is a single hardware op (multiply-4, reduce, add to the
-accumulator) — the integer analogue of `Math.fma` for the matmul inner loop.
+`a.dot(b, acc)` is a single hardware op that multiplies four lanes, reduces
+them, and adds to the accumulator. It is the integer analogue of `Math.fma`
+for the matmul inner loop.
 
 ## How it lowers — same source, every backend
 
@@ -50,9 +52,10 @@ accumulator) — the integer analogue of `Math.fma` for the matmul inner loop.
 | **Vulkan** (RADV, etc.) | `OpSDot` / `OpUDot ... PackedVectorFormat4x8Bit` + `OpIAdd` — the `SPV_KHR_integer_dot_product` hardware unit. |
 | **CPU / AMD / NVIDIA** | a portable widening reduce (sign/zero-extend each lane to int32, multiply, sum) — same numeric result. |
 
-The two paths are **bit-exact**; only the instruction selection differs. On a
+The two paths are bit-exact, and only the instruction selection differs. On a
 device without the dot-product extension, the SPIR-V backend emits a validated
-bit-field expansion instead — still correct, just not the dedicated unit.
+bit-field expansion instead. That expansion is still correct, and it simply
+does not use the dedicated unit.
 
 ### Why not the alternatives?
 
@@ -67,9 +70,10 @@ correct everywhere else.
 
 ## Staying in vector space: `dotAccum`
 
-`dot` collapses four lanes to one scalar. For a wide kernel that is a reduce per
-four elements, and reduce frequency is what costs — the same Q4_K mat-vec
-reducing per sub-block measured 70.7 ms against 24.2 ms reducing once per block.
+`dot` collapses four lanes to one scalar. For a wide kernel that is a reduce
+per four elements, and reduce frequency is what costs. The same Q4_K mat-vec
+reducing per sub-block measured 70.7 ms against 24.2 ms reducing once per
+block.
 
 `dotAccum` is the same operation with the result kept in lanes:
 
@@ -79,17 +83,17 @@ Vector<int8,64>  a = acts.vload<64>(i);
 acc = w.dotAccum(a, acc);     // acc is Vector<int32,16>; 4 lanes -> 1 lane
 ```
 
-Operands are `4N` lanes of 8-bit against a `Vector<int32,N>` accumulator: lanes
-`4i..4i+3` multiply, sum, and add into accumulator lane `i`. Reduce once at the
-end of the block instead of once per group.
+Operands are `4N` lanes of 8-bit against a `Vector<int32,N>` accumulator. Lanes
+`4i..4i+3` multiply, sum, and add into accumulator lane `i`. You reduce once at
+the end of the block instead of once per group.
 
-**`dotAccum` is not simply a wider `dot`.** `dot` is SAME-SIGN — it reads both
+**`dotAccum` is not simply a wider `dot`.** `dot` is SAME-SIGN. It reads both
 operands with the receiver's signedness, because the hardware ops behind it
-(`OpSDot`/`OpUDot`) are same-sign. `dotAccum` is MIXED unsigned x signed, the
-shape quantized inference actually needs and the one `vpdpbusd`, `usdot`,
-`sudot4` and `vqdotsu` all provide: the weights take the receiver's signedness,
-the activations are always signed. So for an unsigned receiver the two give
-different answers — `Vector<uint8,4>[0,5,10,15]` against
+(`OpSDot`/`OpUDot`) are same-sign. `dotAccum` is MIXED unsigned x signed, which
+is the shape quantized inference actually needs and the one `vpdpbusd`,
+`usdot`, `sudot4` and `vqdotsu` all provide. The weights take the receiver's
+signedness, and the activations are always signed. So for an unsigned receiver
+the two give different answers. `Vector<uint8,4>[0,5,10,15]` against
 `Vector<int8,4>[-127,-90,-53,-16]` is -1220 through `dotAccum` and 6460 through
 `dot`, which reads those bytes as 129/166/203/240. They agree for `int8` x
 `int8`. Use `dotAccum` for quantized weights against signed activations, which
@@ -99,7 +103,7 @@ Packed weights normally live in an `int8[]`, so a nibble extraction
 `raw.vload<64>(o) & 15` has type `Vector<int8,64>` even though the values are
 0..15. Since the tier keys off the element type, that would quietly miss
 `vpdpbusd`. `asUnsigned()` / `asSigned()` reinterpret the same bits as the
-other signedness — no instruction, purely a change of what the element is
+other signedness. They emit no instruction and only change what the element is
 called:
 
 ```cajeta
@@ -117,24 +121,25 @@ is DECLARED, because device signedness is tracked per named local.
 | `CAJETA_SIMD_SCALAR_FALLBACK=1` | a scalar lane loop |
 | device (`@Kernel`) | the same DP4a unit `dot` uses, per accumulator lane |
 
-Every tier is **bit-identical for weight values 0..128** against any int8
-activation — which covers every K-quant field (Q4_K's nibbles 0..15, Q5_K's
+Every tier is bit-identical for weight values 0..128 against any int8
+activation, which covers every K-quant field (Q4_K's nibbles 0..15, Q5_K's
 0..31, Q6_K's 0..63) with room to spare. Above 128 the pre-VNNI x86 tier
 clamps, because it uses `vpmaddubsw`, which saturates each adjacent pair sum to
-int16; that buys 3 instructions instead of 15 and is the one place a tier can
+int16. That buys 3 instructions instead of 15 and is the one place a tier can
 disagree. Inside the range the operation is integer, so there is no
-reassociation hazard the way float accumulation has one: a faster tier changes
-speed and never the answer, which is what lets the scalar tier stand as the
-correctness floor. Callers never branch on target — `w.dotAccum(a, acc)` is the
-only spelling, everywhere.
+reassociation hazard the way float accumulation has one. A faster tier changes
+speed and never the answer, and that is what lets the scalar tier stand as the
+correctness floor. Callers never branch on target, because
+`w.dotAccum(a, acc)` is the only spelling, everywhere.
 
 ---
 
-**Rules.** Integer `dot` is defined for **4-lane 8-bit** vectors — `Vector<int8,4>`
-and `Vector<uint8,4>` — and yields `int32` (other integer shapes get a clean
-diagnostic for now). `a.dot(b)` is `sum(a[i]*b[i])`; `a.dot(b, acc)` adds the
+**Rules.** Integer `dot` is defined for 4-lane 8-bit vectors, `Vector<int8,4>`
+and `Vector<uint8,4>`, and yields `int32`. Other integer shapes get a clean
+diagnostic for now. `a.dot(b)` is `sum(a[i]*b[i])`, and `a.dot(b, acc)` adds the
 int32 accumulator. `dotAccum` takes `4N` 8-bit lanes against a `Vector<int32,N>`
-accumulator and yields `Vector<int32,N>`; operand lane counts must match.
-Signedness is the element type (`OpSDot` vs `OpUDot`). Runnable
-end to end in `samples/Tour/xpu` (the `DP4a` section). See `MaskSelect.md` for the
-other branchless value-type idiom and `CajetaXPU.md` for the kernel surface.
+accumulator and yields `Vector<int32,N>`, and operand lane counts must match.
+Signedness is the element type (`OpSDot` vs `OpUDot`). The operation is
+runnable end to end in `samples/Tour/xpu` (the `DP4a` section). See
+`MaskSelect.md` for the other branchless value-type idiom and `CajetaXPU.md`
+for the kernel surface.

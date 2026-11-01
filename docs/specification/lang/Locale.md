@@ -1,32 +1,32 @@
 # `cajeta.lang.Locale` — language / region tag
 
-Companion to `cajeta.lang.String` for the operations whose behaviour
-varies by language: case folding, collation, eventually number /
-date / currency formatting (those layers are separate; Locale is
-the IDENTITY they key off).
+Locale is the companion to `cajeta.lang.String` for the operations
+whose behaviour varies by language, such as case folding, collation,
+and eventually number / date / currency formatting. Those layers are
+separate. Locale is the identity they key off.
 
-Status: **designed, not implemented — nothing in this doc exists in
-the codebase yet.** There is no `Locale.cajeta` (or any `Locale`
+Status: **designed, not implemented.** Nothing in this doc exists in
+the codebase yet. There is no `Locale.cajeta` (or any `Locale`
 type) anywhere in `runtime/`, `src/`, or the grammar, and `String`'s
 shipped case methods (`toUpperCase()` / `toLowerCase()`) are
-**ASCII-only and take no `Locale` argument** — so the "ships in
-tandem with String, coherent on day one" intent has not been
-realized: a core of `String` shipped *without* Locale.
+ASCII-only and take no `Locale` argument. The "ships in tandem with
+String, coherent on day one" intent has therefore not been realized.
+A core of `String` shipped without Locale.
 
 > **Package note.** The inline comment in `String.cajeta` refers to a
 > future `cajeta.text.Locale`, whereas this doc places it in
-> `cajeta.lang.Locale`. The package is unsettled; treat the final
+> `cajeta.lang.Locale`. The package is unsettled. Treat the final
 > location as open until the type actually lands.
 
-Tracked as task #159 → next phase becomes a separate impl task.
+Tracked as task #159. The next phase becomes a separate impl task.
 
 ---
 
 ## What Locale IS
 
-A small, immutable value type that names a (language, region,
-script, variant) tuple. Identity comes from the
-[BCP 47](https://tools.ietf.org/html/bcp47) tag — the same
+Locale is a small, immutable value type that names a (language,
+region, script, variant) tuple. Identity comes from the
+[BCP 47](https://tools.ietf.org/html/bcp47) tag, the same
 identifier shape that HTTP `Accept-Language`, ICU, browser
 `navigator.language`, and modern Java's `Locale.toLanguageTag()`
 all speak. Examples:
@@ -48,23 +48,23 @@ Title-Case) so equal locales compare equal byte-for-byte.
 
 ## What Locale is NOT
 
-- **Not a thread-local default.** No `Locale.setDefault()`. Every
+- **Not a thread-local default.** There is no `Locale.setDefault()`. Every
   locale-sensitive operation takes the Locale explicitly, or
   defaults to `Locale.ROOT`. The "Turkish-locale-on-the-CI-box
   silently breaks case folding" bug class is engineered out by
   not offering the foot-gun. The cost is a few extra arguments
-  at call sites; the benefit is deterministic behaviour.
+  at call sites, and the benefit is deterministic behaviour.
 - **Not a charset.** `Locale.JAPANESE` says nothing about whether
   bytes are UTF-8, Shift-JIS, or EUC-JP. Encoding lives in
   `cajeta.lang.Encoding`.
-- **Not a formatter.** `Locale.US` doesn't know how to render
-  `1234567.89` as `"1,234,567.89"`. That's a `NumberFormat` /
-  `DateFormat` job (separate stdlib doc when those land); Locale
-  is the IDENTITY they look up rules by.
-- **Not a translation table.** There's no `localize("hello.world",
+- **Not a formatter.** `Locale.US` does not know how to render
+  `1234567.89` as `"1,234,567.89"`. That is a `NumberFormat` /
+  `DateFormat` job, with a separate stdlib doc when those land.
+  Locale is the identity they look up rules by.
+- **Not a translation table.** There is no `localize("hello.world",
   Locale.JAPANESE)` resolver in Locale itself. Resource bundles
-  are a layer above (planned: `cajeta.lang.ResourceBundle` /
-  `cajeta.format.Messages`).
+  are a layer above, planned as `cajeta.lang.ResourceBundle` /
+  `cajeta.format.Messages`.
 
 ## Surface
 
@@ -170,75 +170,76 @@ String root = s.toLower();               // "i̇stanbul" still works
                                          // for the legacy I → ı case.
 ```
 
-The `Locale.ROOT` default is the foot-gun-free choice: no thread-
-local surprise. Code that intentionally wants locale-sensitive
+The `Locale.ROOT` default is the foot-gun-free choice, with no
+thread-local surprise. Code that intentionally wants locale-sensitive
 behaviour passes the Locale explicitly.
 
 ## Implementation notes
 
-- **Wire format**: the cached `tag` String is the source of truth.
-  Constructors normalize and re-stringify; the part accessors
-  re-parse the cached tag on demand (cheap — typical tags are
-  4–10 chars). An alternative is to store all four parts in the
-  struct and never re-parse; both are acceptable.
-- **Constants are mode-1 views** over static `.rodata` bytes —
-  same shape as String literals. No allocation at startup.
-- **`fromEnv()` is pure** — every call re-reads getenv. Callers
+- **Wire format.** The cached `tag` String is the source of truth.
+  Constructors normalize and re-stringify, and the part accessors
+  re-parse the cached tag on demand, which is cheap because typical
+  tags are 4–10 chars. An alternative is to store all four parts in
+  the struct and never re-parse. Both are acceptable.
+- **Constants are mode-1 views** over static `.rodata` bytes, the
+  same shape as String literals. There is no allocation at startup.
+- **`fromEnv()` is pure.** Every call re-reads getenv. Callers
   that care about cost should cache the result themselves.
 - **Equality is byte-for-byte on canonical tag.** Two Locale
   values with the same normalized tag are `==`. This pins the
-  hash, too — `Locale.US == Locale.of("EN-us")` is true; both
+  hash too. `Locale.US == Locale.of("EN-us")` is true, since both
   normalize to `"en-US"`.
-- **No mutator surface.** Locale values are immutable; there's
-  no `withRegion(String)` builder in v1 (could be added if
-  composition shows up enough).
+- **No mutator surface.** Locale values are immutable. There is
+  no `withRegion(String)` builder in v1, and one could be added if
+  composition shows up enough.
 
 ## Implementation tier (v1)
 
 What lands at the same time as String:
 
-1. **Value type + identity** — `Locale.of(tag)`, `Locale.of(parts)`,
+1. **Value type + identity.** `Locale.of(tag)`, `Locale.of(parts)`,
    the predefined constants, `toLanguageTag()`, part accessors,
    `==` / `hash()`, `compareTo`.
-2. **Hook into String** — `String.toLower(Locale)`,
+2. **Hook into String.** `String.toLower(Locale)`,
    `toUpper(Locale)`, `compareToIgnoreCase(Locale)`,
    `equalsIgnoreCase(Locale)`. Locale.ROOT default for the no-arg
    forms.
-3. **`Locale.fromEnv()`** — POSIX env parse only on v1; Windows
+3. **`Locale.fromEnv()`.** POSIX env parse only on v1. Windows
    `GetUserDefaultLocaleName` is a follow-up.
 
 Deferred to later tiers:
 
-- **Number / date / currency formatters** — `NumberFormat.of(locale)`,
+- **Number / date / currency formatters.** `NumberFormat.of(locale)`,
   `DateFormat.of(locale)`, etc. Lives in `cajeta.format.*`.
-- **Collation** — locale-sensitive sort rules (German `ä` between
+- **Collation.** Locale-sensitive sort rules (German `ä` between
   `a` and `b`, Swedish `ä` after `z`). Backed by CLDR collation
-  data; not in v1.
-- **Bidi** — `Locale.isRightToLeft()` and Bidi engine hooks for
-  Arabic / Hebrew. Surface designed around the Unicode Bidi
-  Algorithm (UAX #9); deferred until the rendering layer needs it.
-- **Display names** — `locale.getDisplayLanguage(in: Locale)` /
+  data, and not in v1.
+- **Bidi.** `Locale.isRightToLeft()` and Bidi engine hooks for
+  Arabic / Hebrew. The surface is designed around the Unicode Bidi
+  Algorithm (UAX #9), and it is deferred until the rendering layer
+  needs it.
+- **Display names.** `locale.getDisplayLanguage(in: Locale)` or
   similar, returning the human-readable name in another locale
-  ("English" in `en`, "Englisch" in `de`). Needs CLDR display-
-  name data; deferred.
-- **Resource bundle lookup** — separate package
+  ("English" in `en`, "Englisch" in `de`). This needs CLDR display-
+  name data and is deferred.
+- **Resource bundle lookup.** A separate package
   (`cajeta.lang.ResourceBundle` planned).
 
 ## Open questions
 
-1. **Should `fromEnv()` cache?** Current spec: no caching, pure
-   per-call. The lazy-static alternative is ergonomic but
-   tangles with test-time env mutation. Lean toward no caching;
-   the cost is one `getenv` + a ~10-byte parse.
+1. **Should `fromEnv()` cache?** The current spec says no caching,
+   pure per-call. The lazy-static alternative is ergonomic but
+   tangles with test-time env mutation. Lean toward no caching.
+   The cost is one `getenv` + a ~10-byte parse.
 
-2. **Backing-store choice** — cache the parsed parts or re-parse
+2. **Backing-store choice.** Cache the parsed parts or re-parse
    on each accessor call? Re-parse is simpler and the tag is
    short. Pin in v1 review.
 
-3. **`Locale.matches`** — should this be Java's
+3. **`Locale.matches`.** Should this be Java's
    `LanguageRange.matches` (BCP 47 lookup algorithm with weighted
    ranges and fallback chains), or just the simple "shares
-   language" semantics shown above? v1 picks simple; the full
+   language" semantics shown above? v1 picks simple. The full
    algorithm lands when an `Accept-Language` style negotiation
    shows up in cajeta.io / a server framework.
 
@@ -248,7 +249,7 @@ Deferred to later tiers:
 - `docs/specification/lang/Primitives.md` — char vs codepoint, the
   width that case folding works on.
 - `docs/specification/io/Io.md` — `Encoding` is the OTHER
-  classification axis (UTF-8 vs Shift-JIS vs …); Locale ≠
+  classification axis (UTF-8 vs Shift-JIS vs …), and Locale ≠
   encoding.
 - Future: `cajeta.format.NumberFormat`,
   `cajeta.format.DateFormat`, `cajeta.lang.ResourceBundle`.

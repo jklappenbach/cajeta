@@ -1,18 +1,19 @@
 # Hashing — `cajeta.hash`
 
-Non-cryptographic digesting. *(Amended 2026-10-18 with cajeta-crypto spec
-6.3.)* The cryptographic digests (`Sha256`, `Sha1`, `MD5`, `Blake3`), HMAC,
-PBKDF2, TOTP and `SecureRandom` left this package for the `dev.cajeta.crypto`
-library, which also carries JWS signatures and TLS. What this document says
-of them below is history; the library's own docs are current.
+This package is non-cryptographic digesting. *(Amended 2026-10-18 with
+cajeta-crypto spec 6.3.)* The cryptographic digests (`Sha256`, `Sha1`, `MD5`,
+`Blake3`), HMAC, PBKDF2, TOTP and `SecureRandom` left this package for the
+`dev.cajeta.crypto` library, which also carries JWS signatures and TLS. What
+this document says of them below is history, and the library's own docs are
+current.
 
 This is the cajeta surface for the runtime `__cajeta_hash_*` symbols
 plus the algorithm classes that wrap them. Every cajeta value has a
-`hash()` either synthesized (`@AutoHash` / default `Object.hash()`)
-or hand-overridden; this doc covers the algorithms those hashes
-ultimately route through.
+`hash()`, either synthesized through `@AutoHash` or the default
+`Object.hash()`, or hand-overridden. This doc covers the algorithms
+those hashes ultimately route through.
 
-**Decision guide — pick the right hash:**
+The decision guide below picks the right hash:
 
 | Need | Use |
 |------|-----|
@@ -25,15 +26,16 @@ ultimately route through.
 | WebSocket handshake (protocol-fixed) | `Sha1` |
 | **legacy interop only** (S3 Content-MD5, old ETags) | `MD5` |
 
-> Do **not** pick `MD5` for new code — it's broken *and* the slowest hash
-> here. Its 128-bit-fingerprint job is now `XXHash3.hash128` (faster, lower
-> collision odds); its crypto job is `Sha256` / `Blake3`.
+> Do not pick `MD5` for new code. It is broken, and it is the slowest hash
+> here. Its 128-bit-fingerprint job is now `XXHash3.hash128`, which is faster
+> and has lower collision odds. Its crypto job is `Sha256` / `Blake3`.
 
-Status: `Hash` utility namespace + per-primitive intrinsics complete;
-`Hasher` interface + `MD5` + `SipHash` + `XXHash3` (incl. **`hash128`**,
-XXH3-128) + `DefaultHasher` shipped. Cryptographic digests shipped:
-`Sha1` (WebSocket handshake), `Sha256` (SHA-NI accelerated), and `Blake3`
-(AVX-512 hash-16, with XOF). `RapidHash` still designed-only.
+The status is as follows. The `Hash` utility namespace and the per-primitive
+intrinsics are complete. The `Hasher` interface, `MD5`, `SipHash`, `XXHash3`
+(including `hash128`, XXH3-128) and `DefaultHasher` have shipped. The
+cryptographic digests `Sha1` (WebSocket handshake), `Sha256` (SHA-NI
+accelerated), and `Blake3` (AVX-512 hash-16, with XOF) have shipped.
+`RapidHash` is still designed-only.
 
 ## `Hash` utility namespace — shipped
 
@@ -47,8 +49,8 @@ public final class Hash {
 }
 ```
 
-Implementation: `runtime/src/cajeta/hash/Hash.cajeta` — `@Native`-
-bridged to `__cajeta_hash_identity` / `__cajeta_hash_combine` /
+The implementation is `runtime/src/cajeta/hash/Hash.cajeta`, which is
+`@Native`-bridged to `__cajeta_hash_identity` / `__cajeta_hash_combine` /
 `__cajeta_hash_seed` in `runtime/native/cajeta_runtime.c`.
 
 ### Examples
@@ -73,14 +75,14 @@ public int64 hash() {
 int64 seed = Hash.processSeed();
 ```
 
-Pinned by `test/expression/HashTests.cpp`.
+It is pinned by `test/expression/HashTests.cpp`.
 
 ## Per-primitive `hash()` — shipped
 
-Compiler intrinsics. `value.hash()` on a **primitive** receiver lowers
-directly to the matching `__cajeta_hash_*` runtime helper (no boxing, no
-method dispatch — handled in `MethodCallExpression.cpp` ~3521, gated on the
-receiver's `PRIMITIVE_FLAG`):
+These are compiler intrinsics. `value.hash()` on a primitive receiver lowers
+directly to the matching `__cajeta_hash_*` runtime helper, with no boxing and
+no method dispatch. It is handled in `MethodCallExpression.cpp` ~3521, gated
+on the receiver's `PRIMITIVE_FLAG`:
 
 | Type | `hash()` lowering |
 |------|-------------------|
@@ -93,33 +95,33 @@ receiver's `PRIMITIVE_FLAG`):
 Coercion rules match `SynthesizedHashMethod`, so a field hashed via `@AutoHash`
 and the same field hashed via `x.hash()` agree.
 
-Non-primitive receivers are **not** part of this intrinsic:
+Non-primitive receivers are outside this intrinsic:
 
 - **Class types** dispatch `obj.hash()` virtually into the synthesized /
   overridden `hash()`.
-- **`String`** overrides `hash()` directly. The v1 algorithm is **FNV-1a**
-  (64-bit, offset basis `0xCBF29CE484222325`, prime `0x100000001B3`),
-  content-sensitive but **not** process-seeded — the seeded XXH3-64 path
-  (matching the rest of `cajeta.hash`) is a documented follow-up that still
-  needs the `int8[]→uint8_t*` `@Native` bridge; the runtime symbol
-  (`__cajeta_hash_bytes`, XXH3-64) already exists. See `String.cajeta` § `hash`.
+- **`String`** overrides `hash()` directly. The v1 algorithm is FNV-1a
+  (64-bit, offset basis `0xCBF29CE484222325`, prime `0x100000001B3`). It is
+  content-sensitive, and it is not process-seeded. The seeded XXH3-64 path,
+  matching the rest of `cajeta.hash`, is a documented follow-up that still
+  needs the `int8[]→uint8_t*` `@Native` bridge. The runtime symbol
+  `__cajeta_hash_bytes` (XXH3-64) already exists. See `String.cajeta` § `hash`.
 - **Byte buffers** (`int8[]`) hash through `__cajeta_hash_bytes` (XXH3-64) at
-  the call sites that need it (e.g. inside `XXHash3.hash`); there is no
+  the call sites that need it, for example inside `XXHash3.hash`. There is no
   bare `someInt8Array.hash()` array intrinsic.
 
-Pinned by `test/expression/HashTests.cpp`, `test/parser/AutoHashTests.cpp`,
+These are pinned by `test/expression/HashTests.cpp`, `test/parser/AutoHashTests.cpp`,
 and `test/parser/StringHashTests.cpp`.
 
 ## `@AutoHash` — shipped
 
-Class annotation. The compiler synthesizes a structural `hash()`
-that walks every non-static field, calls `field.hash()` on each
-(using the per-primitive intrinsic above for primitives, the class's
-own `hash()` for class types), and threads the results through a
-seed-mixed combiner. The `@Data` and `@Value` bundles imply it, so any
-of `@AutoHash` / `@Data` / `@Value` triggers synthesis. A hand-written
-no-arg `hash()` always wins (the synthesizer skips). Driven by
-`CajetaClass::synthesizeAutoHash` (`CajetaClass.cpp:1204`); the body is
+`@AutoHash` is a class annotation. The compiler synthesizes a structural
+`hash()` that walks every non-static field, calls `field.hash()` on each,
+and threads the results through a seed-mixed combiner. It uses the
+per-primitive intrinsic above for primitives and the class's own `hash()`
+for class types. The `@Data` and `@Value` bundles imply it, so any of
+`@AutoHash` / `@Data` / `@Value` triggers synthesis. A hand-written no-arg
+`hash()` always wins, and the synthesizer skips. Synthesis is driven by
+`CajetaClass::synthesizeAutoHash` (`CajetaClass.cpp:1204`), and the body is
 emitted by `SynthesizedHashMethod`.
 
 <!-- snippet: skip -->
@@ -137,15 +139,15 @@ Position p = heap Position { x: 1, y: 2, z: 3 };
 int64 h = p.hash();
 ```
 
-Pinned by `test/parser/AutoHashTests.cpp`.
+It is pinned by `test/parser/AutoHashTests.cpp`.
 
 ## `Hasher` interface — shipped
 
-The uniform contract every algorithm class implements. Streaming
-writes per-type; one terminal `finish()`. v1 ships `void`-returning
-write methods (no fluent chaining) — the spec's earlier `Hasher`-
-returning shape collided with interface-return covariance edge cases
-that aren't worth working around for v1.
+`Hasher` is the uniform contract every algorithm class implements. It has
+streaming writes per type and one terminal `finish()`. v1 ships
+`void`-returning write methods, with no fluent chaining, because the spec's
+earlier `Hasher`-returning shape collided with interface-return covariance
+edge cases that are not worth working around for v1.
 
 <!-- snippet: skip -->
 ```cajeta
@@ -173,7 +175,8 @@ public interface Hasher {
 
 ### `XXHash3` (default-backing, fast general-purpose) — shipped
 
-Default for non-attacker-controlled hashing. Multi-GB/s throughput.
+`XXHash3` is the default for non-attacker-controlled hashing, with multi-GB/s
+throughput.
 
 <!-- snippet: skip -->
 ```cajeta
@@ -198,16 +201,17 @@ public final class XXHash3 implements Hasher {
 }
 ```
 
-The bulk path (inputs > 240 B) is a pure-Cajeta AVX-512 `Vector<int64,8>`
-long path that's bit-identical to the native XXH3 reference and beats every
-competitor's library on this metric (the crown). `hash128`'s low64 equals the
-64-bit digest on that path (XXH3 derives both from the same accumulators).
+The bulk path, for inputs > 240 B, is a pure-Cajeta AVX-512 `Vector<int64,8>`
+long path that is bit-identical to the native XXH3 reference and beats every
+competitor's library on this metric. `hash128`'s low64 equals the 64-bit
+digest on that path, because XXH3 derives both from the same accumulators.
 
 ### `Sha256` (cryptographic checksum / content-addressing) — shipped
 
-SHA-256 (FIPS 180-4). The native bridge uses x86 **SHA-NI** behind a CPUID
-probe (scalar fallback), making it the fastest SHA-256 in the comparison suite.
-Use for content-addressing and interop; not a keyed/authenticated primitive.
+`Sha256` is SHA-256 (FIPS 180-4). The native bridge uses x86 SHA-NI behind a
+CPUID probe, with a scalar fallback, which makes it the fastest SHA-256 in the
+comparison suite. Use it for content-addressing and interop. It is not a keyed
+or authenticated primitive.
 
 <!-- snippet: skip -->
 ```cajeta
@@ -281,10 +285,10 @@ public final class Pbkdf2 {
 
 ### `SecureRandom` (OS entropy) — shipped
 
-Random bytes from `BCryptGenRandom` on Windows and `/dev/urandom` elsewhere,
-through the native `__cajeta_secure_random_fill`. Session ids, challenge
-handles, salts and keys come from here. It throws when the source cannot be
-read rather than falling back to a weaker generator. `cajeta.math`'s random is
+`SecureRandom` gives random bytes from `BCryptGenRandom` on Windows and
+`/dev/urandom` elsewhere, through the native `__cajeta_secure_random_fill`.
+Session ids, challenge handles, salts and keys come from here. It throws when
+the source cannot be read, and it never falls back to a weaker generator. `cajeta.math`'s random is
 a seeded generator for simulation and is not a substitute.
 
 <!-- snippet: skip -->
@@ -297,11 +301,11 @@ public final class SecureRandom {
 
 ### `Blake3` (fast cryptographic hash + XOF) — shipped
 
-BLAKE3 — the modern fast cryptographic fingerprint and the recommended
-content-addressing hash for new code. 256-bit default digest plus an
-**extendable output (XOF)** of any length (the first 32 bytes equal the
-standard digest). The bulk path is an AVX-512 `hash16` (16 chunks in
-parallel, CPUID-gated, scalar fallback).
+BLAKE3 is the modern fast cryptographic fingerprint and the recommended
+content-addressing hash for new code. It has a 256-bit default digest plus an
+extendable output (XOF) of any length, where the first 32 bytes equal the
+standard digest. The bulk path is an AVX-512 `hash16` that processes 16 chunks
+in parallel, CPUID-gated, with a scalar fallback.
 
 <!-- snippet: skip -->
 ```cajeta
@@ -322,14 +326,14 @@ public final class Blake3 implements Hasher {
 
 ### `RapidHash` (maximum throughput) — designed, not implemented
 
-~20-30% faster than XXH3 on medium-to-large inputs; smaller code
-footprint. Not the default-backing because xxHash3 has the
-ecosystem-stability story (LZ4 / zstd / RocksDB / ClickHouse).
-Same surface shape as `XXHash3`.
+`RapidHash` is ~20-30% faster than XXH3 on medium-to-large inputs and has
+a smaller code footprint. It is not the default backing, because xxHash3
+has the ecosystem-stability story (LZ4 / zstd / RocksDB / ClickHouse). It
+has the same surface shape as `XXHash3`.
 
 ### `SipHash` (DoS-resistant for untrusted input) — shipped
 
-SipHash-2-4 with 128-bit key, supplied as two int64 halves.
+`SipHash` is SipHash-2-4 with a 128-bit key, supplied as two int64 halves.
 
 <!-- snippet: skip -->
 ```cajeta
@@ -346,9 +350,10 @@ public final class SipHash implements Hasher {
 
 ### `MD5` (legacy interop only — **do not use for new code**) — shipped
 
-Kept only for protocols that fix MD5 (S3 `Content-MD5`, existing ETags). It's
-broken *and* the slowest hash here. New code: `XXHash3.hash128` (non-crypto
-128-bit) or `Sha256` / `Blake3` (crypto).
+`MD5` is kept only for protocols that fix MD5, such as S3 `Content-MD5` and
+existing ETags. It is broken, and it is the slowest hash here. New code should
+use `XXHash3.hash128` for a non-crypto 128-bit digest or `Sha256` / `Blake3`
+for crypto.
 
 <!-- snippet: skip -->
 ```cajeta
@@ -367,9 +372,9 @@ public final class MD5 implements Hasher {
 
 ### `DefaultHasher` — shipped
 
-What the compiler-synthesized `Object.hash()` uses: process-seeded
-XXH3 underneath. Delegates the Hasher surface to a backing
-`XXHash3` instance.
+`DefaultHasher` is what the compiler-synthesized `Object.hash()` uses, and
+it is process-seeded XXH3 underneath. It delegates the Hasher surface to a
+backing `XXHash3` instance.
 
 <!-- snippet: skip -->
 ```cajeta
@@ -395,7 +400,8 @@ public final class DefaultHasher implements Hasher {
 | Identity-based (graph nodes, weak refs) | `Hash.identity` |
 | Authenticated/keyed crypto (HMAC, AEAD, signatures) | **`cajeta.crypto`** (future library) |
 
-Worked end-to-end in the tour: `samples/tour/.../tour/hash/HashDemo.cajeta`.
+A worked end-to-end example is in the tour at
+`samples/tour/.../tour/hash/HashDemo.cajeta`.
 
 ## Tests
 
@@ -422,23 +428,23 @@ Worked end-to-end in the tour: `samples/tour/.../tour/hash/HashDemo.cajeta`.
 
 ## v1 implementation notes
 
-- `Hasher` interface ships `void`-returning writes (no fluent
-  chaining). Spec's earlier `Hasher`-returning shape hit
+- The `Hasher` interface ships `void`-returning writes, with no fluent
+  chaining. The spec's earlier `Hasher`-returning shape hit
   interface-return covariance edge cases not worth solving for v1.
-- @Native bridge gaps at the boundary: `boolean` parameter doesn't
-  coerce to C int (worked around with int8 ternary); `int8[]` return
-  doesn't register with the per-thread live-set (worked around with
-  caller-allocates-then-fill helpers).
-- Static method returning a reference-typed value (`pointer`,
+- There are @Native bridge gaps at the boundary. A `boolean` parameter
+  does not coerce to C int, which is worked around with an int8 ternary.
+  An `int8[]` return does not register with the per-thread live-set,
+  which is worked around with caller-allocates-then-fill helpers.
+- A static method returning a reference-typed value (`pointer`,
   `int8[]`, class, interface) with >1 parameter must be
-  `#`-qualified (move-on-return), otherwise the
+  `#`-qualified for move-on-return, otherwise the
   multi-param-borrow-return rule rejects the declaration. See
   MemoryModel.md § Function signatures.
 
 ## Open items
 
-- `RapidHash` — runtime + cajeta wrapper (low priority — XXHash3
-  covers the same use cases with worse code-size but better
-  ecosystem interop).
-- `Hash.identity` argument widening from `pointer` to `Object` —
-  done; widening shipped alongside the Object root work.
+- `RapidHash` needs a runtime and a cajeta wrapper. It is low priority,
+  because XXHash3 covers the same use cases with worse code size but
+  better ecosystem interop.
+- `Hash.identity` argument widening from `pointer` to `Object` is done.
+  The widening shipped alongside the Object root work.

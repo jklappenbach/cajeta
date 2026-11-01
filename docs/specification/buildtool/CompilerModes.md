@@ -1,16 +1,16 @@
 # CompilerModes
 
-Specification for cajeta's two-flavor compilation model: **debug
-mode** (maximum diagnostics, hand-holding for newcomers, runtime
-visibility) vs **release mode** (maximum throughput, minimum
-footprint, zero overhead for safety nets we can prove correct).
+Specification for cajeta's two-flavor compilation model. Debug
+mode gives maximum diagnostics, hand-holding for newcomers, and
+runtime visibility. Release mode gives maximum throughput, minimum
+footprint, and zero overhead for safety nets we can prove correct.
 
-This doc is the contract for what each mode *means* — what
-invariants the user can rely on, what costs they're paying, and
-which individual features can be toggled. The low-level flag
-plumbing (how flavors expand into compiler flags, the order of
-optimization passes, etc.) lives in `Compilation.md`; this doc
-defines the *semantic* envelope each flavor inhabits.
+This doc is the contract for what each mode means. It states what
+invariants you can rely on, what costs you are paying, and which
+individual features can be toggled. The low-level flag plumbing,
+such as how flavors expand into compiler flags and the order of
+optimization passes, lives in `Compilation.md`. This doc defines
+the semantic envelope each flavor inhabits.
 
 ## Table of contents
 
@@ -27,60 +27,62 @@ defines the *semantic* envelope each flavor inhabits.
 
 ## Philosophy
 
-Two audiences, two postures:
+There are two audiences and two postures:
 
 - **Debug mode.** Caress the new user. Every runtime failure should
   point at the source line that caused it. Every drop, every
   borrow, every dangling reference, every overflow comes with
   source positions, a clear English description, and a suggested
-  fix where one exists. Performance is irrelevant; the user is
-  diagnosing, not shipping. Memory cost is fine — debug builds run
-  on developer machines.
+  fix where one exists. Performance is irrelevant, because the
+  user is diagnosing. Memory cost is fine, because debug builds
+  run on developer machines.
 
 - **Release mode.** Maximize throughput and minimize footprint.
   Strip everything that's not load-bearing for correctness once
   the program is known to work. Trust the compiler's static
-  analysis where it's sound (no use-after-move tracking at
-  runtime); rely on the OS / glibc / hardware for the rest (no
-  poison-on-free, no live-set claim, etc.). Crashes are
-  acceptable diagnostics in production — the production team has
-  cores + symbol files + stacktraces from another layer (Sentry,
-  glog, etc.) and doesn't need the language to also hold their
-  hand.
+  analysis where it's sound, so there is no use-after-move
+  tracking at runtime. Rely on the OS / glibc / hardware for the
+  rest, so there is no poison-on-free, no live-set claim, etc.
+  Crashes are acceptable diagnostics in production. The production
+  team has cores + symbol files + stacktraces from another layer
+  (Sentry, glog, etc.) and doesn't need the language to also hold
+  their hand.
 
 **No mode is ever a correctness gate.** Code that runs correctly
 in debug must run correctly in release. The only differences are
 diagnostic surface, runtime checks that the compiler couldn't
 prove safe to elide, and source position metadata. If something
-behaves differently across modes, it's a bug in mode handling,
-not a feature.
+behaves differently across modes, it's a bug in mode handling.
 
-**Every debug feature has a toggle.** Users who want one specific
-debug feature in production (or want to skip one specific feature
-in development) reach for `--<feature>=on|off`. The flavor flags
-(`--debug`, `--release`) are conveniences that expand into
-feature toggle combinations; individual toggles override.
+**Every debug feature has a toggle.** If you want one specific
+debug feature in production, or want to skip one specific feature
+in development, reach for `--<feature>=on|off`. The flavor flags
+(`--debug`, `--release`) are conveniences that expand into feature
+toggle combinations, and individual toggles override.
 
 ---
 
 ## Mode selection
 
-The **compiler binary** (`src/main.cpp`) supports two layers, applied
+The compiler binary (`src/main.cpp`) supports two layers, applied
 left-to-right so later args override earlier ones:
 
-1. Flavor selection: `--mode=debug|debug-release|release|fast|minimal`,
-   or its alias flags `--debug` / `--debug-release` / `--release` /
-   `--fast` / `--minimal`. This expands to a `CompilerFlags` struct via
+1. Flavor selection is
+   `--mode=debug|debug-release|release|fast|minimal`, or its alias
+   flags `--debug` / `--debug-release` / `--release` / `--fast` /
+   `--minimal`. This expands to a `CompilerFlags` struct via
    `CompilerFlags::defaultsForMode` (`src/cajeta/compile/CompilerMode.h`).
-2. Per-feature overrides: `--source-tags=on`, `--bounds=off`, etc.,
-   each mutating one field of that struct after expansion.
+2. Per-feature overrides are `--source-tags=on`, `--bounds=off`,
+   etc., and each mutates one field of that struct after
+   expansion.
 
-Built-in default when no flavor flag is given: `debug` — we don't want
-a new user to ship a stripped binary by accident.
+The built-in default when no flavor flag is given is `debug`,
+because we don't want a new user to ship a stripped binary by
+accident.
 
-> The compiler's own `--profile=<name>` flag is **not** a mode
-> selector — it sets the active `@Profile` for component gating.
-> Build-flavor *profiles* keyed in `cajeta.json` (a build-tool concept,
+> The compiler's own `--profile=<name>` flag is not a mode
+> selector. It sets the active `@Profile` for component gating.
+> Build-flavor profiles keyed in `cajeta.json` (a build-tool concept,
 > `[profile.<name>]`-style, and any `CAJETA_MODE`-style env selection)
 > are resolved by the build tool, which then passes the chosen
 > `--mode`/`--<feature>` flags down to the compiler. See
@@ -119,63 +121,63 @@ Individual flags override.
 | `--diag-hints`          | on        | on                | off         | off       | off         |
 | `--profile-counters`    | off       | on                | off         | off       | off         |
 
-The IR optimization level (`--opt=O0|O1|O2|O3`) is a separate axis;
-each mode picks a default (`O0` for debug, `O2` for release /
-debug-release, `O3` for fast — see `CompilerFlags::defaultsForMode`).
-Debug-info emission is a mode-driven internal toggle. LTO, PGO, and
-frame-pointer flags are planned (see
-[`Compilation.md`](Compilation.md#optimization)); they would layer on
-top of the feature toggles here.
+The IR optimization level (`--opt=O0|O1|O2|O3`) is a separate
+axis. Each mode picks a default, `O0` for debug, `O2` for release
+/ debug-release, and `O3` for fast (see
+`CompilerFlags::defaultsForMode`). Debug-info emission is a
+mode-driven internal toggle. LTO, PGO, and frame-pointer flags are
+planned (see [`Compilation.md`](Compilation.md#optimization)), and
+they would layer on top of the feature toggles here.
 
 ---
 
 ## Feature catalog
 
-Each feature: what it does, its debug + release defaults, its
+Each feature lists what it does, its debug + release defaults, its
 toggle flag, and the runtime cost paid when enabled.
 
 ### `--bounds=on|off|trap`
 
 Array bounds-check generation. `on` emits a comparison + branch
-before every array index access; out-of-bounds raises
-`IndexOutOfBoundsException`. `trap` skips the exception (no
-unwind, no message) and emits an LLVM `@llvm.trap` for the
-fastest possible bail-out (still SIGILL, not silent UB). `off`
-elides the check.
+before every array index access, and out-of-bounds raises
+`IndexOutOfBoundsException`. `trap` skips the exception, with no
+unwind and no message, and emits an LLVM `@llvm.trap` for the
+fastest possible bail-out. That is still SIGILL and never silent
+UB. `off` elides the check.
 
-- Debug default: `on`. Most user-visible source of "why did my
-  program crash?" — keep it loud.
+- Debug default: `on`. It is the most user-visible source of "why
+  did my program crash?", so keep it loud.
 - Release default: `on`. Bounds violations are real bugs even in
-  production; the cost (a compare + predictable branch) is
+  production, and the cost (a compare + predictable branch) is
   amortized below the cache-line cost of the read anyway.
-- Cost: one CMP + conditional branch per index access. Branch
-  predictor handles in-bounds (the overwhelming common case)
+- Cost: one CMP + conditional branch per index access. The branch
+  predictor handles in-bounds, the overwhelming common case,
   near-free.
 - Per `docs/specification/lang/MemoryModel.md` § Bounds, the static analyzer
   can elide the check when the index is provably in-range
-  (constant, prior compare); both modes use this.
+  (constant, prior compare). Both modes use this.
 
 ### `--null-checks=on|off|trap`
 
 Null-receiver checks before virtual dispatch + field load. `on`
-raises `NullReferenceException`; `trap` branches to `@llvm.trap`
-(SIGILL, no unwind) like `--bounds=trap`; `off` elides the check.
+raises `NullReferenceException`. `trap` branches to `@llvm.trap`
+(SIGILL, no unwind) like `--bounds=trap`. `off` elides the check.
 
 - Debug default: `on`.
 - Release default: `on`. Same logic as `--bounds`.
 - Off-default lives in `--minimal` where you've accepted that
   null receivers SEGV.
 - Cost: one CMP per virtual call site that the compiler can't
-  prove non-null. Often elidable post-allocation site.
+  prove non-null. It is often elidable after an allocation site.
 
 ### `--source-tags=on|off`
 
 Carry per-allocation source positions (file + line) on every
 drop-chain entry and every live-allocation set record.
 Diagnostics ("double-free attempted", "drop-chain assertion
-failed") then print the alloc-site AND drop-site, not just an
-address. **First debug feature; see § Source-tagged drop-chain
-entries below for the design.**
+failed") then print the alloc-site AND drop-site rather than only
+an address. This is the first debug feature. See § Source-tagged
+drop-chain entries below for the design.
 
 - Debug default: `on`.
 - Release default: `off`.
@@ -183,59 +185,60 @@ entries below for the design.**
   drop-site, file pointer + line). One extra arg per
   `__cajeta_drop_push` call (passed at codegen time). For typical
   programs with thousands of live drop entries, ~few hundred KB.
-- Cost in release: zero (extra fields aren't in the struct, the
-  debug-flavored helpers aren't linked).
+- Cost in release: zero. The extra fields aren't in the struct,
+  and the debug-flavored helpers aren't linked.
 
 ### `--poison-free=on|off`
 
 After every heap free, scribble the freed body with a recognizable
-sentinel (`0xDEADBEEF` for words, `0xDB` for bytes — pick one).
+sentinel, `0xDEADBEEF` for words or `0xDB` for bytes. Pick one.
 Use-after-free reads then return garbage instead of stale-but-
 plausible data, and the sentinel is fast to recognize in a core
 dump.
 
 - Debug default: `on`.
-- Release default: `off`. Doubles the memory bandwidth on every
-  free; not worth it in production.
+- Release default: `off`. It doubles the memory bandwidth on every
+  free, which is not worth it in production.
 - Cost: one memset per `free()`. Width = allocation size.
 - Optional escalation: track a "should-be-poisoned" flag in the
   live-set and assert on read (via a runtime `__cajeta_load_check`
-  helper) — but that requires every field load to gate on the
-  helper. Defer to a later doc.
+  helper). That requires every field load to gate on the helper,
+  so defer it to a later doc.
 
 ### `--live-set=strict|bounded|off`
 
 The per-thread live-allocation set from `docs/specification/lang/FieldOwnership.md`
-§ Solution B. Three states:
+§ Solution B. It has three states:
 
 - `strict` (debug): unbounded growth + rehash when load passes
-  threshold. Never silently stops tracking. Asserts on suspicious
-  states (e.g., adding an already-present address).
+  threshold. It never silently stops tracking. It asserts on
+  suspicious states (e.g., adding an already-present address).
 - `bounded` (release): fixed-capacity table (current 64K slots).
-  Over the cap, warn once and stop tracking; subsequent double-
-  frees in that regime fall through to glibc's heap checker.
+  Over the cap, warn once and stop tracking. Subsequent
+  double-frees in that regime fall through to glibc's heap
+  checker.
 - `off` (minimal): the set isn't allocated, the auto-drop helpers
   don't check it, and free is unconditional. Aliased fields will
-  double-free; the user has guaranteed via reasoning that no
-  aliased fields exist (or has accepted the cost of glibc abort
-  in production).
+  double-free. The user has guaranteed via reasoning that no
+  aliased fields exist, or has accepted the cost of glibc abort in
+  production.
 - Cost (strict / bounded): one `pthread_mutex_lock` + hash op +
-  unlock per alloc and free. Single global bottleneck — see
-  `docs/specification/lang/FieldOwnership.md` § Cost. Strict additionally
+  unlock per alloc and free. It is a single global bottleneck (see
+  `docs/specification/lang/FieldOwnership.md` § Cost). Strict additionally
   pays rehash cost amortized across allocations.
 - Cost (off): zero. But you'd better know what you're doing.
 
 ### `--drop-chain-validate=on|off`
 
-Validate the drop chain at every push and pop: linked-list
+Validate the drop chain at every push and pop with a linked-list
 integrity check (prev pointer != obj address, no cycle, active
-flag is 0 or 1, drop_fn is non-null when active). Cheap O(1)
-checks. On failure, log the entry's source tags and abort.
+flag is 0 or 1, drop_fn is non-null when active). These are cheap
+O(1) checks. On failure, log the entry's source tags and abort.
 
 - Debug default: `on`.
 - Release default: `off`.
-- Cost: ~3 conditional branches per push/pop. Mostly free
-  (predictable branches).
+- Cost: ~3 conditional branches per push/pop. They are mostly
+  free, since the branches are predictable.
 
 ### `--ub-traps=on|off`
 
@@ -243,8 +246,8 @@ Generate `@llvm.assume` / explicit trap instructions for
 operations the compiler knows are UB if their preconditions are
 violated (signed overflow, shift-by-≥-width, divide by zero,
 unaligned atomic). In release the compiler trusts the UB and
-optimizes around it; in debug the trap fires before the
-optimizer would have wrong-coded.
+optimizes around it. In debug the trap fires before the optimizer
+would have wrong-coded.
 
 - Debug default: `on`. Catches the "compiler made my code do
   something weird" mystery early.
@@ -254,26 +257,26 @@ optimizer would have wrong-coded.
 ### `--use-after-move-rt=on|off`
 
 The compile-time use-after-move tracker (`MemoryModel.md` § Path-
-based borrow tracking) catches most of these. Runtime backup:
-mark moved slots with a sentinel (`MOVED_OUT_BIT` in the
-slot's header word) and trap if anything reads through them.
-Catches indirection cases the static checker misses (e.g., moves
+based borrow tracking) catches most of these. The runtime backup
+marks moved slots with a sentinel (`MOVED_OUT_BIT` in the slot's
+header word) and traps if anything reads through them. It catches
+indirection cases the static checker misses (e.g., moves
 through a stored function pointer).
 
 - Debug default: `on`.
-- Release default: `off`. Static check is trusted.
+- Release default: `off`. The static check is trusted.
 - Cost: one CMP per read from a tracked slot.
 
 ### `--overflow-checks=on|off|wrapping`
 
-Integer overflow behavior. `on` traps; `wrapping` is two's-
-complement modular arithmetic; `off` is undefined behavior (the
-compiler may assume no overflow and optimize accordingly).
+Integer overflow behavior. `on` traps. `wrapping` is
+two's-complement modular arithmetic. `off` is undefined behavior,
+and the compiler may assume no overflow and optimize accordingly.
 
 - Debug default: `on`.
 - Release default: `wrapping`. Trapping in production is a
-  reliability risk (single-bad-arithmetic kills the process);
-  wrapping is well-defined.
+  reliability risk, since a single bad arithmetic op kills the
+  process. Wrapping is well-defined.
 - Cost: one branch per arithmetic op (compiler combines for
   fused checks).
 
@@ -286,7 +289,7 @@ addresses via DWARF + cajeta source maps and prints
 `com.example.Foo::bar (Foo.cajeta:42)` instead of `0x55a3...`.
 
 - Debug default: `on`.
-- Release default: `off`. Backtrace is ~1µs per throw; that
+- Release default: `off`. Backtrace is ~1µs per throw, and that
   matters in latency-bound code. Tooling like Sentry / glog
   captures stacks at a higher layer for production.
 - Cost: ~30 frame walks per throw + symbolization on print.
@@ -300,7 +303,7 @@ default. `terse` is one line per diagnostic for CI parsing.
 
 - Debug default: `verbose`.
 - Release default: `normal`.
-- Affects the **compiler's** output, not the runtime.
+- Affects the compiler's output. The runtime is unaffected.
 - Cost: build-time only.
 
 ### `--diag-hints=on|off`
@@ -311,16 +314,17 @@ violates lifetime, suggests `@SuppressLint("...")` for repeated
 ignored warnings, etc.
 
 - Debug default: `on`.
-- Release default: `off`. Suppresses noise on CI.
+- Release default: `off`. This suppresses noise on CI.
 - Affects the compiler's output.
 
 ### `--diag-format=text|json`
 
-The **format** of the compiler's diagnostics (independent of `--diag-verbosity`,
-which controls their *detail*). `text` is the human-readable default — unchanged
-free-text on stderr. `json` emits **NDJSON**: one self-contained JSON object per
-line on stderr, so tools consume structured diagnostics instead of regex-scraping
-(the IntelliJ plugin and build tool are the consumers; see
+The format of the compiler's diagnostics. It is independent of
+`--diag-verbosity`, which controls their detail. `text` is the
+human-readable default, unchanged free-text on stderr. `json`
+emits NDJSON, one self-contained JSON object per line on stderr,
+so tools consume structured diagnostics instead of regex-scraping.
+The IntelliJ plugin and build tool are the consumers (see
 `specs/archive/idea-build-toolwindow-spec.md` §1.5.1).
 
 Each line is one diagnostic:
@@ -333,30 +337,38 @@ Each line is one diagnostic:
 - `severity`: `"error"` \| `"warning"` \| `"note"`.
 - `code`: the compiler error id (semantic errors) or `"syntax"` (parser/lexer). May be null.
 - `message`: the human message. `file` / `line` / `column`: source location when
-  known (1-based line/column), else JSON null. Syntax errors carry a precise location;
-  **semantic** errors carry one once their site is migrated (the flagship *unresolved
-  type* does) — un-migrated sites still report null location.
-- **Collect-and-continue** (`--lint` **and full compile**;
-  `docs/specs/diagnostic-engine-spec.md`, `docs/specs/collect-continue-compile-spec.md`):
-  recoverable semantic errors are *reported to a diagnostic engine and recovered* (the
-  failed resolution yields an **error type** so analysis continues) rather than aborting on
-  the first. A file surfaces **all** its migrated pre-codegen semantic errors at once,
-  sorted by span and deduped. Full compile gates the codegen loop + artifact emit on the
-  engine being error-free — a broken tree reports every error and writes **no** artifact;
-  a clean tree compiles unchanged. Migration is incremental — an un-migrated site still
-  throws and is folded into the engine as one fatal diagnostic.
-- Remaining sub-phase (**codegen-in-collect-mode**): run **codegen over error types** with
-  per-site **absorption** (an operation on an error type yields an error type, no secondary
-  diagnostic) + IR-safe error values, so use-site / type-mismatch / unknown-method errors
-  are collected too. It is per-codegen-site work (there is no central assignability
-  predicate) and needs IR that survives error subtrees — its own effort.
-- Mode-independent (not changed by `--debug`/`--release`/etc.); default `text`.
+  known (1-based line/column), else JSON null. Syntax errors carry
+  a precise location. Semantic errors carry one once their site is
+  migrated, and the flagship unresolved type does. Un-migrated
+  sites still report null location.
+- **Collect-and-continue** (`--lint` and full compile;
+  `docs/specs/diagnostic-engine-spec.md`,
+  `docs/specs/collect-continue-compile-spec.md`): recoverable
+  semantic errors are reported to a diagnostic engine and
+  recovered, and the compiler does not abort on the first. The
+  failed resolution yields an error type so analysis continues. A
+  file surfaces all its migrated pre-codegen semantic errors at
+  once, sorted by span and deduped. Full compile gates the codegen
+  loop + artifact emit on the engine being error-free. A broken
+  tree reports every error and writes no artifact, and a clean
+  tree compiles unchanged. Migration is incremental. An
+  un-migrated site still throws and is folded into the engine as
+  one fatal diagnostic.
+- The remaining sub-phase is codegen-in-collect-mode. It runs
+  codegen over error types with per-site absorption, where an
+  operation on an error type yields an error type and no secondary
+  diagnostic, plus IR-safe error values, so use-site /
+  type-mismatch / unknown-method errors are collected too. It is
+  per-codegen-site work, since there is no central assignability
+  predicate, and it needs IR that survives error subtrees. It is
+  its own effort.
+- Mode-independent (unchanged by `--debug`/`--release`/etc.). The default is `text`.
 - A clean compile emits nothing. Consumers should skip any non-`{` line defensively.
 
 #### Where a diagnostic points (compiler-jsonl 1.2)
 
-`file`, `line` and `column` are always the place to show the user: the nearest
-source text a person can open. Since 1.2 a diagnostic also says what kind of place
+`file`, `line` and `column` are always the place to show the user,
+the nearest source text a person can open. Since 1.2 a diagnostic also says what kind of place
 that is, in `at`, and generated code and non-source subjects say what produced
 them. A reader that ignores the new fields sees exactly what it saw under 1.1.
 
@@ -373,8 +385,8 @@ Generated code points at what asked for it. A template instantiation points at
 the line that instantiated it. A codec (JSON, CSV, Protobuf, Ion, Avro, a frame's
 CSV loader) points at its record. A generated default constructor points at its
 class. When generated code is nested, the location is the outermost request.
-`via` names the generator and is free text: the compiler writes `template`,
-`default-constructor` and `<label>-synthesizer`. `from` is the generator's own
+`via` names the generator and is free text. The compiler writes
+`template`, `default-constructor` and `<label>-synthesizer`. `from` is the generator's own
 source position, such as the template line where the error is:
 
 ```json
@@ -404,10 +416,12 @@ The schema is `specs/schemas/compiler-jsonl.schema.json`.
 
 ### `--lint <file>`
 
-Run the diagnostic passes over **one** source file and report diagnostics, **without
-a build** — no codegen, no linking, no artifact, no entry-method. A distinct mode (like
-`archive` / `jit-run`): `<file>` is the sole positional; the three-positional
-`<entry-method> <source-root> <archive-root>` compile path does not apply.
+Run the diagnostic passes over one source file and report
+diagnostics, without a build. There is no codegen, no linking, no
+artifact, and no entry-method. It is a distinct mode (like
+`archive` / `jit-run`). `<file>` is the sole positional, and the
+three-positional `<entry-method> <source-root> <archive-root>`
+compile path does not apply.
 
 ```
 cajeta --lint path/to/File.cajeta                     # text diagnostics
@@ -416,57 +430,65 @@ cajeta --lint /tmp/buf.cajeta --source-root proj/src --shadow proj/src/app/File.
 ```
 
 - Runs stdlib load → parse → placeholder/prototype/advice/dependency-graph passes, then
-  stops before codegen. Surfaces the same diagnostics a full compile's front-end does
-  (syntax with precise locations; semantic via error id + message).
+  stops before codegen. It surfaces the same diagnostics a full
+  compile's front-end does, syntax with precise locations and
+  semantic via error id + message.
 - Honors `--diag-format` exactly as a full compile (text default; `json` = NDJSON on
   stderr, nothing on stdout).
-- Exit code: `0` iff no error-severity diagnostic; non-zero otherwise. A missing `<file>`
-  fails with a clear message, **not** the compile usage banner.
+- Exit code: `0` iff no error-severity diagnostic, and non-zero
+  otherwise. A missing `<file>` fails with a clear message and
+  never the compile usage banner.
 - The IntelliJ plugin's editor-annotation tier (`CajetacRunner`) drives this mode.
 
-**`--source-root <root>`** (optional): resolve `<file>`'s references against the whole
-project. Every `.cajeta` under `<root>` is parsed for its **signatures only** (front-end,
-no codegen — the same work `--classpath` does for `.cja` deps) and registered as context;
-only `<file>`'s diagnostics are reported. A broken sibling is skipped, never aborting or
-polluting the linted file. This is what makes `foo.bar()` on a sibling-file type resolve
+**`--source-root <root>`** (optional) resolves `<file>`'s
+references against the whole project. Every `.cajeta` under
+`<root>` is parsed for its signatures only, front-end with no
+codegen, which is the same work `--classpath` does for `.cja`
+deps, and registered as context. Only `<file>`'s diagnostics are
+reported. A broken sibling is skipped, and it never aborts or
+pollutes the linted file. This is what makes `foo.bar()` on a sibling-file type resolve
 instead of squiggling. A non-directory `--source-root` fails clearly.
 
-**`--shadow <realpath>`** (optional, with `--source-root`): skip `<realpath>` in the root
-walk so the linted `<file>` (a staged, unsaved editor buffer) replaces its on-disk twin —
-the edited content is analyzed, with no duplicate-definition clash. A no-op if `<realpath>`
-is not under `<root>`.
+**`--shadow <realpath>`** (optional, with `--source-root`) skips
+`<realpath>` in the root walk so the linted `<file>` (a staged,
+unsaved editor buffer) replaces its on-disk twin. The edited
+content is analyzed, with no duplicate-definition clash. It is a
+no-op if `<realpath>` is not under `<root>`.
 
-- **Remaining follow-up (separate effort):** semantic diagnostics are still
-  `throw`-based — **single-shot and location-less**, so the linted file still yields one
-  semantic diagnostic at no precise offset. Making them *collect-and-continue with spans*
-  (multiple, located semantic squigglies) is its own diagnostics-architecture rework
-  (see `docs/specs/lint-source-root-spec.md` §1.4). `--source-root` removes false
-  *cross-file* positives; it does not change that.
+- **Remaining follow-up (separate effort):** semantic diagnostics
+  are still `throw`-based, single-shot and location-less, so the
+  linted file still yields one semantic diagnostic at no precise
+  offset. Making them collect-and-continue with spans (multiple,
+  located semantic squigglies) is its own diagnostics-architecture
+  rework (see `docs/specs/lint-source-root-spec.md` §1.4).
+  `--source-root` removes false cross-file positives. It does not
+  change that.
 
 ### `--profile-counters=on|off`
 
 Emit per-method invocation counters + per-method total wall-time
-tallies (sampled, low-overhead — bumped on entry, time read on
-exit, never serialized at runtime; dumped via
-`Cajeta.profileSnapshot()`). Used to drive `--pgo=use` in a
-later release-flavor build.
+tallies. They are sampled and low-overhead, bumped on entry, with
+time read on exit, never serialized at runtime, and dumped via
+`Cajeta.profileSnapshot()`. They are used to drive `--pgo=use` in
+a later release-flavor build.
 
 - Debug default: `off` (perturbs timing).
 - Release default: `off`.
 - `--debug-release` default: `on` (the canonical "instrument to
   collect PGO" build).
-- Cost: ~2 instructions per method entry; a per-method atomic on
-  hot paths can dominate. Use only when collecting profiles.
+- Cost: ~2 instructions per method entry. A per-method atomic on
+  hot paths can dominate, so use it only when collecting profiles.
 
 ---
 
 ## Source-tagged drop-chain entries (debug feature #1)
 
-The first concrete debug-mode feature. Goal: when ANYTHING goes
-wrong with a drop — chain assertion failure, double-free detected
-by glibc, poison-byte tripped by a use-after-free read, abort
-inside a destructor — the runtime can print exactly which source
-allocation and which source drop site are involved.
+This is the first concrete debug-mode feature. The goal is that
+when ANYTHING goes wrong with a drop, the runtime can print
+exactly which source allocation and which source drop site are
+involved. That covers a chain assertion failure, a double-free
+detected by glibc, a poison-byte tripped by a use-after-free read,
+and an abort inside a destructor.
 
 ### Today (release-shape)
 
@@ -484,7 +506,7 @@ struct cajeta_drop_entry {
 three. Pop runs `drop_fn` if `active` is set.
 
 When something fails, the only thing the runtime can print is
-the address. Not useful.
+the address. That is not useful.
 
 ### Debug-shape
 
@@ -504,7 +526,7 @@ struct cajeta_drop_entry_debug {
 };
 ```
 
-24 extra bytes per entry. Doubles the chain entry storage.
+That is 24 extra bytes per entry, which doubles the chain entry storage.
 
 `__cajeta_drop_push_debug(entry, obj, drop_fn, alloc_file,
 alloc_line)` records alloc-site at push time.
@@ -517,15 +539,15 @@ records drop-site at pop time, then fires drop_fn.
 Each AST node carries a source position (file, line, column).
 The codegen sites for chain pushes are:
 
-- `LocalVariableDeclaration::emitDropEntryFor` — passes the LVD
+- `LocalVariableDeclaration::emitDropEntryFor` passes the LVD
   expression's file/line.
-- `LocalVariableDeclaration::emitDropEntryForFn` — same.
-- `Expression.cpp` task-spawn drop push — passes the spawn site.
-- Aggregate-init move-deactivation paths — same.
+- `LocalVariableDeclaration::emitDropEntryForFn` passes the same.
+- The `Expression.cpp` task-spawn drop push passes the spawn site.
+- Aggregate-init move-deactivation paths pass the same.
 
-In debug mode each emits `__cajeta_drop_push_debug` with two
-extra args; in release mode each emits `__cajeta_drop_push` with
-the original three.
+In debug mode each emits `__cajeta_drop_push_debug` with two extra
+args. In release mode each emits `__cajeta_drop_push` with the
+original three.
 
 For pops, the codegen sites are inside `Statement.cpp` (block-
 exit pop emission) and `Expression.cpp` (early-return /
@@ -534,9 +556,9 @@ exception-unwind pops). Each passes the closing-brace position
 
 ### Runtime-side use of the tags
 
-The tags are queried only on failure. Three diagnostic sites:
+The tags are queried only on failure. There are three diagnostic sites:
 
-1. **Live-set assertion** — `live_set_add` on a strict (debug)
+1. **Live-set assertion.** `live_set_add` on a strict (debug)
    build sees an already-present address. Print:
 
    ```
@@ -545,7 +567,7 @@ The tags are queried only on failure. Three diagnostic sites:
      This registration:   src/main/cajeta/com/example/Foo.cajeta:68
    ```
 
-2. **Drop-chain integrity check** — `drop_pop_run_debug` checks
+2. **Drop-chain integrity check.** `drop_pop_run_debug` checks
    `prev` integrity and active-flag values. On failure:
 
    ```
@@ -556,9 +578,9 @@ The tags are queried only on failure. Three diagnostic sites:
      Likely cause:      stack frame ran past entry's lifetime.
    ```
 
-3. **Glibc abort handler** — install a SIGABRT handler that
-   walks the per-thread chain backwards and prints the head
-   entry's tags. Catches the common case of "glibc detected
+3. **Glibc abort handler.** Install a SIGABRT handler that walks
+   the per-thread chain backwards and prints the head entry's
+   tags. It catches the common case of "glibc detected
    heap corruption mid-destructor."
 
 ### Storage cost summary
@@ -568,15 +590,15 @@ The tags are queried only on failure. Three diagnostic sites:
 | Release | 32 B       | 32 KB            |
 | Debug   | 56 B       | 56 KB            |
 
-Plus the `const char*` table — one entry per source file used,
-held as a module-global LLVM constant. Negligible.
+Add the `const char*` table, one entry per source file used, held
+as a module-global LLVM constant. It is negligible.
 
 ### Implementation phasing
 
 1. Add `cajeta_drop_entry_debug` struct to runtime.
 2. Add `__cajeta_drop_push_debug` / `__cajeta_drop_pop_run_debug`
    variants.
-3. Compiler-side: a single `debugMode` bool on `CajetaModule`,
+3. Compiler-side, a single `debugMode` bool on `CajetaModule`
    reads `--source-tags=on|off` (default per flavor).
 4. Each `emitDropEntry*` codegen site picks the variant + struct
    size based on `debugMode`.
@@ -597,15 +619,16 @@ How the same compiler emits different IR per mode:
   the flavor flag + per-feature overrides at CLI parse time.
 - Codegen sites that vary by mode check the toggle and emit
   different IR / different runtime helper names. Each toggle is
-  one branch in the codegen; the emitted IR has zero overhead
+  one branch in the codegen, and the emitted IR has zero overhead
   from the toggle itself.
 - Runtime helpers come in matched pairs where they differ
   (`__cajeta_drop_push` / `__cajeta_drop_push_debug`,
   `__cajeta_free` / `__cajeta_free_poisoning`). Both live in the
-  runtime bitcode; only the one the codegen calls gets linked
-  in. Dead-stripped from the final binary in `--release` builds.
+  runtime bitcode, and only the one the codegen calls gets linked
+  in. The other is dead-stripped from the final binary in
+  `--release` builds.
 
-There is **one** runtime — not two. The compiler picks which
+There is one runtime. The compiler picks which
 symbols to reference. This keeps the runtime maintainable and
 guarantees the debug + release paths share underlying state
 (e.g., the live-set struct layout) where it matters.
@@ -616,29 +639,29 @@ guarantees the debug + release paths share underlying state
 
 Implementation order, smallest first:
 
-1. **Source-tagged drop-chain entries** (this doc § above). The
-   foundation that all other diagnostics build on.
+1. **Source-tagged drop-chain entries** (this doc § above). It is
+   the foundation that all other diagnostics build on.
 2. **SIGABRT handler** that walks the chain and prints head
-   entry's source tags. Immediately useful — turns every glibc
-   abort into something diagnosable.
+   entry's source tags. It is immediately useful, because it turns
+   every glibc abort into something diagnosable.
 3. **`--live-set=strict`** with assert-on-duplicate behavior.
-   Catches a class of compiler-codegen bugs in the live-set hook.
-4. **`--poison-free`**. Simple memset-on-free.
-5. **`--drop-chain-validate`**. Cheap and high-value.
-6. **`--diag-hints`** (compile-time, not runtime). Quality of
-   life for the diagnostic verbosity work.
-7. **Stack-trace capture on throw**. Requires symbol-map
+   It catches a class of compiler-codegen bugs in the live-set hook.
+4. **`--poison-free`**. It is a simple memset-on-free.
+5. **`--drop-chain-validate`**. It is cheap and high-value.
+6. **`--diag-hints`** (compile-time only). It is quality of life
+   for the diagnostic verbosity work.
+7. **Stack-trace capture on throw**. It requires symbol-map
    plumbing.
-8. **`--use-after-move-rt`**. Niche; static analysis catches
-   most.
-9. **`--profile-counters`**. Foundation for PGO. Independent of
-   the rest.
+8. **`--use-after-move-rt`**. It is niche, and static analysis
+   catches most.
+9. **`--profile-counters`**. It is the foundation for PGO and is
+   independent of the rest.
 
-The flavor-flag plumbing in `Compilation.md` exists already;
+The flavor-flag plumbing in `Compilation.md` exists already, and
 each feature here gets a CLI flag wired in as it lands. Flavor
 defaults aren't binding until enough features land to give the
-flavor meaningful semantics — until then, individual flags are
-the supported surface.
+flavor meaningful semantics. Until then, individual flags are the
+supported surface.
 
 ---
 
@@ -646,31 +669,33 @@ the supported surface.
 
 - **Per-feature flag scoping.** Are toggles per-module (you can
   build one source file with `--source-tags=on` and link with
-  release modules) or whole-program? Lean: whole-program — module
-  granularity would mean the runtime needs both struct shapes
-  coexisting, which is the complexity we're explicitly avoiding.
-- **`cajeta.json` profile syntax.** The manifest is JSONC (not
-  TOML); a `settings.profiles` block mirroring Cargo's
-  `[profile.dev]` / `[profile.release]` shape is the lean. Resolved
-  by the build tool, which passes the chosen `--mode` to the compiler.
+  release modules) or whole-program? The lean is whole-program,
+  because module granularity would mean the runtime needs both
+  struct shapes coexisting, which is the complexity we're
+  explicitly avoiding.
+- **`cajeta.json` profile syntax.** The manifest is JSONC and not
+  TOML. A `settings.profiles` block mirroring Cargo's
+  `[profile.dev]` / `[profile.release]` shape is the lean. It is
+  resolved by the build tool, which passes the chosen `--mode` to
+  the compiler.
 - **Trap vs throw on `--bounds=on`.** Today the bounds check
   raises an exception. Should debug mode trap (faster, shows in
   a debugger as a clean SIGILL with a source map entry) while
-  release throws (so user code can catch)? Lean: keep both as
-  throws; introduce `--bounds=trap` as the explicit "I want a
-  trap" knob. Document under the feature.
+  release throws (so user code can catch)? The lean is to keep
+  both as throws and introduce `--bounds=trap` as the explicit "I
+  want a trap" knob. Document it under the feature.
 - **Cross-mode archive linking.** A library compiled in
   `--release` is consumed by a `--debug` app build. Today the
-  archive includes pre-compiled IR; the consumer's mode wins on
+  archive includes pre-compiled IR. The consumer's mode wins on
   consumer-side codegen, but the library's `__cajeta_drop_push`
-  calls were emitted in release shape and can't grow to debug.
-  Lean: document that source tags + poison + similar features
-  cover only code compiled in the same invocation; library code
+  calls were emitted in release shape and can't grow to debug. The
+  lean is to document that source tags + poison + similar features
+  cover only code compiled in the same invocation. Library code
   remains in its own mode and crosses the boundary "blind." A
   later mechanism could re-compile library bitcode in the
   consumer's mode at link time, but that's a v2 concern.
 - **Should `--minimal` exist?** "No safety nets, smallest
   possible binary" is a real audience (embedded, microservices,
-  WASM) but the surface is wide. Lean: keep it, with the
+  WASM) but the surface is wide. The lean is to keep it, with the
   defaults shown in § Mode profiles. Document it as "you have
   guaranteed correctness via reasoning."

@@ -1,13 +1,13 @@
 # cajeta.xpu — one kernel, any device
 
-The accelerator substrate of the Cajeta language: how a kernel is declared,
-how it is compiled for NVIDIA, AMD, Vulkan and the host CPU from one source,
-what the compiler measures about it, what the runtime learns about the device
-it lands on, and how the two are reconciled so that the kernel runs at that
-device's ceiling without a table of parts and without a vendor branch in the
-source. This document is the contract. The map for readers is
-[One kernel, any device](../../xpu/README.md); the how-to is
-[Writing XPU Kernels](../../guide/25-xpu-kernels.md); the catalogs of kernels
+This document is the contract for the accelerator substrate of the Cajeta
+language. It describes how a kernel is declared, how it is compiled for
+NVIDIA, AMD, Vulkan and the host CPU from one source, what the compiler
+measures about it, what the runtime learns about the device it lands on, and
+how the two are reconciled so that the kernel runs at that device's ceiling
+without a table of parts and without a vendor branch in the source. The map
+for readers is [One kernel, any device](../../xpu/README.md), and the how-to is
+[Writing XPU Kernels](../../guide/25-xpu-kernels.md). The catalogs of kernels
 built on this substrate are [cajeta-llm](../../xpu/catalog-llm.md) and
 [cajeta-xgboost](../../xpu/catalog-xgboost.md).
 
@@ -35,12 +35,12 @@ the substrate answers each in its own place (xpu-kernel-adaptor §1):
 | what does the device offer | the driver | `Device`, §5 |
 | what configuration satisfies both, and which candidate is fastest here | the feasibility filter and the measured choice | `ShapeFilter`, `ShapeChoice`, `Autotune`, §6 |
 
-The non-goals are as important. The substrate does not sweep: a device that
+The non-goals are as important. The substrate does not sweep. A device that
 can be modelled is computed, and timing is reserved for candidates that all
-fit. It does not fall back silently: a candidate that does not fit is pruned
+fit. It does not fall back silently. A candidate that does not fit is pruned
 with its rule, and a problem no candidate fits is a refusal that names them.
-It does not substitute a value for a fact the driver did not report: absent is
-absent, and the rule that needs it does not apply. And it does not let a
+It does not substitute a value for a fact the driver did not report. Absent is
+absent, and the rule that needs it does not apply. Furthermore, it does not let a
 kernel assume a wave width, a block, or a vendor the hardware was not told
 about.
 
@@ -69,11 +69,12 @@ public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,
 | `@Intrinsic`, `@TargetIntrinsic`, `@TargetAsm` | the escape hatches: a body-less declaration, or per-backend arms beside a portable body that the reference interpreter runs |
 | `@Instantiate({T<…>, …})`, `@Requires(expr)` | on a class template: the members built ahead of time, and the constraint a member must satisfy or be refused by name (§3.5) |
 
-The body is Cajeta restricted to the device subset: no heap allocation, no
-exceptions; locals, control flow including labelled `break` and `continue`,
-calls to `@Device` helpers, and the verbs below. A function-typed value in
-device code is a tag over a closed set of `@Device` statics and lowers to
-direct calls; an out-of-range dispatch is a defined no-op. A
+The body is Cajeta restricted to the device subset. There is no heap
+allocation and there are no exceptions. The subset has locals, control flow
+including labelled `break` and `continue`, calls to `@Device` helpers, and the
+verbs below. A function-typed value in device code is a tag over a closed set
+of `@Device` statics and lowers to direct calls. An out-of-range dispatch is a
+defined no-op. A
 `CooperativeMatrix` fragment may be passed to a helper at its exact declared
 shape and at no other.
 
@@ -95,7 +96,7 @@ words or halves. Workgroup memory is declared inside the kernel,
 `Shared<T>`, `Constant`, `Private` and the layout types `Swizzled<T, S>` and
 `BlockPadded<T, Block, Pad>`, which degrade to the identity layout where a
 backend has no swizzle. `Barrier.workgroup()` synchronises a workgroup.
-Atomics carry a `MemoryOrder`; 64-bit integer atomics are native on CUDA, HIP
+Atomics carry a `MemoryOrder`. 64-bit integer atomics are native on CUDA, HIP
 and the CPU backend and under `Int64Atomics` on Vulkan, and `Device.supports`
 answers for them.
 
@@ -116,7 +117,7 @@ answers for them.
 **Load alignment.** A `vload<N>` or `vstore` of N elements wants one wide
 access, and a device takes one only at an address aligned to its width. The
 compiler proves the alignment from the index's own arithmetic once the kernel
-is optimized: `row * blocks * 144 + 16 + 32 * g` is a multiple of 16 by its
+is optimized. For example, `row * blocks * 144 + 16 + 32 * g` is a multiple of 16 by its
 constants and needs nothing from the author. Where the proof cannot see, for
 an offset that arrives as a parameter, state it:
 
@@ -140,18 +141,18 @@ prefetchers; cajeta-llm's 16-row decode mat-vecs on a Zen 5 took a third of
 their lines on demand until they prefetched the block two ahead.
 
 A statement is a promise about the index. A build with `--ub-traps=on` (every
-debug build) tests each one the proof does not confirm: a violation is
+debug build) tests each one the proof does not confirm. A violation is
 recorded, the access proceeds at the index rounded down to the statement, and
 the launch throws `XpuLaunchException` naming the kernel, the line and the
 index (cpu, CUDA and HIP; Vulkan has no test yet). A statement the proof
 confirms costs nothing. A build without ubTraps does not test, and a broken
-promise then behaves as the device does: a misaligned-address fault on CUDA, a
+promise then behaves as the device does. That is a misaligned-address fault on CUDA, a
 correct unaligned read on AMDGPU, and the elements at the index rounded down
 on Vulkan.
 
 A view (`slice`, `wordView`, `halfView`) starts at its offset, and the launch
-holds its base to what the kernel needs: on CUDA to the widest access proven
-or stated over it, on Vulkan to the device's storage-buffer binding alignment
+holds its base to what the kernel needs. On CUDA that is the widest access proven
+or stated over it. On Vulkan it is the device's storage-buffer binding alignment
 (`minStorageBufferOffsetAlignment`, 4 bytes on RADV and 16 on llvmpipe).
 
 ### 2.4 Launch, streams, events
@@ -161,9 +162,9 @@ k.launch(stream, grid: [workgroups], block: [threads], sharedBytes: [n])(args);
 ```
 
 `grid` counts workgroups. `KernelStream.current()` is the per-thread default
-stream; `create()` a real stream; `sync()`, `waitFor(Event)` and `destroy()`
-the rest. After every launch the compiler emits `Device.checkLaunch()`, and a
-refused launch throws `XpuLaunchException` with one of its reasons: no code
+stream, and `create()` makes a real stream. `sync()`, `waitFor(Event)` and `destroy()`
+are the rest. After every launch the compiler emits `Device.checkLaunch()`, and a
+refused launch throws `XpuLaunchException` with one of these reasons: no code
 registered, a misaligned buffer base, the scalar twin of a wave kernel would
 have run, an unsupported declared wave width, a block that differs from the
 one the kernel was pinned to, a missed deadline, too many threads, too much
@@ -173,35 +174,35 @@ view at an offset the device cannot bind.
 When every launch site of a kernel passes the same constant block, the
 compiler pins it and budgets registers for it (§3.4). A `KernelSubmission` in
 the stream's place adds a policy, a deadline window and a budget to the
-launch; `Scheduler.submit` is the explicit form. The scheduler that acts on
-those is design under the tile-scheduling specifications; today `submit`
+launch, and `Scheduler.submit` is the explicit form. The scheduler that acts on
+those is design under the tile-scheduling specifications. Today `submit`
 records and the launch after it executes immediately.
 
 **Deferred streams.** On CUDA, `KernelStream.setDeferred(true)` queues a
 stream's launches and flushes them at the next point where a result becomes
-observable. The first sight of a launch sequence runs direct; a sequence seen
+observable. The first sight of a launch sequence runs direct. A sequence seen
 three times is recorded as a graph and replayed with its changed grids and
 arguments patched into the nodes. A launch carrying a texture, an image, a
 buffer array, a checked `align:` statement, or more than 48 arguments or 384
 bytes of them goes direct.
-`CAJETA_XPU_DEFER=0` never defers, `all` defers every stream from its first
-launch, unset leaves it to `setDeferred`. Deferral is a no-op on the other
+`CAJETA_XPU_DEFER=0` never defers, and `all` defers every stream from its first
+launch. When it is unset, `setDeferred` decides. Deferral is a no-op on the other
 backends, and it is disabled while a profiler's device sink is live, because
 the profiler attributes each launch at submission. `deferStat` reports queued,
 replayed, direct, graphs, graph launches, patches and flushes.
 
 ### 2.5 One meaning, every backend
 
-The **reference interpreter** runs a kernel's source on the host, sharing the
+The reference interpreter runs a kernel's source on the host, sharing the
 front end and none of the lowering, one work-item at a time with workgroups,
 shared memory, barriers and waves modelled as rendezvous under deterministic
 scheduling. It refuses by name what it cannot define (XPU-REF01) and reports
 undefined behaviour it observes (XPU-REF02). Launches recorded from a run
 (`CAJETA_XPU_RECORD`) replay through it (`CAJETA_XPU_CONFORMANCE=<dir>`, with
-a held list and a budget): integers must agree bit for bit, floats within the
+a held list and a budget). Integers must agree bit for bit, floats within the
 held list's ulps, and a held kernel that now agrees is STALE. Its semantics
 are [ReferenceInterpreter.md](ReferenceInterpreter.md). Every backend is
-judged against it; a kernel's meaning is never what one vendor's compiler
+judged against it. A kernel's meaning is never what one vendor's compiler
 happened to produce.
 
 ## 3. Compile time: what a kernel becomes on each backend
@@ -221,24 +222,24 @@ address spaces, wave and matrix intrinsics fork:
 | `cpu` | host IR: the grid becomes threads, the body a vectorised work-item loop (§3.7) | `cpu` |
 
 NVPTX, AMDGPU and SPIR-V are in-tree targets of the cajeta-llvm fork
-(LLVM 23); the toolchain does not depend on the out-of-tree SPIR-V
+(LLVM 23). The toolchain does not depend on the out-of-tree SPIR-V
 translator. `CAJETA_GPU_<FEATURE>_IMPL=software|native` forces a feature's
 tier for a sweep.
 
 ### 3.2 Wave width
 
 `Group.width()` is the lane count of the wave the kernel got, folded to a
-constant per target: 32 on NVIDIA; 32 or 64 on AMD, as the kernel's target
-features pin; the subgroup size on Vulkan; the host's SIMD width on the CPU
-backend, or the declared wave. A kernel that indexes lanes as
+constant per target. It is 32 on NVIDIA. It is 32 or 64 on AMD, as the kernel's target
+features pin. It is the subgroup size on Vulkan, and on the CPU backend it is
+the host's SIMD width or the declared wave. A kernel that indexes lanes as
 `tid % Group.width()` is correct at every width, and that is the recommended
 form.
 
 `@Wave(width = N)` declares a width the body assumes, and each backend builds
-the kernel for it: NVIDIA accepts 32 only; AMD pins `+wavefrontsize32` or
-`+wavefrontsize64`; the CPU backend runs the work-item loop at N lanes
-regardless of the host's vector width; Vulkan folds a declared W onto
-subgroups of size S as a **virtual wave** of W/S slots per invocation, or a
+the kernel for it. NVIDIA accepts 32 only. AMD pins `+wavefrontsize32` or
+`+wavefrontsize64`. The CPU backend runs the work-item loop at N lanes
+regardless of the host's vector width. Vulkan folds a declared W onto
+subgroups of size S as a virtual wave of W/S slots per invocation, or a
 narrow mode when S exceeds W, and requests a required subgroup size where the
 driver offers one (vulkan-virtual-waves). A kernel whose built width differs
 from its declaration is refused at build. `Group.laneBlock()` reads the
@@ -257,13 +258,14 @@ one per operand group:
 | vulkan | f16, f32 and integer under `SPV_KHR_cooperative_matrix`; bf16 Portable | everything else |
 | cpu | none | all |
 
-The **portable software tile** is either replicated (the whole tile per
-work-item, which lands in scratch: the standard library's f32 and f64 tiles
-spilled kilobytes a work-item replicated and none distributed) or
-**distributed** (each lane holds its 1/W share; the default on AMD and NVPTX,
-`DIST=off` the replicated control). The tier is chosen for a group of operands
-as a whole: a GEMM whose operands straddle tiers demotes entirely rather than
-splitting (amdgpu-coopmatrix-tier-straddle), and each distinct (type, shape,
+The portable software tile is either replicated or distributed. A replicated
+tile is the whole tile per work-item, which lands in scratch. The standard
+library's f32 and f64 tiles spilled kilobytes a work-item replicated and none
+distributed. A distributed tile gives each lane its 1/W share. It is the
+default on AMD and NVPTX, and `DIST=off` is the replicated control. The tier
+is chosen for a group of operands as a whole. A GEMM whose operands straddle
+tiers demotes entirely rather than splitting
+(amdgpu-coopmatrix-tier-straddle), and each distinct (type, shape,
 backend) reports once through an `[mma-tiering]` note. The manifest records
 every native operation's instruction and tier (§4), so a route can learn a
 kernel is on the slow tier before it launches it.
@@ -274,7 +276,7 @@ different partition of the same 256 bytes, so the lowering stages the words
 through a per-wave shared buffer in the layout the hardware's load expects
 and reloads them with `wmma`, once per fragment, for the 16×16 shape only,
 sized from the kernel's `@Occupancy(maxThreads)`, without which the kernel is
-refused (XPU-N04). The kernel source stays one; the cost is confined to the
+refused (XPU-N04). The kernel source stays one. The cost is confined to the
 backend with no cheaper form, and it is a cost a kernel on a hot path
 measures before accepting.
 
@@ -290,14 +292,15 @@ declare its ceiling or fail the build (`[xpu-kernel-unbounded]`).
 `@Occupancy(maxThreads = N)` is that ceiling, a structural fact of the
 kernel's design. `maxWaves = N` is the same bound in waves, for a kernel
 written as N waves whose thread count follows the wave width (256 threads at
-wave 32, 512 at wave 64); declaring both is refused. `minResident` and
-`maxRegisters` are explicit pins. Per backend: NVPTX lowers all four
-(`maxntid`, `minctasm`, `maxnreg`); AMD lowers the block and residency
-(`amdgpu-flat-work-group-size`, `waves-per-eu`) and has no register pin, and
-finishes `maxWaves` once the wave is known; Vulkan's workgroup size is a
-specialisation constant and the annotation is a no-op there. In a class
-template an argument may be an expression over the template's values, so the
-bound travels with the shape: `@Occupancy(maxWaves = (TM / WM) * (TN / WN))`.
+wave 32, 512 at wave 64). Declaring both is refused. `minResident` and
+`maxRegisters` are explicit pins. Each backend lowers the annotation its own
+way. NVPTX lowers all four (`maxntid`, `minctasm`, `maxnreg`). AMD lowers the
+block and residency (`amdgpu-flat-work-group-size`, `waves-per-eu`), has no
+register pin, and finishes `maxWaves` once the wave is known. Vulkan's
+workgroup size is a specialisation constant, and the annotation is a no-op
+there. In a class template an argument may be an expression over the
+template's values, so the bound travels with the shape, as in
+`@Occupancy(maxWaves = (TM / WM) * (TN / WN))`.
 
 ### 3.5 Shapes as templates
 
@@ -316,9 +319,9 @@ public final class QkTile<uint32 TM, uint32 TN, uint32 WM, uint32 WN, uint32 KS>
 `max`), each registering its kernel under a name carrying its arguments.
 `@Requires` is evaluated over the non-type parameters at instantiation, and a
 member that fails it is refused by name with the failing clause
-(`CAJETA_ERROR_TEMPLATE_REQUIREMENT`), never miscompiled. The family object
-that lists the members and chooses among them is the library's (§6.2);
-the specification is xpu-tile-shape-selection and the template mechanics are
+(`CAJETA_ERROR_TEMPLATE_REQUIREMENT`), and it is never miscompiled. The family object
+that lists the members and chooses among them is the library's (§6.2).
+The specification is xpu-tile-shape-selection, and the template mechanics are
 [ExplicitInstantiation](../lang/templates/ExplicitInstantiation.md).
 
 ### 3.6 The build gates
@@ -330,47 +333,47 @@ every offending kernel has been listed, for:
   build declares, with the lowering's reason. A launch would find nothing.
 - `[xpu-kernel-unbounded]`: a non-constant block with no declared ceiling.
 - `[xpu-kernel-spill]`: a kernel with scratch on NVPTX or AMDGPU. The message
-  distinguishes a portable software tile (the scratch is the tile; use a
-  natively tiered type), zero spill stores (a construct legalised through
-  memory; fix the lowering), and register pressure (cut live registers or pin
-  a smaller block).
+  distinguishes three causes. For a portable software tile the scratch is the
+  tile, so use a natively tiered type. For zero spill stores a construct was
+  legalised through memory, so fix the lowering. For register pressure, cut
+  live registers or pin a smaller block.
 - `[xpu-kernel-hung]`: a CPU vectorisation that exceeded its deadline
   (`CAJETA_XPU_CPU_VECTORIZE_DEADLINE_S`, 600 s).
 
 Each has one escape, a declaration naming the plan item that tracks the
 condition, and the line becomes a note tagged `[tracked: <item>]`.
-`@Unlowered(backend = "cpu", tracked = "...")` is per backend; a held kernel
+`@Unlowered(backend = "cpu", tracked = "...")` is per backend. A held kernel
 that now lowers is STALE and fails until the declaration goes. `mayLower =
-true` makes the hold per instantiation of a template (one member needs 73 KB
-of shared memory and is declined; another fits), at the price of stale
-detection. `hold = true` skips the attempt before lowering. `hostWaveBelow =
+true` makes the hold per instantiation of a template, at the price of stale
+detection. One member may need 73 KB of shared memory and be declined while
+another fits. `hold = true` skips the attempt before lowering. `hostWaveBelow =
 N` holds on the CPU backend only on a host narrower than N lanes.
 `@Unbounded(tracked)` tracks the derived block. A box without the assembler is
-not the kernel's failure: the line stays a note saying `no assembler`.
+not the kernel's failure. The line stays a note saying `no assembler`.
 `CAJETA_XPU_KERNEL_GATE=warn` demotes the gates for a sweep.
 
 ### 3.7 The CPU backend
 
-The host is a target, not an emulator. A kernel's body is wrapped in a
+The host is a target in its own right. It is not an emulator. A kernel's body is wrapped in a
 per-block work-item loop and handed to LLVM's loop vectoriser at the host's
 SIMD width (16 lanes on AVX-512, 8 on AVX2), or at the declared `@Wave`
 width. Wave verbs lower to scalar calls carrying vector-function-ABI variants
-that the vectoriser substitutes, so a wave is a vector: reductions become
-vector reductions, ballots a mask, shuffles a gather; a divergent block
+that the vectoriser substitutes, so a wave is a vector. Reductions become
+vector reductions, ballots become a mask, and shuffles become a gather. A divergent block
 takes the masked variant, so active-lane semantics hold. A workgroup barrier
 is honoured by fission of the loop into regions, with uniform loops
 scaffolded so the work-item loop stays innermost. Shared memory is a
-per-block array; blocks fan out across pthread workers, one a physical core
-by default (capped by `CAJETA_XPU_CPU_WORKERS` or `Device.setCpuWorkerCap`,
-which may go up to the hardware threads); a launch under 256 work-items runs
+per-block array. Blocks fan out across pthread workers, one a physical core
+by default, capped by `CAJETA_XPU_CPU_WORKERS` or `Device.setCpuWorkerCap`,
+which may go up to the hardware threads. A launch under 256 work-items runs
 inline unless its kernel has measured over 20 µs inline twice, and
 `CAJETA_XPU_CPU_TRACE=1` accounts every launch's wall time per kernel
 (CajetaCPU.md §8). A kernel whose loop the
 vectoriser would leave scalar is refused at launch rather than run slowly
 (reason 3 of §2.4), and the manifest records the width it was built at, or 1
 for a kernel with no wave verb. The device-geometry surface on this backend
-describes the host: cores as multiprocessors, the SIMD width as the wave,
-physical memory, integrated. The backend reports no register or spill count,
+describes the host. Cores are the multiprocessors, the SIMD width is the wave,
+the memory is physical memory, and the device is integrated. The backend reports no register or spill count,
 so every feasibility rule that needs one passes (§6.1).
 
 ## 4. The kernel manifest
@@ -386,10 +389,10 @@ code, embedded in the artifact and registered at load, readable as
 | access | per buffer parameter: read, write, accumulate, streaming; the derived `restartable`, `drainsDevice`, `captureSafe` |
 | native operations | per cooperative verb: the instruction chosen and its tier (`wmma…`, or `software-tile.replicated` / `.distributed`) |
 
-Absent is a value: a field a backend cannot report is an empty `Optional`,
+Absent is a value. A field a backend cannot report is an empty `Optional` and
 never zero, and `KernelManifest.of` is `null` where the backend has no device
-code for the kernel. On NVPTX the footprint comes from `ptxas -v`; on AMDGPU
-from the code object's kernel descriptor. The manifest is what `KernelFacts`
+code for the kernel. On NVPTX the footprint comes from `ptxas -v`. On AMDGPU
+it comes from the code object's kernel descriptor. The manifest is what `KernelFacts`
 reads (§6.1), what `Group.laneBlockOf` reads, and what the spill gate judges.
 
 ## 5. Run time: what the device reports
@@ -400,7 +403,7 @@ One backend is selected at the first device touch, in the order CUDA, HIP,
 Vulkan, CPU among those the binary bundles, restricted by `CAJETA_XPU_BACKEND`
 or by `Device.force(name)` called before that touch. A forced backend that is
 unavailable degrades like the environment route, with one note. Selection is
-per process and cached; `Device.activeBackend()` names what was got, and is
+per process and cached. `Device.activeBackend()` names what was got, and is
 itself a touch.
 
 ### 5.2 The geometry surface
@@ -422,26 +425,26 @@ report.
 | capabilities | `supports(Capability)`: `RayQueryNative`, `RayQueryRtCore`, `CoopMatrixBf16F32Acc`, `AtomicInt64` |
 | the registry | `kernelAvailable(name)`, `registeredKernelCount()`, `registeredKernel(i)`, `kernelLaunchCount(name)`, `launchFailures()`, `checkLaunch()` |
 
-The per-block shared limit is the load-bearing one: an RTX 4090 holds 100 KB
+The per-block shared limit is the load-bearing one. An RTX 4090 holds 100 KB
 a multiprocessor and caps a block at 48 KB unless the launch opts in to
-99 KB, while on RDNA the two are equal; a tile sized against the wrong figure
+99 KB, while on RDNA the two are equal. A tile sized against the wrong figure
 assembles on one part and fails on the other. Size tiles against
 `sharedBytesPerBlock()`, and against the opt-in ceiling only where the launch
 asks for it.
 
-`kernelAvailable(name)` is the registry question: device code for this kernel
+`kernelAvailable(name)` is the registry question. It asks whether there is device code for this kernel
 on the active backend, with a manifest whose shared memory fits this device.
 A route asks it before considering a candidate, and nothing falls through to a
 kernel it denies. The remaining capability traits that older versions of this
-document described as `xpu.cap.*` are empty markers nothing reads; the
+document described as `xpu.cap.*` are empty markers nothing reads. The
 capability surface is `Device.supports` and the registry.
 
 ### 5.3 Timing
 
 `KernelTimer` brackets a stream between two events and answers nanoseconds at
-a **tier**: device events on CUDA and HIP, the synchronous host clock on the
-CPU backend, unavailable on Vulkan outside the profiler's timestamp seam
-(it answers -1 and the caller times on the host). On first use it calibrates
+a tier. The tier is device events on CUDA and HIP, and the synchronous host clock on the
+CPU backend. It is unavailable on Vulkan outside the profiler's timestamp seam,
+where it answers -1 and the caller times on the host. On first use it calibrates
 the event clock's scale against the host clock over busy copies (the CUDA
 event clock runs 4.6 percent fast on WSL2) and refuses a scale outside
 [0.5, 2]. `impliedGBps`, `impliedOpsPerSecond` and `withinPeak` turn a
@@ -451,13 +454,13 @@ reading into a figure against the device's roofline.
 
 `CAJETA_PROFILER=1` arms the host sampler and the device capture in one
 window before any backend initialises. Every device span carries the tier
-that produced it: DEVICE from the vendor's dispatch records (CUPTI on CUDA,
+that produced it. DEVICE comes from the vendor's dispatch records (CUPTI on CUDA,
 rocprofiler on HIP), EVENT from device-event brackets (CUDA with only the
-driver installed), HOST from submit-to-complete; on Vulkan, timestamp writes
+driver installed), and HOST from submit-to-complete. On Vulkan the tier is timestamp writes
 inside the command buffer around each profiled dispatch, with the period
-refined by a drift fit, degrading to host windows where the queue family has
+refined by a drift fit, and it degrades to host windows where the queue family has
 no valid timestamp bits. Records flow through lock-free per-sink rings that
-never block the launch path; a long run's pending table grows rather than
+never block the launch path. A long run's pending table grows rather than
 dropping launches, and the record's `gpu_pending_overflow`, `unclaimed` and
 `records_dropped` counters say when a capture is incomplete. An armed capture
 keeps every launch direct (§2.4). The specification is cajeta-profiler.
@@ -466,13 +469,13 @@ keeps every launch direct (§2.4). The specification is cajeta-profiler.
 
 ### 6.1 The feasibility filter
 
-A **family** is a list of candidate shapes of one kernel design. At a problem
+A family is a list of candidate shapes of one kernel design. At a problem
 `(M, N, K)` the family builds a `ShapeFilter` over `DeviceFacts.current()`
 (registers per multiprocessor, shared per block with and without opt-in,
 shared per multiprocessor, threads and blocks per multiprocessor,
 multiprocessor count, threads per block) and considers each
 `ShapeCandidate(kernel, tileM, tileN, threads, kBlock, maxSplits)` with its
-`KernelFacts.measured(kernel, dynamicSharedBytes)`: registers a thread, spill
+`KernelFacts.measured(kernel, dynamicSharedBytes)`, which gives registers a thread, spill
 bytes, and static plus dynamic shared bytes from the manifest, each -1 when
 absent.
 
@@ -485,65 +488,65 @@ absent.
 | R5 | never | records whether the grid fills the multiprocessors, or the split-K count that would |
 | R6 | never | records the padding waste at this problem, per mille |
 
-Every pruned candidate is kept with its rule, its need and the limit; a fact
-the backend does not report prunes nothing; an empty survivor set is a
-`refusal()` that names the family, the problem and every verdict, thrown as
-`XpuLaunchException` by the family, never silently replaced.
+Every pruned candidate is kept with its rule, its need and the limit. A fact
+the backend does not report prunes nothing. An empty survivor set is a
+`refusal()` that names the family, the problem and every verdict, and the
+family throws it as `XpuLaunchException`. It is never silently replaced.
 
 ### 6.2 The measured choice
 
 `ShapeChoice.choose(dir, filter, probe)` decides among survivors. An override
-set by `setShapeOverride(family, kernel)` wins (a sweep's lever). No survivor
+set by `setShapeOverride(family, kernel)` wins, and it is a sweep's lever. No survivor
 refuses. One survivor is picked outright. Several are first looked up in the
-store under `shape.<family>.<M>x<N>x<K>` against a **build id** of the device
-UUID, the driver version and every survivor's code hash; a hit is taken with
+store under `shape.<family>.<M>x<N>x<K>` against a build id of the device
+UUID, the driver version and every survivor's code hash. A hit is taken with
 its recorded margin (`.margin`, per mille; under 30 is a tie). A miss times
 every survivor through the family's `ShapeProbe` at the `KernelTimer` tier,
-five interleaved rounds, and the fastest median wins; the winner and its
+five interleaved rounds, and the fastest median wins. The winner and its
 margin are remembered unless another process held 25 percent or more of the
 device while it was timed (`Device.foreignLoadPercent`, read once per five
-seconds), in which case the result is used and not stored, with a note. The
+seconds). In that case the result is used and not stored, with a note. The
 result (`ShapeResult`) says which kernel, whether it came from the cache, a
 timing or an override, the margin, the tie, and the refusal if any.
 
 `prewarm` runs the same at load so that a model's first real launch is the
 settled choice. A family whose probe is the running program's own launches,
 bracketed in place, holds its trial through the warm-up and spends the first
-uses of a shape on the trial's samples; such a program's throughput is read
+uses of a shape on the trial's samples. Such a program's throughput is read
 only after the store has settled.
 
 ### 6.3 The store
 
 `Autotune` is one small file per (device key, name) under a directory the
 caller supplies (`<dir>/<deviceKey>/<name>`), with an in-memory memo so that a
-box without a writable store tunes once per execution. The **device key** is
+box without a writable store tunes once per execution. The device key is
 the backend plus the geometry the answer depends on (multiprocessors × SIMDs,
-wave, registers, shared memory, threads); a part that reports nothing is
-keyed `unknown` and shares nothing. `remember`/`recall` are the plain forms;
+wave, registers, shared memory, threads). A part that reports nothing is
+keyed `unknown` and shares nothing. `remember`/`recall` are the plain forms.
 `rememberFor`/`recallFor` carry a build id, and a value recalled against a
 different build is discarded and reported (XPU-T02). `invalidate` drops an
-entry; `reportUnderperforming` records a tuned value that measured below its
-promise (XPU-T01); `claimOnce` serialises a one-time probe across threads;
+entry. `reportUnderperforming` records a tuned value that measured below its
+promise (XPU-T01). `claimOnce` serialises a one-time probe across threads, and
 `persists()` says whether this execution's values are surviving. `cajeta tune
---reset <dir>` clears a store. No per-user directory is assumed: an
+--reset <dir>` clears a store. No per-user directory is assumed. An
 application knows where its cache belongs, and libraries resolve one from
 their own option or environment.
 
-The separate **calibration store** (`DeviceCalibration.current()`,
+The separate calibration store (`DeviceCalibration.current()`,
 `CalibrationStore`) holds device-wide measured facts (peaks, bandwidth idle
 and under host load, bytes in flight, launch cost, event and inter-queue
-cost) keyed by device, driver, compiler and power mode, served from records
-built into the artifact and then the platform cache directory, never `/tmp`;
+cost) keyed by device, driver, compiler and power mode. They are served from records
+built into the artifact and then the platform cache directory, never `/tmp`.
 `cajeta calibrate` and `--with-calibration` build a snapshot in for a fixed
 device.
 
 ### 6.4 Routing
 
 Which kernel serves which data format in which regime is a declaration the
-layer audits, not a predicate each package restates: a `RouteTable` of rows,
-each one kernel variant serving one format in one regime, with a static
-`shapeRefusal` the audit walks and a runtime `readyRefusal` read at bind, both
-answering with the gate that refused rather than a boolean. The audit names,
+layer audits. No package restates it as a predicate. The declaration is a `RouteTable` of rows.
+Each row is one kernel variant serving one format in one regime, with a static
+`shapeRefusal` the audit walks and a runtime `readyRefusal` read at bind. Both
+answer with the gate that refused rather than a boolean. The audit names,
 from any machine and with no model loaded, every row a new format lacks.
 [CajetaXPU-Routing.md](CajetaXPU-Routing.md) is the contract.
 
@@ -553,10 +556,10 @@ Two configuration decisions need no library code. The compiler pins each
 kernel's launch block from its constant launch sites (§3.4), so registers are
 budgeted for the real occupancy. And `DeviceProfile`, the compile-time model,
 fills `feasibleBlocks` and `occupancyLimiter` into the manifest from the
-kernel's measured footprint where its architecture table knows the part; on a
-part it does not know those fields are absent, which is why the run-time
+kernel's measured footprint where its architecture table knows the part. On a
+part it does not know, those fields are absent, so the run-time
 filter above reads the driver instead. Applying a run-time-chosen geometry to
-a kernel with a tunable block is design (xpu-kernel-adaptor §5, §6); today
+a kernel with a tunable block is design (xpu-kernel-adaptor §5, §6). Today
 the kernels that adapt their geometry do so as families (§6.1, §6.2).
 
 ## 7. Discipline
@@ -575,13 +578,13 @@ run. An order-dependent red is an unwritten read.
 
 **Census.** A library's test run on a backend enumerates every registered
 kernel (`Device.registeredKernel`) and requires each to have been
-value-checked, or excused by name against a plan item; a kernel that ran is
+value-checked, or excused by name against a plan item. A kernel that ran is
 not thereby covered. The committed tables per backend are the record of what
 each has proven.
 
-**A route change is gated by the answer, not the speed.** An inference
+**A route change is gated by the answer alone.** Speed does not gate it. An inference
 library's route change passes only when its greedy walk agrees with the
-reference implementation token for token; a batched throughput figure is read
+reference implementation token for token. A batched throughput figure is read
 only beside the tokens it produced. A fast route that is wrong is
 indistinguishable from a win in every other instrument.
 
@@ -589,15 +592,15 @@ indistinguishable from a win in every other instrument.
 
 The v1 design of this package (2026-07) specified the three native backends
 under one namespace, the dlopen-on-demand runtime library, graph capture and
-the vendor FFI; those remain, and the contract above supersedes its
+the vendor FFI. Those remain, and the contract above supersedes its
 descriptions of capability traits, build configuration and device detection.
-The engineering specifications behind the present behaviour: route-table
+The engineering specifications behind the present behaviour are route-table
 (closed 2026-09-18), xpu-kernel-independence (`@Instantiate`, `@Requires`,
 the interpreter, the escape hatches), xpu-kernel-adaptor (the three
 questions, the declaration vocabulary, the gate), xpu-tile-manifest (§4),
 xpu-tile-shape-selection (§6.1, §6.2), vulkan-virtual-waves (§3.2),
-amdgpu-coopmatrix-tier-straddle (§3.3), cajeta-profiler (§5.4). Feature notes
-beside this document: [the capability matrix](CajetaXPU-Matrix.md) and the
+amdgpu-coopmatrix-tier-straddle (§3.3), cajeta-profiler (§5.4). The feature notes
+beside this document are [the capability matrix](CajetaXPU-Matrix.md) and the
 [CPU bring-up log](CajetaCPU.md) (historical; the current CPU model is §3.7),
 [the launch FFI](CajetaXPU-FFI.md), the wave verbs
 ([WaveReductions](WaveReductions.md), [WavePrefixScan](WavePrefixScan.md),

@@ -1,37 +1,36 @@
 # Method-Level Templates
 
-Status: design draft, 2026-05-18. Triggered by stdlib gaps surfaced
-during the P2 collections rollout: `Stream<T>.fold<R>`,
+Status: design draft, 2026-05-18. It was triggered by stdlib gaps surfaced
+during the P2 collections rollout. `Stream<T>.fold<R>`,
 `Stream<T>.collect<R>(Collector<T, R>)`, and the
 `Optional<int32>.Some(42)` templated-static-factory call syntax all need
-type parameters introduced *on the method itself*, separate from the
+type parameters introduced on the method itself, separate from the
 type parameters introduced on the enclosing class.
 
-Outcome (proposed): allow methods to introduce their own `<...>` type
-parameter list, with one hard requirement — **a method that introduces
+The proposed outcome is to allow methods to introduce their own `<...>` type
+parameter list, with one hard requirement. A method that introduces
 method-level type parameters must be declared `final` (instance
-method) or `static` (no receiver)**. The modifier is mandatory and
+method) or `static` (no receiver). The modifier is mandatory, and
 the compiler rejects declarations that lack it.
 
 Underneath that surface requirement, the method occupies no vtable
-slot regardless of the modifier — the templating itself excludes it
-from dispatch (a vtable slot is one function pointer; a method-
-templated declaration is a *family* of bodies, one per type-arg
-tuple). The mandatory `final` / `static` is a clarity rule rather
-than a mechanism: it surfaces the non-virtuality at the declaration
-site so readers don't have to reason about why a templated method
-isn't dispatched.
+slot regardless of the modifier, because the templating itself excludes it
+from dispatch. A vtable slot is one function pointer, and a method-
+templated declaration is a family of bodies, one per type-arg
+tuple. The mandatory `final` / `static` is a clarity rule. It
+surfaces the non-virtuality at the declaration site so readers don't
+have to reason about why a templated method isn't dispatched.
 
 ## Background
 
 Cajeta's class-level templates already work: `class Stream<T>`, `class
 Optional<T>`, `class Pair<K, V>`. Each instantiation is monomorphized
-(C++ semantics, not Java erasure — see [[project_language_basis]] and
-[[feedback_never_call_templates_generics]]). `Stream<int32>` and
+with C++ semantics (see [[project_language_basis]] and
+[[feedback_never_call_templates_generics]]). There is no Java erasure. `Stream<int32>` and
 `Stream<Counter>` are distinct types with distinct vtables and distinct
 method bodies.
 
-What does *not* work today is type parameters introduced by the method
+What does not work today is type parameters introduced by the method
 itself:
 
 ```cajeta
@@ -49,8 +48,8 @@ public class Optional<T> {
 
 Both forms appear in `ToDo.md` Priority 2 §§ 2–3 and §7, and in
 `specs/Features.md` row L-22. The rest of the stdlib has been written around
-their absence: `Stream<T>.reduce(T, (T, T) -> T)` is the same-type
-degenerate case of fold; `Optional<int32>` callers write `heap
+their absence. `Stream<T>.reduce(T, (T, T) -> T)` is the same-type
+degenerate case of fold, and `Optional<int32>` callers write `heap
 Optional<int32>(true, 42)` instead of `Optional<int32>.Some(42)`.
 
 ## The vtable problem
@@ -59,53 +58,53 @@ This is the question worth getting right, because Java solves it with
 erasure (which Cajeta has explicitly rejected) and C++ sidesteps it by
 forbidding the construct.
 
-Concrete scenario: `Stream<T>` is the base class. `ArrayStream<T>`,
+Here is a concrete scenario. `Stream<T>` is the base class. `ArrayStream<T>`,
 `MapStream<T, U>`, `FilterStream<T>`, etc. all extend `Stream<T>` and
 override `next()`. A vtable slot is one function pointer per virtual
 method per concrete instantiation of the class.
 
 If `fold<R>` were virtual:
 
-- `Stream<int32>`'s vtable would need a slot for `fold<R>` — but
-  `fold<R>` is *not one function*, it's a family indexed by `R`. There
+- `Stream<int32>`'s vtable would need a slot for `fold<R>`, but
+  `fold<R>` is a family indexed by `R`, and it is not one function. There
   is no single function pointer that covers `fold<int64>`,
   `fold<String>`, `fold<Pair<int32, int32>>`, etc.
-- Subclasses overriding the slot would have the same problem squared:
-  `ArrayStream<int32>` would need to provide an override for *every*
+- Subclasses overriding the slot would have the same problem squared.
+  `ArrayStream<int32>` would need to provide an override for every
   `R` the program ever instantiates with, but the set of `R`s isn't
   known until link time.
 
 C++ forbids `template <typename R> virtual R fold(...)` for exactly
 this reason. Java sidesteps it because erasure means there's only one
-`fold` body anyway — the type parameters vanish at runtime. We've
+`fold` body anyway, since the type parameters vanish at runtime. We've
 already chosen monomorphization, so we inherit C++'s problem.
 
 ## The fix: require `final` (instance) or `static`
 
-**A method-templated declaration MUST be marked `final` (if instance)
+A method-templated declaration MUST be marked `final` (if instance)
 or `static` (no receiver). The compiler rejects declarations that
-lack it.** Underneath the modifier, the templating itself is what
-actually excludes the method from the vtable — the modifier is the
+lack it. Underneath the modifier, the templating itself is what
+actually excludes the method from the vtable, and the modifier is the
 explicit marker that surfaces that fact at the declaration site.
 
 ### Why mandate the modifier when the templating alone would suffice?
 
 A method-templated declaration is non-virtual no matter what. The
 compiler could implicitly exclude it from the vtable and silently
-shadow any inherited same-name method. But that would be surprising —
-in Java/Cajeta, instance methods are virtual by default, and readers
+shadow any inherited same-name method. But that would be surprising,
+because in Java/Cajeta instance methods are virtual by default, and readers
 have strong intuitions about "subclass declarations override." The
-mandatory `final` (or `static`) modifier makes the opt-out explicit:
-the reader sees `final <R>` and immediately knows this method
+mandatory `final` (or `static`) modifier makes the opt-out explicit.
+The reader sees `final <R>` and immediately knows this method
 participates in neither vtable dispatch nor override resolution.
 
-Worth knowing: `final` in Java/Cajeta does **not** by itself remove
+It is worth knowing that `final` in Java/Cajeta does not by itself remove
 a method from the vtable. It only prevents further overrides past
 that point in the hierarchy. Here we're co-opting it as the
 declaration-site marker for a stronger property (no vtable slot at
 all) that the templating itself enforces. The rule "`final` is
 required" is closer to a lint-style ergonomic check than a semantic
-load-bearing constraint — but readers benefit, and it cleanly
+load-bearing constraint. Readers benefit, and it cleanly
 prevents the surprising shadowing scenario described below.
 
 ### What's allowed and what isn't
@@ -155,7 +154,7 @@ error: method 'fold' introduces method-level type parameter 'R'
 ### Constructors and operators excluded
 
 Constructors and operator-overload declarations cannot carry method-
-level type parameters — the construct/operator entry shapes don't
+level type parameters, because the construct/operator entry shapes don't
 compose with per-call monomorphization. Construct an instance of a
 templated class by writing the class-level args explicitly (`heap
 Box<int32>(42)`, or `stack Box<int32>(42)`) and rely on diamond
@@ -169,7 +168,7 @@ earlier drafts of this doc cannot arise. A subclass cannot redeclare
 a parent's `final <R> foo(...)` method without a normal override
 error. A subclass that needs different behavior overrides the virtual
 primitive the templated method calls through to (the template-method
-pattern: `Stream.fold<R>` calls `next()`; `ArrayStream<T>` overrides
+pattern, where `Stream.fold<R>` calls `next()` and `ArrayStream<T>` overrides
 `next()`).
 
 ## Syntax
@@ -238,7 +237,7 @@ Each item below is currently blocked or working around the gap.
 
 ### 1. `Stream<T>.fold<R>` — cross-type accumulator
 
-Today: `reduce(T seed, (T, T) -> T fn)` only — the accumulator must
+Today there is only `reduce(T seed, (T, T) -> T fn)`, so the accumulator must
 share the element type. You can sum an `int32` stream into an `int32`
 total but not into an `int64`. You can't fold a `Stream<Counter>`
 (class T) into an `int32` count without first mapping to a primitive
@@ -280,13 +279,13 @@ ArrayStream<Counter> cs_s2 = heap ArrayStream<Counter>(cs, 3);
 String joined = cs_s2.fold("", (String acc, Counter c) -> acc + c.v);
 ```
 
-Monomorphization: each unique `(T, R)` pair produces one specialized
+Each unique `(T, R)` pair produces one specialized
 function symbol. `Stream<int32>::fold<int64>`,
 `Stream<Counter>::fold<int32>`, `Stream<Counter>::fold<String>` are
 three separate bodies, generated on-demand at call sites.
 
-`reduce` stays as the same-type convenience wrapper (no behavior
-change, common case stays terse):
+`reduce` stays as the same-type convenience wrapper, so there is no behavior
+change and the common case stays terse:
 
 ```cajeta
 public T reduce(T seed, (T, T) -> T fn) {
@@ -296,7 +295,7 @@ public T reduce(T seed, (T, T) -> T fn) {
 
 ### 2. `Stream<T>.collect<R>(Collector<T, R>)` — generic terminal accumulator
 
-Today: blocked. Collectors can't even be expressed since the terminal
+Today this is blocked. Collectors can't even be expressed since the terminal
 that consumes them can't be written.
 
 With method-level templates:
@@ -367,12 +366,12 @@ stack dispatches statically.
 
 ### 3. `Optional<T>.Some(value)` — templated static factory call syntax
 
-Today: `Optional<int32> o = heap Optional<int32>(true, 42);` is the
+Today `Optional<int32> o = heap Optional<int32>(true, 42);` is the
 only way to construct a present `Optional`. It's verbose, exposes the
 internal `(boolean present, T value)` constructor shape, and forces
 callers to know the storage layout.
 
-With method-level templates *and* the related call-syntax piece
+With method-level templates and the related call-syntax piece
 (`TypeName<args>.staticMethod(...)`):
 
 ```cajeta
@@ -412,7 +411,7 @@ The factory pattern generalizes the same way to `Pair`, `Result`,
 
 ### 4. Static generic utilities
 
-`max`, `min`, `swap`, `clamp`, etc. — utilities that don't belong on
+`max`, `min`, `swap`, `clamp`, and similar utilities don't belong on
 any one class.
 
 ```cajeta
@@ -459,37 +458,37 @@ gets a clean `mapTo<R>` that produces a `Stream<R>`.
 
 ## Codegen model
 
-Same as class-level templates: lazy monomorphization at the call site.
+The model is the same as class-level templates, which is lazy monomorphization at the call site.
 
 1. Parser captures the `typeParameters` on the method declaration as a
    `vector<string>` on the `MethodDeclaration` AST node (mirroring how
    class-level template parameters are captured on `CajetaClass`).
-2. The method gets no vtable slot — the templating itself excludes
+2. The method gets no vtable slot, because the templating itself excludes
    it. Vtable build skips method-templated declarations entirely.
-3. Type checking on the *body* of the method binds the method-level
-   T-vars as abstract type variables; they resolve against the same
+3. Type checking on the body of the method binds the method-level
+   T-vars as abstract type variables. They resolve against the same
    scope rules as class-level T-vars and shadow them if names collide
    (with a warning).
 4. At each call site, the compiler infers (or accepts explicit) values
    for the method-level type parameters. The (receiver type args ×
    method-level type args) tuple becomes the monomorphization key.
 5. The compiler maintains a per-method instantiation cache. On first
-   sight of a new key, it specializes the method body — substituting
+   sight of a new key, it specializes the method body, substituting
    the type variables in parameter types, return type, local variable
-   types, and `stack`/`heap` expressions — and emits a fresh LLVM
+   types, and `stack`/`heap` expressions, and emits a fresh LLVM
    function with a mangled name encoding both class-level and method-
    level args.
 6. The call site emits a direct `call` to the mangled symbol. No
    vtable lookup. No dispatch cost.
 
-For static methods, omit the receiver entirely (no `this` parameter,
-no class-level instantiation needed if the class itself isn't
-templated; if the class is templated, only the method-level args feed
-mangling for static methods declared inside it — class-level args on
+For static methods, omit the receiver entirely. There is no `this`
+parameter, and no class-level instantiation is needed if the class itself
+isn't templated. If the class is templated, only the method-level args feed
+mangling for static methods declared inside it, because class-level args on
 static methods are independent of any receiver and would conventionally
-be declared as method-level too).
+be declared as method-level too.
 
-Name mangling sketch (illustrative, final form TBD):
+This is a name mangling sketch, illustrative, with the final form TBD:
 
 ```
 cajeta.lang.stream.Stream$T=int32$.fold$R=int64$
@@ -505,7 +504,7 @@ cajeta.lang.Math$.max$T=cajeta.lang.String$
 
 `<T extends Comparable<T>>` works the same as on class-level templates.
 The bound is checked at instantiation time against the inferred /
-supplied T. Diagnostics point to the call site, not the declaration.
+supplied T. Diagnostics point to the call site. They do not point to the declaration.
 
 ### Inference failure
 
@@ -523,8 +522,8 @@ Optional<int32> o = Stream.empty();      // OK (target type fixes R)
 ### Interaction with virtual `next()`
 
 A `<R> R fold(R seed, ...)` on `Stream<T>` calls `this.next()`, which
-IS virtual. The dispatch happens normally — fold itself is non-virtual
-(by virtue of templating), but the methods it *calls* are dispatched
+IS virtual. The dispatch happens normally. fold itself is non-virtual
+(by virtue of templating), but the methods it calls are dispatched
 per usual. This is the template-method pattern.
 
 ### Failed-override-via-templating
@@ -545,26 +544,26 @@ dispatch on the receiver's static type, not dynamically."
 
 ### Method-templated methods on interfaces
 
-Allowed only when the interface declares the method as `default`
-(i.e., the implementation lives on the interface; subclasses inherit
-the same body and cannot specialize per type-arg). Today Cajeta's
-interface support is minimal; revisit when interface defaults land.
+This is allowed only when the interface declares the method as `default`,
+so that the implementation lives on the interface and subclasses inherit
+the same body and cannot specialize per type-arg. Today Cajeta's
+interface support is minimal, and this will be revisited when interface defaults land.
 
 ## What this does *not* solve
 
-- **Per-lambda type parameters** (`<U> (U) -> U`). Same vtable
-  constraint, separate grammar work. See `docs/specification/lang/Lambdas.md`
+- **Per-lambda type parameters** (`<U> (U) -> U`). The same vtable
+  constraint applies, and it is separate grammar work. See `docs/specification/lang/Lambdas.md`
   § "Per-lambda type parameters."
 - **Higher-kinded types** (`F<_>` where `F` itself is a type
   parameter). Not on the roadmap.
 - **Variance annotations** (`<? extends T>`, `<? super T>`). Cajeta's
-  monomorphization model makes Java's wildcards mostly unnecessary;
+  monomorphization model makes Java's wildcards mostly unnecessary, and
   bounded `<T extends Bound>` covers the vast majority of real cases.
 
 ## Implementation phases
 
 The work breaks down naturally across three increments. None require
-runtime changes; this is entirely a parse + monomorphize +
+runtime changes, since this is entirely a parse + monomorphize +
 mangling story.
 
 ### Phase 1 — Grammar + parsing + scope binding
@@ -603,16 +602,16 @@ explicit type args. Inference may be partial in this phase.
 
 ### Phase 3 — Static factory call syntax + stdlib uptake
 
-- Allow `TypeName.method<args>(values)` at the call site (Form C —
-  type args after the identifier, mirroring `Type<args>` at the
-  type-use site). This is the only call-site syntax; Java's
+- Allow `TypeName.method<args>(values)` at the call site (Form C,
+  with type args after the identifier, mirroring `Type<args>` at the
+  type-use site). This is the only call-site syntax, and Java's
   `TypeName.<args>method(...)` dot-prefix form is rejected.
 - Update `Optional.Some` / `Optional.None` / similar stdlib factories.
 - Rewrite `Stream<T>.reduce` as a wrapper around `fold<T>`.
 - Add `Math.max` / `Math.min` / `Math.clamp` static utilities.
 - Add the corresponding parser + dispatch tests.
 
-Deliverable: `Optional<int32>.Some(42)` works; the verbose `heap
+Deliverable: `Optional<int32>.Some(42)` works. The verbose `heap
 Optional<int32>(true, 42)` form remains valid but is no longer the
 recommended idiom.
 
@@ -620,20 +619,20 @@ recommended idiom.
 
 Once this lands, these existing notes need to be revised:
 
-- `docs/specification/lang/Lambdas.md:347` — paragraph saying "method-level
-  template ... doesn't exist in Cajeta" needs replacement with a
+- `docs/specification/lang/Lambdas.md:347` has a paragraph saying "method-level
+  template ... doesn't exist in Cajeta" that needs replacement with a
   pointer to this doc and a corrected example using `mapTo<R>`.
-- `docs/specification/lang/Lambdas.md:14` — "same virtual-vtable reasoning
-  as method-level templates" reference can become a forward link to
+- `docs/specification/lang/Lambdas.md:14` has a "same virtual-vtable reasoning
+  as method-level templates" reference that can become a forward link to
   this doc's "vtable problem" section.
-- `docs/specification/lang/Views.md:324` — "No method-level generics" needs
+- `docs/specification/lang/Views.md:324` says "No method-level generics", which needs
   to be relaxed (or kept as a view-specific restriction with its own
   rationale, if views have a separate reason to forbid them).
-- `docs/specification/lang/stream/Streams.md:245-246` — "needs method-level type
-  parameters (P2.3)" gets a link to this doc.
-- `ToDo.md` § Priority 2 §§ 2, 3, 7 — mark these as unblocked once
+- `docs/specification/lang/stream/Streams.md:245-246` says "needs method-level type
+  parameters (P2.3)" and gets a link to this doc.
+- `ToDo.md` § Priority 2 §§ 2, 3, 7 are marked as unblocked once
   Phase 1 lands.
-- `specs/Features.md` row L-22 — flip to implemented once Phase 2 lands.
+- `specs/Features.md` row L-22 flips to implemented once Phase 2 lands.
 
 ## Status
 
@@ -644,8 +643,8 @@ Shipped, 2026-05-18. All three phases landed:
 - Phase 2 (per-call monomorphization, inferred type args via
   function-type unifier, mid-codegen save/restore around
   instantiation): pinned by `test/parser/MethodTemplateCallTests.cpp`.
-- Phase 3 (post-identifier explicit-type-arg call syntax — Form C —
-  `receiver.method<TypeArgs>(args)`: covers both
+- Phase 3 (post-identifier explicit-type-arg call syntax, Form C,
+  `receiver.method<TypeArgs>(args)`, which covers both
   `Util.identity<int32>(42)` and `b.passthrough<R>(99)`): pinned by
   `test/parser/MethodTemplateExplicitArgsTests.cpp`. Also wired
   `Stream<T>.fold<R>` (pinned by `test/parser/StreamFoldTests.cpp`)
@@ -656,18 +655,18 @@ Shipped, 2026-05-18. All three phases landed:
 Known limitations:
 
 - **`TypeName<TypeArgs>.method(args)` form** (type-name-with-args as
-  receiver expression — distinct from the working
-  `TypeName.method<TypeArgs>(args)` post-identifier form). Needs
+  receiver expression, distinct from the working
+  `TypeName.method<TypeArgs>(args)` post-identifier form). It needs
   additional grammar work to allow a parameterized type name as a
-  primary expression. (Form B in the call-syntax taxonomy. Not
-  planned; Form C subsumes its use cases.)
+  primary expression. This is Form B in the call-syntax taxonomy. It is
+  not planned, since Form C subsumes its use cases.
 - ~~Lambda body with class-typed parameters~~ **Resolved 2026-05-18.**
   `LambdaExpression::resolveTypes` now pushes a temporary scope with
   the lambda's declared parameters before walking the body, so bare-
-  identifier references (`acc`, `c`) resolve correctly. Also requires
-  skipping the expectedType propagator on method-templated targets
-  (templates carry placeholder T-vars and pre-existing instantiations
-  may have the wrong T-args for this call site) — see
+  identifier references (`acc`, `c`) resolve correctly. It also requires
+  skipping the expectedType propagator on method-templated targets,
+  because templates carry placeholder T-vars and pre-existing instantiations
+  may have the wrong T-args for this call site. See
   `MethodCallExpression`'s lambda-as-arg propagator.
 - ~~**Templated method whose T-vars don't appear in value params**~~
   **Resolved 2026-05-18.** Two-layer naming (`Method::getMapKey`

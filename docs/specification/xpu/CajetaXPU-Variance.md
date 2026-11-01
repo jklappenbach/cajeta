@@ -1,7 +1,7 @@
 # CajetaXPU — Variance Discipline
 
 This is the working register for where `cajeta.xpu.nvidia`,
-`cajeta.xpu.amd`, and `cajeta.xpu.vulkan` diverge — and the discipline
+`cajeta.xpu.amd`, and `cajeta.xpu.vulkan` diverge. It also records the discipline
 that keeps those divergences from leaking into `cajeta.xpu` as
 NVIDIA-shaped assumptions during the NVIDIA-first implementation
 phase.
@@ -9,17 +9,17 @@ phase.
 The rule statement and pointer back to this doc live in
 [`CajetaXPU.md`](CajetaXPU.md) §3.0.
 
-> **A fourth backend — CPU — has since landed on the same seam** (the
+> **A fourth backend, CPU, has since landed on the same seam** (the
 > `LoweringTarget` vtable; see [`CajetaCPU.md`](CajetaCPU.md)). It held the
-> three-column discipline with a single new fork: the **coordinate source**. A
+> three-column discipline with a single new fork, the coordinate source. A
 > CPU has no hardware grid or coordinate intrinsics, so its kernel gains 9
 > trailing `i32` coordinate params and `KernelThread`/`Workgroup` reads pull from those
-> (the grid→threads model); buffers are flat `addrspace(0)`, the wave is width-1,
-> barriers are deferred (`XPU-N01`). Everything else — the body walk, operators,
-> control flow, `globalId = ctaid*ntid + tid` — stayed Core, confirming the
-> measured surface a third time. The *launch* side added one runtime fork
-> (Vulkan's descriptor-set ABI needs per-kernel parameter metadata to translate
-> the uniform `kernelParams` argv), but that lives in the runtime dispatcher, not
+> (the grid→threads model). Buffers are flat `addrspace(0)`, the wave is width-1,
+> and barriers are deferred (`XPU-N01`). Everything else stayed Core, including the body walk, operators,
+> control flow and `globalId = ctaid*ntid + tid`, which confirms the
+> measured surface a third time. The launch side added one runtime fork,
+> because Vulkan's descriptor-set ABI needs per-kernel parameter metadata to translate
+> the uniform `kernelParams` argv. That fork lives in the runtime dispatcher rather than
 > on `LoweringTarget`.
 
 ---
@@ -38,11 +38,11 @@ landing:
 
 ### 1.1 Outcomes
 
-- **All three pass** — lands in `xpu.core` as designed.
-- **One column needs different parameters or semantics** —
-  restructured so the variation becomes a parameter. Example: wave
-  width is const-expr *per target*, not a literal `32`.
-- **One column genuinely can't support it** — moves to the vendor
+- **All three pass.** The API lands in `xpu.core` as designed.
+- **One column needs different parameters or semantics.** The API is
+  restructured so the variation becomes a parameter. For example, wave
+  width is const-expr per target rather than a literal `32`.
+- **One column genuinely can't support it.** The API moves to the vendor
   namespace. Portable wrappers, if any, live in `xpu.core.compat`.
 
 ---
@@ -51,8 +51,8 @@ landing:
 
 Each row is a dimension where the three backends diverge. Every new
 `xpu.core` API gets reviewed against the relevant rows. New
-dimensions get appended as they surface during NVIDIA-first work; do
-not reorder existing rows — they are referenced by number in PR
+dimensions get appended as they surface during NVIDIA-first work. Do
+not reorder existing rows, because they are referenced by number in PR
 variance checks.
 
 | #  | Dimension                  | NVIDIA                            | AMD                                  | Vulkan                                                | Implication for core                                                                          |
@@ -76,16 +76,16 @@ variance checks.
 
 For every PR that adds or modifies an `xpu.core` API:
 
-1. The PR description includes a **variance check** section — which
+1. The PR description includes a **variance check** section. It names which
    rows from §2 apply, and the AMD / Vulkan mental-model answer for
    each.
-2. If any row says "would force a redesign," restructure *before*
-   merge — don't ship the NV-only shape and refactor across already-
+2. If any row says "would force a redesign," restructure before
+   merge. Do not ship the NV-only shape and refactor across already-
    written kernels later.
 3. New variance dimensions discovered during the check get appended
    to §2 in the same PR.
 
-The variance check is a paragraph in the PR description, not a
+The variance check is a paragraph in the PR description. It is not a
 separate review pass.
 
 ---
@@ -93,19 +93,19 @@ separate review pass.
 ## 4. Hard pre-AMD checkpoints
 
 Before the AMD pass begins, the following `xpu.core` surfaces must
-already clear the three-column check — because they are the language-
+already clear the three-column check. They are the language-
 surface bits where retrofitting across already-shipped NVIDIA kernels
 would be most expensive.
 
 - **`@Kernel` attribute + the `KernelArg` trait.** Must admit
-  Vulkan's push-constant / descriptor partitioning, not just "pass
+  Vulkan's push-constant / descriptor partitioning as well as "pass
   the args."
 - **Address-space qualifiers** (`Global` / `Shared` / `Constant` /
-  `Private` / `Generic`). Must map cleanly to SPIR-V storage classes,
-  not just NV addrspace numbers.
+  `Private` / `Generic`). Must map cleanly to SPIR-V storage classes
+  as well as NV addrspace numbers.
 - **`launch(stream, grid, block)(args)` syntax.** The Vulkan binding
-  pass is the hard part — either the syntax accommodates it or we
-  end up with two launch syntaxes, which we don't want.
+  pass is the hard part. Either the syntax accommodates it or we
+  end up with two launch syntaxes, which we do not want.
 - **`KernelBuffer<T>` lifecycle** (alloc / free / upload / download / map).
   Must round-trip through Vulkan's bind-memory-to-buffer model
   without a leaky special case.
@@ -116,9 +116,9 @@ would be most expensive.
 - **Borrow-check rules** for launch borrow scope, shared-memory
   aliasing, and cross-stream WAR / RAW.
 
-Lower-risk surfaces — capability traits, the `xpu.thread.x` family of
-intrinsic builtins, the `xpu.core.{blas,dnn,fft}` portable wrappers —
-can be more iterative. They are easier to move between namespaces
+Lower-risk surfaces can be more iterative. These are the capability traits, the `xpu.thread.x` family of
+intrinsic builtins, and the `xpu.core.{blas,dnn,fft}` portable wrappers.
+They are easier to move between namespaces
 post-AMD without invalidating kernels.
 
 ---
@@ -128,8 +128,8 @@ post-AMD without invalidating kernels.
 - Append new rows to §2 as the NVIDIA implementation surfaces new
   divergences. Do not reorder existing rows; PR variance checks
   reference them by number.
-- When a row's implication changes — e.g. the AMD pass discovers we
-  were wrong about how something maps — update the row in place and
+- When a row's implication changes, for example when the AMD pass discovers we
+  were wrong about how something maps, update the row in place and
   note the reason in the PR that changes it.
 - Retire a row only when the dimension truly stops mattering across
   all three backends. For example, if Vulkan eventually gains stream-

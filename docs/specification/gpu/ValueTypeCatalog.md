@@ -5,38 +5,38 @@
 > that when it is time to write definitions the surface is already specified. It is a
 > companion to [`OperatorOverloading.md`](../lang/OperatorOverloading.md).
 >
-> The `@ValueType` operator-overloading **mechanism it relies on has since landed**
-> (`plans/value-type-overloading-plan.md`, shipped 2026-06-05): `@ValueType` POD classes
+> The `@ValueType` operator-overloading mechanism it relies on has since landed
+> (`plans/value-type-overloading-plan.md`, shipped 2026-06-05). `@ValueType` POD classes
 > carry `VALUE_TYPE_FLAG` and dispatch operators via a relaxed gate, with their operators
 > force-inlined to flat IR (preserving by-value GPU marshalling). What is still
-> design-stage is the **type definitions themselves** — of everything below, only
+> design-stage is the type definitions themselves. Of everything below, only
 > `Vector` / `Matrix` / `Quaternion` (compiler intrinsics carrying their own type flags,
-> *not* declared `@ValueType` classes) and the device-only `CooperativeMatrix` exist in
-> code today; the rest is specified here but unwritten.
+> which are no declared `@ValueType` classes) and the device-only `CooperativeMatrix` exist in
+> code today. The rest is specified here but unwritten.
 
 Priority: **now** = needed for current ML/GPU work · **soon** = next · **later** = justified-but-speculative.
 
-> **Corrections (2026-06-04) — these override the raw per-row notes below, which were
-> generated before the design decisions were locked:**
+> **Corrections (2026-06-04).** These override the raw per-row notes below, which were
+> generated before the design decisions were locked:
 > - **No templated operators; matmul `*` is compiler-intrinsic for built-in `Matrix`/`Tensor`**
 >   (owner decision). Operator overloads are concrete (specific LHS × specific RHS). Any row
 >   marking K-generic matmul as *"FORBIDDEN" / "needs method-templated operators"* OR as a
->   `operator*<K>` template is superseded: for the compiler-known value types `Matrix`/`Tensor`,
+>   `operator*<K>` template is superseded. For the compiler-known value types `Matrix`/`Tensor`,
 >   `M1 * M2` lowers to matmul by the compiler reading `R/K/C` off the (already concrete) operand
->   types in codegen — exactly like `Vector`'s operators, no template anywhere. Element-wise
+>   types in codegen, exactly like `Vector`'s operators, with no template anywhere. Element-wise
 >   multiply is the method `a.hadamard(b)`.
 > - **Instance mutating operators are forbidden on value types** (owner decision). Any
->   `operator[]=` / `operator++` / `operator--` row is conceptual only: value types are by-value
+>   `operator[]=` / `operator++` / `operator--` row is conceptual only. Value types are by-value
 >   Copy, so in-place mutation would mutate a copy. Writes use whole-value reassignment
->   (`m = m.with(...)`, `m[r][c]=v` rewrites the whole value via flat-lane insert); `m += n`
+>   (`m = m.with(...)`, `m[r][c]=v` rewrites the whole value via flat-lane insert), and `m += n`
 >   desugars to `m = m + n`. Read `operator[]` is fine.
-> - The catalog is **auto-generated** from the design workflow and still has duplicate/conflicting
->   rows for a few types (e.g. `Matrix`); a consolidation pass is pending. Treat the
+> - The catalog is auto-generated from the design workflow and still has duplicate/conflicting
+>   rows for a few types (e.g. `Matrix`). A consolidation pass is pending. Treat the
 >   conventions section + these corrections as authoritative when they disagree with a row.
 
 ## Operator-signature conventions
 
-Canonical conventions the catalog/docs must follow (grounded in OperatorOverloading.md and CajetaLlvmVisitor.h:1074-1167 enforcement): (1) BINARY arithmetic/bitwise/comparison (+, -, *, /, %, &, |, ^, <<, >>, ==, <) and NON-mutating UNARY (+, -, !, ~): `public static` with explicit operands, no `this`. Binary = exactly 2 params; unary = exactly 1 param. Shape: `public static R operator+(LHS a, RHS b)` and `public static R operator-(T a)`. Return type R is the owned result. (2) For a value type V, the canonical homogeneous arithmetic signature is `public static V operator+(V a, V b)`; mixed forms like `public static V operator*(V a, float32 s)` (and the swapped `(float32 s, V a)` if commutativity is wanted) are declared explicitly — there is NO implicit scalar broadcast for value types. (3) COMPARISON: declare only `operator==` and `operator<`; the compiler DERIVES `!=` (¬==), `>` (swapped <), `>=` (¬<), `<=` (swapped ¬<) via BinaryOpExpression.cpp:715-754. Both `==` and `<` return `bool`. Do not declare the derived four unless a partial order needs them. (4) MUTATING UNARY ++/-- and INDEXED []/[]=: INSTANCE methods, NO static. `operator++()` 0 params return void; `operator[](IdxT i)` 1 param returns element (a borrow tied to receiver); `operator[]=(IdxT i, ElemT v)` 2 params return void. (5) COMPOUND-ASSIGN (+=, -=, ...): omit by default (auto-derived as `a = a + b` from the static binary form); declare an explicit instance `operator+=(RHS b)` (1 param, void) only for in-place mutation. (6) @ValueType operators that must run in kernels are additionally marked @Device and constrained to primitive scalar/vector ops (no alloca/GEP/heap) so they device-inline cleanly. (7) NO templated operators — operator overloads are concrete (a specific LHS type × a specific RHS type). Shape-generic matmul is NOT a user operator: for the compiler-known value types `Matrix`/`Tensor`, `M1 * M2` is **compiler-intrinsic** (the compiler reads `R/K/C` off the concrete operand types and emits matmul, like `Vector`'s operators — no template, no inference machinery). Element-wise multiply is the method `a.hadamard(b)`. User-defined value types use only concrete operator overloads. (8) Operator bodies should be small/pure to honor the AlwaysInline size guard and the by-value/no-side-effect marshalling contract.
+Canonical conventions the catalog/docs must follow (grounded in OperatorOverloading.md and CajetaLlvmVisitor.h:1074-1167 enforcement): (1) BINARY arithmetic/bitwise/comparison (+, -, *, /, %, &, |, ^, <<, >>, ==, <) and NON-mutating UNARY (+, -, !, ~): `public static` with explicit operands, no `this`. Binary = exactly 2 params; unary = exactly 1 param. Shape: `public static R operator+(LHS a, RHS b)` and `public static R operator-(T a)`. Return type R is the owned result. (2) For a value type V, the canonical homogeneous arithmetic signature is `public static V operator+(V a, V b)`; mixed forms like `public static V operator*(V a, float32 s)` (and the swapped `(float32 s, V a)` if commutativity is wanted) are declared explicitly, because there is NO implicit scalar broadcast for value types. (3) COMPARISON: declare only `operator==` and `operator<`; the compiler DERIVES `!=` (¬==), `>` (swapped <), `>=` (¬<), `<=` (swapped ¬<) via BinaryOpExpression.cpp:715-754. Both `==` and `<` return `bool`. Do not declare the derived four unless a partial order needs them. (4) MUTATING UNARY ++/-- and INDEXED []/[]=: INSTANCE methods, NO static. `operator++()` 0 params return void; `operator[](IdxT i)` 1 param returns element (a borrow tied to receiver); `operator[]=(IdxT i, ElemT v)` 2 params return void. (5) COMPOUND-ASSIGN (+=, -=, ...): omit by default (auto-derived as `a = a + b` from the static binary form); declare an explicit instance `operator+=(RHS b)` (1 param, void) only for in-place mutation. (6) @ValueType operators that must run in kernels are additionally marked @Device and constrained to primitive scalar/vector ops (no alloca/GEP/heap) so they device-inline cleanly. (7) NO templated operators. Operator overloads are concrete (a specific LHS type × a specific RHS type). Shape-generic matmul is NOT a user operator. For the compiler-known value types `Matrix`/`Tensor`, `M1 * M2` is compiler-intrinsic. The compiler reads `R/K/C` off the concrete operand types and emits matmul, like `Vector`'s operators, with no template and no inference machinery. Element-wise multiply is the method `a.hadamard(b)`. User-defined value types use only concrete operator overloads. (8) Operator bodies should be small/pure to honor the AlwaysInline size guard and the by-value/no-side-effect marshalling contract.
 
 ## Type index
 
@@ -296,20 +296,20 @@ Canonical conventions the catalog/docs must follow (grounded in OperatorOverload
 > `Vector<T,N>` is a bare `CajetaVector` carrying `PRIMITIVE_FLAG | VECTOR_FLAG`, so it is
 > excluded from the operator-dispatch gate on both counts (`!CajetaClass` and `PRIMITIVE_FLAG`).
 > Its `+ - * / == []` are intercepted in `BinaryOpExpression`/`ArrayIndexExpression` (host) and
-> `KernelLowering` (device) and emitted as flat `<N x T>` SSA — **the signatures in the table
-> below are documentary** (the canonical surface a future declared form would expose), not source
-> the compiler reads. Consequences:
-> - Vector is the **register-residency reference** the `@ValueType` mechanism preserves: emitted
+> `KernelLowering` (device) and emitted as flat `<N x T>` SSA. The signatures in the table
+> below are documentary, as the canonical surface a future declared form would expose, and the
+> compiler reads no such source. Consequences:
+> - Vector is the register-residency reference the `@ValueType` mechanism preserves. Emitted
 >   IR is byte-identical to the pre-mechanism intrinsic path, pinned by the S0 golden oracle
 >   (`test/expression/VectorHostGoldenIrTests.cpp` host + `XpuVectorDeviceTests` device).
 > - Vector's `operator[]` read and `operator[]=` element-write are intrinsic mutable-vector ops
->   and are **exempt from the S3 `@ValueType` mutating-operator ban** — that ban
->   (`CAJETA_ERROR_VALUE_TYPE_MUTATING_OPERATOR`) forbids *declaring* a mutating operator on a
->   by-value `@ValueType` **CajetaClass**; Vector is not one, and `v[i] = x` mutates the value's
+>   and are exempt from the S3 `@ValueType` mutating-operator ban. That ban
+>   (`CAJETA_ERROR_VALUE_TYPE_MUTATING_OPERATOR`) forbids declaring a mutating operator on a
+>   by-value `@ValueType` CajetaClass. Vector is not one, and `v[i] = x` mutates the value's
 >   inline slot directly via `insertelement`.
-> - **Synthesizing declared Vector operator signatures** (making the surface above real source
->   backed by the interception, gate still bypassing `CajetaVector`) is **deferred**
->   (documentary-first, plan Decision #5). The intrinsic path is the implementation; a declared
+> - Synthesizing declared Vector operator signatures (making the surface above real source
+>   backed by the interception, gate still bypassing `CajetaVector`) is deferred
+>   (documentary-first, plan Decision #5). The intrinsic path is the implementation, and a declared
 >   façade would be ergonomic sugar only.
 
 | Operator | Form | Signature | Notes |
@@ -324,12 +324,12 @@ Canonical conventions the catalog/docs must follow (grounded in OperatorOverload
 | `operator[]` | instance-index-read | `public T operator[] (uint32 i)` | Instance form per OperatorOverloading.md 5; i must be <N |
 | `operator[]=` | instance-index-write | `public void operator[]= (uint32 i, T value)` | Requires mutable borrow at call site; v is mutable borrow receiver |
 
-**Component / swizzle reads:** `.x/.y/.z/.w` (and `.r/.g/.b/.a`) read one lane; a 2-4 letter **swizzle** `.xy`/`.xyz`/`.xxyy`/`.zyx` reads a `Vector<T,M>` (repeats allowed; lowers to `shufflevector`). Out-of-range letters → `CAJETA_ERROR_VECTOR_COMPONENT`. Swizzle *writes* (`v.xy = …`) deferred.
+**Component / swizzle reads:** `.x/.y/.z/.w` (and `.r/.g/.b/.a`) read one lane. A 2-4 letter swizzle `.xy`/`.xyz`/`.xxyy`/`.zyx` reads a `Vector<T,M>` (repeats allowed; lowers to `shufflevector`). Out-of-range letters → `CAJETA_ERROR_VECTOR_COMPONENT`. Swizzle writes (`v.xy = …`) are deferred.
 
 **Methods:**
 - geometry/math: `dot(other)`, `length()`, `normalize()`; `cross(other)` (3-D), `reflect(n)`, `refract(n, eta)`, `distance(other)`; `min(b)`, `max(b)`, `clamp(lo, hi)`, `lerp(b, t)` — *float element, v1; integer min/max deferred*.
 - integer dot (DP4a): on `Vector<int8,4>` / `Vector<uint8,4>`, `dot(other)` → `int32` and the fused `dot(other, acc)` → `acc + dot`. Signedness is the element type (`OpSDot`/`OpUDot`); Vulkan emits the `SPV_KHR_integer_dot_product` hardware unit, other backends a portable widening reduce (bit-exact). *4-lane 8-bit only, v1.* See `IntegerDotProduct.md`.
-- **mask** (on a `Vector<boolean,N>` from a comparison): `all()`/`any()` → `boolean`, `select(whenTrue, whenFalse)` → per-lane blend. **Masks are register-only** — `KernelBuffer<Vector<boolean,N>>` / bool-vector kernel args stay ABI-rejected.
+- **mask** (on a `Vector<boolean,N>` from a comparison): `all()`/`any()` → `boolean`, `select(whenTrue, whenFalse)` → per-lane blend. Masks are register-only, so `KernelBuffer<Vector<boolean,N>>` / bool-vector kernel args stay ABI-rejected.
 
 ## BFloat16
 
@@ -418,7 +418,7 @@ Canonical conventions the catalog/docs must follow (grounded in OperatorOverload
 - **GPU notes:** Register residency: {T,T,T,T} = 4 floats = 16 bytes, small SSA aggregate. By-value kernel marshalling (4 numeric fields, POD). Device lowering: methods inline to vector/scalar ops. Used in graphics, robotics, game physics. Unrelated to CooperativeMatrix (device-only matrix core).
 - **Depends on:** Numeric, Vector<T,3>, Matrix<T,3,3>, Math (sin, cos, sqrt, atan2)
 
-> **Status (2026-06-05) — LIVE (host + CPU/Vulkan), a compiler intrinsic like Vector/Matrix.** `CajetaQuaternion` carries `QUATERNION_FLAG | PRIMITIVE_FLAG`, lowering to a flat `<4 x T>` = (w, x, y, z); **float element only** (`CAJETA_ERROR_QUATERNION_ELEMENT_TYPE`). Construction `new/stack Quaternion<T>(w,x,y,z)`. Operators (intrinsic, the table below is documentary): `*` = Hamilton product `Quaternion*Quaternion` and vector rotation `Quaternion*Vector<T,3>` (→ rotated `Vector<T,3>`); `+ -` element-wise. Methods: `normalize()`, `conjugate()`, `length()`, `dot(other)`, and the interpolators **`slerp(other, t)`** (constant angular velocity; `acos`/`sin` via the device transcendental seam, branchless with an automatic near-parallel `nlerp` fallback) and **`nlerp(other, t)`** (cheaper normalized lerp). Both run on CPU/Vulkan/AMD. The `==`→boolean row below is superseded by the value-type comparison-mask rule (`MaskSelect.md`) and is **not implemented for Quaternion in v1**.
+> **Status (2026-06-05) — LIVE (host + CPU/Vulkan), a compiler intrinsic like Vector/Matrix.** `CajetaQuaternion` carries `QUATERNION_FLAG | PRIMITIVE_FLAG`, lowering to a flat `<4 x T>` = (w, x, y, z), with a float element only (`CAJETA_ERROR_QUATERNION_ELEMENT_TYPE`). Construction is `new/stack Quaternion<T>(w,x,y,z)`. The operators are intrinsic, and the table below is documentary. `*` = Hamilton product `Quaternion*Quaternion` and vector rotation `Quaternion*Vector<T,3>` (→ rotated `Vector<T,3>`), and `+ -` are element-wise. The methods are `normalize()`, `conjugate()`, `length()`, `dot(other)`, and the interpolators `slerp(other, t)` (constant angular velocity; `acos`/`sin` via the device transcendental seam, branchless with an automatic near-parallel `nlerp` fallback) and `nlerp(other, t)` (cheaper normalized lerp). Both run on CPU/Vulkan/AMD. The `==`→boolean row below is superseded by the value-type comparison-mask rule (`MaskSelect.md`) and is not implemented for Quaternion in v1.
 
 | Operator | Form | Signature | Notes |
 |---|---|---|---|

@@ -1,23 +1,23 @@
 # `cajeta.collection` — Lists, Sets, Maps, and friends
 
-The container types in `runtime/src/cajeta/collection/`. Today each
-container exposes its elements as a `cajeta.lang.stream.Stream<E>`
-through a factory method (`stream()`, or `keys()`/`values()`/`entries()`
-on `HashMap`) rather than multiple-inheriting `Stream` directly; the
-multiple-inheritance "container IS a stream" design is still pending.
-See Streams.md for the full stream protocol and combinator surface.
+This package holds the container types in `runtime/src/cajeta/collection/`.
+Today each container exposes its elements as a `cajeta.lang.stream.Stream<E>`
+through a factory method, which is `stream()`, or `keys()`/`values()`/`entries()`
+on `HashMap`. The multiple-inheritance design, in which a container is
+itself a stream, is still pending. See Streams.md for the full stream
+protocol and combinator surface.
 
-All containers report their element count via `count()` (never `size`
-or `length`); `count()` returns `int64` except on `ArrayList`, where it
-is `int32`.
+All containers report their element count via `count()`, and never via
+`size` or `length`. `count()` returns `int64` except on `ArrayList`, where
+it is `int32`.
 
 ## Collections borrow their elements by default — transfer is the caller's choice
 
 Collections are not containers. They can be treated like containers by
 transferring ownership in, but they are not designed to own by default. Element
-and key parameters on the collections below are declared plainly (`T` / `K` /
-`V`), with one exception noted at `HashMap.operator[]=`. Passing `x` lends;
-passing `#x` transfers; both spellings are legal and the choice is the
+and key parameters on the collections below are declared plainly as `T` / `K` /
+`V`, with one exception noted at `HashMap.operator[]=`. Passing `x` lends and
+passing `#x` transfers. Both spellings are legal, and the choice is the
 caller's:
 
 ```cajeta
@@ -27,35 +27,35 @@ xs.add(#c);      // transfers — the list takes the title
 int32 n = c.n;   // still fine: `#` moves the title, not the binding
 ```
 
-Genuine containers — those whose storage outlives the caller's frame, such as
-`JsonValue.setArray` / `setObject` (the DOM owns its children) or `Pair` — do
-declare `#` formals. A `#` formal obliges the caller to write `#` whenever the
-argument is a local the frame owns; a fresh value — a literal, or a
-`heap T(...)` / `stack T(...)` construction — passes plain, because an unowned
-temporary has no title to surrender.
+Genuine containers do declare `#` formals. A genuine container is one whose
+storage outlives the caller's frame, such as `JsonValue.setArray` / `setObject`,
+where the DOM owns its children, or `Pair`. A `#` formal obliges the caller to
+write `#` whenever the argument is a local the frame owns. A fresh value, which
+is a literal or a `heap T(...)` / `stack T(...)` construction, passes plain,
+because an unowned temporary has no title to surrender.
 
 Three things to know before writing collection code:
 
 - **Each entry records the mode it arrived in.** A `#`-tendered entry belongs to
-  the collection: teardown drops it, `remove` hands the title back, and a
-  replace displaces exactly one value. A lent entry is never reclaimed — its
+  the collection, so teardown drops it, `remove` hands the title back, and a
+  replace displaces exactly one value. A lent entry is never reclaimed, so its
   real owner must outlive the collection.
 - **The source stays readable.** A transfer DEMOTES its source to a borrow of
-  the same live instance (`MemoryModel.md`). What you must not do is read it
-  after the collection tears down — that dangles, and nothing diagnoses it yet
-  (§1.7).
+  the same live instance, as `MemoryModel.md` describes. What you must not do is
+  read it after the collection tears down. That read dangles, and nothing
+  diagnoses it yet (§1.7).
 - **String is an ordinary element.** `list.add(s)` lends a `String` and
   `list.add(#s)` transfers it, exactly as for any other class. A lent `String`
-  must outlive the list; if you would rather the list hold something
+  must outlive the list. If you would rather the list hold something
   independent of the caller's lifetime, `s.substring(0, s.count())` returns a
   fresh `#String`.
 
-Keys MAY be transferred (`map.put(#k, v)`), and when they are, hashing matters.
-`String` and primitives are VALUE-hashed, so a fresh equal key finds a
-surrendered entry; a user class is IDENTITY-hashed by default, so it does not.
-Replacing a value under an owned class key therefore has no spelling today —
+Keys MAY be transferred, as in `map.put(#k, v)`, and when they are, hashing
+matters. `String` and primitives are VALUE-hashed, so a fresh equal key finds a
+surrendered entry. A user class is IDENTITY-hashed by default, so it does not.
+Replacing a value under an owned class key therefore has no spelling today.
 `map.update` is an open design question, and `OwnedKeyLookupTests` pins the
-identity MISS so the day structural equality lands for classes, it fails
+identity MISS so that the day structural equality lands for classes, it fails
 loudly.
 
 ## Status snapshot
@@ -78,8 +78,8 @@ loudly.
 
 ## `ArrayList<T>` — shipped
 
-Dynamic array. Heap-allocated `T[]` that grows on demand. Source at
-`runtime/src/cajeta/collection/ArrayList.cajeta`.
+`ArrayList<T>` is a dynamic array, a heap-allocated `T[]` that grows on
+demand. The source is at `runtime/src/cajeta/collection/ArrayList.cajeta`.
 
 ```cajeta
 public class ArrayList<T> {
@@ -116,7 +116,7 @@ int32 sum #= list.stream().reduce(0,
     (int32 a, int32 b) -> { return a + b; });
 ```
 
-Pinned by `test/parser/ArrayListTests.cpp` (7 tests).
+It is pinned by `test/parser/ArrayListTests.cpp`, which holds 7 tests.
 
 ### Open items
 
@@ -128,8 +128,8 @@ Pinned by `test/parser/ArrayListTests.cpp` (7 tests).
 
 ## `HashMap<K, V>` — shipped
 
-Open-addressing hash map with linear probing + tombstones. Source at
-`runtime/src/cajeta/collection/HashMap.cajeta`.
+`HashMap<K, V>` is an open-addressing hash map with linear probing and
+tombstones. The source is at `runtime/src/cajeta/collection/HashMap.cajeta`.
 
 ```cajeta
 public class HashMap<K, V> {
@@ -150,22 +150,23 @@ public class HashMap<K, V> {
 }
 ```
 
-The `#K` / `#V` on `operator[]=` are forwards, not an unconditional take: they
-thread the caller's transfer word through to `put`, since a plain forward would
-read all-borrow and record every indexed store as borrowed no matter how the
-caller spelled it. So `m[k] = v` stays mode-carrying, exactly like `put`. A
-fresh value passes plain — `counts["grapes"] = 7` and
-`m["k"] = heap Box(5)` both compile — while a named local the frame owns must
-be surrendered explicitly, `m[#k] = v`, the same `#` `put(#k, v)` would ask for.
+The `#K` / `#V` on `operator[]=` are forwards. They thread the caller's
+transfer word through to `put`, since a plain forward would read all-borrow and
+record every indexed store as borrowed no matter how the caller spelled it. They
+are never an unconditional take. So `m[k] = v` stays mode-carrying, exactly like
+`put`. A fresh value passes plain, so `counts["grapes"] = 7` and
+`m["k"] = heap Box(5)` both compile. A named local the frame owns must be
+surrendered explicitly, as `m[#k] = v`, which is the same `#` that `put(#k, v)`
+would ask for.
 
-`K` may be a **class type or a primitive** — no boxing either way. The
-bucket index uses `key.hash()` and bucket equality uses `==`; primitive
+`K` may be a class type or a primitive, with no boxing either way. The
+bucket index uses `key.hash()` and bucket equality uses `==`. Primitive
 keys lower `.hash()` to the `__cajeta_hash_*` runtime helpers via a
-compiler intrinsic. (Views are not allowed as `K` or `V` — see
-`Views.md`.)
+compiler intrinsic. Views are not allowed as `K` or `V`, as `Views.md`
+explains.
 
-Capacity is power-of-2; auto-grows past 0.75 load factor with
-tombstone compaction on each resize.
+Capacity is a power of 2. The map auto-grows past a 0.75 load factor,
+with tombstone compaction on each resize.
 
 ### Examples
 
@@ -192,21 +193,21 @@ int32 kiwiCount = counts[kiwis];              // `kiwis` is demoted, still looks
 int64 distinct #= counts.keys().count();
 ```
 
-Pinned by `test/collections/HashMapTests.cpp`,
+It is pinned by `test/collections/HashMapTests.cpp`,
 `test/collections/PrimitiveHashMapTests.cpp`, and the stream-view
 suites `test/collections/HashMapStreamTests.cpp` /
 `HashMapStreamParallelTests.cpp`.
 
 ### Open items
 
-- Multiple-inherit `Stream<Pair<K, V>>` so the map IS its entry-
-  stream (today `entries()` is the factory).
+- Multiple-inherit `Stream<Pair<K, V>>` so the map IS its entry
+  stream. Today `entries()` is the factory.
 - `getOrDefault(K, V)`, `putIfAbsent(K, V)`, `merge`.
 
 ## `HashSet<T>` — shipped
 
-Thin wrapper over a backing `HashMap<T, _>`. Same key constraint as
-`HashMap` (class or primitive `T`).
+`HashSet<T>` is a thin wrapper over a backing `HashMap<T, _>`. It has the
+same key constraint as `HashMap`, so `T` is a class or a primitive.
 
 ```cajeta
 public class HashSet<T> {
@@ -218,11 +219,12 @@ public class HashSet<T> {
 }
 ```
 
-(No no-arg constructor and no `Stream` surface yet; `add` returns void.)
+There is no no-arg constructor and no `Stream` surface yet, and `add` returns
+void.
 
 ## `LinkedList<T>` — shipped
 
-Doubly-linked list with head/tail pointers.
+`LinkedList<T>` is a doubly-linked list with head and tail pointers.
 
 ```cajeta
 public class LinkedList<T> {
@@ -242,14 +244,14 @@ public class LinkedList<T> {
 }
 ```
 
-`head()`/`tail()`/`get()`/`popHead()`/`popTail()` return a zero/null
-sentinel on an empty list (no bounds error yet) — guard with `count()`.
-No `Stream` surface yet.
+`head()`/`tail()`/`get()`/`popHead()`/`popTail()` return a zero or null
+sentinel on an empty list, because there is no bounds error yet, so guard
+with `count()`. There is no `Stream` surface yet.
 
 ## `Deque<T>` / `Stack<T>` — designed
 
-`Deque<T>` is a double-ended queue; `Stack<T>` exposes the LIFO
-subset (`push` / `pop` / `peek`). Both back onto a circular array
+`Deque<T>` is a double-ended queue, and `Stack<T>` exposes the LIFO
+subset of `push` / `pop` / `peek`. Both back onto a circular array
 buffer that grows on demand.
 
 ```cajeta
@@ -271,13 +273,13 @@ public class Stack<T> {
 }
 ```
 
-Both multiple-inherit `Stream<T>` (Deque in front-to-back order;
-Stack in pop-order, top-to-bottom).
+Both multiple-inherit `Stream<T>`. Deque streams in front-to-back order,
+and Stack streams in pop order, top to bottom.
 
 ## `Heap<T>` — shipped
 
-Binary min-heap, ordered by `<` on `T` (the smallest element pops
-first). No comparator parameter today.
+`Heap<T>` is a binary min-heap, ordered by `<` on `T`, so the smallest
+element pops first. There is no comparator parameter today.
 
 ```cajeta
 public class Heap<T> {
@@ -290,14 +292,14 @@ public class Heap<T> {
 }
 ```
 
-No `Stream` surface yet.
+There is no `Stream` surface yet.
 
 ## Ordered maps: `RedBlackTree<K, V>` / `BPlusTree<K, V>` — shipped
 
 These replace the never-built `TreeMap` / `TreeSet`. Both are ordered
-maps keyed by `<` / `>` on `K`; `RedBlackTree` is a balanced BST,
-`BPlusTree` a cache-friendly B+ tree. Insert/lookup ship; **delete is
-deferred**.
+maps keyed by `<` / `>` on `K`. `RedBlackTree` is a balanced BST, and
+`BPlusTree` is a cache-friendly B+ tree. Insert and lookup ship, and
+delete is deferred.
 
 ```cajeta
 public class RedBlackTree<K, V> {       // BPlusTree<K, V> mirrors this
@@ -315,11 +317,11 @@ public class RedBlackTree<K, V> {       // BPlusTree<K, V> mirrors this
 ## `Collector<T, R>` and `Collectors` — shipped
 
 `Collector<T, R>` reduces a `Stream<T>` into a single `R`. It is a
-**class** holding three function-typed fields (not an interface with
-methods); the `Stream<T>.collect<R>` terminal consumes it. All three
-callables are required so the same collector works sequentially and
-under `.parallel()` (each worker calls `supplier()` for a fresh partial;
-the orchestrator merges with `combiner`).
+class holding three function-typed fields, and the `Stream<T>.collect<R>`
+terminal consumes it. All three callables are required so the same
+collector works sequentially and under `.parallel()`. Each worker calls
+`supplier()` for a fresh partial, and the orchestrator merges with
+`combiner`.
 
 ```cajeta
 public class Collector<T, R> {
@@ -337,8 +339,8 @@ public class Collectors {
 }
 ```
 
-Only `toList<T>()` ships today (`toSet` / `toMap` / `counting` /
-`joining` are not built). Used at the terminal end of a chain:
+Only `toList<T>()` ships today, and `toSet` / `toMap` / `counting` /
+`joining` are not built. It is used at the terminal end of a chain:
 
 ```cajeta
 ArrayList<int32> evens #= xs.stream()
@@ -346,56 +348,58 @@ ArrayList<int32> evens #= xs.stream()
     .collect(Collectors.toList<int32>());
 ```
 
-`collect<R>` returns an owned `#R`. The collected list is a fresh value,
-not a borrow into the stream, so it outlives the stream temporary that
+`collect<R>` returns an owned `#R`. The collected list is a fresh value
+with no borrow into the stream, so it outlives the stream temporary that
 is freed at the end of the statement. Bind it with `#=`. A plain `=` is
 `CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER`.
 
 ## For-loop desugaring through Stream
 
 The `for (v : iterable)` form lowers to `iterable.next()` walking
-calls when `iterable` is-a (multiple-inherits) `Stream<T>`. This is
-the eventual story for HashMap / HashSet / LinkedList iteration —
+calls when `iterable` multiple-inherits `Stream<T>`. This is the
+eventual story for HashMap / HashSet / LinkedList iteration, because
 the multiple-inheritance design eliminates the need for a separate
 `Iterator<T>` abstraction.
 
-Today the for-each loop works over arrays directly
-(`for (int32 x : xs)`) via the array-iteration intrinsic; the
+Today the for-each loop works over arrays directly, as
+`for (int32 x : xs)`, via the array-iteration intrinsic. The
 stream-receiver lowering is the next step.
 
 ## Planned: common collection interfaces
 
-The container types ship today as standalone classes — there is no
-common supertype. The plan is to **explore factoring out a thin
-capability hierarchy** so generic code can operate over "any
-collection" — common iteration, `count()`, `isEmpty()` — without
-caring about the concrete type, while keeping the honest distinctions
-between the kinds of container:
+The container types ship today as standalone classes, and there is no
+common supertype. The plan is to explore factoring out a thin
+capability hierarchy so template code can operate over any collection,
+with common iteration, `count()` and `isEmpty()`, without caring about
+the concrete type, while keeping the honest distinctions between the
+kinds of container:
 
-- **`Iterable<T>` — the real unifier:** `stream() -> Stream<T>` plus
-  `count()` / `isEmpty()`. Everything that yields elements implements
-  it: `ArrayList`, `HashSet`, `LinkedList`, `Heap`, the immutables,
-  and (over keys / values / entries) the maps. This subsumes the
-  "every container multiple-inherits `Stream<E>`" idea (see
-  "For-loop desugaring through Stream") into a named, minimal contract.
-- **`Map<K, V>` is its own interface, NOT a collection.** A map's
+- **`Iterable<T>` is the real unifier.** It is `stream() -> Stream<T>`
+  plus `count()` / `isEmpty()`. Everything that yields elements
+  implements it, meaning `ArrayList`, `HashSet`, `LinkedList`, `Heap`,
+  the immutables, and the maps over keys, values and entries. This
+  subsumes the idea that every container multiple-inherits `Stream<E>`
+  (see "For-loop desugaring through Stream") into a named, minimal
+  contract.
+- **`Map<K, V>` is its own interface and never a collection.** A map's
   element type is really `Pair<K, V>`, and `get(K)` / `containsKey(K)`
   have no analog on a list or set. Folding maps into one
-  `Collection<T>` is the mistake Java explicitly avoids — keep them
-  separate (a map is `Iterable<Pair<K, V>>` via `entries()`).
+  `Collection<T>` is the mistake Java explicitly avoids, so they stay
+  separate. A map is `Iterable<Pair<K, V>>` via `entries()`.
 - **Mutation behind its own interface.** `add` / `remove` live on a
-  `MutableCollection<T>` (with a map equivalent), so the immutable
-  collections and read-only views simply don't implement it rather
-  than carrying unsupported mutators.
+  `MutableCollection<T>`, with a map equivalent, so the immutable
+  collections and read-only views simply do not implement it and never
+  carry unsupported mutators.
 
-Value: enables generic "operate on any sequence / any map" code and a
-uniform iteration + `count()` story across the package.
+The value is that it enables code that operates on any sequence or any
+map, and a uniform iteration and `count()` story across the package.
 
-Cost / sequencing: retrofitting interfaces onto the already-shipped
-classes is a cross-cutting change with vtable / dispatch implications,
-and it brushes against the operator-overloading-through-templates
-limitation `Math` notes (ordered containers compare via `<` / `>`). So
-the plan is to land the concrete types first, then introduce
+The cost and sequencing are the reason to wait. Retrofitting interfaces
+onto the already-shipped classes is a cross-cutting change with vtable
+and dispatch implications, and it brushes against the
+operator-overloading-through-templates limitation `Math` notes, since
+ordered containers compare via `<` / `>`. So the plan is to land the
+concrete types first, then introduce
 `Iterable<T>` / `Map<K, V>` / `MutableCollection<T>` as a deliberate
 follow-up pass in which every collection declares conformance at once.
 
@@ -403,46 +407,48 @@ follow-up pass in which every collection declares conformance at once.
 
 The in-memory collections above stay the defaults in
 `cajeta.collection`. Disk-backed, larger-than-memory variants live in
-a separate `cajeta.collection.ltm` package rather than as a mode flag
-on the in-memory types — because they carry a genuinely different
-contract: operations do I/O that can block or fail (`IoException`),
-keys/values must be serializable, and there is an explicit lifecycle
-(`open` / `close` / `flush` / `sync` / durability). Surfacing that at
-the type level (you reach for `ltm.BPlusTree`) keeps the in-memory
-common case free of disk-shaped API.
+a separate `cajeta.collection.ltm` package instead of behind a mode
+flag on the in-memory types, because they carry a genuinely different
+contract. Operations do I/O that can block or fail with `IoException`,
+keys and values must be serializable, and there is an explicit
+lifecycle of `open` / `close` / `flush` / `sync` and durability.
+Surfacing that at the type level, so that you reach for
+`ltm.BPlusTree`, keeps the in-memory common case free of disk-shaped
+API.
 
-- **`ltm.BPlusTree<K, V>`** (planned, first): a paged B+ tree over
+- **`ltm.BPlusTree<K, V>`** (planned, first) is a paged B+ tree over
   `cajeta.io.file.File`. Nodes are fixed-size pages addressed by
-  page-id × pageSize offsets; child links are page-ids, not object
-  pointers; a buffer pool reads pages on demand and **evicts/frees**
-  clean pages under memory pressure, flushing dirty ones. Same B+
-  shape as the in-memory tree (linked leaves → range scans), so the
-  algorithm is shared and only the node-access layer differs.
-- **`ltm.HashMap<K, V>`** (later): extendible (or linear) hashing over
-  the same pager — O(1) point lookups, no ordering. A directory keyed
-  on the top bits of `key.hash()` points at bucket pages; a bucket
-  overflow splits and doubles the directory only when local depth
-  exceeds global depth.
+  page-id × pageSize offsets, and child links are page-ids instead of
+  object pointers. A buffer pool reads pages on demand and evicts and
+  frees clean pages under memory pressure, flushing dirty ones. It has
+  the same B+ shape as the in-memory tree, with linked leaves for range
+  scans, so the algorithm is shared and only the node-access layer
+  differs.
+- **`ltm.HashMap<K, V>`** (later) is extendible or linear hashing over
+  the same pager, with O(1) point lookups and no ordering. A directory
+  keyed on the top bits of `key.hash()` points at bucket pages. A
+  bucket overflow splits, and it doubles the directory only when local
+  depth exceeds global depth.
 
-Open design decision for the `ltm` types: how generic `K` / `V`
-serialize into fixed-size page slots — an `Encoder<K>` / `Encoder<V>`
-bound (`cajeta.wire`), versus restricting to fixed-width primitive
-keys + `int8[]` values. Leaning toward the `Encoder` bound so the
-types stay generic.
+The open design decision for the `ltm` types is how the template
+parameters `K` / `V` serialize into fixed-size page slots. The choices
+are an `Encoder<K>` / `Encoder<V>` bound from `cajeta.wire`, or a
+restriction to fixed-width primitive keys and `int8[]` values. We lean
+toward the `Encoder` bound so the types stay fully parameterized.
 
 ## Open items
 
-Tracked in specs/Features.md:
+These are tracked in specs/Features.md:
 
-- `Deque<T>` / `Stack<T>` (still designed-only); delete on the ordered
-  trees; the `ltm` disk-backed variants.
+- `Deque<T>` / `Stack<T>`, which are still designed-only, delete on the
+  ordered trees, and the `ltm` disk-backed variants.
 - Multiple-inheritance from `Stream<E>` on `ArrayList`, `HashMap`,
-  `HashSet`, `LinkedList`, `Heap` so they ARE streams (today they
-  expose `stream()` / `keys()` / `values()` / `entries()` factories).
+  `HashSet`, `LinkedList`, `Heap` so they ARE streams. Today they
+  expose `stream()` / `keys()` / `values()` / `entries()` factories.
 - More `Collectors` factories beyond `toList<T>()` (`toSet`, `toMap`,
   `counting`, `joining`).
 - For-loop desugaring for `Stream`-typed receivers.
 
-(Shipped since earlier drafts: `Collector<T, R>` + `Collectors.toList`
-+ `Stream.collect<R>`, and fluent chained-form parsing —
-`xs.stream().filter(p).count()` no longer needs intermediate locals.)
+Shipped since earlier drafts are `Collector<T, R>`, `Collectors.toList`,
+`Stream.collect<R>`, and fluent chained-form parsing, so
+`xs.stream().filter(p).count()` no longer needs intermediate locals.

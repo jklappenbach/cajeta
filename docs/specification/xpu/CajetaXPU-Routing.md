@@ -1,9 +1,9 @@
 # cajeta.xpu — Kernel Routing
 
-How the layer decides which kernel runs. Companion to
+This document describes how the layer decides which kernel runs. It is a companion to
 [CajetaXPU.md](CajetaXPU.md) (the substrate) and the
 [kernel-writing guide](../../guide/25-xpu-kernels.md) (how to write one).
-Specified by [`specs/archive/route-table-spec.md`](../../../specs/archive/route-table-spec.md)
+It is specified by [`specs/archive/route-table-spec.md`](../../../specs/archive/route-table-spec.md)
 (closed 2026-09-18).
 
 ## 1. Three questions, three homes
@@ -24,7 +24,7 @@ wrong on the next device that has the capability under another name.
 
 ## 2. A route is a row
 
-One kernel **variant**, serving one format, in one regime. Q4_K's wave
+A row is one kernel variant, serving one format, in one regime. Q4_K's wave
 variant and its packed variant are two rows, and `priority` orders them.
 
 One variant per row is what lets `dispatch` have no arms, and therefore
@@ -43,8 +43,8 @@ place of the sixteen booleans it resolves at bind today.
 | `dispatch(call)` | the launcher. One variant, one kernel: nothing to choose here |
 | `priority()` | order among rows serving the same (format, regime) |
 
-A route is an **interface a registrant implements**, never a record of
-function values: a dispatcher launches kernels, and a kernel launch
+A route is an interface a registrant implements. It is never a record of
+function values, because a dispatcher launches kernels, and a kernel launch
 inside a lambda has unreachable captured buffers in launch codegen.
 
 ### 2.1 Admission has two halves, and they are different questions
@@ -53,48 +53,49 @@ inside a lambda has unreachable captured buffers in launch codegen.
 with nothing bound. `readyRefusal` reads mutable state, meaning the
 receiver's slab, a widen that was declined, or a global A/B switch
 someone can flip at run time. It is a runtime refusal no audit can
-check. Tangling the two is the defect, not an incidental of it. A
-predicate that names formats *and* reads a slab cannot be widened for a
+check. Tangling the two is the defect itself. A
+predicate that names formats and also reads a slab cannot be widened for a
 new format without also claiming its slab is ready, which is how one
 format's bytes reach another's decoder.
 
-The test for which half a constraint belongs in is not "is this value
-known at compile time". It is **can the audit's answer change depending
-on when it ran**. A field on the query cannot. A mutable static can, and
-so belongs in the runtime half however constant it looks.
+The test for which half a constraint belongs in is whether the audit's
+answer can change depending on when it ran. Whether the value is known at
+compile time is a different question. A field on the query cannot change the
+answer. A mutable static can, and so it belongs in the runtime half however
+constant it looks.
 
-The split is enforced by TYPE as far as a type can enforce it.
+The split is enforced by type as far as a type can enforce it.
 `shapeRefusal` takes a `RouteQuery`, carrying regime, format, and
 whatever static facts the registrant extends it with. `readyRefusal` and
 `dispatch` take a `RouteCall`, which carries a query plus the receiver
-and the operands. So a static half cannot reach the RECEIVER, by
+and the operands. So a static half cannot reach the receiver, by
 construction. Reaching a global is still the author's to avoid, and the
 test above is how.
 
-A `RouteCall` **holds** a query rather than extending one: a
+A `RouteCall` holds a query rather than extending one. A
 registrant's call type has to extend `RouteCall` and still carry its own
 query subclass, which single inheritance forbids the other way round.
 
 ### 2.2 A half answers with the gate, not with a boolean
 
-Both halves return a `String`: null when they admit, otherwise the row's
+Both halves return a `String`. It is null when they admit, and otherwise it is the row's
 own name for the constraint that refused. A row usually has several
 gates in one half. The zero-sync MoE row tests gating, hidden alignment
 and expert width statically, and a slab bind and a widen at runtime. A
 boolean answer would coarsen all of those into one word, which is the
 complaint this table exists to answer. Naming costs nothing, because a
 cajeta string literal materializes as a static view-mode `String` rather
-than an allocation. There is exactly one statement of each gate, not a
-predicate and a matching list of reasons that can drift apart.
+than an allocation. There is exactly one statement of each gate, so there is no
+predicate with a matching list of reasons that can drift apart.
 
 ## 3. Resolution, and the refusal
 
 `RouteTable.admissible(query)` is the static half, meaning format,
 regime, `shapeRefusal` and `needs`. It answers with nothing bound, which
 is what the audit walks. `RouteTable.pick(call)` is that plus
-`readyRefusal`, and is what a registrant calls **at bind** to resolve a
+`readyRefusal`, and is what a registrant calls at bind to resolve a
 weight's row
-once and store it. The launch is then one virtual call, not a table
+once and store it. The launch is then one virtual call rather than a table
 walk. Both read one implementation of the static test, `clauseOf`, so
 they cannot drift. `candidates(query, out)` returns the whole admissible
 set, highest priority first. `priority` is a declared default, and on
@@ -109,17 +110,17 @@ asked for, the row's own gate text, and the index into `needs()` of the
 capability that was missing. The clause is one of `Format`, `Regime`,
 `Shape`, `Unsupported`, `Ready`, or `Empty` for a table with no rows.
 
-The row a refusal names is the one that got **furthest** through the
-clauses, never the one consulted last. Registration order does not reach
+The row a refusal names is the one that got furthest through the
+clauses. It is never the one consulted last. Registration order does not reach
 the selector's answer, and a diagnostic that reintroduced it would put
 that order back in the one place a reader trusts.
 
-Route records read the same object: a census that shows the wrong kernel
-is explained in one line, not by bisection.
+Route records read the same object, so a census that shows the wrong kernel
+is explained in one line without bisection.
 
 ## 4. The audit
 
-`RouteTable.audit(queries)` walks the **declared half**, meaning format,
+`RouteTable.audit(queries)` walks the declared half, meaning format,
 regime and shape, over the registrant's own queries. It returns a
 report giving, per (query, row), the clause that answered. Per query it
 gives how many rows serve it and whether the choice was shadowed. Per
@@ -128,14 +129,14 @@ declares it needs.
 
 Declared-only is what makes it a host test, and the line is sharper than
 "no bound weight". `needs` is also excluded, because it asks the live
-device: a process that selected no backend answers false to every
+device. A process that selected no backend answers false to every
 capability, and one on the wrong part answers differently again. An
 audit that ruled on `needs` would call a whole table unserved on a
 machine without the hardware, which is the machine you are most likely
 to be adding a format on. A row whose capability the local box lacks
-still serves its format. What is missing is silicon, not a row.
+still serves its format. What is missing is silicon. The row is present.
 
-So the audit **reports** each row's declared `Capability` set rather than
+So the audit reports each row's declared `Capability` set rather than
 ruling on it, and `needs` stays in `admissible` and `pick`, where asking
 the live device is the whole point. The result is that adding a format
 names every row that lacks it before any model is loaded, from any
@@ -144,7 +145,7 @@ machine. Adding a row runs it against every format that exists.
 There is no dispatcher probe. At one row per kernel variant, a row that
 admits a format has exactly one kernel for it and no arm to omit.
 
-`auditRow(row, queries)` is the per-row **fire / no-fire** pair: hand it
+`auditRow(row, queries)` is the per-row fire / no-fire pair. Hand it
 the row's own format at shapes that should and should not take it. A row
 that answers zero, or answers every one, has a gate that is not
 discriminating. A predicate that silently disabled a whole check once
@@ -154,7 +155,7 @@ read as a clean run for an hour.
 
 It does not write kernels, choose data layouts, or select among admitted
 rows by cost. The last of those is the tile family's, and it needs the
-rows to exist first. It does not absorb capability queries: a row's `needs`
+rows to exist first. It does not absorb capability queries. A row's `needs`
 names a `Capability`, and the device answers it.
 
 ## 6. Beyond one package

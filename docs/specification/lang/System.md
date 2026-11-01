@@ -1,6 +1,6 @@
 # `System` — process-level intrinsics
 
-`System` is cajeta's namespace for process-level I/O, environment access, and tunable string properties. It isn't a regular class; the compiler recognizes `System.<namespace>.<method>(...)` shapes and lowers them directly to runtime calls (no field/method resolution, no vtable lookup). The recognized namespaces are:
+`System` is cajeta's namespace for process-level I/O, environment access, and tunable string properties. It is not a regular class. The compiler recognizes `System.<namespace>.<method>(...)` shapes and lowers them directly to runtime calls, with no field/method resolution and no vtable lookup. The recognized namespaces are:
 
 | Namespace        | Surface                                                              |
 | ---------------- | -------------------------------------------------------------------- |
@@ -10,9 +10,9 @@
 | `System.env`     | OS environment-variable access (libc `getenv` / `setenv`)             |
 | `System.property` | Process-scoped string properties (Java `-Dkey=value` style)          |
 
-In addition to the namespaced receivers above, `System` recognizes two **direct** methods — `System.exit(int32)` and `System.currentTimeMillis()` (see *Process control & clock* below).
+In addition to the namespaced receivers above, `System` recognizes two direct methods, `System.exit(int32)` and `System.currentTimeMillis()` (see *Process control & clock* below).
 
-Any other receiver — most commonly `System.out` from Java muscle memory — throws `CAJETA_ERROR_UNKNOWN_SYSTEM_STREAM` with a "did you mean `stdout`?" hint when `--diag-hints` is on. (`System.stderror` is accepted as a typo-friendly alias for `System.stderr`.)
+Any other receiver, most commonly `System.out` from Java muscle memory, throws `CAJETA_ERROR_UNKNOWN_SYSTEM_STREAM` with a "did you mean `stdout`?" hint when `--diag-hints` is on. (`System.stderror` is accepted as a typo-friendly alias for `System.stderr`.)
 
 ---
 
@@ -32,7 +32,7 @@ System.stdout.print("hello");                     // no trailing newline
 System.stderr.println("oops");                    // fd 2
 ```
 
-Primitive arguments are auto-stringified through `__cajeta_*_to_str` runtime helpers (`i64`, `f64`, `bool`). String concatenation via `+` works as you'd expect; the resulting concatenated buffer becomes the `println` argument.
+Primitive arguments are auto-stringified through `__cajeta_*_to_str` runtime helpers (`i64`, `f64`, `bool`). String concatenation via `+` works as you would expect. The resulting concatenated buffer becomes the `println` argument.
 
 ```cajeta
 int32 n = 7;
@@ -52,11 +52,11 @@ System.stdout.print("count = {}", 42);                   // "count = 42" (no new
 System.stderr.println("err {} = {}", "answer", 42);      // fd 2
 ```
 
-The format string is a regular `String`. `{}` is the only substitution token; no positional indices, no format specifiers, no escapes (write literal `{}` only when you mean a substitution). Extra `{}` markers beyond the supplied args render as `null`; extra args beyond the markers are ignored.
+The format string is a regular `String`. `{}` is the only substitution token. There are no positional indices, no format specifiers and no escapes, so write a literal `{}` only when you mean a substitution. Extra `{}` markers beyond the supplied args render as `null`, and extra args beyond the markers are ignored.
 
 A few non-format variants exist for completeness:
 
-- `System.stdout.printf(fmt, String[] args)` — the explicit `String[]` form. Useful when args are accumulated dynamically; the multi-arg `println(fmt, x, y, ...)` is preferred for static call sites.
+- `System.stdout.printf(fmt, String[] args)` is the explicit `String[]` form. It is useful when args are accumulated dynamically. The multi-arg `println(fmt, x, y, ...)` is preferred for static call sites.
 - Calling `printf` with a non-`String[]` second argument throws `CAJETA_ERROR_PRINTF_BAD_ARGS` with the actual type and the expected shape spelled out.
 
 ---
@@ -94,9 +94,9 @@ String ver = System.property.get("app.version");  // populated via -Dapp.version
 
 Properties differ from environment variables in three ways:
 
-- **Scope.** Properties are visible only inside the current process; they aren't inherited by spawned subprocesses (env is). Use env when you need parent→child propagation, properties when you want process-local tunables.
-- **Source.** Properties are typically set at the CLI (`-Dkey=value`); env typically comes from the parent process. Either side can still set the other at runtime.
-- **Naming.** Properties conventionally use dotted lowercase (`app.version`, `cajeta.test.mode`); env conventionally uses uppercase with underscores (`CAJETA_DEBUG`). Neither is enforced.
+- **Scope.** Properties are visible only inside the current process. They are not inherited by spawned subprocesses, while env is. Use env when you need parent→child propagation, and properties when you want process-local tunables.
+- **Source.** Properties are typically set at the CLI (`-Dkey=value`). Env typically comes from the parent process. Either side can still set the other at runtime.
+- **Naming.** Properties conventionally use dotted lowercase (`app.version`, `cajeta.test.mode`). Env conventionally uses uppercase with underscores (`CAJETA_DEBUG`). Neither is enforced.
 
 ### `-Dkey=value` at program startup
 
@@ -108,7 +108,7 @@ $ ./build/myapp -Dapp.version=2.0 -Dmode=release -Dverbose
 
 The C-main shim emitted by the compiler walks `argv` at startup, splits each `-Dkey=value` (or bare `-Dkey`) token at the first `=`, and installs the result into the property map via `__cajeta_property_install`. Bare `-Dflag` installs an empty-string value (testable with `if (System.property.get("flag") != null)`).
 
-Tokens that don't start with `-D` are ignored by the shim — they're meant for the user's entry-point string args once `static int32 main(String[] args)` lands.
+Tokens that do not start with `-D` are ignored by the shim. They are meant for the user's entry-point string args once `static int32 main(String[] args)` lands.
 
 ### Missing keys
 
@@ -132,18 +132,18 @@ System.exit(0);                                   // terminate the process
 int64 nowMs = System.currentTimeMillis();         // wall-clock ms since epoch
 ```
 
-- `System.exit(int32 code)` lowers to the `__cajeta_exit` runtime helper; the argument is cast to `i32` and used as the process exit status.
+- `System.exit(int32 code)` lowers to the `__cajeta_exit` runtime helper. The argument is cast to `i32` and used as the process exit status.
 - `System.currentTimeMillis()` lowers to `__cajeta_currentTimeMillis` and returns an `int64` millisecond timestamp (Java-shaped). Pinned by `test/expression/SystemUtilTests.cpp`.
 
-(Cooperative fiber sleep lives on a different namespace — `Fiber.sleep(Duration)` in `cajeta.concurrent` — not `System`.)
+Cooperative fiber sleep lives on a different namespace, `Fiber.sleep(Duration)` in `cajeta.concurrent`, rather than on `System`.
 
 ---
 
 ## Implementation notes
 
-- The compiler's `MethodCallExpression` intrinsic dispatcher (`src/cajeta/asn/expression/MethodCallExpression.cpp`) recognizes both the `System.<namespace>.<method>` shape and the direct `System.exit` / `System.currentTimeMillis` methods, lowering each to a direct runtime call. No `System` class exists in the stdlib — the namespace is purely a syntactic affordance.
+- The compiler's `MethodCallExpression` intrinsic dispatcher (`src/cajeta/asn/expression/MethodCallExpression.cpp`) recognizes both the `System.<namespace>.<method>` shape and the direct `System.exit` / `System.currentTimeMillis` methods, lowering each to a direct runtime call. No `System` class exists in the stdlib. The namespace is purely a syntactic affordance.
 - Runtime helpers live in `runtime/native/cajeta_runtime.c`: `__cajeta_env_get` / `__cajeta_env_set` / `__cajeta_property_get` / `__cajeta_property_set` / `__cajeta_property_install` (the last splits `key=value` and installs).
-- The property map is a singly-linked list of (`key`, `value`) entries guarded by a `pthread_mutex_t`. Each `set` walks the list to find an existing entry and overwrites the value, or appends a new entry at the head. Sub-O(N) lookup is a future tuning step; today's expected property count is tens, not thousands.
+- The property map is a singly-linked list of (`key`, `value`) entries guarded by a `pthread_mutex_t`. Each `set` walks the list to find an existing entry and overwrites the value, or appends a new entry at the head. Sub-O(N) lookup is a future tuning step. Today's expected property count is in the tens.
 - For JIT-mode tests, the runtime is linked twice (the test binary's native object plus the JIT-loaded bitcode). Each copy has its own static property map, so cross-source visibility doesn't hold in the JIT path. Binary builds (the user-facing case) link the runtime once and see the property map as truly process-global. Tests in `test/expression/SystemEnvPropertyTests.cpp` cover both single-runtime-copy paths (runtime-direct C calls, and cajeta-side `set→get` roundtrips) explicitly.
 
 ---
@@ -164,4 +164,4 @@ Both errors surface cleanly through the CLI's top-level try/catch in `src/main.c
 - [`Lang.md`](Lang.md) — overall stdlib `cajeta.lang` package surface.
 - [`Process.md`](../process/Process-design.md) — subprocess I/O streams (`ProcessBuilder` + `Process`); unrelated to `System.stdout` but uses the same `Stdio` enum.
 - [`io/`](../io/) — file I/O streams; complements stdout/stderr/stdin for non-process-local files.
-- [`Annotations.md`](../reflect/Annotations.md) — `@SuppressLint` etc.; orthogonal to System but the cajeta-wide annotation surface.
+- [`Annotations.md`](../reflect/Annotations.md) — `@SuppressLint` and the rest of the cajeta-wide annotation surface, orthogonal to System.

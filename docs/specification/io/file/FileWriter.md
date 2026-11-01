@@ -1,9 +1,10 @@
 # `cajeta.io.file.FileWriter` — streaming byte writer
 
-Returned by `File.openWrite(path, mode)`. The caller hands in bytes
-(or a `String`) per call; each write goes straight to the kernel —
-there is no user-space buffer. The runtime loops past partial OS
-writes so every requested byte lands before the call returns.
+`File.openWrite(path, mode)` returns a `FileWriter`. The caller
+hands in bytes (or a `String`) per call, and each write goes
+straight to the kernel. There is no user-space buffer. The runtime
+loops past partial OS writes so every requested byte lands before
+the call returns.
 
 ## Surface
 
@@ -21,27 +22,26 @@ public class FileWriter {
 
 ## Notes
 
-- **`write(data, len)`** — writes `data[0..len)`. Partial OS writes
-  are hidden by the runtime loop — the call returns once every byte
-  has been accepted by the kernel. On a hard error the native
-  helper returns `-1`; a throwing wrapper
-  (`DiskFullException`, etc.) is *planned* — see
-  [`Errors.md`](Errors.md) — but not yet wired, so today errors do
-  not surface as exceptions here.
-- **`writeString(s)`** — writes the `String`'s UTF-8 bytes
-  directly. No charset re-encode at this layer.
-- **`flush()`** — a no-op today: there is no user-space buffer to
-  drain, so writes are already in the kernel. It does NOT `fsync`
-  — durability flushing is the random-access `File.sync()`
-  (Phase E). Defined for stream conformance.
-- **`close()`** — closes the fd; idempotent (sets `fd = -1`). The
-  class does not yet declare a `~FileWriter()` destructor, so
-  auto-close on scope exit is *planned*, not wired — call
-  `close()` explicitly today.
-- **Buffer ownership** — `data` is the caller's array; the writer
+- **`write(data, len)`** writes `data[0..len)`. Partial OS writes
+  are hidden by the runtime loop, and the call returns once every
+  byte has been accepted by the kernel. On a hard error the native
+  helper returns `-1`. A throwing wrapper (`DiskFullException`,
+  etc.) is planned and not yet wired, so today errors do not
+  surface as exceptions here. See [`Errors.md`](Errors.md).
+- **`writeString(s)`** writes the `String`'s UTF-8 bytes
+  directly. There is no charset re-encode at this layer.
+- **`flush()`** is a no-op today. There is no user-space buffer to
+  drain, so writes are already in the kernel. It does NOT `fsync`.
+  Durability flushing is the random-access `File.sync()`
+  (Phase E). It is defined for stream conformance.
+- **`close()`** closes the fd and is idempotent, since it sets
+  `fd = -1`. The class does not yet declare a `~FileWriter()`
+  destructor, so auto-close on scope exit is planned and not
+  wired. Call `close()` explicitly today.
+- **Buffer ownership.** `data` is the caller's array. The writer
   never retains a reference past the call.
-- **No charset.** Bytes only (and `writeString`'s pre-encoded
-  UTF-8).
+- **No charset.** The writer handles bytes only, plus
+  `writeString`'s pre-encoded UTF-8.
 
 ## Idiomatic write
 
@@ -51,9 +51,9 @@ w.write(payload, payloadLen);
 w.close();   // explicit close (auto-close on drop is planned)
 ```
 
-For the one-shot case (don't keep `w` around), see
-`File.writeAllBytes(path, data, len)` — atomic-rename semantics
-included.
+For the one-shot case where you do not keep `w` around, see
+`File.writeAllBytes(path, data, len)`. It includes atomic-rename
+semantics.
 
 ## See also
 

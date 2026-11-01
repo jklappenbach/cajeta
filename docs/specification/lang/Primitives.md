@@ -1,7 +1,7 @@
 # Primitives — boxed wrappers and the unboxed types they wrap
 
-Cajeta has a fixed set of **explicit-width** primitive types (there is no
-`int`/`long`/`float`/`double`). The authoritative list is the native-type
+Cajeta has a fixed set of explicit-width primitive types. There is no
+`int`/`long`/`float`/`double`. The authoritative list is the native-type
 bootstrap in `src/cajeta/type/CajetaType.cpp`:
 
 | Family | Types | Backing |
@@ -15,10 +15,10 @@ bootstrap in `src/cajeta/type/CajetaType.cpp`:
 | Low-precision floats | `float4e2m1` `float6e2m3` `float6e3m2` `float8e4m3` `float8e5m2` `float8e4m3fnuz` `float8e5m2fnuz` | OCP Microscaling — storage-only today (opaque iN; conversion/arith helpers are future work) |
 | Raw pointer | `pointer` | opaque address; low-level/interop |
 
-There is no implicit numeric widening — every cross-width conversion goes
-through an explicit cast. **There is no `byte` type**: the canonical byte buffer
+There is no implicit numeric widening. Every cross-width conversion goes
+through an explicit cast. There is no `byte` type. The canonical byte buffer
 is `int8[]` (or `uint8[]`). `uchar` is a deprecated alias for `uint8`. `char` is
-a codepoint, not a byte.
+a codepoint rather than a byte.
 
 This doc covers the boxed wrapper types and the static parse/format intrinsics
 that operate on primitives. For the broader language tour, see
@@ -42,10 +42,11 @@ Thin wrappers that exist so primitives can be stored in `Collection<T>`
 and related templated types when the element-type slot is class-typed.
 Boxing happens at the boundary; the unboxed types stay separate.
 
-The shipped classes are named after the primitive they wrap — `Int32`,
+The shipped classes are named after the primitive they wrap. They are `Int32`,
 `Int64`, `Float32`, `Float64`, `Boolean`, and `UInt8`/`UInt16`/`UInt32`/`UInt64`
-(in `runtime/src/cajeta/lang/`) — **not** Java's `Integer`/`Long`/`Double`. The
-sketch below shows the shape; consult the source for the exact surface.
+(in `runtime/src/cajeta/lang/`), and Java's `Integer`/`Long`/`Double` names are
+not used. The sketch below shows the shape. Consult the source for the exact
+surface.
 
 ```cajeta
 public final class Integer {
@@ -72,7 +73,7 @@ public final class Boolean { ... }
 ```
 
 The static parse/format methods are intrinsic in `MethodCallExpression`'s
-namespace dispatcher; the boxed wrapper classes are declared in
+namespace dispatcher. The boxed wrapper classes are declared in
 `runtime/src/cajeta/lang/` (`Int32.cajeta`, `Int64.cajeta`, `Float32.cajeta`,
 `Float64.cajeta`, `Boolean.cajeta`, `UInt8.cajeta` … `UInt64.cajeta`).
 
@@ -95,7 +96,7 @@ the appropriate stringifier (`__cajeta_i64_to_str`,
 
 ## `Math` namespace
 
-`Math` (`runtime/src/cajeta/lang/Math.cajeta`) is a mix of monomorphized generic
+`Math` (`runtime/src/cajeta/lang/Math.cajeta`) is a mix of monomorphized template
 methods and compiler intrinsics dispatched by name. Shipped:
 
 | Group | Methods |

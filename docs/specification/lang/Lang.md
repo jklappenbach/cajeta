@@ -5,31 +5,32 @@ The classes every cajeta program implicitly has access to: `Object`,
 in `cajeta.lang` because so many APIs across the rest of the stdlib
 return them.
 
-`System` is a sibling namespace (not a class) that exposes process-
+`System` is a sibling namespace rather than a class. It exposes process-
 level I/O, env-var access, and tunable string properties via compiler
-intrinsics — see **[`lang/System.md`](System.md)**.
+intrinsics. See [`lang/System.md`](System.md).
 
-`Cajeta` is a second such namespace. Its one surface a program is
-likely to reach for is **`Cajeta.owned(formal)`** — whether *this*
-call surrendered the formal's title — for algorithms that genuinely
-branch on ownership, such as an interning pool that adopts what it is
-given and copies what it is only lent. Correctness never requires it:
-stores spell `#=` and let the field or slot bit record what the caller
-did. See **[`lang/MemoryModel.md`](MemoryModel.md)**. (`Cajeta.moveMask()`,
-the positional transfer-word read this replaced, is retired.)
+`Cajeta` is a second such namespace. The one surface a program is
+likely to reach for is `Cajeta.owned(formal)`, which reports whether
+this call surrendered the formal's title. It serves algorithms that
+genuinely branch on ownership, such as an interning pool that adopts
+what it is given and copies what it is only lent. Correctness never
+requires it. Stores spell `#=` and let the field or slot bit record
+what the caller did. See [`lang/MemoryModel.md`](MemoryModel.md).
+`Cajeta.moveMask()`, the positional transfer-word read this replaced,
+is retired.
 
 ## `Object` — universal root
 
-See **[`lang/Object.md`](Object.md)** for the full spec
-(implicit-extends invariant, the four methods, override-pair
-enforcement, `@Hash` algorithm-class registry, equal-implies-same-
-hash contract, pending design questions on `Hasher` interface +
-security-level enforcement).
+See [`lang/Object.md`](Object.md) for the full spec. It covers the
+implicit-extends invariant, the four methods, override-pair
+enforcement, the `@Hash` algorithm-class registry, the equal-implies-
+same-hash contract, and the pending design questions on the `Hasher`
+interface and security-level enforcement.
 
 ## `String` — immutable, encoding-aware
 
-See **[`lang/String.md`](String.md)** for the full spec and
-roadmap. `String` is a **class** (`cajeta.lang.String`), not a
+See [`lang/String.md`](String.md) for the full spec and
+roadmap. `String` is a class (`cajeta.lang.String`) rather than a
 primitive. Internal storage is a UTF-8 `int8[]` plus a byte count, a
 mode discriminator, and a cached code-point count:
 
@@ -43,8 +44,9 @@ public class String {
 }
 ```
 
-A `String` carries a tagged mode internally — **owned** (`mode = 0`)
-or **view** (`mode = 1`, borrowed over bytes that live elsewhere).
+A `String` carries a tagged mode internally. The mode is owned
+(`mode = 0`) or view (`mode = 1`, borrowed over bytes that live
+elsewhere).
 String literals lower directly to view-mode instances over `.rodata`.
 
 ### Shipped surface
@@ -92,18 +94,18 @@ enhanced-for over a String is not wired.
 
 ### Owned vs. view (design — not yet wired)
 
-Both modes are the same type. A view borrows bytes it doesn't own; an
-owned String holds heap bytes. The owned/view **drop distinction is
-not yet implemented** — the type system collapses the two, so
+Both modes are the same type. A view borrows bytes it does not own, and
+an owned String holds heap bytes. The owned/view drop distinction is
+not yet implemented. The type system collapses the two, so
 helper-produced Strings currently leak at scope exit
 (`test/parser/OwnedStringDropTests.cpp`). The named view API
-(`viewOf` / `toOwned` / `cString`) from earlier drafts does **not**
-exist and is disavowed — explicit duplication is the reserved `clone()`
-method (clone semantics — spec lineage: element-ownership §6, whose
-type-argument layer is superseded by title-tracking while clone's
-contract is unchanged: reference types shallow-copy via the
-RTTI walk; value types copy through the COW value hooks). The only view
-entry point today is the `String(#int8[], int32)` constructor. See [`lang/String.md` § Memory model](String.md#memory-model).
+(`viewOf` / `toOwned` / `cString`) from earlier drafts does not
+exist and is disavowed. Explicit duplication is the reserved `clone()`
+method. Its spec lineage is element-ownership §6, whose type-argument
+layer is superseded by title-tracking while clone's contract is
+unchanged. Reference types shallow-copy via the RTTI walk, and value
+types copy through the COW value hooks. The only view entry point
+today is the `String(#int8[], int32)` constructor. See [`lang/String.md` § Memory model](String.md#memory-model).
 
 ### Examples
 
@@ -123,7 +125,7 @@ Shipped (pinned by `StringMethodsTests`): `+`, `.contains`,
 `.replace`, `.equals`, `.size`, `.count`, `.isEmpty`, `.charAt`,
 `.startsWith`, `.endsWith`, `.codepointAt`, `.hash`.
 
-**Not implemented** (planned — see `String.md`): static factories
+Not yet implemented, and planned per `String.md`: static factories
 (`fromUtf8`/`fromBytes`/`of`/`repeat`/`join`/`fromCodePoints`),
 `getBytes`, `split`/`lines`, `lastIndexOf`, `compareTo`/`Comparable`,
 `Locale`-aware case folding, `format`/`printf`, `StringBuilder`,
@@ -132,11 +134,11 @@ codepoint/byte iteration streams, and the codepoint-indexed view
 
 ## `Encoding` enum
 
-The enum **ships** as
+The enum ships as
 [`cajeta.lang.Encoding`](../../../runtime/src/cajeta/lang/Encoding.cajeta)
-with 12 members. The byte ↔ text conversion methods that *consume* it
+with 12 members. The byte ↔ text conversion methods that consume it
 (`String.fromBytes` / `String.getBytes`) are not yet implemented, so
-today an `Encoding` value is just selected by name; the runtime
+today an `Encoding` value is just selected by name. The runtime
 String path is UTF-8 throughout.
 
 ```cajeta
@@ -156,8 +158,8 @@ public enum Encoding {
 
 Conversion error behavior is governed by the companion
 [`EncodingErrorPolicy`](../../../runtime/src/cajeta/lang/EncodingErrorPolicy.cajeta)
-enum (`{ FAIL, REPAIR }`, FAIL default — both shipped). Operations
-that can't represent a code point under `FAIL` throw
+enum (`{ FAIL, REPAIR }`, FAIL default, both shipped). Operations
+that cannot represent a code point under `FAIL` throw
 [`EncodingException`](../../../runtime/src/cajeta/lang/EncodingException.cajeta)
 (a `RecoverableException` subtype, shipped).
 
@@ -198,9 +200,10 @@ Optional<int32> hit = xs.stream().findFirst((int32 v) -> { return v > 3; });   /
 
 ### Status
 
-Construction, `isPresent`/`isEmpty`/`get`/`orElse` — shipped.
+Construction and `isPresent`/`isEmpty`/`get`/`orElse` are shipped.
 `get()` on empty throws `CAJETA_ERROR_NONE_UNWRAP`.
-Multiple-inherits-Stream — not yet, tracked in specs/Features.md.
+Multiple inheritance from Stream is not done yet and is tracked in
+specs/Features.md.
 Pinned by `test/parser/OptionalTests.cpp` (6 tests) and
 `test/parser/OptionalAndAllocateTests.cpp` (6 tests).
 
@@ -217,8 +220,8 @@ public class Pair<K, V> {
 }
 ```
 
-Used as the element type for `Map<K, V>` streams (`HashMap` extends
-`Stream<Pair<K, V>>` via multiple inheritance — see Collections.md).
+Pair is used as the element type for `Map<K, V>` streams. `HashMap` extends
+`Stream<Pair<K, V>>` via multiple inheritance (see Collections.md).
 
 ### Examples
 
@@ -230,5 +233,5 @@ int32 b = p.second();                          // 4
 
 ### Status
 
-Construction + getters shipped. Pinned by `test/parser/PairTests.cpp`
-(3 tests). Multiple inheritance from anything else not yet relevant.
+Construction and getters are shipped. Pinned by `test/parser/PairTests.cpp`
+(3 tests). Multiple inheritance from anything else is not yet relevant.

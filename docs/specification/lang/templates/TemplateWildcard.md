@@ -4,15 +4,15 @@
 
 The chain-walk surface in `Stream<T>` (`unwrap`, `cloneChainOver`,
 `isStatefulWrapper`, `splittableSize`, `trySplitRoot`) is templated on the
-stream's element type `T`. This breaks down across **type-changing wrappers**
-— wrappers whose source element type differs from their output element type:
+stream's element type `T`. This breaks down across type-changing wrappers,
+whose source element type differs from their output element type:
 
-- `MapStream<T, R> extends Stream<R>` — source is `Stream<T>`, base is
+- `MapStream<T, R> extends Stream<R>` has source `Stream<T>` and base
   `Stream<R>`.
-- `FlatMapStream<U, T> extends Stream<T>` — source is `Stream<U>`, base is
+- `FlatMapStream<U, T> extends Stream<T>` has source `Stream<U>` and base
   `Stream<T>`.
-- `MapOrSkipStream<T, R>`, `MapOrFallbackStream<T, R>`, `MapOrLogStream<T, R>`
-  — same structural shape.
+- `MapOrSkipStream<T, R>`, `MapOrFallbackStream<T, R>` and `MapOrLogStream<T, R>`
+  have the same structural shape.
 
 Per Liskov, an override's signature must match the base class's. So
 `MapStream<T, R>::unwrap()` is forced to return `Stream<R>`, but its source
@@ -23,10 +23,10 @@ parallel driver sees a leaf, short-circuits to sequential drain, and
 
 Two structural fixes are on the table:
 
-- **Option A — AnyStream**: introduce a non-templated `AnyStream` base class
+- **Option A, AnyStream.** Introduce a non-templated `AnyStream` base class
   carrying the chain-walk surface. `Stream<T> extends AnyStream`. Erasure is
   local to one hierarchy.
-- **Option B — Template wildcards (`<?>`)**: introduce a language-level
+- **Option B, template wildcards (`<?>`).** Introduce a language-level
   "unknown but tracked" type argument. `Stream<?>` becomes a usable type.
   Erasure is a first-class feature.
 
@@ -41,11 +41,11 @@ This document analyzes Option B in depth.
 > types are `CajetaCapture` (see `docs/CaptureConversion.md`). Coverage:
 > `test/parser/TemplateWildcardP{1,2,5,6,7}Tests.cpp` and
 > `WildcardLintTests.cpp`. The cost/benefit analysis below is retained as
-> the design record; treat its forward-looking framing ("if `<?>` is
-> chosen", the staging plan) as the plan that was executed, not pending
-> work. The one piece still in flight is the migration from the syntactic
-> receiver-identity heuristic to first-class `capture#N` identity
-> (Step 6's deeper form) — tracked in `docs/CaptureConversion.md`.
+> the design record. Its forward-looking framing ("if `<?>` is
+> chosen", the staging plan) describes the plan that was executed, and none
+> of it is pending work. The one piece still in flight is the migration from
+> the syntactic receiver-identity heuristic to first-class `capture#N` identity
+> (Step 6's deeper form), tracked in `docs/CaptureConversion.md`.
 
 ---
 
@@ -55,15 +55,15 @@ This document analyzes Option B in depth.
 
 1. **Memory layout has no concrete answer.** `Stream<int32>` and
    `Stream<Foo>` differ in element size, vtable, drop function.
-   `Stream<?>` has none of these. Forces either pointer-only access (breaks
-   primitives) or boxing/erasure (i.e., AnyStream re-invented under the hood).
+   `Stream<?>` has none of these. It forces either pointer-only access (which
+   breaks primitives) or boxing/erasure (AnyStream re-invented under the hood).
 
 2. **Template instantiation breaks.** `TemplateInstantiator` keys on
    concrete type args. `<?>` is not a stable cache key. Either every
    wildcard site demands its own instantiation, or the runtime carries a
-   capture identity — neither exists today.
+   capture identity, and neither exists today.
 
-3. **Generic method dispatch needs a `T`.** Methods like
+3. **Template method dispatch needs a `T`.** Methods like
    `collectParallelChain<T, R>` pick `T` from call-site argument types. If
    the argument is `Stream<?>`, `T` is unrepresentable. The compiler must
    defer instantiation per call or commit to erased bodies.
@@ -87,13 +87,13 @@ This document analyzes Option B in depth.
    next ask is `<? extends T>` / `<? super T>` (PECS). Without them,
    wildcards are read-only or unsafe-write. The chain-walk surface
    needs both reads (`unwrap`) and writes (`cloneChainOver`), so naked
-   `<?>` doesn't suffice; you're 70% of the way to full variance.
+   `<?>` doesn't suffice, and you're 70% of the way to full variance.
 
 7. **JIT pessimization that won't show up in tests.** Today every
-   chain is fully specialized — `next()` inlines, primitive arithmetic
-   stays primitive, LLVM unrolls and vectorizes. Wildcard chains lose
-   specialization. The parallel path could end up *slower* than
-   sequential, masked by larger workloads. Microbenches catch this;
+   chain is fully specialized, so `next()` inlines, primitive arithmetic
+   stays primitive, and LLVM unrolls and vectorizes. Wildcard chains lose
+   specialization. The parallel path could end up slower than
+   sequential, masked by larger workloads. Microbenches catch this, and
    integration tests don't.
 
 8. **Drop-chain ABI leakage.** A drop entry today is
@@ -104,8 +104,8 @@ This document analyzes Option B in depth.
 
 9. **Lambda closure types entangle.** A lambda capturing `Stream<?>`
    has a closure type carrying that wildcard. Two such lambdas aren't
-   interchangeable — the capture identity matters. Today closures fold
-   cleanly into typed functors; wildcards force per-capture closure
+   interchangeable, because the capture identity matters. Today closures fold
+   cleanly into typed functors, and wildcards force per-capture closure
    variants.
 
 10. **Diagnostics regression.** Java's "capture#1 of ?" errors are
@@ -113,18 +113,18 @@ This document analyzes Option B in depth.
     Either cryptic messages ship or a capture renderer must be built.
 
 11. **One-way door.** Once `<?>` ships, every future library author
-    must consider variance for every public generic API. The cognitive
+    must consider variance for every public template API. The cognitive
     cost on stdlib design is permanent and broad.
 
-12. **Test matrix expansion.** Every generic API needs wildcard
-    coverage — `HashMap<?, ?>`, `ArrayList<?>`, `Optional<?>`, every
-    Stream subclass. The current generics test footprint roughly
+12. **Test matrix expansion.** Every template API needs wildcard
+    coverage, across `HashMap<?, ?>`, `ArrayList<?>`, `Optional<?>`, and every
+    Stream subclass. The current template test footprint roughly
     doubles, much of it negative-path tests.
 
 ### Performance cost in detail
 
-The "pointer-only access invalidates primitives" cost is **not**
-universal — it bites where primitives cross the wildcard boundary.
+The "pointer-only access invalidates primitives" cost is limited.
+It bites where primitives cross the wildcard boundary.
 
 #### Today (specialized for `Stream<int32>`)
 
@@ -146,8 +146,8 @@ body:
   br label %loop
 ```
 
-After inlining: `load i32, ptr; add; incr ptr`. Vectorizes 8-wide,
-unrolls 4x. ~0.5 ns/element.
+After inlining it is `load i32, ptr; add; incr ptr`. It vectorizes 8-wide
+and unrolls 4x, at ~0.5 ns/element.
 
 #### Naive `Stream<?>` usage (the worst case)
 
@@ -178,8 +178,8 @@ body:
 ```
 
 Indirect calls block inlining, unrolling, and vectorization. Per
-element: 2-3 indirect calls + 1 alloc + 1 free. ~50-100 ns/element.
-**~100x slower** than the specialized form.
+element that is 2-3 indirect calls + 1 alloc + 1 free, at ~50-100 ns/element.
+That is ~100x slower than the specialized form.
 
 #### Disciplined `Stream<?>` (chain-walk only, downcast at worker boundary)
 
@@ -189,13 +189,13 @@ element: 2-3 indirect calls + 1 alloc + 1 free. ~50-100 ns/element.
 // Worker loop is still specialized — same IR as the specialized form.
 ```
 
-Net cost: a few extra virtual calls per chain dispatch. Trivial.
+The net cost is a few extra virtual calls per chain dispatch, which is trivial.
 
 #### Triggers that slip into the worst case
 
 The naive worst case is reachable through reasonable-looking source code:
 
-1. **Generic utility helper.**
+1. **Template utility helper.**
    ```cajeta
    public static int32 countAny(Stream<?> s) {
        int32 n = 0;
@@ -257,10 +257,10 @@ The naive worst case is reachable through reasonable-looking source code:
    }
    ```
 
-**Structural problem**: `next()` on a wildcard-typed receiver is
+The structural problem is that `next()` on a wildcard-typed receiver is
 syntactically legal even when the result type is unrepresentable. The
-compiler has to produce something — and "something" means boxed +
-virtual + drop. There is no error at the point of harm; performance
+compiler has to produce something, and "something" means boxed +
+virtual + drop. There is no error at the point of harm, so the performance
 loss is invisible at the source level.
 
 ---
@@ -285,9 +285,9 @@ ArrayList<AnyFuture>   pending;
 ArrayList<AnyResult>   results;
 ```
 
-Every generic in the stdlib eventually wants a heterogeneous container
+Every template in the stdlib eventually wants a heterogeneous container
 of its instantiations. The bespoke-base alternative is the
-Java-before-generics pattern: many shallow `Object`s instead of one
+Java-before-generics pattern, with many shallow `Object`s instead of one
 tracked escape hatch. Bespoke bases compose badly because each one has
 its own surface to maintain.
 
@@ -326,7 +326,7 @@ public static <T> void zip(Stream<T> a, Stream<T> b)         // SAME T
 public static    void scan(Stream<?> a, Stream<?> b)         // unknown, possibly different
 ```
 
-The wildcard provides a third position: "tracked but unknown,"
+The wildcard provides a third position, "tracked but unknown,"
 distinct from both specific-`T` and fully-erased. Bespoke bases
 collapse these two signatures to the same shape.
 
@@ -342,7 +342,7 @@ length(carStream);
 
 Without `<?>`, the caller must either commit to a template
 instantiation OR upcast through a bespoke base. Wildcards let "I
-don't care what T is" be a first-class type rather than a workaround.
+don't care what T is" be a first-class type.
 
 ### 5. Type-keyed registries (factories, plugin systems, codecs)
 
@@ -355,9 +355,9 @@ Supplier<?> f = factories.get(key);
 Object made = f.get();
 ```
 
-Standard pattern across CLIs, codecs, plugin systems, dependency
-injection containers. The per-generic alternative is `AnySupplier`,
-`AnyCounter`, `AnyEncoder`, `AnyParser` … each a tiny pseudo-class
+This is a standard pattern across CLIs, codecs, plugin systems, and dependency
+injection containers. The per-template alternative is `AnySupplier`,
+`AnyCounter`, `AnyEncoder`, `AnyParser` and so on, each a tiny pseudo-class
 with no real semantics.
 
 ### 6. Reflection-shaped APIs
@@ -374,23 +374,23 @@ public static void dumpChainShape(Stream<?> head) {
 }
 ```
 
-Debug walkers, serializers, equality across heterogeneous keys,
-structural pretty-printers — all want "any instantiation, I won't
+Debug walkers, serializers, equality across heterogeneous keys, and
+structural pretty-printers all want "any instantiation, I won't
 touch the elements." Bespoke bases force this to be per-type.
 
 ### 7. Variance features compound for free
 
 Declaration-site `out T` / `in T` (Kotlin/Scala-style) sits on the
 same capture machinery. If `<?>` lands, declaration-site variance is
-a 30% top-up later. If bespoke bases accrete for years and *then*
-variance is wanted, the type-system work must still be done AND the
+a 30% top-up later. If bespoke bases accrete for years and then
+variance is wanted, the type-system work must still be done, and the
 bespoke-base legacy persists.
 
 ---
 
 ## Linting analysis
 
-Lint **can** catch the performance footgun cases:
+Lint can catch the performance footgun cases:
 
 - `Stream<?>` materializing `T` inside a loop ("likely boxing").
 - Wildcard return crossing a hot-path boundary.
@@ -399,15 +399,15 @@ Lint **can** catch the performance footgun cases:
 - Discarded wildcard `next()` result ("the box allocates even though
   the value is unused").
 
-Lint **cannot** catch:
+Lint cannot catch:
 
-- Capture conversion soundness — type-checker territory.
-- TemplateInstantiator cache aliasing — build-infrastructure
+- Capture conversion soundness, which is type-checker territory.
+- TemplateInstantiator cache aliasing, which is build-infrastructure
   territory.
-- Drop-chain ABI changes — compiler-internal, not stylistic.
+- Drop-chain ABI changes, which are compiler-internal and never stylistic.
 
-Linting reduces the surface area of misuse; it does not reduce the
-foundational implementation cost. The type-system depth is
+Linting reduces the surface area of misuse. It does not reduce the
+foundational implementation cost, and the type-system depth is
 unavoidable.
 
 ---
@@ -439,51 +439,51 @@ AnyStream a = someChain;
 a.next();      // ← compile error: AnyStream has no method next()
 ```
 
-This is the load-bearing design property: misuse is caught by the
-type system, not by convention or by a profiler.
+This is the load-bearing design property. Misuse is caught by the
+type system, so neither convention nor a profiler has to catch it.
 
-**The trade-off**: AnyStream is a point fix. The pattern, once
-normalized, will be copied to every generic in the stdlib
+The trade-off is that AnyStream is a point fix. The pattern, once
+normalized, will be copied to every template in the stdlib
 (`AnyOptional`, `AnyFuture`, `AnyResult`, `AnySupplier`,
-`AnyConsumer`, `AnyCollection`). Eventually, you have wildcards —
-just hand-rolled and inconsistent.
+`AnyConsumer`, `AnyCollection`). Eventually, you have wildcards,
+hand-rolled and inconsistent.
 
 ---
 
 ## The honest framing
 
-The decision is not really about the parallel chain walk. It is about
-language posture.
+The decision is about language posture, and the parallel chain walk is
+only the occasion for it.
 
-- **Bespoke-base posture**: Cajeta has no general erasure. Each
-  generic gets a hand-rolled escape hatch as the need arises. The
+- **Bespoke-base posture.** Cajeta has no general erasure. Each
+  template gets a hand-rolled escape hatch as the need arises. The
   stdlib accretes `Any*` classes over time. The language stays
-  simpler; the stdlib grows wider. Erasure is invisible at the
-  language level but pervasive in the codebase.
+  simpler, and the stdlib grows wider. Erasure is invisible at the
+  language level and pervasive in the codebase.
 
-- **`<?>` posture**: Cajeta has type-system support for "unknown but
+- **`<?>` posture.** Cajeta has type-system support for "unknown but
   tracked." One mechanism handles heterogeneous containers, bounded
   variance, capture identity, and reflection-shaped APIs. The
-  language is more complex; the stdlib stays narrower. Erasure is
+  language is more complex, and the stdlib stays narrower. Erasure is
   concentrated in the compiler where it is visible and maintained.
 
 The bespoke-base posture solves the immediate task with the smallest
-intervention. The `<?>` posture pays an upfront cost — call it 2-3
-weeks of focused compiler work — and that cost is amortized across
-every generic the language will ever ship.
+intervention. The `<?>` posture pays an upfront cost of about 2-3
+weeks of focused compiler work, and that cost is amortized across
+every template the language will ever ship.
 
 If `<?>` is the chosen direction, the misuse-footgun cost is
 real but addressable through linting at edit and compile time. The
 type-system depth (capture conversion, drop-chain ABI,
 TemplateInstantiator cache, diagnostics) is not addressable through
-linting — that work is unavoidable.
+linting, and that work is unavoidable.
 
 ---
 
 ## Recommended staging if `<?>` is chosen
 
-Stage the work to deliver value incrementally rather than blocking
-the parallel chain walk on a full implementation:
+Stage the work to deliver value incrementally, so the parallel chain
+walk does not wait on a full implementation:
 
 1. **Type-checker plumbing** at `src/cajeta/type/CajetaType.cpp:454`:
    parse `<?>`, basic assignability rules, no variance yet. Use it
@@ -493,9 +493,9 @@ the parallel chain walk on a full implementation:
    tests.
 3. **TemplateInstantiator**: wildcard keys treated as an erased
    instantiation, separate cache bucket.
-4. **Lint pass**: wildcard-in-hot-loop detector. Lives in the
-   compiler, not only the linter, so users see it inline.
-5. **Migrate parallel chain walk** to use `<?>`. ~50 LOC change once
+4. **Lint pass**: wildcard-in-hot-loop detector. It lives in the
+   compiler as well as the linter, so users see it inline.
+5. **Migrate parallel chain walk** to use `<?>`. It is a ~50 LOC change once
    the foundation is in place.
 6. **Bounded wildcards** (`? extends`, `? super`) as a separate later
    step. Do not block #5 on it.
@@ -510,17 +510,17 @@ that motivated the investigation. Step 6 is the long-term dividend.
 | Dimension | Bespoke-base (AnyStream) | `<?>` wildcards |
 |---|---|---|
 | Solves chain-walk parallel | Yes | Yes |
-| Heterogeneous containers | Per-generic Any* class | First-class |
+| Heterogeneous containers | Per-template Any* class | First-class |
 | Bounded variance (PECS) | Impossible | Requires `<?>` foundation |
 | Capture identity | Cannot express | Expressible with capture |
 | Method-level flexibility | Through bespoke upcast | Native `<?>` parameter |
-| Type-keyed registries | Per-generic Any* class | First-class |
+| Type-keyed registries | Per-template Any* class | First-class |
 | Reflection-shaped APIs | Per-type bespoke | Generic |
 | Compiler infrastructure cost | Low (~1 week) | High (~2-3 weeks) |
 | Performance footgun surface | None — type system enforces | Real — needs linting |
 | Future variance compatibility | Re-do erasure work | 30% top-up |
-| Stdlib growth pattern | Wide (one Any* per generic) | Narrow (one mechanism) |
+| Stdlib growth pattern | Wide (one Any* per template) | Narrow (one mechanism) |
 
 The bespoke-base posture is right-sized for the immediate task in
 isolation. The `<?>` posture is right-sized for the trajectory of a
-language that will ship many generic APIs over time.
+language that will ship many template APIs over time.

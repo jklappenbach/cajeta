@@ -1,13 +1,13 @@
 # cajeta.codec.json
 
-JSON value model, parser, and writer for the cajeta stdlib. Single
-source of truth for what "JSON support" means in Cajeta — consumed by
-`@ToString(format=TO_STRING_JSON)` (Annotations.md § @ToString) and
-direct `Json.parse<T>(bytes, len)` / `Json.toBytes<T>(value)` calls in
-user code. Mapping between JSON keys and class fields is driven by per-
-field annotations (`@JsonProperty`, `@JsonIgnore`, `@JsonRequired`,
-`@JsonNamingStrategy` at class level); no class-level annotation is
-required to make a type JSON-compatible.
+This is the JSON value model, parser, and writer for the cajeta stdlib. It
+is the single source of truth for what "JSON support" means in Cajeta.
+`@ToString(format=TO_STRING_JSON)` (Annotations.md § @ToString) consumes
+it, and so do direct `Json.parse<T>(bytes, len)` /
+`Json.toBytes<T>(value)` calls in user code. Mapping between JSON keys
+and class fields is driven by per-field annotations (`@JsonProperty`,
+`@JsonIgnore`, `@JsonRequired`, `@JsonNamingStrategy` at class level).
+No class-level annotation is required to make a type JSON-compatible.
 
 Status: **shipped (v1 scalar baseline)**. The pull tokenizer
 (`JsonReader`), pull writer (`JsonWriter`), value tree (`JsonValue` /
@@ -16,15 +16,16 @@ compile-time synthesizer all exist under
 [`runtime/src/cajeta/codec/json/`](../../../../runtime/src/cajeta/codec/json/)
 and are covered by tests (`test/parser/Json*Tests.cpp`). The forward
 items called out below (options structs, a `JsonNumber` wrapper, escape
-*decoding*, relaxed mode) are **planned**, not built — each is flagged
-inline. specs/Features.md S-1101 / S-1102.
+decoding, relaxed mode) are planned and not yet built. Each is flagged
+inline. See specs/Features.md S-1101 / S-1102.
 
 ## Performance at a glance
 
-Measured on one machine (AMD Ryzen AI Max+ 395), MB/s, against Jackson
-(Java's reference JSON library) on the standard simdjson corpus. The
-SIMD scanner is pure Cajeta on the built-in `Vector<T,N>` (no `@Native`
-C) — see `docs/specification/math/Simd.md` and the harness in `bench/`.
+These numbers were measured on one machine (AMD Ryzen AI Max+ 395), in
+MB/s, against Jackson (Java's reference JSON library) on the standard
+simdjson corpus. The SIMD scanner is pure Cajeta on the built-in
+`Vector<T,N>`, with no `@Native` C. See `docs/specification/math/Simd.md`
+and the harness in `bench/`.
 
 | workload | twitter | citm | canada | vs Jackson |
 |---|---|---|---|---|
@@ -36,49 +37,50 @@ C) — see `docs/specification/math/Simd.md` and the harness in `bench/`.
 | Cajeta — `Json.parse<T>` over the pull reader (superseded) | ~620 | ~700 | ~450 | 0.4× |
 | Cajeta — scalar baseline (v1, pre-SIMD) | ~345 | ~395 | ~230 | 0.22–0.28× |
 
-The **`Json.parse<T>` binding** is the headline path: the Tier-1 synthesizer
-codegens the deserializer directly over a SIMD *structural index* (stage 1) in
-a tight inline walk (stage 2) — dispatching on one byte per token, decoding only
-T's mapped fields and skipping unmapped subtrees with no value decode. Crucially
-it has **no per-token `JsonReader.next()` call boundary**: that boundary forces
-parser state into a heap object the AOT compiler can't register-promote and caps
-the pull path at ~0.4× Jackson (the superseded row). Driving the SIMD engine
-from a register-state walk carries the scan throughput all the way to the bound
-struct — **2.2–3.5× Jackson** (skip-all; real decode adds bounded per-field work
-Jackson also pays). See `plans/Json-fast-path.md`.
+The `Json.parse<T>` binding is the headline path. The Tier-1 synthesizer
+codegens the deserializer directly over a SIMD structural index (stage 1) in
+a tight inline walk (stage 2). It dispatches on one byte per token, decodes
+only T's mapped fields, and skips unmapped subtrees with no value decode. It
+also has no per-token `JsonReader.next()` call boundary. That boundary forces
+parser state into a heap object the AOT compiler can't register-promote, and
+it caps the pull path at ~0.4× Jackson (the superseded row). Driving the SIMD
+engine from a register-state walk carries the scan throughput all the way to
+the bound struct, at 2.2–3.5× Jackson for skip-all. Real decode adds bounded
+per-field work that Jackson also pays. See `plans/Json-fast-path.md`.
 
 **Machine & method.**
 
-- **CPU** — AMD Ryzen AI Max+ 395 ("Strix Halo", Zen 5), 16 cores / 32 threads,
+- **CPU.** AMD Ryzen AI Max+ 395 ("Strix Halo", Zen 5), 16 cores / 32 threads,
   up to 5.19 GHz, with a Radeon 8060S iGPU. Single-threaded benchmark.
-- **RAM** — 64 GiB. **OS** — Ubuntu 26.04 LTS, Linux kernel 7.0.0-22-generic.
-- **Toolchain** — `cajeta` 0.7.1, `--emit=exe --release` (LLVM O2), built against
+- **RAM.** 64 GiB. **OS.** Ubuntu 26.04 LTS, Linux kernel 7.0.0-22-generic.
+- **Toolchain.** `cajeta` 0.7.1, `--emit=exe --release` (LLVM O2), built against
   the `cajeta-llvm` fork (LLVM 23). Native AOT, no JIT warmup.
-- **Method** — 200 measured iterations after 20 warmup. `Json.parse<T>` borrows
+- **Method.** 200 measured iterations after 20 warmup. `Json.parse<T>` borrows
   its input and frees it on drop (one-shot contract), so each iteration parses a
-  **fresh copy** and a copy-only baseline is subtracted. Datasets are the
+  fresh copy and a copy-only baseline is subtracted. Datasets are the
   standard simdjson corpus (`twitter` 617 KB, `citm_catalog` 1.6 MB, `canada`
   2.1 MB). Jackson 2.18.2 measured on the JVM with generous JIT warmup
   (100 iterations) over `byte[]`.
 
-The typed tokenizer emits the **exact** token stream of the pull
-`JsonReader` (validated token-for-token and per-type counts against the
-reader on all three datasets). The journey from the scalar baseline to
-here was three levers: removing a per-call scope-frame `malloc`
-(`--lazy-scope`, ~2×), porting the structural scan to SIMD on
-`Vector<T,N>` (the bulk of it), and keeping all hot **scanner state in
-registers** rather than a heap object (~2× on the typed walk — output
-stays heap, state goes to the stack). Net: **~0.25× → 2.0–3.8× Jackson**,
-a 10–15× swing.
+The typed tokenizer emits the exact token stream of the pull
+`JsonReader`, validated token-for-token and per-type counts against the
+reader on all three datasets. The journey from the scalar baseline to
+here was three levers. The first was removing a per-call scope-frame
+`malloc` (`--lazy-scope`, ~2×). The second was porting the structural
+scan to SIMD on `Vector<T,N>`, which was the bulk of it. The third was
+keeping all hot scanner state in registers rather than a heap object
+(~2× on the typed walk). Output stays heap, and state goes to the stack.
+The net result is ~0.25× → 2.0–3.8× Jackson, a 10–15× swing.
 
 ### Cross-language: Cajeta vs Rust vs Java
 
-Same machine, same methodology (idle box, peak-of-batches MB/s). The
-apples-to-apples comparison for the headline path is **structural skip-all** —
-fully scan + validate JSON structure and decode/materialize *nothing*. That is
-exactly what `Json.parse<BBEmpty>` does (build the SIMD index + depth-walk,
-skipping every value), and its direct analogs are Rust `serde_json`'s
-`IgnoredAny` (scalar) and Java Jackson's tokenize.
+These runs use the same machine and the same methodology (idle box,
+peak-of-batches MB/s). The apples-to-apples comparison for the headline
+path is structural skip-all, which fully scans and validates JSON structure
+and decodes or materializes nothing. That is exactly what
+`Json.parse<BBEmpty>` does (build the SIMD index + depth-walk, skipping
+every value), and its direct analogs are Rust `serde_json`'s `IgnoredAny`
+(scalar) and Java Jackson's tokenize.
 
 | structural skip-all (build structure, decode nothing) | twitter | citm | canada |
 |---|---|---|---|
@@ -89,13 +91,13 @@ skipping every value), and its direct analogs are Rust `serde_json`'s
 | _Cajeta vs Jackson_ | _2.46×_ | _2.23×_ | _3.63×_ |
 
 Cajeta edges Rust's `serde_json` `IgnoredAny` on all three and is 2.2–3.6×
-Jackson. Note the comparison *favors* serde_json: `IgnoredAny` borrows its input
-(no per-iteration copy), whereas the Cajeta number has a fresh-copy baseline
-subtracted because `parse` frees its buffer — and Cajeta still wins.
+Jackson. Note that the comparison favors serde_json. `IgnoredAny` borrows its
+input with no per-iteration copy, whereas the Cajeta number has a fresh-copy
+baseline subtracted because `parse` frees its buffer. Cajeta still wins.
 
-For context, Rust's **full-materialization** paths (which do strictly more work
-than skip-all — they build a navigable value tree, so they are *not* directly
-comparable to the skip-all row above):
+For context, here are Rust's full-materialization paths. They do strictly
+more work than skip-all, because they build a navigable value tree, so they
+are not directly comparable to the skip-all row above:
 
 | full materialization (build a value tree) | twitter | citm | canada |
 |---|---|---|---|
@@ -104,8 +106,8 @@ comparable to the skip-all row above):
 | Rust — `serde_json` `Value` DOM | 538 | 823 | 598 |
 
 `simd-json`'s SIMD tape materializes every value into a flat tape, so it trails
-the skip-all structural number — the cost is the materialization, not the SIMD.
-A like-for-like SIMD-vs-SIMD *structural* comparison would need simd-json's
+the skip-all structural number. The cost is the materialization. A
+like-for-like SIMD-vs-SIMD structural comparison would need simd-json's
 stage-1 index alone, which the library doesn't expose as a standalone path.
 
 > Harness: `serde_json` 1.x + `simd-json` 0.13, `-C target-cpu=native`, 200
@@ -114,27 +116,27 @@ stage-1 index alone, which the library doesn't expose as a standalone path.
 
 ## Goals, in priority order
 
-1. **Fast.** Throughput is the design's first constraint, not an
-   afterthought. The reader streams tokens without materializing a
-   value tree; the writer formats primitives directly into a growable
-   byte buffer; the `@Encoding` codegen path bypasses both layers and
-   talks field-by-field to the user's struct. The library must be
-   competitive with hand-tuned scalar JSON parsers in C and Java (rough
-   target: ≥ 500 MB/s for the pull tokenizer on simple shapes on a
-   modern x86_64 core — long since cleared; see *Performance at a
-   glance* above). SIMD-accelerated structural scanning, once a future
-   direction, is now built (pure Cajeta on `Vector<T,N>`) and beats
-   Jackson 2–3.8×.
-2. **RFC 8259 conformance.** Strict by default — invalid input fails
-   loudly. A `relaxed=true` reader option allows trailing commas and
-   `//` / `/* */` comments for hand-written configs.
+1. **Fast.** Throughput is the design's first constraint. The reader
+   streams tokens without materializing a value tree. The writer
+   formats primitives directly into a growable byte buffer. The
+   `@Encoding` codegen path bypasses both layers and talks
+   field-by-field to the user's struct. The library must be
+   competitive with hand-tuned scalar JSON parsers in C and Java. The
+   rough target was ≥ 500 MB/s for the pull tokenizer on simple shapes
+   on a modern x86_64 core, and that was long since cleared (see
+   *Performance at a glance* above). SIMD-accelerated structural
+   scanning, once a future direction, is now built (pure Cajeta on
+   `Vector<T,N>`) and beats Jackson 2–3.8×.
+2. **RFC 8259 conformance.** Parsing is strict by default, so invalid
+   input fails loudly. A `relaxed=true` reader option allows trailing
+   commas and `//` / `/* */` comments for hand-written configs.
 3. **Three API tiers.** Direct codegen for `@Encoding`, pull tokenizer
-   for streaming/zero-allocation, value tree for convenience. Users
-   pick the layer that matches their performance budget.
+   for streaming/zero-allocation, value tree for convenience. You
+   pick the layer that matches your performance budget.
 4. **Zero-copy where the borrow checker allows.** Reader tokens carry
-   borrowed slices into the input buffer; numbers are stored as
-   unparsed byte slices and lazily decoded when accessed. The caller
-   pays for materialization only on demand.
+   borrowed slices into the input buffer. Numbers are stored as
+   unparsed byte slices and lazily decoded when accessed, so you
+   pay for materialization only on demand.
 
 ---
 
@@ -168,19 +170,20 @@ stage-1 index alone, which the library doesn't expose as a standalone path.
 └─────────────────────────────────────────────────────────────┘
 ```
 
-A user writing a server hot-path calls `Json.parse<T>(bytes, len)` —
-nothing else required; the compiler does the work. A user writing a
-SAX-style streaming consumer drops to Tier 2. A user writing ad-hoc
-config inspection picks Tier 3 and pays for the convenience.
+A user writing a server hot-path calls `Json.parse<T>(bytes, len)` and
+nothing else is required, because the compiler does the work. A user
+writing a SAX-style streaming consumer drops to Tier 2. A user writing
+ad-hoc config inspection picks Tier 3 and pays for the convenience.
 
 ---
 
 ## Value model — `JsonValue`
 
-`JsonValue` is a flat tagged union: an `int32 kind` discriminator plus
+`JsonValue` is a flat tagged union, an `int32 kind` discriminator plus
 one payload field per kind. The kind tags are `static final int32`
-constants on `JsonValue` (there is no separate `JsonKind` enum — keeping
-the discriminator a plain `int32` avoids a per-check enum allocation).
+constants on `JsonValue`. There is no separate `JsonKind` enum, because
+keeping the discriminator a plain `int32` avoids a per-check enum
+allocation.
 
 ```cajeta
 package cajeta.codec.json;
@@ -235,12 +238,12 @@ entirely.
 
 ### Numbers in the tree
 
-There is **no `JsonNumber` wrapper class** in v1. A `NUMBER` `JsonValue`
-stores an `int64` (`asInt64()` / `asInt32()`); the tree does not yet
+There is no `JsonNumber` wrapper class in v1. A `NUMBER` `JsonValue`
+stores an `int64` (`asInt64()` / `asInt32()`), and the tree does not yet
 carry floats. When you need lazy / float / overflow-checked number
-handling, drop to the Tier-2 reader, whose `currentNumberAsInt64()`,
+handling, drop to the Tier-2 reader. Its `currentNumberAsInt64()`,
 `currentNumberAsInt32()`, and `currentNumberAsFloat64()` parse the token
-span on demand (a span the reader records without parsing until asked).
+span on demand, a span the reader records without parsing until asked.
 A lazy `JsonNumber` value-tree wrapper is a planned addition.
 
 ### `JsonObject` and `JsonArray`
@@ -280,13 +283,13 @@ public class JsonObject {
 ```
 
 `JsonArray` is a geometric-growth `JsonValue[]`. `JsonObject` is
-insertion-order-preserving and looks keys up by **linear scan** (v1 does
-no hashing — the convenience tier isn't the hot path; Tier 1 handles
-perf-sensitive shapes field-by-field). `put` does not deduplicate:
-re-putting a key appends a second entry `get` will never reach.
-`Stream<...>` inheritance (so `filter` / `map` / `forEach` apply) is a
-planned addition, not built — there is no `JsonEntry` type and no
-`getOpt` yet.
+insertion-order-preserving and looks keys up by linear scan. v1 does
+no hashing, because the convenience tier isn't the hot path and Tier 1
+handles perf-sensitive shapes field-by-field. `put` does not
+deduplicate, so re-putting a key appends a second entry `get` will
+never reach. `Stream<...>` inheritance (so `filter` / `map` / `forEach`
+apply) is a planned addition and is not built. There is no `JsonEntry`
+type and no `getOpt` yet.
 
 ---
 
@@ -338,28 +341,28 @@ public class JsonReader {
 }
 ```
 
-There is **no `JsonReaderOptions` struct** in v1: parsing is strict
-RFC 8259 only (relaxed mode, UTF-8 validation toggles, and a tunable
-`maxStringBytes` are planned). `maxDepth` is fixed at 1024 internally.
+There is no `JsonReaderOptions` struct in v1. Parsing is strict
+RFC 8259 only. Relaxed mode, UTF-8 validation toggles, and a tunable
+`maxStringBytes` are planned. `maxDepth` is fixed at 1024 internally.
 
 ### Reader doctrine
 
 - **No allocation in the steady state.** `next()` advances a cursor
-  and updates an internal state machine; it does not allocate. String
-  and number tokens are recorded as `(tokenStart, tokenEnd)` byte spans
-  — the caller pays the copy/parse cost only on `currentBytes()` /
-  `currentString()` / `currentNumberAs*()`. Note v1 `currentBytes()` /
-  `currentString()` **copy** the span and keep escape sequences verbatim
-  (`\n` stays the two bytes `\` `n`); zero-copy String views and escape
-  *decoding* are planned.
+  and updates an internal state machine, and it does not allocate.
+  String and number tokens are recorded as `(tokenStart, tokenEnd)`
+  byte spans, so the caller pays the copy/parse cost only on
+  `currentBytes()` / `currentString()` / `currentNumberAs*()`. Note
+  that v1 `currentBytes()` / `currentString()` copy the span and keep
+  escape sequences verbatim (`\n` stays the two bytes `\` `n`).
+  Zero-copy String views and escape decoding are planned.
 - **The cursor model is forward-only, with one-token lookahead.**
   `peek()` caches the next token so the Tier-1 synthesizer can dispatch
-  array elements; otherwise the reader walks the input once forward with
+  array elements. Otherwise the reader walks the input once forward with
   no back-up.
-- **Errors are recoverable.** Malformed input — and integer overflow or
-  exceeding the depth limit — throws `JsonParseException` (a
-  `RecoverableException`, see ErrorModel.md); the reader's state after
-  the throw is undefined and the caller should discard it. No
+- **Errors are recoverable.** Malformed input, integer overflow, and
+  exceeding the depth limit all throw `JsonParseException` (a
+  `RecoverableException`, see ErrorModel.md). The reader's state after
+  the throw is undefined and the caller should discard it. There is no
   partial-result API.
 
 ### Sample — count top-level keys without allocating
@@ -385,18 +388,18 @@ while (true) {
 return count;
 ```
 
-The reader itself is the only allocation; the whole input is walked
+The reader itself is the only allocation, and the whole input is walked
 once.
 
 ---
 
 ## Tier 2 — SAX push parser (`JsonSax` / `JsonHandler`)
 
-The push counterpart to the pull reader: subclass `JsonHandler`,
-override only the events you care about (every method is a no-op by
-default), and hand it to `JsonSax.parse`. The parser drives the document
-once and calls your events in document order — memory is O(nesting
-depth), independent of document size.
+`JsonSax` is the push counterpart to the pull reader. Subclass
+`JsonHandler`, override only the events you care about (every method is
+a no-op by default), and hand it to `JsonSax.parse`. The parser drives
+the document once and calls your events in document order. Memory is
+O(nesting depth), independent of document size.
 
 ```cajeta
 public class JsonHandler {
@@ -412,10 +415,10 @@ public final class JsonSax {
 }
 ```
 
-Values are delivered **lazily** — the value events receive the
-`JsonReader` positioned at the token, so a handler pays to decode only
-what it pulls (skipping a value costs nothing). `BOOLEAN`/`NULL` carry no
-span, so the boolean is passed directly and `onNull` takes no argument.
+Values are delivered lazily. The value events receive the `JsonReader`
+positioned at the token, so a handler pays to decode only what it pulls,
+and skipping a value costs nothing. `BOOLEAN`/`NULL` carry no span, so the
+boolean is passed directly and `onNull` takes no argument.
 
 ```cajeta
 public class KeyCounter extends JsonHandler {
@@ -428,10 +431,10 @@ JsonSax.parse(bytes, length, c);     // c.keys == number of object keys
 ```
 
 `JsonSax` is a thin driver over `JsonReader`, so push and pull emit the
-identical token stream; the SIMD scanner (*Performance at a glance*) is a
-drop-in speed upgrade for the driver loop. Use SAX when a callback shape
-fits the consumer; use the pull reader when you want to navigate (skip
-subtrees, peek) yourself.
+identical token stream, and the SIMD scanner (*Performance at a glance*)
+is a drop-in speed upgrade for the driver loop. Use SAX when a callback
+shape fits the consumer. Use the pull reader when you want to navigate
+(skip subtrees, peek) yourself.
 
 ---
 
@@ -465,10 +468,10 @@ public class JsonWriter {
 }
 ```
 
-There is **no `JsonWriterOptions` struct** and **no `toString()`** in
-v1: output is always compact. Pretty-printing (`pretty` / `indentSpaces`)
+There is no `JsonWriterOptions` struct and no `toString()` in v1, so
+output is always compact. Pretty-printing (`pretty` / `indentSpaces`)
 and ASCII-safe escaping (`asciiSafe`) are planned. `writeNumber(int32)`
-is not a separate overload — widen to `int64`.
+is not a separate overload, so widen to `int64`.
 
 ### Writer doctrine
 
@@ -478,15 +481,15 @@ is not a separate overload — widen to `int64`.
 - **No intermediate strings.** Number formatting writes ASCII digits
   directly to the output buffer. v1's `writeNumber(float64)` is a naive
   fixed-precision serializer (integer part + up to 6 fractional digits,
-  no scientific notation yet); a strtod-class formatter is planned.
-- **Single growable buffer.** Backed by an internally-owned `#int8[]`
-  with geometric growth (×2). The buffer is transferred out on
-  `toBytes()`, which also resets the writer — reuse one writer across
-  many documents by calling `toBytes()` at each boundary. (Calling it
-  twice with no intervening writes yields an empty buffer the second
-  time.)
+  no scientific notation yet). A strtod-class formatter is planned.
+- **Single growable buffer.** The writer is backed by an internally-owned
+  `#int8[]` with geometric growth (×2). The buffer is transferred out on
+  `toBytes()`, which also resets the writer, so you can reuse one writer
+  across many documents by calling `toBytes()` at each boundary. Calling
+  it twice with no intervening writes yields an empty buffer the second
+  time.
 - **String escaping is minimal in v1.** `writeString` escapes `"` and
-  `\`; it does not yet escape control characters or emit `\u` sequences.
+  `\`. It does not yet escape control characters or emit `\u` sequences.
 
 ### Sample — write `{"id":42,"tags":["a","b"]}` with no temporaries
 
@@ -503,12 +506,13 @@ w.beginObject()
 
 ### JSON Lines (`JsonLinesWriter`) — newline-delimited records
 
-For `.jsonl` output (one JSON value per line — the structured-logging
-wire format), `JsonLinesWriter` wraps a `FileWriter` sink and a reused
-`JsonWriter`. It exposes the same fluent build API; `endLine` commits the
-current record (appends `\n`, streams the line to the sink) and resets
-for the next. The internal buffer is reused across every record — **no
-per-line allocation**, and each record is a single `write`.
+`JsonLinesWriter` is for `.jsonl` output, one JSON value per line, which
+is the structured-logging wire format. It wraps a `FileWriter` sink and a
+reused `JsonWriter`. It exposes the same fluent build API. `endLine`
+commits the current record (appends `\n`, streams the line to the sink)
+and resets for the next. The internal buffer is reused across every
+record, so there is no per-line allocation, and each record is a single
+`write`.
 
 ```cajeta
 JsonLinesWriter jl = heap JsonLinesWriter(fileWriter);
@@ -521,9 +525,9 @@ jl.beginObject()
 jl.flush();
 ```
 
-The same zero-copy path is available directly on `JsonWriter`:
-`writeTo(FileWriter)` streams the encoded document to a sink and resets
-(no `toBytes` copy); `writeLineTo(FileWriter)` does the same with a
+The same zero-copy path is available directly on `JsonWriter`.
+`writeTo(FileWriter)` streams the encoded document to a sink and resets,
+with no `toBytes` copy. `writeLineTo(FileWriter)` does the same with a
 trailing newline. Reach for these on hot paths where `toBytes`' per-call
 `int8[]` copy would dominate.
 
@@ -557,18 +561,18 @@ public final class Json {
 ```
 
 The resolver distinguishes Tier 1 from Tier 3 by the call site's
-explicit type argument: `Json.parse(buf, n)` routes to Tier 3 (returns
-`#JsonValue`); `Json.parse<T>(buf, n)` routes to the synthesizer
-(returns `T`). For Tier 1, `T` must be a class type — JSON requires a
-root value, so top-level primitives go through Tier 2
+explicit type argument. `Json.parse(buf, n)` routes to Tier 3 and returns
+`#JsonValue`. `Json.parse<T>(buf, n)` routes to the synthesizer and
+returns `T`. For Tier 1, `T` must be a class type, because JSON requires
+a root value, so top-level primitives go through Tier 2
 (`JsonReader.next()` + `r.currentNumberAsInt32()`).
 
 ---
 
 ## Tier 3 — value tree (the `JsonValue` API)
 
-For ad-hoc work where convenience beats throughput. Parse a full
-document into a tree, walk it with `.object().get("k").array()...`
+Tier 3 is for ad-hoc work where convenience beats throughput. Parse a
+full document into a tree, walk it with `.object().get("k").array()...`
 chains, mutate, then serialize:
 
 ```cajeta
@@ -590,20 +594,20 @@ store a freed node, and binding the chain to a local is rejected with
 `CAJETA_ERROR_BORROW_OF_TEMPORARY`.
 
 `Json.parse(bytes, len)` is sugar for `heap JsonReader(bytes,
-len).readValue()`; `Json.parse(String)` forwards to it against the
+len).readValue()`, and `Json.parse(String)` forwards to it against the
 String's UTF-8 payload. `Json.toBytes(v)` is sugar for `heap
-JsonWriter().writeValue(v).toBytes()`. Both pay the full allocation cost
-— every primitive becomes its own `JsonValue` shell. For documents over
-a few hundred KB, prefer Tier 2. (`JsonObject.put` takes raw key bytes +
-length; the typed `getString`/`getInt`/… getters above are the ergonomic
-read side.)
+JsonWriter().writeValue(v).toBytes()`. Both pay the full allocation cost,
+because every primitive becomes its own `JsonValue` shell. For documents
+over a few hundred KB, prefer Tier 2. `JsonObject.put` takes raw key
+bytes + length, and the typed `getString`/`getInt`/… getters above are
+the ergonomic read side.
 
 ---
 
 ## Tier 1 — `Json.parse<T>` / `Json.toBytes` + field annotations
 
-The fast path. The user writes a plain class — no class-level
-annotation, no mention of an encoder type — and calls into the codec
+Tier 1 is the fast path. You write a plain class, with no class-level
+annotation and no mention of an encoder type, and call into the codec
 with `T` as a method-level template arg:
 
 ```cajeta
@@ -620,8 +624,8 @@ UserMessage u #= Json.parse<UserMessage>(jsonBytes, (int64) jsonBytes.count());
 `Json.parse<T>` and `Json.toBytes` are method-level templates in the
 `cajeta.codec.json.Json` factory class. At each instantiation site,
 the compiler walks `T`'s declared fields and emits per-field reader /
-writer code that talks directly to `JsonReader` / `JsonWriter`. No
-`JsonValue` tree, no `Encoder<T>` indirection, no reflection.
+writer code that talks directly to `JsonReader` / `JsonWriter`. There is
+no `JsonValue` tree, no `Encoder<T>` indirection, and no reflection.
 
 What the compiler synthesizes for the call above:
 
@@ -656,9 +660,9 @@ public static #int8[] toBytes_UserMessage(UserMessage value) {
 }
 ```
 
-The key dispatch is an `if/else` chain in declaration order (v1; v2
-can swap to a perfect-hash table once field count exceeds a
-threshold). Each field is read or written in a single call.
+The key dispatch is an `if/else` chain in declaration order in v1. v2
+can swap to a perfect-hash table once field count exceeds a threshold.
+Each field is read or written in a single call.
 
 ### Field-level annotations
 
@@ -684,35 +688,34 @@ public class UserMessage {
 
 Annotation surface (all in package `cajeta.codec.json`):
 
-- **`@JsonProperty(String name)`** — overrides the wire-key for this
+- **`@JsonProperty(String name)`** overrides the wire-key for this
   field. Without it, the field's declared name is used verbatim.
-- **`@JsonIgnore`** — synthesizer skips this field for both read and
-  write. The field's slot still exists in memory; the codec just
-  pretends it isn't there.
-- **`@JsonIgnore(onRead = true, onWrite = false)`** — asymmetric
+- **`@JsonIgnore`** makes the synthesizer skip this field for both read
+  and write. The field's slot still exists in memory, and the codec
+  just pretends it isn't there.
+- **`@JsonIgnore(onRead = true, onWrite = false)`** is the asymmetric
   variant. `onWrite = false, onRead = true` lets a field be set from
   external input but never echoed back. The flipped pair (read-only-
   output, write-ignored-from-input) is the common audit / computed-
   field pattern.
-- **`@JsonRequired`** — the synthesizer tracks a per-field `sawKey`
-  flag and throws `JsonParseException` at end-of-object if a required
+- **`@JsonRequired`** makes the synthesizer track a per-field `sawKey`
+  flag and throw `JsonParseException` at end-of-object if a required
   key never appeared. Without it, missing keys leave the field at its
-  default. (`@JsonIgnore` overrides `@JsonRequired` — an un-read field
-  can't be required.)
-- **`@JsonInclude("NEVER" | "ALWAYS" | "NON_NULL" | "NON_DEFAULT")`** —
+  default. `@JsonIgnore` overrides `@JsonRequired`, since an un-read
+  field can't be required.
+- **`@JsonInclude("NEVER" | "ALWAYS" | "NON_NULL" | "NON_DEFAULT")`**
   controls when the writer emits this field (string-valued argument).
-  `ALWAYS` (default) always writes; `NON_NULL` omits null class values;
-  `NON_DEFAULT` omits a field equal to its type default; `NEVER` makes
+  `ALWAYS` (default) always writes. `NON_NULL` omits null class values.
+  `NON_DEFAULT` omits a field equal to its type default. `NEVER` makes
   the field read-only (parsed but never written).
-- **`@JsonAlias({"alt1", "alt2"})`** — accepts these keys *in
-  addition* to the primary name during parse. Writes always emit the
-  primary name. Useful for backward compatibility with renamed
-  fields.
-- **`@JsonRaw`** — the field's wire-value is treated as a pre-
-  formatted JSON byte slice on both sides. The synthesizer copies
-  bytes verbatim during write and captures the token's raw byte
-  slice during read. Used for embedded blobs the application doesn't
-  want to parse twice.
+- **`@JsonAlias({"alt1", "alt2"})`** accepts these keys in addition
+  to the primary name during parse. Writes always emit the primary
+  name. This is useful for backward compatibility with renamed fields.
+- **`@JsonRaw`** treats the field's wire-value as a pre-formatted JSON
+  byte slice on both sides. The synthesizer copies bytes verbatim
+  during write and captures the token's raw byte slice during read. It
+  is used for embedded blobs the application doesn't want to parse
+  twice.
 
 ### Class-level naming strategy
 
@@ -732,50 +735,49 @@ public class UserMessage {
 ```
 
 `IDENTITY` (default) is the no-op transform. Strategies are pure
-functions of the field name; the compiler resolves them at
+functions of the field name, and the compiler resolves them at
 synthesis time, so there's no per-call runtime cost.
 
 ### Unknown-key policy
 
 The synthesizer accepts unknown keys silently by default (the `else {
-r.next(); }` arm above) — JSON parsers in the wild encounter many
+r.next(); }` arm above). JSON parsers in the wild encounter many
 incoming-field-but-not-modeled cases, and crashing the parse on each is
-hostile. The class-level annotation `@JsonStrict` flips the policy:
-unknown keys throw `JsonParseException` (message names the unknown key).
-Use this for closed-schema interchange where extra fields indicate a
-producer/consumer mismatch.
+hostile. The class-level annotation `@JsonStrict` flips the policy, so
+unknown keys throw `JsonParseException` with a message naming the
+unknown key. Use this for closed-schema interchange where extra fields
+indicate a producer/consumer mismatch.
 
 ### Optional / nullable fields
 
 A `String name` field whose corresponding JSON key is missing
-receives no assignment — the default-initialized value (`null` for
+receives no assignment, so the default-initialized value (`null` for
 class types, `0` / `false` for primitives) stands. Explicit `null`
-in the JSON input (`"name": null`) hits the same branch as missing
-— the field stays at its default. Users who need to distinguish
+in the JSON input (`"name": null`) hits the same branch as missing,
+and the field stays at its default. Users who need to distinguish
 "absent" from "present-as-null" declare the field as
-`Optional<String>` (v2 — the synthesizer needs to know to set
-`Optional.empty()` vs `Optional.of(null)`).
+`Optional<String>`. That is v2 work, because the synthesizer needs to
+know to set `Optional.empty()` vs `Optional.of(null)`.
 
 ### Why not `@Encoding(JsonEncoder<T>)`
 
 The binary-format `@Encoding` design in `cajeta.wire` (see
 Annotations.md § @Encoding) is the right shape for formats where the
-*encoder is the format* — MessagePack, Protobuf, Avro all need a
+encoder is the format. MessagePack, Protobuf, and Avro all need a
 class-level binding because the wire bytes are opaque without one.
-JSON is different: the format is fixed, and what varies between
+JSON is different. The format is fixed, and what varies between
 classes is the field-name mapping and the include/exclude/required
 behavior. Pushing that mapping into a generic `Encoder<T>` would
-either force every JSON-using class into a `@Encoding` annotation
-(noise — the class name repeats, the encoder type name is
-boilerplate), or force the encoder to do reflection at runtime
-(slow). The method-template-plus-field-annotation design avoids
-both: zero class-level annotation when defaults suffice, per-field
-control when not, and the codegen is monomorphic per `T`.
+either force every JSON-using class into a `@Encoding` annotation,
+which is noise because the class name repeats and the encoder type
+name is boilerplate, or force the encoder to do reflection at runtime,
+which is slow. The method-template-plus-field-annotation design avoids
+both. There is zero class-level annotation when defaults suffice,
+per-field control when not, and the codegen is monomorphic per `T`.
 
-`cajeta.wire.JsonEncoder<T>` is therefore **not specified by this
-doc**. Annotations.md § @Encoding's existing mention of it is
-superseded — JSON uses the codec-direct path. Binary formats keep
-`@Encoding`.
+`cajeta.wire.JsonEncoder<T>` is therefore not specified by this doc.
+Annotations.md § @Encoding's existing mention of it is superseded, and
+JSON uses the codec-direct path. Binary formats keep `@Encoding`.
 
 ---
 
@@ -785,40 +787,40 @@ JSON numbers are arbitrary-precision in the spec, but real users want
 `int32` / `int64` / `float64`. The library splits the difference at the
 reader:
 
-- **Span, not value.** The tokenizer records a number's `(tokenStart,
+- **Span first.** The tokenizer records a number's `(tokenStart,
   tokenEnd)` byte span without parsing it. The parse cost is paid only
   when the caller calls a `currentNumberAs*()` accessor.
 - **Integer path.** `currentNumberAsInt64()` does a single-pass digit
   accumulation (in `uint64`, to dodge the signed-overflow trap) with a
-  range check against `INT64_MAX` / `abs(INT64_MIN)`; it throws
+  range check against `INT64_MAX` / `abs(INT64_MIN)`. It throws
   `JsonParseException` on overflow or on a fractional/exponent token.
   `currentNumberAsInt32()` delegates and narrows.
 - **Float path.** `currentNumberAsFloat64()` is a naive accumulation
-  (integer part, optional fraction, optional exponent) — **not**
-  strtod-class accuracy. It round-trips cleanly for typical small-
-  magnitude JSON numbers against the writer's fixed-precision output;
-  exact round-tripping awaits a strtod-equivalent runtime helper.
+  (integer part, optional fraction, optional exponent) and does not
+  have strtod-class accuracy. It round-trips cleanly for typical small-
+  magnitude JSON numbers against the writer's fixed-precision output.
+  Exact round-tripping awaits a strtod-equivalent runtime helper.
 - **The value tree stores `int64` only.** `readValueAfter` materializes
   every `NUMBER` node via `currentNumberAsInt64()`, so a fractional
   literal in a Tier-3 parse throws. Float support in the tree, a lazy
   `JsonNumber` wrapper, a dedicated `JsonOverflowException`, and bigints
-  are all planned, not built — v1 surfaces overflow as
+  are all planned and not built. v1 surfaces overflow as
   `JsonParseException`.
 
 ---
 
 ## String handling
 
-- **UTF-8 is the wire encoding.** The reader accepts UTF-8 bytes; the
-  writer emits UTF-8 bytes. No UTF-16 or UTF-32 interchange.
-- **Escapes are NOT decoded in v1.** The reader records the *bounds* of
+- **UTF-8 is the wire encoding.** The reader accepts UTF-8 bytes, and the
+  writer emits UTF-8 bytes. There is no UTF-16 or UTF-32 interchange.
+- **Escapes are NOT decoded in v1.** The reader records the bounds of
   a string token, skipping over `\`-escapes without resolving them.
-  `currentBytes()` / `currentString()` copy the span **verbatim** — a
-  `\n` in the source stays the two bytes `\` `n`. Lazy escape *decoding*
+  `currentBytes()` / `currentString()` copy the span verbatim, so a
+  `\n` in the source stays the two bytes `\` `n`. Lazy escape decoding
   (and a zero-copy borrowed-slice fast path for escape-free strings) is
   planned.
-- **No UTF-8 validation toggle.** There is no `validateUtf8` option yet;
-  the reader does not validate string well-formedness.
+- **No UTF-8 validation toggle.** There is no `validateUtf8` option yet,
+  and the reader does not validate string well-formedness.
 - **Surrogate handling is planned.** Lone-surrogate rejection and
   surrogate-pair decoding land with the escape-decoder above.
 
@@ -826,7 +828,7 @@ reader:
 
 ## Error model
 
-v1 funnels **all** failures through a single
+v1 funnels all failures through a single
 `JsonParseException extends RecoverableException` (per ErrorModel.md):
 
 ```cajeta
@@ -840,57 +842,57 @@ It carries a brief message ("unexpected character", "unterminated
 string", "number out of int64 range", "nesting depth limit exceeded",
 "unknown key (class is @JsonStrict)", a missing-`@JsonRequired`-field
 message, …) plus the byte offset (`position`). Line/column derivation is
-deferred — `position` is the offset only.
+deferred, so `position` is the offset only.
 
-The finer-grained subtypes a Jackson-style API would expose —
-`JsonTypeException` (wrong-kind access), `JsonOverflowException`
-(`asInt32` on an out-of-range number), `JsonDepthException`,
-`JsonRequiredFieldException`, `JsonUnknownFieldException` — are
-**planned**, not built; today every one of those conditions raises
+The finer-grained subtypes a Jackson-style API would expose are planned
+and not built. Those are `JsonTypeException` (wrong-kind access),
+`JsonOverflowException` (`asInt32` on an out-of-range number),
+`JsonDepthException`, `JsonRequiredFieldException`, and
+`JsonUnknownFieldException`. Today every one of those conditions raises
 `JsonParseException`.
 
 Errors are thrown, never returned in an out-parameter. The reader's
-state after a throw is undefined; discard the reader.
+state after a throw is undefined, so discard the reader.
 
 ---
 
 ## RFC 8259 conformance
 
-- **Strict mode** (the only v1 mode): accepts exactly the grammar in
+- **Strict mode** (the only v1 mode) accepts exactly the grammar in
   RFC 8259 § 2. Trailing commas are rejected. Unquoted keys are
   rejected. Comments are rejected. Numbers must match the spec's number
-  production. (String *content* validation — escape and UTF-8
-  well-formedness — is not yet enforced; see § String handling.)
-- **Relaxed mode** — trailing-comma tolerance and `//` / `/* */`
-  comment support — is **planned**, gated on the `JsonReaderOptions`
-  struct that doesn't exist yet. Intended for hand-edited
-  configuration; explicitly not a wire-format mode.
+  production. String content validation, meaning escape and UTF-8
+  well-formedness, is not yet enforced; see § String handling.
+- **Relaxed mode**, with trailing-comma tolerance and `//` / `/* */`
+  comment support, is planned, gated on the `JsonReaderOptions`
+  struct that doesn't exist yet. It is intended for hand-edited
+  configuration and is explicitly not a wire-format mode.
 - **Duplicate keys.** RFC 8259 leaves this implementation-defined. The
-  Tier-3 `JsonObject` does not deduplicate — it appends every entry in
-  insertion order, and `get` returns the **first** match. A
+  Tier-3 `JsonObject` does not deduplicate. It appends every entry in
+  insertion order, and `get` returns the first match. A
   reject-duplicates option is planned.
 
 ---
 
 ## Memory model interactions
 
-- `Json.parse(bytes, len)` returns `#JsonValue` (ownership transferred
-  to the caller). Drop reclaims the entire tree via the standard
-  auto-field-drop chain. `readValueAfter` builds string nodes with
-  `setStringOwned`, so the tree owns its string bytes.
+- `Json.parse(bytes, len)` returns `#JsonValue`, with ownership
+  transferred to the caller. Drop reclaims the entire tree via the
+  standard auto-field-drop chain. `readValueAfter` builds string nodes
+  with `setStringOwned`, so the tree owns its string bytes.
 - `JsonReader.currentString()` / `currentBytes()` return owned `#`
-  copies of the token span in v1 (no borrowed-view fast path yet — see
-  § String handling). `JsonValue.asString()` materializes a fresh
-  `#String` over the value's stored byte slice.
-- `JsonWriter.toBytes()` returns `#int8[]` — ownership transferred,
-  writer's buffer reset. Calling `toBytes()` twice without intervening
-  writes yields an empty buffer the second time (no error — the writer
-  is back in its initial empty state).
+  copies of the token span in v1. There is no borrowed-view fast path
+  yet; see § String handling. `JsonValue.asString()` materializes a
+  fresh `#String` over the value's stored byte slice.
+- `JsonWriter.toBytes()` returns `#int8[]`, with ownership transferred
+  and the writer's buffer reset. Calling `toBytes()` twice without
+  intervening writes yields an empty buffer the second time. There is
+  no error, because the writer is back in its initial empty state.
 - `JsonObject` / `JsonArray` own their entries (`put` / `add` take
   `#`-transferred values) and reclaim them on drop. Iterate `JsonArray`
   by index (`get(i)` over `count()`) and `JsonObject` positionally
   (`keyAt` / `valueAt` over `count()`) or by key (`get` / the typed
-  getters); `Stream<...>`-protocol iteration is planned.
+  getters). `Stream<...>`-protocol iteration is planned.
 
 ---
 
@@ -901,26 +903,27 @@ state after a throw is undefined; discard the reader.
 - Pull tokenizer: ≥ 500 MB/s on simple shapes (single-level objects of
   ASCII strings + integers) on a modern x86_64 core.
 - Direct-codegen path (Tier 1): bounded by `JsonReader` throughput
-  plus a constant per-field dispatch; aim within 10% of a hand-written
-  parser for the same struct.
-- Writer: ≥ 800 MB/s compact output; pretty mode ≥ 200 MB/s.
+  plus a constant per-field dispatch. The aim is within 10% of a
+  hand-written parser for the same struct.
+- Writer: ≥ 800 MB/s compact output, and pretty mode ≥ 200 MB/s.
 
 ### v1 — measured (streaming tokenize, 2026-06)
 
-First same-machine baseline against the canonical
+This is the first same-machine baseline against the canonical
 [nativejson-benchmark](https://github.com/miloyip/nativejson-benchmark) corpus
-(`twitter` / `citm_catalog` / `canada`). Workload is **streaming tokenization**:
-pull `JsonReader.next()` to `END`, counting tokens, numbers read lazily (no DOM).
-Compared against Jackson and Gson running the equivalent streaming loop
-(`JsonParser.nextToken()` / Gson `JsonReader` walk) on the **same files**. All
-three implementations produced **identical token counts** (twitter 29 573, citm
-85 035, canada 223 236) — a correctness cross-check.
+(`twitter` / `citm_catalog` / `canada`). The workload is streaming
+tokenization. Pull `JsonReader.next()` to `END`, counting tokens, with numbers
+read lazily and no DOM. It is compared against Jackson and Gson running the
+equivalent streaming loop (`JsonParser.nextToken()` / Gson `JsonReader` walk)
+on the same files. All three implementations produced identical token counts
+(twitter 29 573, citm 85 035, canada 223 236), which is a correctness
+cross-check.
 
 - **Machine:** AMD Ryzen AI Max+ 395 (Zen 5), Linux. Single thread.
-- **Cajeta:** `--release` native AOT (no warmup needed); per-iteration fresh
-  read, read-only baseline subtracted to isolate tokenization.
+- **Cajeta:** `--release` native AOT (no warmup needed). Per-iteration fresh
+  read, with the read-only baseline subtracted to isolate tokenization.
 - **Java:** OpenJDK 25 (Corretto), Jackson 2.18.2 / Gson 2.11.0, JIT warmed
-  (100 iters) then 200 measured; bytes read once, parsed in-memory.
+  (100 iters) then 200 measured. Bytes read once, parsed in-memory.
 
 | file | size | **Cajeta** | Jackson | Gson | Cajeta vs Jackson | Cajeta vs Gson |
 |---|---|---|---|---|---|---|
@@ -928,25 +931,26 @@ three implementations produced **identical token counts** (twitter 29 573, citm
 | citm_catalog | 1.73 MB | **~441 MB/s** | ~1810 | ~915 | 0.24× | 0.48× |
 | canada | 2.25 MB | **~257 MB/s** | ~810 | ~480 | 0.32× | 0.54× |
 
-**Reading:** tokenization is **Gson-class** (within ~2× of a mature, widely-used
-library) and **~3–4× behind Jackson** (best-in-class, byte-level symbol tables +
-structural tricks → the v2 SIMD direction below). For a young hand-written scalar
-tokenizer this is a credible starting point; the `≥ 500 MB/s` target above holds
-only for the simplest single-level integer/ASCII shapes, not the structure- and
-number-dense real corpus.
+**Reading.** Tokenization is Gson-class, within ~2× of a mature, widely-used
+library, and ~3–4× behind Jackson. Jackson is best-in-class, with byte-level
+symbol tables and structural tricks, which is the v2 SIMD direction below. For
+a young hand-written scalar tokenizer this is a credible starting point. The
+`≥ 500 MB/s` target above holds only for the simplest single-level
+integer/ASCII shapes, and does not hold for the structure- and number-dense
+real corpus.
 
-**Gaps that outrank speed (found while benchmarking — fix before treating the
-codec as a first-class built-in):**
+**Gaps that outrank speed.** These were found while benchmarking, and they
+should be fixed before treating the codec as a first-class built-in.
 
 1. **No float parsing in the value tree.** `Json.parse` → `JsonValue` throws on
    any fractional/exponent literal, so `canada.json` (100 % floats) and
-   `twitter.json` (44 floats) cannot be DOM-parsed at all (only the lazy
-   streaming reader runs, by not converting). See § "Numbers in the tree" — a
-   float-carrying tree is the prerequisite, not an optimization.
+   `twitter.json` (44 floats) cannot be DOM-parsed at all. Only the lazy
+   streaming reader runs, by not converting. See § "Numbers in the tree". A
+   float-carrying tree is the prerequisite, and is more than an optimization.
 2. **Tier-3 DOM does not scale.** A full `JsonValue` tree of `citm_catalog`
-   (1.73 MB) exhausts the runtime live-allocation set (65 536) and faults — far
-   too many simultaneously-live nodes. The v2 arena allocator below is a
-   correctness fix here, not just perf.
+   (1.73 MB) exhausts the runtime live-allocation set (65 536) and faults,
+   because far too many nodes are simultaneously live. The v2 arena allocator
+   below is a correctness fix here, and more than a perf fix.
 3. **`JsonReader` aliases its input.** The ctor stores the borrowed `int8[]`
    into an owned field, so a buffer cannot be shared across readers without a
    double-free. Take `#int8[]` (transfer) or hold a non-owning view.
@@ -956,14 +960,15 @@ harness used to produce the table.
 
 ### SIMD scanner — beats Jackson (2026-06)
 
-A simdjson-style scanner in **pure Cajeta** on the built-in `Vector<T,N>`
-(`docs/specification/math/Simd.md`): 16-byte block load (`Cajeta.vload16`), compare→movemask
-(`Vector.eqMask`), an integer prefix-XOR string mask (escaped/in-string `,{}[]`
-correctly excluded), and `popcount64`. The reader's token count is exactly
-`#brackets + #strings + #scalars`, each a popcount of a stage-1 mask.
+This is a simdjson-style scanner in pure Cajeta on the built-in `Vector<T,N>`
+(`docs/specification/math/Simd.md`). It uses a 16-byte block load
+(`Cajeta.vload16`), compare→movemask (`Vector.eqMask`), an integer prefix-XOR
+string mask (escaped/in-string `,{}[]` correctly excluded), and `popcount64`.
+The reader's token count is exactly `#brackets + #strings + #scalars`, each a
+popcount of a stage-1 mask.
 
-Same machine, full tokenize, MB/s — **token counts identical to the scalar
-reader** (twitter 29 573 / citm 85 035 / canada 223 236):
+The table is the same machine, full tokenize, in MB/s. Token counts are
+identical to the scalar reader (twitter 29 573 / citm 85 035 / canada 223 236):
 
 | file | **Cajeta SIMD** | Jackson | **vs Jackson** |
 |---|---|---|---|
@@ -971,11 +976,12 @@ reader** (twitter 29 573 / citm 85 035 / canada 223 236):
 | citm_catalog | **~3181** | ~1837 | **1.7×** |
 | canada | **~3463** | ~811 | **4.3×** |
 
-From ~0.45–0.64× (scalar/SWAR) to **1.7–4.3× Jackson** — native SIMD is the lever
-the JVM can't pull. Stage-1 classification alone runs 8–11 GB/s. Harness:
-`bench/src/bench/TokCount.cajeta` (token count + speed), `Stage1.cajeta` (engine).
-The typed-token emitter (KEY/STRING/NUMBER/…) over the same masks is the API
-follow-on. `tableLookup`(pshufb)/`clmul`/256-bit widen the margin further.
+The scanner went from ~0.45–0.64× (scalar/SWAR) to 1.7–4.3× Jackson. Native
+SIMD is the lever the JVM can't pull. Stage-1 classification alone runs 8–11
+GB/s. The harness is `bench/src/bench/TokCount.cajeta` (token count + speed)
+and `Stage1.cajeta` (engine). The typed-token emitter (KEY/STRING/NUMBER/…)
+over the same masks is the API follow-on. `tableLookup`(pshufb)/`clmul`/256-bit
+widen the margin further.
 
 ### v2 — future directions
 
@@ -994,7 +1000,7 @@ follow-on. `tableLookup`(pshufb)/`clmul`/256-bit widen the margin further.
   `cajeta.io.OutputStream` instead of an internal buffer, for
   serializing larger-than-RAM documents.
 
-None of v2 is on the S-1102 critical path; the impl can ship the
+None of v2 is on the S-1102 critical path. The impl can ship the
 scalar baseline first and layer SIMD on later without API breakage.
 
 ---
@@ -1002,27 +1008,27 @@ scalar baseline first and layer SIMD on later without API breakage.
 ## Out of scope
 
 - **JSON5, JSONC, HJSON.** Relaxed mode covers the common
-  configuration cases; full extended-syntax dialects are not stdlib.
-- **JSON Pointer (RFC 6901) / JSON Patch (RFC 6902).** Sibling
-  libraries; not part of S-1101.
+  configuration cases. Full extended-syntax dialects are not stdlib.
+- **JSON Pointer (RFC 6901) / JSON Patch (RFC 6902).** These are sibling
+  libraries and not part of S-1101.
 - **Schema validation.** A `cajeta.codec.jsonschema` package can
   land separately if demand exists.
-- **JsonPath / JMESPath query.** Same — separate library.
+- **JsonPath / JMESPath query.** This is also a separate library.
 
 ---
 
 ## Cross-references
 
-- `docs/specification/reflect/Annotations.md` § @ToString — consumes
+- `docs/specification/reflect/Annotations.md` § @ToString consumes
   `Json.toBytes(this)` when `format=TO_STRING_JSON`.
-- `docs/specification/reflect/Annotations.md` § @Encoding — binary-format
+- `docs/specification/reflect/Annotations.md` § @Encoding covers binary-format
   codegen (MessagePack / Protobuf / Avro). JSON does NOT use
   `@Encoding`; see § "Why not `@Encoding(JsonEncoder<T>)`" above.
-- `docs/specification/error/ErrorModel.md` — `JsonException`'s place in
+- `docs/specification/error/ErrorModel.md` gives `JsonException`'s place in
   the Recoverable hierarchy.
-- `docs/specification/lang/stream/Streams.md` — `JsonArray` / `JsonObject` are planned to
-  multiple-inherit `Stream<...>` (not built; iterate by index/position
-  today).
-- `docs/specification/lang/templates/MethodLevelTemplate.md` — `Json.parse<T>` /
-  `Json.toBytes` follow the standard final-method-template contract.
+- `docs/specification/lang/stream/Streams.md` covers the plan for `JsonArray` /
+  `JsonObject` to multiple-inherit `Stream<...>` (not built; iterate by
+  index/position today).
+- `docs/specification/lang/templates/MethodLevelTemplate.md` is the standard
+  final-method-template contract that `Json.parse<T>` / `Json.toBytes` follow.
 - `specs/Features.md` S-1101 (this spec), S-1102 (the implementation).

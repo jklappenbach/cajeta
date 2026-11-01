@@ -1,20 +1,20 @@
 # Streams
 
-The pull-protocol iteration substrate for the cajeta stdlib. Every
-class that wants to expose "walk my elements" semantics multiple-
-inherits `cajeta.lang.stream.Stream<T>` — there is no separate
+Streams are the pull-protocol iteration substrate for the cajeta stdlib.
+Every class that wants to expose "walk my elements" semantics multiple-
+inherits `cajeta.lang.stream.Stream<T>`, and there is no separate
 `Iterator` type. Cajeta uses multiple inheritance precisely so a
-container can BE a stream rather than expose one through a
+container can be a stream itself instead of exposing one through a
 factory method.
 
 Status: the protocol root, the intermediate combinators, the terminals,
 and the `.parallel()` fork/join path are all in place as real methods
 on `Stream<T>` (see `runtime/src/cajeta/lang/stream/Stream.cajeta`).
-Fluent chaining works (`xs.stream().filter(p).count()`); the historical
-two-step workaround — binding each wrapper stream to a local before the
-next op — is no longer required. Collections still expose a `.stream()`
-factory (or `keys()`/`values()`/`entries()` on HashMap) rather than
-multiple-inheriting `Stream` directly; that conversion is still pending.
+Fluent chaining works, as in `xs.stream().filter(p).count()`, and the
+historical two-step workaround of binding each wrapper stream to a local
+before the next op is no longer required. Collections still expose a
+`.stream()` factory, or `keys()`/`values()`/`entries()` on HashMap, rather
+than multiple-inheriting `Stream` directly, and that conversion is still pending.
 
 ## Overview
 
@@ -35,20 +35,20 @@ cajeta.lang.stream.Stream<T>              ← protocol root: next() + ops + term
 └─ HashMapEntryStream<K,V> implements Splittable<Pair<K,V>>  ← HashMap.entries()
 ```
 
-`Splittable<T>` (a sub-interface of `Stream<T>`) marks sources that can
-be cheaply halved for the parallel driver — see `StreamParallelism.md`.
+`Splittable<T>`, a sub-interface of `Stream<T>`, marks sources that can
+be cheaply halved for the parallel driver. See `StreamParallelism.md`.
 
 The collection types expose streams through factory methods today
 (`list.stream()`, `map.keys()/values()/entries()`). The longer-term
 design is for each container to multiple-inherit `Stream` of its element
-type so `list.count()` / `map.filter(p).forEach(...)` dispatch directly;
-that conversion has not landed yet.
+type so `list.count()` / `map.filter(p).forEach(...)` dispatch directly,
+and that conversion has not landed yet.
 
 ## Pull primitive: `next(): Optional<T>`
 
 Every stream class overrides `next()`. The base default returns an
-empty `Optional<T>` so a never-overridden subclass behaves like an
-empty stream — never null-defaults, never crashes.
+empty `Optional<T>`, so a never-overridden subclass behaves like an
+empty stream. It never null-defaults and never crashes.
 
 ```cajeta
 public class Stream<T> {
@@ -59,20 +59,20 @@ public class Stream<T> {
 }
 ```
 
-The pull primitive returns by value (sret + NRVO per
-`docs/specification/lang/ValueReturns.md`); every wrapper override
+The pull primitive returns by value, with sret and NRVO per
+`docs/specification/lang/ValueReturns.md`, and every wrapper override
 (`FilterStream`, `MapStream`, `PeekStream`, etc.) follows suit so the
 vtable slot ABI lines up. A subclass override whose body never says
-`return stack X(...)` (e.g. `PeekStream.next` is `return o;` only)
-still inherits the sret shape from `Stream.next` —
+`return stack X(...)`, as `PeekStream.next` is `return o;` only,
+still inherits the sret shape from `Stream.next`.
 `Method::returnsStackValue()` walks the superclass chain so the
 override matches the base method's signature without source-level
 annotation.
 
 ## Terminal combinators
 
-Walked-to-exhaustion (or short-circuiting) consumers. All inherited
-from `Stream<T>`; subclasses don't override them.
+Terminals are consumers that walk to exhaustion or short-circuit. All are
+inherited from `Stream<T>`, and subclasses do not override them.
 
 | Name | Signature | Behavior |
 | ---- | --------- | -------- |
@@ -88,9 +88,9 @@ from `Stream<T>`; subclasses don't override them.
 | `collect<R>` | `(Collector<T, R>) : #R` | Reduce via a `Collector` (supplier / accumulator / combiner triple); owned. See Collections.md § Collector. |
 
 `fold<R>` / `map<R>` / `flatMap<R>` / `collect<R>` and the `mapOr*<R>`
-ops carry a method-level type parameter (written `final` in source, so
-they can't sit in a vtable — see `MethodLevelTemplate.md`); the inherited
-`next()` is what subclasses customize.
+ops carry a method-level type parameter. They are written `final` in source,
+so they cannot sit in a vtable, as `MethodLevelTemplate.md` explains. The
+inherited `next()` is what subclasses customize.
 
 ### Examples
 
@@ -137,10 +137,10 @@ Pinned by `test/parser/StreamTerminalTests.cpp` (13 tests) and
 ## Intermediate combinators (lazy wrappers)
 
 Each returns a fresh `#Stream<R>` whose `next()` pulls from the source
-stream on demand. None evaluate eagerly — the pipeline runs only when
-a terminal consumes the tail. Call them as methods on any `Stream<T>`
-(each constructs and returns the corresponding wrapper); the wrapper
-class is the implementation, not the call site.
+stream on demand. None evaluate eagerly, and the pipeline runs only when
+a terminal consumes the tail. Call them as methods on any `Stream<T>`,
+and each constructs and returns the corresponding wrapper. The wrapper
+class is the implementation.
 
 | Method | Wrapper | Behavior |
 | ------ | ------- | -------- |
@@ -154,9 +154,9 @@ class is the implementation, not the call site.
 | `mapOrFallback<R>((T) -> #R fn, R fallback)` | `MapOrFallbackStream<T,R>` | Like `map`, but a throwing element is substituted with `fallback` (length unchanged). |
 | `mapOrLog<R>((T) -> #R fn, (T, Exception) -> void logger)` | `MapOrLogStream<T,R>` | Like `map`, but a throwing element is passed to `logger(elem, exc)` then dropped. |
 
-The three `mapOr*` recovery ops catch only `RecoverableException`;
-`UnrecoverableException` always propagates (the alarm contract — see
-`StreamParallelism.ErrorHandling.md` § 3.3). They are type-changing
+The three `mapOr*` recovery ops catch only `RecoverableException`, and
+`UnrecoverableException` always propagates, which is the alarm contract of
+`StreamParallelism.ErrorHandling.md` § 3.3. They are type-changing
 wrappers, so under `.parallel()` the chain falls back to sequential.
 
 ### Examples
@@ -184,7 +184,7 @@ int32 doubledSum = xs.stream().map<int32>(dbl).reduce(0, add);    // 42
 ```
 
 Each method is sugar for constructing the matching wrapper, so the
-explicit form (`heap FilterStream<int32>(xs.stream(), isEven)`) still
+explicit form `heap FilterStream<int32>(xs.stream(), isEven)` still
 works and is what the methods lower to.
 
 Pinned by `test/parser/StreamIntermediateTests.cpp` (24 tests covering
@@ -192,10 +192,10 @@ all nine wrappers, including the three `mapOr*` recovery ops).
 
 ### Fluent chaining
 
-`xs.stream().filter(p).map<R>(f).count()` works today — the intermediate
+`xs.stream().filter(p).map<R>(f).count()` works today. The intermediate
 combinators are real methods on `Stream<T>` that return `#Stream<R>`, so
-they chain directly. The historical P6.6 two-step workaround (binding
-each wrapper stream to a named local) is no longer required;
+they chain directly. The historical P6.6 two-step workaround of binding
+each wrapper stream to a named local is no longer required.
 `test/parser/ChainedFormTests.cpp` pins the chained terminal forms, and
 the parallel suite pins fluent dispatch through filter chains.
 
@@ -247,12 +247,12 @@ xs.stream().anyMatch(isEven);
 xs.stream().allMatch(isEven);
 ```
 
-When a wrapper stream stores a lambda in a field (`(T) -> R fn` on
-`MapStream<T, R>`), invocation through `this.fn(args)` is now wired
-end-to-end through MethodCallExpression's function-typed-field path
-(see `src/cajeta/asn/expression/MethodCallExpression.cpp` — function-
-field-invocation block). Before that landed, the call silently became
-`i1 false` for boolean lambdas / garbage for others.
+When a wrapper stream stores a lambda in a field, such as `(T) -> R fn` on
+`MapStream<T, R>`, invocation through `this.fn(args)` is now wired
+end-to-end through MethodCallExpression's function-typed-field path,
+the function-field-invocation block in
+`src/cajeta/asn/expression/MethodCallExpression.cpp`. Before that landed,
+the call silently became `i1 false` for boolean lambdas and garbage for others.
 
 ## `ArrayStream<T>` and the `T[].stream()` intrinsic
 
@@ -269,15 +269,15 @@ public class ArrayStream<T> extends Stream<T> implements Splittable<T> {
 }
 ```
 
-`ArrayStream` is the canonical `Splittable<T>` root: `trySplit()`
-halves the index range without copying, making it the parallel-friendly
+`ArrayStream` is the canonical `Splittable<T>` root. `trySplit()`
+halves the index range without copying, which makes it the parallel-friendly
 source (see `StreamParallelism.md`). It also overrides `count()` with an
 O(1) `limit - idx` fast path under `.parallel()`.
 
 The compiler intrinsic `arr.stream()` lowers to
-`heap ArrayStream<T>(arr, arr.count())` — see
-`src/cajeta/asn/expression/MethodCallExpression.cpp` (the `.stream()`
-intrinsic block, scoped to a `CajetaArray` receiver). The instantiated
+`heap ArrayStream<T>(arr, arr.count())`. See the `.stream()` intrinsic
+block in `src/cajeta/asn/expression/MethodCallExpression.cpp`, which is
+scoped to a `CajetaArray` receiver. The instantiated
 ArrayStream<T>'s ctor is dispatched via the template's instantiation
 cache, identical to any user `heap T<...>(...)` call.
 
@@ -289,12 +289,12 @@ exercise across StreamTerminalTests / StreamIntermediateTests.
 `Optional<T>` multiple-inherits `Stream<T>` so the present-value case
 behaves like a one-element stream and the empty case like a zero-
 element stream. `next()` returns the contained value on the first
-call (present case) and empty thereafter.
+call in the present case, and empty thereafter.
 
-> Implementation status: today `Optional<T>` does NOT yet multiple-
-> inherit `Stream<T>` (see `runtime/src/cajeta/lang/Optional.cajeta` —
-> no `extends Stream<T>` clause). Lands once multiple inheritance is
-> verified end-to-end on the codegen path. Tracked in specs/Features.md.
+> Implementation status: today `Optional<T>` does not yet multiple-
+> inherit `Stream<T>`, and `runtime/src/cajeta/lang/Optional.cajeta` has
+> no `extends Stream<T>` clause. It lands once multiple inheritance is
+> verified end-to-end on the codegen path. It is tracked in specs/Features.md.
 
 ## Constructing streams from collections
 
@@ -307,11 +307,11 @@ The convention for every collection in `cajeta.collection`:
 | `ImmutableList<T>` / `ImmutableSet<T>` | `.stream()` | `Stream<T>` over elements |
 | `HashMap<K, V>` | `map.keys()` / `map.values()` / `map.entries()` | `Stream<K>` / `Stream<V>` / `Stream<Pair<K,V>>`, slot-walk order |
 
-`HashMap`'s three views are `Splittable` snapshots taken at the call
-(`keys()` → `HashMapKeyStream`, etc.); a concurrent `put`/`remove`/resize
-during traversal is undefined behavior, same as Java's non-snapshot
+`HashMap`'s three views are `Splittable` snapshots taken at the call,
+so `keys()` → `HashMapKeyStream` and so on. A concurrent `put`/`remove`/resize
+during traversal is undefined behavior, the same as Java's non-snapshot
 iterators. The longer-term plan is for containers to multiple-inherit
-`Stream` so the factory call drops away — not landed yet.
+`Stream` so the factory call drops away, and that has not landed yet.
 
 ## Tests
 
@@ -335,13 +335,13 @@ Complete features have pinned test files:
 
 Tracked in `specs/Features.md`:
 
-- Multiple-inheritance for `Optional<T>` to `extends Stream<T>` —
+- Multiple-inheritance for `Optional<T>` to `extends Stream<T>`. It is
   ergonomic but blocked on end-to-end multi-inheritance codegen.
-  (`Optional<T>` is a plain class today — it does NOT yet extend
-  `Stream<T>`; see `runtime/src/cajeta/lang/Optional.cajeta`.)
+  `Optional<T>` is a plain class today and does not yet extend
+  `Stream<T>` (see `runtime/src/cajeta/lang/Optional.cajeta`).
 - Multiple-inheritance for collection types (`ArrayList<T>`,
-  `HashMap<K,V>`, etc.) to BE streams rather than expose a `.stream()`
-  / `keys()` / `values()` / `entries()` factory.
+  `HashMap<K,V>`, etc.) so that they are streams themselves rather than
+  exposing a `.stream()` / `keys()` / `values()` / `entries()` factory.
 - **Shipped since this doc's first draft:** `fold<R>` (both the
   sequential 2-arg form and the parallel 3-arg-with-combiner form),
   `collect<R>(Collector<T,R>)`, the `mapOr*` recovery ops, the

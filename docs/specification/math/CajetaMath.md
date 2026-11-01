@@ -1,34 +1,35 @@
 # cajeta.math
 
-A design for `cajeta.math`, the numerical foundation library for
-cajeta — and the layer everything else numerical builds on.
+This is a design for `cajeta.math`, the numerical foundation library for
+cajeta and the layer everything else numerical builds on. It covers
 N-dimensional tensors, linear algebra, statistics (descriptive,
 inferential, classical ML), signal processing, neural networks,
 quaternions and spatial transforms, mixed-precision casting, RNGs,
-arbitrary-precision arithmetic. NumPy + SciPy + scikit-learn-shaped
-contracts in one tree, with autograd + neural-network plumbing as one
-sub-package alongside the others.
+and arbitrary-precision arithmetic. The contracts are shaped like
+NumPy, SciPy and scikit-learn in one tree, with autograd and
+neural-network plumbing as one sub-package alongside the others.
 
 This document covers two layers in one:
 
-1. **Top-level `cajeta.math`** — boxed numeric Objects for every
+1. **Top-level `cajeta.math`** holds boxed numeric Objects for every
    native type (including the fp4 / fp6 / fp8 variants the language
    already lowers), precision-aware casting, `RoundingMode`,
    arbitrary-precision (`BigInteger`, `BigDecimal`, `Rational`), and
    general-purpose RNGs. The compiler can fold the boxed forms back
-   into their primitives in tight loops; the boxes exist so that
+   into their primitives in tight loops. The boxes exist so that
    `HashMap<Double, V>` works the way every other reference-typed
    keyed collection works.
-2. **Sub-packages** — `cajeta.math.tensor`, `linalg`, `stats`,
-   `signal`, `nn`. Each is an independent block on top of the boxed-
-   primitive foundation.
+2. **Sub-packages** are `cajeta.math.tensor`, `linalg`, `stats`,
+   `signal` and `nn`. Each is an independent block on top of the
+   boxed-primitive foundation.
 
 Implementation lands incrementally as `.cajeta` files. The boxed-
-primitive foundation lives under `./runtime/src/cajeta/math/` (stdlib-
-adjacent — every program with a `HashMap<Double, V>` benefits from
-boxed `Double`). The sub-packages live under `./libraries/cajeta.math/src/`
-(separate tree; ships as its own package outside the stdlib so the
-surface can evolve without stdlib-stability constraints).
+primitive foundation lives under `./runtime/src/cajeta/math/`, which
+is stdlib-adjacent, because every program with a
+`HashMap<Double, V>` benefits from a boxed `Double`. The sub-packages
+live under `./libraries/cajeta.math/src/`, a separate tree. They ship
+as their own package outside the stdlib so the surface can evolve
+without stdlib-stability constraints.
 
 ## Why this is `cajeta.math`, not `cajeta.ml`
 
@@ -39,91 +40,94 @@ design. Scientific computing needs linear algebra, statistics, and
 arbitrary precision. Robotics needs SE(3) and Lie-algebra
 exponentials. Audio needs cepstral analysis. Computer graphics needs
 matrix decompositions for IK and skinning. ML uses every one of
-these — but so does everyone else, and the namespace should reflect
+these, and so does everyone else, so the namespace should reflect
 that.
 
-So `cajeta.math.*` is the long-lived numerical foundation; `cajeta.math.nn`
-is the neural-network corner of it. Users who never touch a neural net
-still get tensors, linalg, stats, and signal processing under a name
-that doesn't presume otherwise.
+So `cajeta.math.*` is the long-lived numerical foundation, and
+`cajeta.math.nn` is the neural-network corner of it. Users who never
+touch a neural net still get tensors, linalg, stats, and signal
+processing under a name that does not presume otherwise.
 
 The previous `cajeta.ml` framing is retired. `cajeta.math.nn`
-absorbs autograd + layers + optimizers; `cajeta.math.stats` absorbs
+absorbs autograd, layers and optimizers. `cajeta.math.stats` absorbs
 the classical-ML estimators (regression, classification, clustering,
-trees, preprocessing); `cajeta.math.signal` absorbs FFT and filter
-design. The packages aren't moved out of view — they're recategorized
-under their actual subject.
+trees, preprocessing). `cajeta.math.signal` absorbs FFT and filter
+design. The packages are not moved out of view. They are
+recategorized under their actual subject.
 
 ## Why a separate library (sub-packages, not stdlib)
 
 The stdlib answers "what does every cajeta program need." That answer
-is small: error types, strings, time, collections, basic IO. Tensors,
-autograd, optimizers, and regression models don't belong there — most
-programs never touch them, the surface area is huge, the dependency
-weight is real (BLAS, LAPACK, eventually accelerator runtimes), and
-the API churn cycle is faster than stdlib should accept.
+is small, and it is error types, strings, time, collections, and basic
+IO. Tensors, autograd, optimizers, and regression models do not belong
+there. Most programs never touch them, the surface area is huge, the
+dependency weight is real (BLAS, LAPACK, eventually accelerator
+runtimes), and the API churn cycle is faster than stdlib should
+accept.
 
 The boxed-primitive foundation at the top level of `cajeta.math` is
-different — every program with a hash map of doubles, a typed-
+different. Every program with a hash map of doubles, a typed-
 identifier system, or a parsing surface that returns "this Object is
 some kind of number" benefits from it. That layer stays in the
 stdlib-adjacent tree.
 
 The sub-packages (tensor / linalg / stats / signal / nn) live as
 separate libraries with independent versioning, optional dependencies
-on the accelerator foundation ([`cajeta.xpu`](../gpu/CajetaGPU.md) —
+on the accelerator foundation ([`cajeta.xpu`](../gpu/CajetaGPU.md),
 see §"Backend strategy"), and room for the APIs to evolve.
 
 ## Goals
 
 - **NumPy parity for the everyday surface.** Arithmetic,
   broadcasting, reshape, slicing, reductions, linalg, FFT, random,
-  basic stats. If a NumPy script translates 1:1 in spirit, that's a
-  win.
-- **First-class autograd.** Forward and reverse mode, dynamic graphs
-  (PyTorch shape, not TensorFlow 1.x), so research code can introspect
-  and modify computation at runtime.
+  and basic stats. If a NumPy script translates 1:1 in spirit, that
+  is a win.
+- **First-class autograd.** Forward and reverse mode, with dynamic
+  graphs in the PyTorch shape rather than the TensorFlow 1.x shape,
+  so research code can introspect and modify computation at runtime.
 - **Classical ML covered under stats.** Regression (linear / logistic
   / polynomial), clustering (k-means, hierarchical, DBSCAN),
   classification (kNN, SVM, naive Bayes), trees (decision trees,
-  random forests, gradient boosting). The scikit-learn estimator
-  contract: `fit(X, y) -> Self`, `predict(X) -> Y`, `score(X, y)`.
+  random forests, gradient boosting). It follows the scikit-learn
+  estimator contract, which is `fit(X, y) -> Self`,
+  `predict(X) -> Y`, `score(X, y)`.
 - **NN building blocks under nn.** Layers, optimizers, loss
   functions, parameter management, training loops. The PyTorch
   `nn.Module` shape fits here cleanly.
 - **Geometry under linalg.** Quaternions, SE(3) / SO(3) transforms,
-  rotation conversions, spatial vector types — where every shipping
-  3D engine puts them.
+  rotation conversions, and spatial vector types, which is where
+  every shipping 3D engine puts them.
 - **Mixed precision is native, not an afterthought.** Tensors carry
-  dtype; fp4 / fp6 / fp8 / fp16 / bf16 / fp32 / fp64 all participate.
-  Casting between them is explicit and uses the boxed-primitive
-  casting API.
+  dtype, and fp4 / fp6 / fp8 / fp16 / bf16 / fp32 / fp64 all
+  participate. Casting between them is explicit and uses the
+  boxed-primitive casting API.
 - **GPU acceleration on day one — optional.** Kernels dispatch
   through [`cajeta.xpu`](../gpu/CajetaGPU.md) when a device is
-  present, fall back to CPU + LLVM SIMD intrinsics otherwise. Same
-  `Tensor` API; the active backend resolves at runtime.
+  present, and fall back to CPU + LLVM SIMD intrinsics otherwise. The
+  `Tensor` API is the same, and the active backend resolves at
+  runtime.
 
 ## Non-goals (v1)
 
 - **Distributed training.** Multi-host / multi-GPU coordination
   belongs in a follow-up library that builds on `cajeta.math.nn`.
-- **Pre-trained model zoo.** No bundled weights. The infrastructure
-  supports loading from external sources (npy / safetensors / ONNX
-  later); we don't curate a model library.
-- **JIT graph compilers.** No XLA-equivalent in v1. Eager execution
-  with vectorized kernels is the baseline; tracing / compilation is a
-  later layer.
+- **Pre-trained model zoo.** There are no bundled weights. The
+  infrastructure supports loading from external sources (npy /
+  safetensors / ONNX later), and we do not curate a model library.
+- **JIT graph compilers.** There is no XLA-equivalent in v1. Eager
+  execution with vectorized kernels is the baseline, and tracing /
+  compilation is a later layer.
 - **Probabilistic programming framework.** Distributions exist
-  (`stats.distributions`); a Pyro / Stan-equivalent inference engine
-  doesn't.
+  (`stats.distributions`). A Pyro / Stan-equivalent inference engine
+  does not.
 
 ---
 
 ## Top-level `cajeta.math` — boxed primitives and friends
 
-The foundation. Every native numeric type has an Object form here.
-Higher layers (`tensor`, `linalg`, `stats`, `signal`, `nn`) reach into
-these for casting, formatting, parsing, and inspection.
+This is the foundation. Every native numeric type has an Object form
+here. The higher layers (`tensor`, `linalg`, `stats`, `signal`, `nn`)
+reach into these for casting, formatting, parsing, and inspection.
 
 ### Boxed primitives — full coverage
 
@@ -149,8 +153,8 @@ cajeta.math.Float64        (boxed float64)
 `cajeta.lang.Integer / Long / Double / Boolean` (the shapes already
 documented in `docs/specification/`) become aliases / re-exports of
 `cajeta.math.Int32 / Int64 / Float64 / Boolean`. The math package is
-the source of truth; `cajeta.lang` carries the Java-style names for
-ergonomics.
+the source of truth, and `cajeta.lang` carries the Java-style names
+for ergonomics.
 
 ### Common shape — every boxed numeric type
 
@@ -229,9 +233,9 @@ public final class Float8E4M3 implements Comparable<Float8E4M3> {
 }
 ```
 
-Same shape applies to every floating-point box — only the constants
-and casting destinations differ. Integer boxes drop the IEEE
-inspection methods, gain bit-manipulation helpers (`bitCount`,
+The same shape applies to every floating-point box, and only the
+constants and casting destinations differ. Integer boxes drop the
+IEEE inspection methods, gain bit-manipulation helpers (`bitCount`,
 `numberOfLeadingZeros`, `reverse`, etc.), and replace saturating
 arithmetic with two-variant arithmetic (wrapping + checked).
 
@@ -248,18 +252,18 @@ public enum RoundingMode {
 }
 ```
 
-`STOCHASTIC` rounding is non-deterministic by design (samples from the
-RNG returned by `Random.default()`); it's the standard technique for
-low-precision training to avoid systematic bias when quantizing
-gradients and weights. The RNG dependency is the reason `Random`
-lives at the top level of `cajeta.math` rather than nested under
-`stats` — `RoundingMode` is in the boxed-primitive layer and can't
-reach upward.
+`STOCHASTIC` rounding is non-deterministic by design, and it samples
+from the RNG returned by `Random.default()`. It is the standard
+technique for low-precision training to avoid systematic bias when
+quantizing gradients and weights. The RNG dependency is the reason
+`Random` lives at the top level of `cajeta.math` rather than nested
+under `stats`. `RoundingMode` is in the boxed-primitive layer and
+cannot reach upward.
 
 ### Why fp4 / fp6 / fp8 deserve dedicated boxes
 
-These formats have small dynamic range and tight quantization steps;
-the failure modes (overflow to inf, underflow to zero, NaN
+These formats have small dynamic range and tight quantization steps.
+The failure modes (overflow to inf, underflow to zero, NaN
 propagation, denormal flushing) bite immediately when used naively.
 The boxed types make the gotchas inspectable (`isSubnormal()`,
 `saturatingAdd`) and the casts to and from larger formats explicit.
@@ -267,7 +271,7 @@ Without that surface, fp8 training loops degrade silently in ways
 that take days to debug.
 
 The boxed types also give us the natural place to hang the conversion
-correctness tests — a precision-down cast from `Float64` →
+correctness tests. A precision-down cast from `Float64` to
 `Float8E4M3` has well-defined behavior we can pin down once and trust
 everywhere.
 
@@ -279,11 +283,11 @@ cajeta.math.BigDecimal     — arbitrary-precision decimal with scale
 cajeta.math.Rational       — exact ratio of two BigIntegers
 ```
 
-Standard arithmetic, comparisons, conversions to / from boxed
-primitives (with explicit rounding when the destination can't
-represent the value), parsing, formatting. Same shape as Java's
-`BigInteger / BigDecimal` so users coming from JVM languages get a
-familiar API.
+These offer standard arithmetic, comparisons, conversions to and
+from boxed primitives (with explicit rounding when the destination
+cannot represent the value), parsing, and formatting. They have the
+same shape as Java's `BigInteger / BigDecimal`, so users coming from
+JVM languages get a familiar API.
 
 ### Numeric utilities
 
@@ -302,11 +306,12 @@ cajeta.math.constants  — PI, E, TAU, GOLDEN, LN2, LN10, etc.
 
 ### Random number generation
 
-A general-purpose RNG for stdlib-and-up code — counters, sampling,
-shuffling, jitter, the everyday sources of stochasticity. Distinct
-from `cajeta.math.stats.distributions` (tensor-shaped sampling) and
-from `SecureRandom` (cryptographic). Mutable RNG object with
-`nextX()` methods, the shape Java / C++ / most stdlibs converged on.
+This is a general-purpose RNG for stdlib-and-up code. It serves
+counters, sampling, shuffling, jitter, and the everyday sources of
+stochasticity. It is distinct from `cajeta.math.stats.distributions`
+(tensor-shaped sampling) and from `SecureRandom` (cryptographic). It
+is a mutable RNG object with `nextX()` methods, the shape Java, C++
+and most stdlibs converged on.
 
 ```cajeta
 public final class Random {
@@ -377,14 +382,14 @@ public final class SecureRandom {
 }
 ```
 
-Algorithm pinning is intentional: the default RNG's algorithm is
+Algorithm pinning is intentional. The default RNG's algorithm is
 documented and fixed across versions (PCG64 unless a future
-specification calls out a replacement) so a saved seed produces the
+specification calls out a replacement), so a saved seed produces the
 same stream three years later.
 
 ### GUID — 32-bit, 64-bit, 128-bit globally unique identifiers
 
-Three sizes covering the spectrum from "small ID with low collision
+Three sizes cover the spectrum from "small ID with low collision
 risk acceptable" through "snowflake-shaped sortable ID for high-
 volume systems" through "standard UUID, effectively zero collision
 risk."
@@ -397,11 +402,12 @@ cajeta.math.Guid128       — 16-byte UUID (RFC 4122 compatible)
 
 #### `Guid32`
 
-4 bytes. ~4.3 billion possible values; collision probability ≈ 50%
-at ~77,000 generated IDs (birthday bound). Suitable for short-lived
-IDs (request IDs, transient objects, log correlation), local
-sequences augmented with a time epoch, or any scope where the
-generating process can detect and recover from collision.
+`Guid32` is 4 bytes, with ~4.3 billion possible values. The collision
+probability is ≈ 50% at ~77,000 generated IDs (the birthday bound).
+It is suitable for short-lived IDs (request IDs, transient objects,
+log correlation), local sequences augmented with a time epoch, or any
+scope where the generating process can detect and recover from
+collision.
 
 ```cajeta
 public final class Guid32 implements Comparable<Guid32> {
@@ -426,11 +432,12 @@ public final class Guid32 implements Comparable<Guid32> {
 
 #### `Guid64`
 
-8 bytes. ~1.8 × 10¹⁹ possible values; collision probability ≈ 50%
-at ~5 billion. Snowflake-shape time-ordered variant suitable for
-high-volume databases (sortable index, no UUID v4's pathological
-b-tree fragmentation). Random variant available for cases where
-ordering would leak information.
+`Guid64` is 8 bytes, with ~1.8 × 10¹⁹ possible values. The collision
+probability is ≈ 50% at ~5 billion. The snowflake-shape time-ordered
+variant is suitable for high-volume databases, because it gives a
+sortable index without UUID v4's pathological b-tree fragmentation.
+A random variant is available for cases where ordering would leak
+information.
 
 ```cajeta
 public final class Guid64 implements Comparable<Guid64> {
@@ -460,9 +467,9 @@ public final class Guid64 implements Comparable<Guid64> {
 
 #### `Guid128`
 
-16 bytes. RFC 4122 UUID compatible. Effectively zero collision risk
-for any realistic generation rate. The default for IDs that cross
-system boundaries.
+`Guid128` is 16 bytes and RFC 4122 UUID compatible. It has
+effectively zero collision risk for any realistic generation rate,
+and it is the default for IDs that cross system boundaries.
 
 ```cajeta
 public final class Guid128 implements Comparable<Guid128> {
@@ -503,7 +510,7 @@ public final class Guid128 implements Comparable<Guid128> {
 | Session tokens, secrets                             | `Guid128.v4` |
 
 The explicit size in the type name makes the trade-off visible at
-every read site instead of buried in choice of generator.
+every read site instead of buried in the choice of generator.
 
 ---
 
@@ -540,17 +547,17 @@ cajeta.math.nn       ── autograd (Variable wrapper, dynamic graphs,
                        differential evolution).
 ```
 
-Five sub-packages. Each is self-contained on top of the boxed-
-primitive foundation; cross-package dependencies are explicit (`nn`
-depends on `tensor` and `linalg`; `stats` depends on `tensor` and
-`linalg`; `signal` depends on `tensor`).
+There are five sub-packages. Each is self-contained on top of the
+boxed-primitive foundation, and cross-package dependencies are
+explicit. `nn` depends on `tensor` and `linalg`, `stats` depends on
+`tensor` and `linalg`, and `signal` depends on `tensor`.
 
 ---
 
 ## `cajeta.math.tensor`
 
-The foundational type. Everything else in the sub-packages flows
-through `Tensor`.
+This is the foundational type. Everything else in the sub-packages
+flows through `Tensor`.
 
 ```cajeta
 public final class Tensor<T> implements Collection<T> {
@@ -641,39 +648,40 @@ public final class DType {
 }
 ```
 
-Implementation strategy: storage is a single heap buffer (`int8[]`)
-sized to `dtype.bytesPerElement() * shape.totalSize()`, plus a small
-header for shape / strides / offset. Views (slice / reshape /
-transpose) share the underlying buffer; only `astype` and explicit
+The implementation strategy is a single heap buffer (`int8[]`) for
+storage, sized to `dtype.bytesPerElement() * shape.totalSize()`, plus
+a small header for shape, strides and offset. Views (slice / reshape /
+transpose) share the underlying buffer, and only `astype` and explicit
 copies allocate.
 
-`Tensor<T>` parameterizing on the element type (`int32`, `float32`,
-etc., not the boxed forms) lets the compiler specialize hot kernels
-per dtype. The `DType` runtime tag covers the generic-over-dtype API
-surface (`astype`, IO).
+`Tensor<T>` parameterizes on the element type (`int32`, `float32`,
+etc., and never the boxed forms), which lets the compiler specialize
+hot kernels per dtype. The `DType` runtime tag covers the
+generic-over-dtype API surface (`astype`, IO).
 
 ### Tensor IO (`cajeta.math.tensor.io`)
 
-Same sub-package, separate module:
+This is the same sub-package in a separate module:
 
-- **NumPy `.npy`** — single-array, fully reversible.
-- **NumPy `.npz`** — multi-array zip container.
-- **safetensors** — modern alternative used by HuggingFace; safer than
-  pickled `.pt` since it can't execute arbitrary code on load.
-- **CSV** — simple float / int loaders that produce 2-D tensors.
-- **Image loaders** — PNG / JPEG / EXR to / from `Tensor<uint8>` or
-  `Tensor<float32>`; lands later, behind a feature flag.
+- **NumPy `.npy`** is single-array and fully reversible.
+- **NumPy `.npz`** is the multi-array zip container.
+- **safetensors** is the modern alternative used by HuggingFace. It
+  is safer than pickled `.pt` since it cannot execute arbitrary code
+  on load.
+- **CSV** gives simple float / int loaders that produce 2-D tensors.
+- **Image loaders** read PNG / JPEG / EXR to and from `Tensor<uint8>`
+  or `Tensor<float32>`. They land later, behind a feature flag.
 
-ONNX import / export lives in `cajeta.math.nn.onnx` because it's
-graph-shaped, not tensor-shaped.
+ONNX import / export lives in `cajeta.math.nn.onnx` because it is
+graph-shaped rather than tensor-shaped.
 
 ---
 
 ## `cajeta.math.linalg`
 
-Linear algebra. Matrix operations, decompositions, solvers — plus the
-geometry types (Vec*, Mat*, Quaternion, SE(3)) that are linear algebra
-by construction.
+This is linear algebra. It holds matrix operations, decompositions
+and solvers, plus the geometry types (Vec*, Mat*, Quaternion, SE(3))
+that are linear algebra by construction.
 
 ### Core surface
 
@@ -756,10 +764,10 @@ public final class SO3<T> {
 }
 ```
 
-Generic over `T` so `Quaternion<float32>` (graphics) and
+These are generic over `T`, so `Quaternion<float32>` (graphics) and
 `Quaternion<float64>` (control, robotics) both work without a second
 implementation. The graphics layer (`cajeta.render`) imports these for
-mesh transforms, camera math, and skeletal animation; physics, IK,
+mesh transforms, camera math, and skeletal animation. Physics, IK,
 and SLAM workloads use the same types.
 
 ### Backend dispatch
@@ -768,18 +776,19 @@ Linalg kernels dispatch through `cajeta.xpu.blas` /
 `cajeta.xpu.dnn` when an accelerator is present and the operation
 is large enough to amortize the launch overhead. Below that threshold,
 or when no XPU device is configured, the CPU fallback uses LLVM SIMD
-intrinsics — see §"Backend strategy" for the full story.
+intrinsics. See §"Backend strategy" for the full story.
 
 ---
 
 ## `cajeta.math.stats`
 
-Descriptive and inferential statistics, distributions, hypothesis
-tests, AND the sklearn-shaped classical-ML estimators. The unifying
-shape: all of it is statistical modeling — descriptive stats are
-zero-parameter models, regression is parametric inference, clustering
-is unsupervised inference. Living together under `stats` matches that
-reality and frees `nn` to be neural-network-specific.
+This package holds descriptive and inferential statistics,
+distributions, hypothesis tests, AND the sklearn-shaped classical-ML
+estimators. The unifying shape is that all of it is statistical
+modeling. Descriptive stats are zero-parameter models, regression is
+parametric inference, and clustering is unsupervised inference.
+Living together under `stats` matches that reality and frees `nn` to
+be neural-network-specific.
 
 ### Descriptive statistics
 
@@ -860,9 +869,10 @@ public class LinearRegression implements Estimator<Tensor<float64>, Tensor<float
 }
 ```
 
-Same shape for `Ridge`, `Lasso`, `ElasticNet`, `LogisticRegression`,
-`PolynomialRegression`. The estimator interface is the contract every
-classical-ML model honors so users can swap implementations cleanly.
+The same shape applies to `Ridge`, `Lasso`, `ElasticNet`,
+`LogisticRegression` and `PolynomialRegression`. The estimator
+interface is the contract every classical-ML model honors, so users
+can swap implementations cleanly.
 
 Classification: `KNN`, `SVM` (linear / kernel), `NaiveBayesGaussian` /
 `NaiveBayesMultinomial` / `NaiveBayesBernoulli`, `LDA` / `QDA`.
@@ -870,7 +880,7 @@ Classification: `KNN`, `SVM` (linear / kernel), `NaiveBayesGaussian` /
 Clustering: `KMeans` (with k-means++ init), `MiniBatchKMeans`,
 `HierarchicalClustering` (single / complete / average / Ward),
 `DBSCAN`, `OPTICS`, `GaussianMixture` (under both clustering and
-distributions — same model, two entry points).
+distributions, as the same model with two entry points).
 
 Trees: `DecisionTreeClassifier`, `DecisionTreeRegressor`,
 `RandomForestClassifier`, `RandomForestRegressor`, `ExtraTreesClassifier`,
@@ -887,9 +897,10 @@ Metrics: `accuracy`, `precision`, `recall`, `f1`, `auc`, `mse`, `mae`,
 
 ## `cajeta.math.signal`
 
-Signal processing — what NumPy splits across `numpy.fft` and `scipy.signal`.
-Living together makes sense: nearly every signal-processing pipeline
-moves between the time and frequency domains.
+This package is signal processing, which NumPy splits across
+`numpy.fft` and `scipy.signal`. Living together makes sense, because
+nearly every signal-processing pipeline moves between the time and
+frequency domains.
 
 ### FFT
 
@@ -910,9 +921,9 @@ public Tensor<T>          dct<T>(Tensor<T> x, DCTType type = DCTType.II);
 public Tensor<T>          idct<T>(Tensor<T> X, DCTType type = DCTType.II);
 ```
 
-Dispatches to `cajeta.xpu.fft` (cuFFT / rocFFT) when an XPU
-device is present and the transform is large enough; FFTW-shaped CPU
-plans below that threshold.
+The FFT dispatches to `cajeta.xpu.fft` (cuFFT / rocFFT) when an XPU
+device is present and the transform is large enough. Below that
+threshold it uses FFTW-shaped CPU plans.
 
 ### Convolution and correlation
 
@@ -955,17 +966,18 @@ public Tensor<T> istft<T>(Tensor<complex64> Z, int32 nperseg, int32 noverlap, Wi
 
 ## `cajeta.math.nn`
 
-Autograd plus everything that depends on it: layers, optimizers, loss
-functions, training loops. Plus the gradient-free generic optimizers
-(BFGS family, Nelder-Mead, simulated annealing) — same package because
-they share the "optimize a parameter set against an objective" shape,
-even when no gradient is involved.
+This package is autograd plus everything that depends on it, which is
+layers, optimizers, loss functions and training loops. It also holds
+the gradient-free generic optimizers (the BFGS family, Nelder-Mead,
+simulated annealing). They are in the same package because they share
+the "optimize a parameter set against an objective" shape, even when
+no gradient is involved.
 
 ### Autograd
 
-PyTorch-style dynamic graphs. A `Variable` carries data, a gradient
-buffer, and a `gradFn` reference; operations build the graph
-implicitly; `backward()` walks it in reverse.
+Autograd uses PyTorch-style dynamic graphs. A `Variable` carries
+data, a gradient buffer, and a `gradFn` reference. Operations build
+the graph implicitly, and `backward()` walks it in reverse.
 
 ```cajeta
 public final class Variable<T> {
@@ -988,10 +1000,10 @@ public class NoGradScope implements AutoCloseable {
 ```
 
 Op authors register a `Function<Inputs, Output, GradInputs>` that
-provides forward + backward. Standard ops (matmul, add, mul, relu,
-softmax, log, sum, mean, ...) ship as built-ins; each delegates its
-forward pass to `cajeta.math.tensor` (and through it to
-`cajeta.xpu` when an accelerator is present).
+provides forward and backward. Standard ops (matmul, add, mul, relu,
+softmax, log, sum, mean, ...) ship as built-ins. Each delegates its
+forward pass to `cajeta.math.tensor`, and through it to
+`cajeta.xpu` when an accelerator is present.
 
 ### `Module` base + parameter discovery
 
@@ -1020,7 +1032,7 @@ public abstract class Module {
 `LayerNorm`, `RMSNorm`, `Dropout`, `Embedding`, `MultiheadAttention`,
 `TransformerEncoderLayer`, `TransformerDecoderLayer`.
 
-Activations as Module-or-function pairs: `ReLU`, `GELU`, `SiLU`,
+Activations ship as Module-or-function pairs: `ReLU`, `GELU`, `SiLU`,
 `Tanh`, `Sigmoid`, `Softmax`.
 
 Losses: `MSELoss`, `CrossEntropyLoss`, `BCELoss`, `L1Loss`,
@@ -1057,8 +1069,9 @@ LR schedulers: `StepLR`, `MultiStepLR`, `ExponentialLR`,
 
 ### Gradient-free optimization
 
-For users whose objective doesn't come with gradients (black-box
-functions, simulation-based scoring, integer or constrained spaces):
+These are for users whose objective does not come with gradients,
+such as black-box functions, simulation-based scoring, and integer or
+constrained spaces:
 
 ```cajeta
 public OptimResult bfgs<T>(    (Tensor<T>) -> T fn, Tensor<T> x0);
@@ -1068,10 +1081,10 @@ public OptimResult simulatedAnnealing<T>((Tensor<T>) -> T fn, Tensor<T> x0, SACo
 public OptimResult differentialEvolution<T>((Tensor<T>) -> T fn, Tensor<T> bounds, DEConfig cfg);
 ```
 
-BFGS / L-BFGS internally use gradient estimation (finite differences
-by default, or a user-supplied gradient function). They share the
-infrastructure with autograd-based optimizers — `OptimResult` is the
-same type either way.
+BFGS / L-BFGS internally use gradient estimation, with finite
+differences by default or a user-supplied gradient function. They
+share the infrastructure with autograd-based optimizers, and
+`OptimResult` is the same type either way.
 
 ### ONNX import/export
 
@@ -1083,90 +1096,95 @@ public void   saveONNX(Module model, Tensor<float32> exampleInput, String path);
 ```
 
 ONNX lives under `nn` (rather than under `tensor.io`) because the
-import / export operates on `Module` graphs, not raw tensors.
+import / export operates on `Module` graphs rather than raw tensors.
 
 ---
 
 ## Backend strategy
 
 The same `Tensor` / `Module` API targets one portable accelerator
-surface — `cajeta.xpu` — which the compiler lowers to four
-backends from one source:
+surface, `cajeta.xpu`, which the compiler lowers to four backends
+from one source:
 
-- **CPU + LLVM SIMD intrinsics** — the default and the only one with
-  no external dependencies, and the floor `cajeta.xpu` always
+- **CPU + LLVM SIMD intrinsics** is the default and the only backend
+  with no external dependencies. It is the floor `cajeta.xpu` always
   lowers to when no GPU is present. Loop kernels are aggressively
-  autovectorized; AVX-512, NEON, SVE are all in scope.
-- **Vulkan (SPIR-V)** — portable cross-vendor compute (Intel Arc,
-  Apple via MoltenVK, mobile, lavapipe). Linalg uses cooperative-matrix
-  kernels.
-- **AMD (ROCm / AMDGPU)** — when a HIP device is present.
-- **NVIDIA (NVPTX)** — when a CUDA device is present.
+  autovectorized, and AVX-512, NEON and SVE are all in scope.
+- **Vulkan (SPIR-V)** is portable cross-vendor compute (Intel Arc,
+  Apple via MoltenVK, mobile, lavapipe). Linalg uses
+  cooperative-matrix kernels.
+- **AMD (ROCm / AMDGPU)** is used when a HIP device is present.
+- **NVIDIA (NVPTX)** is used when a CUDA device is present.
 
-`cajeta.xpu` is the *only* GPU package in the stdlib: there are no
+`cajeta.xpu` is the only GPU package in the stdlib. There are no
 per-vendor `cajeta.xpu.nvidia` / `.amd` / `.vulkan` stdlib packages.
 Vendor-peak library bindings (cuBLAS / cuDNN / cuFFT, rocBLAS / MIOpen /
-rocFFT) and vendor-exclusive silicon paths live in **external vendor
-libraries** layered under the same `cajeta.xpu.{blas,dnn,fft}`
-seams — added to a project explicitly, never bundled in stdlib. See
-[`CajetaGPU.md`](../gpu/CajetaGPU.md) for the foundation model.
+rocFFT) and vendor-exclusive silicon paths live in external vendor
+libraries layered under the same `cajeta.xpu.{blas,dnn,fft}` seams.
+They are added to a project explicitly and never bundled in the
+stdlib. See [`CajetaGPU.md`](../gpu/CajetaGPU.md) for the foundation
+model.
 
 The active backend is selected at runtime on the first device touch
-(`CUDA → HIP → Vulkan → CPU`); the API doesn't change. A program written
-against `cajeta.math.linalg.matmul(a, b)` runs on whichever backend is
-present, with no source-level branching.
+(`CUDA → HIP → Vulkan → CPU`), and the API does not change. A program
+written against `cajeta.math.linalg.matmul(a, b)` runs on whichever
+backend is present, with no source-level branching.
 
-When no GPU is present the math sub-packages still build and run — they
-just stay on CPU. The GPU dependency is genuinely optional; dropping
+When no GPU is present the math sub-packages still build and run, and
+they stay on CPU. The GPU dependency is genuinely optional. Dropping
 `cajeta.xpu` from `Cajeta.toml` strips the device-dispatch path out
 of the compiled library entirely.
 
-For the substrate that makes accelerator dispatch possible — the device
-foundation, value types, buffers, kernels, and per-backend lowering —
-see [`CajetaGPU.md`](../gpu/CajetaGPU.md) and the compute layer
-[`CajetaXPU.md`](../xpu/CajetaXPU.md).
+For the substrate that makes accelerator dispatch possible, which is
+the device foundation, value types, buffers, kernels, and per-backend
+lowering, see [`CajetaGPU.md`](../gpu/CajetaGPU.md) and the compute
+layer [`CajetaXPU.md`](../xpu/CajetaXPU.md).
 
 ---
 
 ## Implementation sequence
 
-A reasonable order, given dependencies:
+This is a reasonable order, given the dependencies:
 
 1. **Boxed primitives + `RoundingMode` + casting API.** No sub-package
    can land cleanly without these. The intrinsic-fp tests already in
-   the suite (`Fp*Tests`) cover the underlying lowering; this step
+   the suite (`Fp*Tests`) cover the underlying lowering, and this step
    adds the user-visible Object API.
-2. **BigInteger, BigDecimal, Rational.** Standalone, useful outside
-   the math library, lets later steps reuse the arbitrary-precision
-   path (exact statistical computations).
-3. **`Random`, `SecureRandom`, `Guid{32,64,128}`.** Top-level under
-   `cajeta.math`. Self-contained, unblocks tensor sampling and
-   identifier-generation in apps.
-4. **`cajeta.math.tensor`.** The foundation. Strided storage,
-   broadcasting, slicing, reductions, the dtype tag. Element-wise ops
-   as a baseline (no autograd yet, no linalg yet). Plus npy / npz IO.
-5. **`cajeta.math.linalg`.** matmul + basic decompositions + the
-   geometry types. Wraps reference-implementation kernels initially;
-   LAPACK / OpenBLAS / `cajeta.xpu.blas` plug in later behind
-   the same surface.
-6. **`cajeta.math.stats` — descriptive + distributions.** Self-
-   contained block atop `tensor` + `linalg`. Hypothesis tests next.
+2. **BigInteger, BigDecimal, Rational.** These are standalone and
+   useful outside the math library, and they let later steps reuse
+   the arbitrary-precision path (exact statistical computations).
+3. **`Random`, `SecureRandom`, `Guid{32,64,128}`.** These are
+   top-level under `cajeta.math`. They are self-contained, and they
+   unblock tensor sampling and identifier generation in apps.
+4. **`cajeta.math.tensor`.** This is the foundation. It covers strided
+   storage, broadcasting, slicing, reductions, and the dtype tag, with
+   element-wise ops as a baseline and no autograd or linalg yet. It
+   also covers npy / npz IO.
+5. **`cajeta.math.linalg`.** This covers matmul, basic decompositions
+   and the geometry types. It wraps reference-implementation kernels
+   initially, and LAPACK / OpenBLAS / `cajeta.xpu.blas` plug in later
+   behind the same surface.
+6. **`cajeta.math.stats` — descriptive + distributions.** This is a
+   self-contained block atop `tensor` + `linalg`. Hypothesis tests
+   come next.
 7. **`cajeta.math.stats` — classical ML.** Regression, classification,
-   clustering, trees, preprocessing, metrics. Sklearn-shaped
-   estimators. Each is independent; ship as you go.
-8. **`cajeta.math.signal` — FFT.** Stand-alone block.
+   clustering, trees, preprocessing, metrics, as sklearn-shaped
+   estimators. Each is independent, so ship as you go.
+8. **`cajeta.math.signal` — FFT.** This is a stand-alone block.
 9. **`cajeta.math.signal` — convolution, correlation, filter design.**
 10. **`cajeta.math.nn` — autograd.** The Variable wrapper, backward
-    graph, function registration. Built on `tensor`.
-11. **`cajeta.math.nn` — layers, optimizers, training loop.**
-    Transformer block early so language-model workloads are reachable.
+    graph, and function registration, built on `tensor`.
+11. **`cajeta.math.nn` — layers, optimizers, training loop.** The
+    transformer block comes early so language-model workloads are
+    reachable.
 12. **`cajeta.math.nn` — gradient-free optimizers.** BFGS / L-BFGS,
-    Nelder-Mead, SA, DE. Independent of the autograd path.
+    Nelder-Mead, SA, DE. These are independent of the autograd path.
 13. **Accelerator wiring through `cajeta.xpu.{blas,dnn,fft}`.**
-    Backends light up under the same API. The CPU path keeps working.
+    Backends light up under the same API, and the CPU path keeps
+    working.
 
-The gating step is (1) — every other layer touches boxed numerics,
-casting, and rounding. It's small in surface area but foundational.
+The gating step is (1). Every other layer touches boxed numerics,
+casting, and rounding. It is small in surface area and foundational.
 
 ---
 
@@ -1175,33 +1193,34 @@ casting, and rounding. It's small in surface area but foundational.
 - **Boxed primitive locations.** Keep `cajeta.lang.Integer / Long /
   Double` as the everyday names and treat `cajeta.math.Int32 /
   Int64 / Float64` as canonical, or fold the everyday names into
-  `cajeta.math` directly? Java's split has historical baggage; we
+  `cajeta.math` directly? Java's split has historical baggage, and we
   could pick the cleaner shape.
-- **DType representation.** Runtime-tag (`DType`) on a tensor generic
-  over `T` produces a small inconsistency: `Tensor<float32>` knows its
-  element type at compile time, but `astype` returns a tensor with the
-  runtime-chosen dtype. Worth resolving — probably with a separate
-  `AnyTensor` base type that erases the element type for the dtype-
-  generic API.
+- **DType representation.** A runtime tag (`DType`) on a tensor
+  generic over `T` produces a small inconsistency. `Tensor<float32>`
+  knows its element type at compile time, but `astype` returns a
+  tensor with the runtime-chosen dtype. This is worth resolving,
+  probably with a separate `AnyTensor` base type that erases the
+  element type for the dtype-generic API.
 - **Stochastic rounding RNG sourcing.** `RoundingMode.STOCHASTIC`
-  needs an RNG; current sketch reaches into `Random.default()`.
-  Alternative: stochastic rounding API takes an explicit RNG argument
-  and isn't a `RoundingMode` enum value at all — it's a runtime-only
-  mode that can't be requested via simple casts. Worth a decision
-  before locking the API.
+  needs an RNG, and the current sketch reaches into
+  `Random.default()`. The alternative is a stochastic rounding API
+  that takes an explicit RNG argument and is not a `RoundingMode`
+  enum value at all, so it is a runtime-only mode that cannot be
+  requested via simple casts. This is worth a decision before locking
+  the API.
 - **Autograd graph storage.** Eager build (every op records into the
   current graph) vs. trace-on-demand (record only inside an explicit
-  `withGrad { }` scope). Eager matches PyTorch and is intuitive;
+  `withGrad { }` scope). Eager matches PyTorch and is intuitive, and
   trace-on-demand is cheaper when most code is forward-only. Defer
   until autograd implementation starts.
-- **Module parameter discovery.** Synthesize via `@Trainable`
+- **Module parameter discovery.** Synthesize via a `@Trainable`
   annotation walked by the compiler, or by reflection at runtime?
-  Compiler-walked is faster and statically-checked; runtime is
+  Compiler-walked is faster and statically-checked, and runtime is
   flexible and matches the Python ergonomics ML researchers expect.
-  Worth picking a side once `nn.Module` lands.
+  This is worth picking a side once `nn.Module` lands.
 - **Where does GUID actually belong?** `cajeta.math.Guid{32,64,128}`
-  is the current sketch — math because the random / time-ordered
-  generation uses RNG and timestamps. But GUIDs aren't numerical
-  per se; an argument could be made for `cajeta.lang.Guid*` or
-  `cajeta.util.Guid*`. Worth revisiting after the rest of the math
-  sub-packages settle.
+  is the current sketch. It is in math because the random and
+  time-ordered generation uses RNG and timestamps. But GUIDs are not
+  numerical per se, and an argument could be made for
+  `cajeta.lang.Guid*` or `cajeta.util.Guid*`. This is worth
+  revisiting after the rest of the math sub-packages settle.

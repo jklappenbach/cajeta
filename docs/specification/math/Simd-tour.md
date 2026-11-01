@@ -1,12 +1,13 @@
 # Tour: data-parallel work with `cajeta.simd`
 
-This walks from "I'm processing bytes one at a time" to "I'm classifying 16
-bytes per instruction" — the leap that lets a JSON scanner beat Jackson. It
-assumes you've met `cajeta.io.Buffer`. Spec: `docs/specification/math/Simd.md`.
+This tour walks from processing bytes one at a time to classifying 16 bytes
+per instruction. That leap is what lets a JSON scanner beat Jackson. It
+assumes you have met `cajeta.io.Buffer`. The spec is
+`docs/specification/math/Simd.md`.
 
-The running example is the heart of a fast JSON scanner: **find every quote and
-structural character in a block, with one operation per block instead of per
-byte.**
+The running example is the heart of a fast JSON scanner. It finds every quote
+and structural character in a block, with one operation per block instead of
+one per byte.
 
 ## 0. The pain we're removing
 
@@ -19,8 +20,8 @@ while (p < n) {
 }
 ```
 
-Even with SWAR (8 bytes/step) you're doing per-byte *logic*. SIMD does the
-*comparison itself* 16 lanes wide: one instruction compares 16 bytes to `"` and
+Even with SWAR (8 bytes/step) you are doing per-byte logic. SIMD does the
+comparison itself 16 lanes wide. One instruction compares 16 bytes to `"` and
 hands you a 16-bit mask of where they matched.
 
 ## 1. A vector is 16 lanes you operate on at once
@@ -34,14 +35,14 @@ i8x16 ones = i8x16.splat((int8) 1);    // 16 copies of 1
 i8x16 inc = v.add(ones);               // every lane + 1, in one instruction
 ```
 
-A `Vector<int8, 16>` (`i8x16`) is a value — it lives in a SIMD register, copies
-freely, has no ownership and no drop. `load` is unaligned; `splat` broadcasts a
-scalar to every lane.
+A `Vector<int8, 16>` (`i8x16`) is a value. It lives in a SIMD register, copies
+freely, and has no ownership and no drop. `load` is unaligned, and `splat`
+broadcasts a scalar to every lane.
 
 ## 2. Compare → mask: the workhorse
 
-The operation that makes JSON fast: compare every lane to a byte and get back a
-**bitmask** — bit `i` set iff lane `i` matched.
+This is the operation that makes JSON fast. You compare every lane to a byte
+and get back a bitmask, with bit `i` set iff lane `i` matched.
 
 ```cajeta
 i8x16 block = i8x16.load(buf, p);
@@ -54,14 +55,14 @@ if (quotes != 0) {
 }
 ```
 
-`eqMask` is one `pcmpeqb` + `pmovmskb` on x86 (one `cmeq` + reduce on ARM). You
-went from 16 compares-and-branches to **two instructions**.
+`eqMask` is one `pcmpeqb` + `pmovmskb` on x86, and one `cmeq` + reduce on ARM.
+You went from 16 compares-and-branches to two instructions.
 
 ## 3. Classify many characters at once — `tableLookup`
 
-JSON has six structural characters (`{ } [ ] : ,`). Instead of six masks, use a
-16-entry **classifier table** and one `tableLookup` (the `pshufb` primitive):
-the low nibble of each byte indexes the table, so you tag whole classes of bytes
+JSON has six structural characters (`{ } [ ] : ,`). Instead of six masks, use
+a 16-entry classifier table and one `tableLookup`, the `pshufb` primitive. The
+low nibble of each byte indexes the table, so you tag whole classes of bytes
 in one op.
 
 ```cajeta
@@ -72,15 +73,15 @@ i8x16 tags = block.tableLookup(block.and(i8x16.splat((int8) 0x0F)).asIndices());
 int32 structural = tags.eqMask(...);   // structural-char lanes
 ```
 
-(The full classifier — the simdjson recipe — is in the JSON scanner; this is the
-engine under it.)
+The full classifier, the simdjson recipe, is in the JSON scanner. This is the
+engine under it.
 
 ## 4. Cross-lane logic stays on integers
 
-The clever part of a JSON scanner is deciding which bytes are *inside strings*
-(so a `,` in `"a,b"` isn't a separator). That's a running parity over the quote
-mask — and you do it on the **integer masks**, not the vectors, because integers
-have `ctz`, shifts, and `clmul`:
+The clever part of a JSON scanner is deciding which bytes are inside strings,
+so a `,` in `"a,b"` is not a separator. That is a running parity over the
+quote mask. You do it on the integer masks rather than the vectors, because
+integers have `ctz`, shifts, and `clmul`:
 
 ```cajeta
 int64 q = ...;                    // quote bits for this block
@@ -90,17 +91,17 @@ int64 realStructural = structuralBits & (~inString);
 ```
 
 `Simd.clmul` (carryless multiply) computes the whole prefix-XOR in one
-instruction — the trick that lets simdjson mask strings branch-free.
+instruction. That is what lets simdjson mask strings branch-free.
 
 ## 5. Why this differentiates Cajeta
 
-Stages 2–4 of this — escape handling, the index stream, stage 2 walking it — are
-in the JSON scanner (`docs/specification/codec/json/Json.md`). The point of the tour is the
-shape: **per-block, not per-byte.** A handful of SIMD ops classify 16 (or 32)
-bytes; the scalar reader did a branch per byte. That ratio is the difference
-between "0.5× Jackson" and "faster than Jackson" — first-class native SIMD is a
-capability the JVM can't match, and a concrete edge over Java and other
-competitors.
+Stages 2–4 of this, which are escape handling, the index stream, and stage 2
+walking it, are in the JSON scanner (`docs/specification/codec/json/Json.md`).
+The tour is about the shape, which is per-block rather than per-byte. A
+handful of SIMD ops classify 16 (or 32) bytes, where the scalar reader did a
+branch per byte. That ratio is the difference between "0.5× Jackson" and
+"faster than Jackson". First-class native SIMD is a capability the JVM cannot
+match, and it is a concrete edge over Java and other competitors.
 
 ## 6. What you learned
 
@@ -111,5 +112,5 @@ competitors.
 | A running cross-lane decision (in-string) | extract masks, `clmul`/`ctz` on ints (§4) |
 | Lane-wise math (add/min/and/…) | the `Vector<T,N>` ops (§1) |
 
-SIMD is the same `Buffer` bytes, classified 16–32 at a time — and it's how a
-Cajeta JSON parser outruns Jackson, on a capability the JVM can't offer.
+SIMD is the same `Buffer` bytes, classified 16–32 at a time. It is how a
+Cajeta JSON parser outruns Jackson, on a capability the JVM cannot offer.

@@ -1,22 +1,22 @@
 # OperatorOverloading
 
-Specification for operator overloading in Cajeta. Two design rules
-carry everything else:
+This document specifies operator overloading in Cajeta. Two design
+rules carry everything else:
 
 1. **Binary operators and non-mutating unaries are `public static`.**
-   Both operands are explicit parameters — there is no implicit `this`.
-   The operator cannot mutate either operand; it returns a fresh value.
-   C#'s shape, not C++'s.
+   Both operands are explicit parameters, and there is no implicit
+   `this`. The operator cannot mutate either operand. It returns a
+   fresh value. This is the shape C# uses.
 2. **Mutating unaries (`++`, `--`) and indexed access (`[]`, `[]=`)
-   are instance methods.** They genuinely mutate the receiver; the
-   borrow checker enforces that the call site holds a mutable borrow.
+   are instance methods.** They mutate the receiver, and the borrow
+   checker enforces that the call site holds a mutable borrow.
 
-The split exists because the host's role is fundamentally different
-in the two categories. `a + b` is symmetric arithmetic — neither
-operand is privileged, neither should mutate. `x++` is asymmetric
-in-place mutation — the receiver IS the target. Honoring both with
-one shape forces a wrong default; honoring each with the right shape
-keeps both readings clean.
+The split exists because the host's role is different in the two
+categories. `a + b` is symmetric arithmetic. Neither operand is
+privileged, and neither should mutate. `x++` is in-place mutation,
+and the receiver is the target. One shape for both would force a
+wrong default on one of them. A shape for each keeps both readings
+clean.
 
 > **Implementation status (verified against `test/parser/`).** Shipped:
 > static binary arithmetic/bitwise/comparison operators (`+ - * / %
@@ -26,11 +26,11 @@ keeps both readings clean.
 > `ValueTypeIndexOperatorTests.cpp`, `ObjectOperatorEqTests.cpp`).
 > Still deferred: unary `+` / `-`, mutating unary `++` / `--`, and
 > compound assignment `+= -= …` have grammar alternatives but are not
-> yet lowered; logical/bitwise-not `!` / `~` have **no** grammar
-> alternative at all (`OPERATOR BANG` / `OPERATOR TILDE` are absent from
-> `operatorOverloadDeclaration`, so `operator!` / `operator~` do not
-> parse yet). Sections that describe these forms are spec, not current
-> behavior.
+> yet lowered. Logical and bitwise not, `!` / `~`, have no grammar
+> alternative at all, since `OPERATOR BANG` / `OPERATOR TILDE` are
+> absent from `operatorOverloadDeclaration`, so `operator!` /
+> `operator~` do not parse yet. The sections that describe these forms
+> are the specification. They are not current behavior.
 
 ## Table of contents
 
@@ -65,11 +65,11 @@ keeps both readings clean.
 | Indexed write       | `[]=`                    | instance        | 2 (index, value)     | `void`    | yes (`this`) |
 | Compound assignment | `+= -= *= /= %= &= \|= ^= <<= >>=` | derived (default) or instance (explicit) | 1 (RHS) | `void` (instance form) | yes (instance form) |
 
-Boolean `&&` and `||` are intentionally not overloadable — short-
-circuit evaluation can't be expressed faithfully through a single
-function call (both operands would have to be evaluated to be passed
-in), and short-circuit semantics are too load-bearing to silently
-drop.
+Boolean `&&` and `||` are intentionally not overloadable.
+Short-circuit evaluation cannot be expressed faithfully through a
+single function call, because both operands would have to be
+evaluated to be passed in, and short-circuit semantics are too
+important to drop silently.
 
 ---
 
@@ -104,9 +104,9 @@ ABI as borrows; the return is an owned value. Chained expressions
 (`a + b * 2.0`) build a fresh value at each step and the borrow
 checker is satisfied throughout because no operand is ever mutated.
 
-The return value can be `stack`-allocated (returned by value, copied
-into the caller's slot) or `heap`-allocated and transferred via the
-`#T` return-type form:
+The return value can be `stack`-allocated, which returns it by value
+and copies it into the caller's slot, or `heap`-allocated and
+transferred via the `#T` return-type form:
 
 ```cajeta
 public static #Vec2 operator+ (Vec2 a, Vec2 b) {
@@ -114,10 +114,11 @@ public static #Vec2 operator+ (Vec2 a, Vec2 b) {
 }
 ```
 
-The stack form is preferred for value-type math (Vec2, Quaternion,
-Mat4 — small POD-shaped classes). The `#T` form is for cases where
-the result needs heap residency for downstream lifetime reasons
-(rare for math types, common for collection-returning ops).
+The stack form is preferred for value-type math on small POD-shaped
+classes such as Vec2, Quaternion and Mat4. The `#T` form is for cases
+where the result needs heap residency for downstream lifetime
+reasons. That is rare for math types and common for
+collection-returning ops.
 
 ### Asymmetric LHS / RHS types
 
@@ -128,8 +129,9 @@ common asymmetry:
 public static Vec2 operator* (Vec2 v, float32 k) { ... }
 ```
 
-`v * 2.0f` resolves. `2.0f * v` does NOT — cajeta only dispatches on
-the LHS type. To support the reversed form, declare a second overload:
+`v * 2.0f` resolves. `2.0f * v` does NOT, because cajeta only
+dispatches on the LHS type. To support the reversed form, declare a
+second overload:
 
 ```cajeta
 public static Vec2 operator* (float32 k, Vec2 v) {
@@ -138,15 +140,16 @@ public static Vec2 operator* (float32 k, Vec2 v) {
 ```
 
 The two-overload pattern keeps the dispatch rule simple. Languages
-that try to make `k * v` find the operator on `Vec2` (Scala's
-implicit-conversion approach, Python's `__rmul__`) all end up
-trading dispatch-cost or surprise for the convenience.
+that try to make `k * v` find the operator on `Vec2`, such as Scala
+with implicit conversions and Python with `__rmul__`, all end up
+trading dispatch cost or surprise for the convenience.
 
 ---
 
 ## 3. Static unary operators
 
-Single explicit operand; no `this`:
+A static unary operator takes a single explicit operand and has no
+`this`:
 
 ```cajeta
 public final class Vec2 {
@@ -168,15 +171,16 @@ public final class Mask {
 }
 ```
 
-`-v` lowers to `Vec2.operator-(v)` (the single-operand overload).
+`-v` lowers to `Vec2.operator-(v)`, the single-operand overload.
 The grammar uses the same `OPERATOR SUB` token for both unary and
-binary `-`; arity at the declaration site disambiguates.
+binary `-`, and the arity at the declaration site disambiguates them.
 
 ---
 
 ## 4. Instance mutating unaries (`++`, `--`)
 
-Zero parameters; mutates `this`; returns `void`:
+A mutating unary takes zero parameters, mutates `this`, and returns
+`void`:
 
 ```cajeta
 public final class Counter {
@@ -196,9 +200,9 @@ public final class Counter {
 
 `x++` and `++x` both lower to `x.operator++()`. Cajeta does NOT
 distinguish pre-increment from post-increment at the declaration
-level — the operator runs after evaluating the surrounding
-expression (post-increment shape) by default; pre-increment is the
-same call but the surrounding expression sees `x`'s new value.
+level. By default the operator runs after the surrounding expression
+is evaluated, which is the post-increment shape. Pre-increment is the
+same call, and the surrounding expression sees `x`'s new value.
 
 The borrow checker fires on the call site:
 
@@ -212,13 +216,13 @@ const_ref++;                          // ERROR: ++ requires mut borrow
 ### Why not C#-style static `operator++`?
 
 C# requires `public static T operator++(T x)` returning a new T, and
-rewrites `x++` to `x = T.op_Increment(x)`. That's clever for
-immutable value types (where allocation is free) but precludes truly
-in-place increment on a large object. For `Counter`, the difference
-is negligible. For `Tensor`, copying every backing buffer on `++`
-would be catastrophic. Instance form gives the user the choice; the
-C#-style static form is reachable as a `static` method named
-`incremented` anyway.
+rewrites `x++` to `x = T.op_Increment(x)`. That works well for
+immutable value types, where allocation is free, but it precludes a
+true in-place increment on a large object. For `Counter`, the
+difference is negligible. For `Tensor`, copying every backing buffer
+on `++` would be catastrophic. The instance form gives you the
+choice, and the C#-style static form is still reachable as a
+`static` method named `incremented`.
 
 ---
 
@@ -241,7 +245,7 @@ public final class Grid<T> {
 
 `grid[5]` lowers to `grid.operator[](5)`. `grid[5] = v` lowers to
 `grid.operator[]=(5, v)`. The grammar already collapses the two
-into a single `OPERATOR LBRACK RBRACK ASSIGN?` alternative — that
+into a single `OPERATOR LBRACK RBRACK ASSIGN?` alternative, and that
 shape stays.
 
 Multi-index (`grid[i, j]`) is a future extension once the lexer
@@ -251,14 +255,14 @@ distinguishes a 2-D index from a comma-expression in a 1-D index.
 
 ## 6. Compound assignment (`+=`, `-=`, ...)
 
-By **default, derived from the binary form.** `a += b` rewrites to
-`a = a + b` at the AST-lowering level — no separate user code
-required, no separate symbol emitted. The static `operator+` is the
-only thing that exists; `+=` is sugar.
+By default, compound assignment is derived from the binary form.
+`a += b` rewrites to `a = a + b` at the AST-lowering level, with no
+separate user code required and no separate symbol emitted. The
+static `operator+` is the only thing that exists, and `+=` is sugar.
 
-For cases where in-place beats allocate-and-reassign — large objects
-where copying the result back over the LHS dominates the actual
-mutation — the user can **explicitly** declare an instance
+For cases where in-place beats allocate-and-reassign, such as large
+objects where copying the result back over the LHS dominates the
+actual mutation, you can explicitly declare an instance
 `operator+=`:
 
 ```cajeta
@@ -280,10 +284,11 @@ public final class Tensor {
 }
 ```
 
-The compiler picks: if instance `operator+=` exists on the LHS
-type, route through it; else derive from binary `+`. A class can
-ship one without the other (e.g. a class that doesn't support `+`
-at all but has a mutate-in-place `+=` for performance reasons).
+The compiler picks the route. If an instance `operator+=` exists on
+the LHS type, it routes through it, and otherwise it derives from
+binary `+`. A class can ship one without the other, for example a
+class that does not support `+` at all but has a mutate-in-place
+`+=` for performance reasons.
 
 Same pattern for `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`,
 `>>=`.
@@ -292,9 +297,9 @@ Same pattern for `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`,
 
 ## 7. Comparison operators and `==`
 
-`==` on class instances **defaults to identity equality** (pointer
-comparison) — same as Java's `Object.equals` does NOT default to,
-which Java got wrong. To define structural equality, declare:
+`==` on class instances defaults to identity equality, which is
+pointer comparison. Java's `Object.equals` does NOT default to the
+same, which Java got wrong. To define structural equality, declare:
 
 ```cajeta
 public final class Point {
@@ -307,42 +312,43 @@ public final class Point {
 }
 ```
 
-When `operator==` is defined, `!=` is **derived** automatically
-(returns the negation). Defining only `==` is the idiomatic shape;
-defining only `!=` is rejected with a diagnostic suggesting the
+When `operator==` is defined, `!=` is derived automatically and
+returns the negation. Defining only `==` is the idiomatic shape.
+Defining only `!=` is rejected with a diagnostic suggesting the
 caller add `==` too.
 
-Pairing rule: `<` and `>` are independent. `<=` and `>=` are
-derived from `<` (or `>`) when not defined explicitly.
-Implementing all three of `<`, `<=`, `==` is fine but unnecessary
-— the compiler picks up the gaps.
+The pairing rule is that `<` and `>` are independent. `<=` and `>=`
+are derived from `<` or `>` when not defined explicitly.
+Implementing all three of `<`, `<=`, `==` is fine but unnecessary,
+because the compiler picks up the gaps.
 
 When defined, the four comparison operators are required to be
-consistent — the type system can't fully enforce it, but a
-`@TotalOrder` annotation lets the user opt in to runtime checks
-under `--debug` (out of v1 scope).
+consistent. The type system cannot fully enforce it, but a
+`@TotalOrder` annotation lets you opt in to runtime checks under
+`--debug`. That annotation is out of v1 scope.
 
 ### Value-type (Vector / Matrix) comparisons yield masks, not booleans
 
 The rules above govern user-declared `operator==` / `operator<` etc.,
-which return a scalar `boolean` (a user `@ValueType` `Vec2` can declare
-`public static boolean operator== (Vec2 a, Vec2 b)` — see
-`test/parser/ValueTypeOperatorHostTests.cpp`). The built-in
-`@ValueType` SIMD types `Vector<T,N>` and `Matrix<…>` are different:
-`== != < <= > >=` on them produce a **per-lane mask** (`<N x i1>`), not
-a reduced boolean. Reduce a mask with `.all()` / `.any()`, and blend
-with `.select(a, b)`. Do not use a raw Vector/Matrix comparison
-directly as an `if` condition — reduce it first.
+which return a scalar `boolean`. A user `@ValueType` `Vec2` can
+declare `public static boolean operator== (Vec2 a, Vec2 b)`, as
+`test/parser/ValueTypeOperatorHostTests.cpp` shows. The built-in
+`@ValueType` SIMD types `Vector<T,N>` and `Matrix<…>` are different.
+`== != < <= > >=` on them produce a per-lane mask (`<N x i1>`). They
+do not produce a reduced boolean. Reduce a mask with `.all()` /
+`.any()`, and blend with `.select(a, b)`. Do not use a raw
+Vector/Matrix comparison directly as an `if` condition. Reduce it
+first.
 
 ### Hash consistency
 
 A class that defines `operator==` for structural equality MUST also
-override `hash()` for structural hashing — or `HashMap<MyClass, V>`
-silently mis-keys (two equal-by-`==` instances with different
-identity hashes land in different buckets). The compiler emits
-`CAJETA_WARN_HASH_EQUALS_MISMATCH` when one is present without the
-other; the `@AutoHash` annotation synthesizes both from a field
-list.
+override `hash()` for structural hashing. Otherwise
+`HashMap<MyClass, V>` silently mis-keys, because two equal-by-`==`
+instances with different identity hashes land in different buckets.
+The compiler emits `CAJETA_WARN_HASH_EQUALS_MISMATCH` when one is
+present without the other, and the `@AutoHash` annotation
+synthesizes both from a field list.
 
 ---
 
@@ -361,15 +367,16 @@ list.
 | `a[i] = v`  | `a.operator[]=(i, v)` |
 | `a += b`    | `a.operator+=(b)` if declared, else `a = T.operator+(a, b)` |
 
-Static-operator dispatch is **not virtual** — the static type of
-the LHS determines which class's operator runs. Subclasses can
-shadow a parent's static operator but cannot override it; the
-runtime type is ignored at the operator-dispatch site. This matches
-how C# and Scala both handle static operators and avoids the
-"surprising override" trap.
+Static-operator dispatch is not virtual. The static type of the LHS
+determines which class's operator runs. Subclasses can shadow a
+parent's static operator but cannot override it, and the runtime
+type is ignored at the operator-dispatch site. This matches how C#
+and Scala both handle static operators and avoids the "surprising
+override" trap.
 
-Method-template operators are not supported. (Same restriction
-as method-templated virtuals — see `MethodLevelTemplate.md`.)
+Method-template operators are not supported. The same restriction
+applies to method-templated virtuals, as described in
+`MethodLevelTemplate.md`.
 
 ---
 
@@ -378,44 +385,44 @@ as method-templated virtuals — see `MethodLevelTemplate.md`.)
 The borrow lifetimes that an overload introduces:
 
 - **Static binary / unary**: each operand crosses the call as a plain
-  borrow. The return is a fresh value (owned). No new lifetime
-  questions — same as any other static method.
-- **Instance `++` / `--`**: requires a **mutable borrow** of the
+  borrow. The return is a fresh, owned value. There are no new
+  lifetime questions, the same as any other static method.
+- **Instance `++` / `--`**: requires a mutable borrow of the
   receiver. Calling on an immutable borrow is a compile error.
 - **Instance `[]`**: returns a borrow of an element. The element
   borrow lives as long as the receiver borrow.
-- **Instance `[]=`**: requires a **mutable borrow** of the receiver
-  and ownership-or-borrow of the value (per the value's type's
-  ownership rules).
+- **Instance `[]=`**: requires a mutable borrow of the receiver and
+  ownership or a borrow of the value, per the value's type's
+  ownership rules.
 - **Derived `+=`**: the rewritten `a = a + b` form requires the LHS
   to be assignable; the borrow checker treats this as any other
   reassignment.
 - **Explicit instance `+=`**: requires a mutable borrow of the
   receiver.
 
-The borrow checker doesn't need any operator-specific rules; the
-existing borrow / ownership inference already handles every case
-above naturally once the dispatch lowers correctly.
+The borrow checker does not need any operator-specific rules. The
+existing borrow and ownership inference already handles every case
+above once the dispatch lowers correctly.
 
 ---
 
 ## 10. Grammar changes
 
-Current state (`antlr4/CajetaParser.g4` § `operatorOverloadDeclaration`,
-post the in-progress `REFERENCE?` work): the rule accepts the
-broad shape `typeType OPERATOR <sym> formalParameters methodBody`
-with no constraints on staticness or arity. The grammar does
-already accept `static` as a `modifier` (via `classOrInterfaceModifier`),
-so `public static Vec2 operator+ (Vec2 a, Vec2 b) { ... }` parses
-today; the issue is the grammar doesn't *require* it.
+Today the rule in `antlr4/CajetaParser.g4` § `operatorOverloadDeclaration`,
+after the in-progress `REFERENCE?` work, accepts the broad shape
+`typeType OPERATOR <sym> formalParameters methodBody` with no
+constraints on staticness or arity. The grammar already accepts
+`static` as a `modifier` via `classOrInterfaceModifier`, so
+`public static Vec2 operator+ (Vec2 a, Vec2 b) { ... }` parses
+today. The issue is that the grammar does not require it.
 
 Two options:
 
 ### Option A: Enforce in the grammar (strict)
 
-Split into two productions — one that requires `STATIC` and a
-binary-shaped parameter list, one that's instance-shaped and
-limited to mutating-unary / indexed forms.
+Split the rule into two productions. One requires `STATIC` and a
+binary-shaped parameter list, and the other is instance-shaped and
+limited to mutating-unary and indexed forms.
 
 Sketch:
 
@@ -470,19 +477,20 @@ Pros:
 
 Cons:
 - The unary vs binary distinction for `+`, `-`, `*` (e.g. `operator-`
-  one-param vs two-param) can't be expressed at the grammar level
-  without splitting on parameter count, which ANTLR doesn't naturally
-  do — would have to disambiguate after the parse.
-- Ambiguity: `STATIC` is already a `modifier`, which `modifier*`
-  consumes before `memberDeclaration`. If `staticBinaryOperatorDeclaration`
-  also names `STATIC` explicitly, the grammar has two paths and
-  picks one non-deterministically.
+  one-param vs two-param) cannot be expressed at the grammar level
+  without splitting on parameter count, which ANTLR does not
+  naturally do. The parser would have to disambiguate after the
+  parse.
+- The grammar becomes ambiguous. `STATIC` is already a `modifier`,
+  which `modifier*` consumes before `memberDeclaration`. If
+  `staticBinaryOperatorDeclaration` also names `STATIC` explicitly,
+  the grammar has two paths and picks one non-deterministically.
 
 ### Option B: Keep one production, enforce in the visitor (recommended)
 
-Leave `operatorOverloadDeclaration` as-is (one alternative per
-operator token). The visitor inspects the AST and rejects shapes
-that don't match the operator-category table in §1.
+Leave `operatorOverloadDeclaration` as it is, with one alternative
+per operator token. The visitor inspects the AST and rejects shapes
+that do not match the operator-category table in §1.
 
 ```antlr
 // Unchanged from today — except clarifying comment.
@@ -501,22 +509,22 @@ operatorOverloadDeclaration
 ```
 
 The `static` modifier is consumed by `modifier*` ahead of the
-declaration — same path any static method takes. The visitor
+declaration, the same path any static method takes. The visitor
 checks `ctx->modifier()` against the operator-category requirement.
 
 Pros:
 - No grammar churn.
-- Per-operator error messages can be richer ("operator+ must be
-  declared `public static` with two parameters; got instance method
-  with one parameter").
+- Per-operator error messages can be richer, for example "operator+
+  must be declared `public static` with two parameters; got instance
+  method with one parameter".
 - The arity-driven unary/binary `-` distinction falls out naturally.
 
 Cons:
-- The wrong shape parses, just to be rejected later. Acceptable —
-  parse errors have always landed late for semantic mistakes.
+- The wrong shape parses, and is rejected later. That is acceptable,
+  because errors have always landed late for semantic mistakes.
 
-**Recommendation: Option B.** No grammar diff is actually needed
-beyond the comment update; all enforcement moves to the visitor.
+The recommendation is Option B. No grammar diff is needed beyond the
+comment update, and all enforcement moves to the visitor.
 
 ---
 
@@ -543,39 +551,41 @@ a method object from the parsed shape. The new checks:
    - If `operator==` is defined but `hash()` isn't overridden,
      emit `CAJETA_WARN_HASH_EQUALS_MISMATCH`.
    - If both `==` and `!=` are explicit, the `!=` must logically
-     negate `==` — can't statically verify, but the warning steers
-     users toward defining only `==`.
+     negate `==`. The compiler cannot verify that statically, but
+     the warning steers users toward defining only `==`.
 
-3. **Method-name mangling** stays the same — operators encode as
+3. **Method-name mangling** stays the same. Operators encode as
    `operator+`, `operator++`, `operator[]`, `operator[]=`, etc. on
    the method-name side. Static binary ops sit on the class as
-   static methods; the existing static-dispatch path picks them up
-   without a separate lookup mechanism.
+   static methods, and the existing static-dispatch path picks them
+   up without a separate lookup mechanism.
 
-`BinaryOpExpression`-side dispatch (the recently-patched code in
-`src/cajeta/asn/expression/BinaryOpExpression.cpp`): the lookup
-becomes "find a static method named `operator+` on the LHS's type
-that takes (LHS-type, RHS-type)" instead of "find an instance method
-named `operator+` on the LHS that takes (RHS-type)". A static call
-emits as `callT::operator+(lhs, rhs)`; both operands pass through
-the ABI as plain values (or pointers, per cajeta's class-pass-by-
-pointer rule). The fix you landed for the chained-`+` vtable load is
-moot under static dispatch — there's no instance to load through.
+On the `BinaryOpExpression` side, the recently patched code in
+`src/cajeta/asn/expression/BinaryOpExpression.cpp`, the lookup used
+to find an instance method named `operator+` on the LHS that takes
+(RHS-type). Now it finds a static method named `operator+` on the
+LHS's type that takes (LHS-type, RHS-type). A static call emits as
+`callT::operator+(lhs, rhs)`. Both operands pass through the ABI as
+plain values, or as pointers per cajeta's class-pass-by-pointer
+rule. The fix you landed for the chained-`+` vtable load is moot
+under static dispatch, because there is no instance to load through.
 
-`UnaryExpression`-side dispatch (new — currently deferred per the
-demo's comment): for `++` / `--`, emit `lhs.operator++()` instance
-call; for `-` / `!` / `~`, emit `T.operator-(lhs)` static call.
+The `UnaryExpression` side is new, and is currently deferred per the
+demo's comment. For `++` / `--`, it emits the `lhs.operator++()`
+instance call. For `-` / `!` / `~`, it emits the `T.operator-(lhs)`
+static call.
 
-`AssignmentExpression`-side dispatch for `+=` and friends: lookup
-order — explicit instance `operator+=` on LHS type → emit `lhs.operator+=(rhs)`;
-else `static operator+` exists → rewrite to `lhs = T.operator+(lhs, rhs)`;
-else fall through to the primitive-types `+=` lowering.
+The `AssignmentExpression` side handles `+=` and friends in lookup
+order. An explicit instance `operator+=` on the LHS type emits
+`lhs.operator+=(rhs)`. Otherwise, if a `static operator+` exists,
+the expression rewrites to `lhs = T.operator+(lhs, rhs)`. Otherwise
+it falls through to the primitive-types `+=` lowering.
 
 ---
 
 ## 12. Migration from the instance-method-binary form
 
-The current in-progress demo (`samples/Tour/src/tour/OperatorOverloadDemo.cajeta`)
+The current in-progress demo, `samples/Tour/src/tour/OperatorOverloadDemo.cajeta`,
 declares `operator+` as an instance method that mutates `this` and
 returns `this`. Under the new rule, that shape becomes:
 
@@ -596,18 +606,19 @@ public static Vec2 operator+ (Vec2 a, Vec2 b) {
 Semantic differences:
 
 - `Vec2 r = a + b - c` no longer mutates `a`. `a`, `b`, `c` all
-  survive unchanged; `r` is a fresh Vec2.
-- Each binary op allocates a temporary (cheap for `stack` — the
-  caller's slot, no heap traffic).
+  survive unchanged, and `r` is a fresh Vec2.
+- Each binary op allocates a temporary. For `stack` that is cheap,
+  since it is the caller's slot and there is no heap traffic.
 - The chain `a + b - c` walks through two static calls, each
   returning a new value.
 
 The BinaryOpExpression fix you landed for the "load-through-vtable
-on the chained-op return" goes away as a problem class — the static
-call's return is the value directly, no instance-pointer load needed.
+on the chained-op return" goes away as a problem class. The static
+call's return is the value directly, and no instance-pointer load is
+needed.
 
-The tests under `test/parser/OperatorOverloadTests.cpp` (and the
-value-type variants) already exercise the static form — this migration
+The tests under `test/parser/OperatorOverloadTests.cpp` and the
+value-type variants already exercise the static form. This migration
 has landed.
 
 ---
@@ -701,28 +712,29 @@ public final class Tick {
 - **Reversed binary overloads** (e.g. `float32 * Vec2`). Current rule
   is "user declares two overloads, one for each LHS type." Pythonic
   `__rmul__` and Scala's implicit-conversion approach both have
-  worse failure modes (silent surprise dispatch). Stay with the
-  explicit-two-overloads rule.
-- **`operator=` (plain assignment).** C++ allows overloading `=`;
-  C# and Java do not. Cajeta leans toward "no" — the borrow checker
-  + drop-chain semantics rely on assignment being a known shape, and
-  letting users replace it opens the door to subtle aliasing bugs.
-  Listed in §10's grammar sketch for completeness but proposed as
-  **not overloadable** in v1.
-- **`operator()` (call).** Functors / function-objects — useful for
-  building DSLs and for lambda-like classes. Plausibly an instance
-  method with any signature. Out of v1 unless a concrete use case
-  surfaces.
-- **Conversion operators** (C++'s `operator T()`). Implicit cast to
-  another type. Powerful but hazardous (a single accidental
-  conversion overload can wreck overload resolution everywhere).
-  Out of v1; reserved for an explicit `@Conversion` annotation on a
-  named method later, NOT a syntax-level operator.
+  worse failure modes, namely silent surprise dispatch. Stay with
+  the explicit-two-overloads rule.
+- **`operator=` (plain assignment).** C++ allows overloading `=`,
+  and C# and Java do not. Cajeta leans toward "no", because the
+  borrow checker and drop-chain semantics rely on assignment being a
+  known shape, and letting users replace it opens the door to subtle
+  aliasing bugs. It is listed in §10's grammar sketch for
+  completeness but proposed as not overloadable in v1.
+- **`operator()` (call).** Functors and function objects are useful
+  for building DSLs and for lambda-like classes. This would
+  plausibly be an instance method with any signature. It is out of
+  v1 unless a concrete use case surfaces.
+- **Conversion operators** (C++'s `operator T()`). These are implicit
+  casts to another type. They are powerful but hazardous, since a
+  single accidental conversion overload can wreck overload
+  resolution everywhere. They are out of v1. The feature is reserved
+  for an explicit `@Conversion` annotation on a named method later.
+  It will not be a syntax-level operator.
 - **Hash-equality lint as warning or error.** §7 currently says
   warning. Under `--strict` it should be an error. Decide whether
   `--strict` matters here.
-- **Method-templated operators.** Currently forbidden (parallel to
-  method-templated virtuals). A `Tensor<T>.operator+` that's
-  monomorphized per `T` would actually be useful. Plausibly worth
-  revisiting once the underlying method-template-on-static-methods
-  path is well-exercised.
+- **Method-templated operators.** These are currently forbidden, in
+  parallel with method-templated virtuals. A `Tensor<T>.operator+`
+  that is monomorphized per `T` would be useful. It is plausibly
+  worth revisiting once the underlying method-template-on-static-
+  methods path is well exercised.

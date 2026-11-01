@@ -3,13 +3,13 @@
 ## Goals
 
 - **Single-owner heap.** Every heap-allocated value has exactly one owning reference at any time.
-- **Implicit borrow, explicit passthrough.** `=` is always a borrow — the title stays with the right-hand side. `#` hands along whatever title the source holds — a transfer when the source owns, a borrow when it doesn't — `dst #= v` at a store, `#v` at a call argument, return, or slot extraction.
-- **Static safety, no user-visible annotations.** All borrow/lifetime errors are compile-time. Scope-based inference; no lifetime syntax for users to write.
-- **Zero runtime cost in release.** Heap blocks are plain memory; drops happen at owner scope-end. A debug build flag adds runtime verification for testing the static checker.
+- **Implicit borrow, explicit passthrough.** `=` is always a borrow, and the title stays with the right-hand side. `#` hands along whatever title the source holds. That is a transfer when the source owns and a borrow when it doesn't. It is spelled `dst #= v` at a store and `#v` at a call argument, return, or slot extraction.
+- **Static safety, no user-visible annotations.** All borrow and lifetime errors are reported at compile time. Lifetimes are inferred from scope, so there is no lifetime syntax for you to write.
+- **Zero runtime cost in release.** Heap blocks are plain memory, and drops happen at the owner's scope end. A debug build flag adds runtime verification for testing the static checker.
 
-> **AMENDED (2026-07-03): a THIRD ownership state — `shared`** (governed by
-> [`slice-spec.md`](slice-spec.md), approved 2026-07-02). Cajeta's model is an **implicit
-> smart-pointer family** — the kind is always inferred, never annotated:
+> **AMENDED (2026-07-03): a THIRD ownership state, `shared`** (governed by
+> [`slice-spec.md`](slice-spec.md), approved 2026-07-02). Cajeta's model is an implicit
+> smart-pointer family. The kind is always inferred and never annotated:
 >
 > | State | Discipline | Analog |
 > |---|---|---|
@@ -17,21 +17,22 @@
 > | **borrow** | non-owning; must not outlive its source (static) | `&T` |
 > | **shared** | co-owned **immutable leaf buffers**; runtime count; freed at the last stake | `Rc`/`shared_ptr` |
 >
-> `shared` exists for exactly one thing v1: a **slice** (`String.substring`, later `Slice<T>`)
-> that outlives the value it was sliced from — the case borrow must reject and copying is too
-> expensive to force. Promotion is one-way (`owned → shared`); moves are **rc-neutral**; the
-> count lives in a side table keyed by buffer base with a stolen count-word sign bit (no layout
-> change); buffers never sliced-and-stored pay one predicted bit-test at drop and nothing else.
-> Scoped to immutable leaf buffers ⇒ the shared graph is acyclic ⇒ no cycles, no `weak`, no
-> leaks. An **escaping borrow of an eligible source resolves** (copy small / share large / copy
-> arena-backed) instead of erroring; identity/mutable objects keep the error-and-`#` discipline
-> (slice-spec §4, §9 — the transparent-only boundary). `Object.clone()` = shallow copy +
-> stake-share per String field (slice-spec §6.4; LIVE). The "single-owner heap" goal above is
-> thereby refined: single owner **or counted co-owners for immutable slice backings**.
+> `shared` exists for exactly one thing in v1. A slice (`String.substring`, later `Slice<T>`)
+> may outlive the value it was sliced from, which is the case borrow must reject and copying is
+> too expensive to force. Promotion is one-way (`owned → shared`), moves are rc-neutral, and the
+> count lives in a side table keyed by buffer base with a stolen count-word sign bit, so the
+> layout does not change. Buffers that are never sliced and stored pay one predicted bit-test at
+> drop and nothing else. Because the state is scoped to immutable leaf buffers, the shared graph
+> is acyclic, so there are no cycles, no `weak` and no leaks. An escaping borrow of an eligible
+> source resolves (copy small, share large, copy arena-backed) instead of erroring. Identity and
+> mutable objects keep the error-and-`#` discipline (slice-spec §4, §9, the transparent-only
+> boundary). `Object.clone()` is a shallow copy plus a stake-share per String field (slice-spec
+> §6.4; LIVE). The "single-owner heap" goal above is thereby refined to a single owner or
+> counted co-owners for immutable slice backings.
 
 ## Non-goals (v1)
 
-- Multi-threading safety (deferred — needs Send/Sync-style protocol).
+- Multi-threading safety (deferred, since it needs a Send/Sync-style protocol).
 - FFI safety beyond signature-trust.
 - `unsafe` escape hatch.
 - Reflection / dynamic-dispatch borrow analysis (deferred until virtuals land).
@@ -40,8 +41,8 @@
 
 ## Operator: `#`
 
-Single token, and — with one opt-in exception — it appears only where a transfer
-actually happens: at a **use site**, never in a signature.
+`#` is a single token. With one opt-in exception, it appears only at a use site,
+where a transfer actually happens. It does not appear in a signature.
 
 | Position | Meaning |
 |----------|---------|
@@ -50,10 +51,10 @@ actually happens: at a **use site**, never in a signature.
 | `#T` (parameter type) | **Opt-in must-own.** The method refuses a lend: the caller has to surrender. Rarely needed — see below. |
 | `#T` (return type) | The method always transfers. Also rarely needed; a plain return already carries whatever title it holds. |
 
-**Stores use `#=`; every other transfer position uses `#expr`.** The two are not
-alternatives — they partition by position. An assignment is the one place the
-title lands *in* something, so it gets a fused token that cannot be half-written;
-call arguments, returns, and extraction reads are not assignments and keep `#v`.
+Stores use `#=`, and every other transfer position uses `#expr`. The two
+spellings are partitioned by position. An assignment is the one place the
+title lands in something, so it gets a fused token that cannot be half-written.
+Call arguments, returns, and extraction reads are not assignments, so they keep `#v`.
 
 ```cajeta
 this.held #= c;         // store: `held` takes c's title
@@ -62,18 +63,18 @@ return #c;              // return: same
 T x #= this.data[i];    // store from a slot: the `#=` is the whole transfer
 ```
 
-**A `#=` never takes a second `#` on its right.** The store already carries the
-transfer, whatever the source is — identifier, field, element, or call result —
-so `x #= #y` is `CAJETA_ERROR_DOUBLE_TRANSFER`. The rule has no exceptions to
-remember.
+A `#=` never takes a second `#` on its right. The store already carries the
+transfer for every kind of source (an identifier, a field, an element, or a call
+result), so `x #= #y` is `CAJETA_ERROR_DOUBLE_TRANSFER`. The rule has no
+exceptions to remember.
 
 > **Deprecated:** `dst = #v` was the original store spelling. It still compiles
 > and still transfers, but warns (`CAJETA_WARN_DEPRECATED_TRANSFER_ASSIGN`) and
 > becomes an error in a later release. Write `dst #= v`.
 
-**Transfer is the caller's decision, not the signature's.** A plain class-typed
-parameter accepts *both* a lend and a transfer — which one happened is decided at
-each call site by whether the argument was spelled `#x`:
+The caller decides whether a transfer happens. A plain class-typed
+parameter accepts both a lend and a transfer, and each call site decides which
+one happened by whether the argument was spelled `#x`:
 
 ```cajeta
 void keep(Cell c) { this.held #= c; }   // no ownership spelling in the signature
@@ -82,26 +83,27 @@ sink.keep(cell);        // lends — `cell` still owns it, and drops it at scope
 sink.keep(#cell);       // surrenders — the title moves; `cell` is moved-from
 ```
 
-`keep` is written once and is correct both ways: `#=` moves *whatever title `c`
-holds*. When the caller lent, the field records a borrow and the field's drop
-stays quiet; when the caller surrendered, the field records ownership and drops
-it. The callee does not branch, and does not need to know which happened.
+`keep` is written once and is correct both ways, because `#=` moves whatever
+title `c` holds. When the caller lent, the field records a borrow and the field's
+drop stays quiet. When the caller surrendered, the field records ownership and
+drops it. The callee does not branch, and it does not need to know which happened.
 
 This is deliberate. An earlier design put the ownership mode in the signature and
 required the author to predict, at declaration time, how every future caller would
-use the method. That prediction is not available — most acutely for containers,
-where the same `put` is legitimately used both ways — and the honest endpoint was
-to mark *everything* "either", which is what the language now does by default.
-Rationale and the rejected alternatives are recorded in the title-tracking spec §4.6.
+use the method. That prediction is not available, and it is least available for
+containers, where the same `put` is legitimately used both ways. The honest
+endpoint was to mark everything "either", which is what the language now does by
+default. The rationale and the rejected alternatives are recorded in the
+title-tracking spec §4.6.
 
-`#T` on a parameter survives only as an **opt-in must-own** edge, for a method
-that cannot function with a borrow (it stores the value somewhere that outlives
-the call, and has no way to cope with the caller keeping the title). A plain
+`#T` on a parameter survives only as an opt-in must-own edge. It is for a method
+that cannot function with a borrow, because it stores the value somewhere that
+outlives the call and has no way to cope with the caller keeping the title. A plain
 argument at such an edge is `CAJETA_ERROR_TRANSFER_REQUIRED`. The store that
 keeps a `#T` formal is still `#=`, because the formal owns its argument and
 frees it at return.
 
-The opposite edge is `^T`, a **borrow-only** parameter. The callee receives a
+The opposite edge is `^T`, a borrow-only parameter. The callee receives a
 borrow on every call, and a caller cannot pass `#x`, a fresh `heap` value, an
 owned `#T` result or a `+` String into it
 (`CAJETA_ERROR_TRANSFER_INTO_BORROW_PARAM`). It is the one formal that may be
@@ -120,37 +122,37 @@ kept in a field with a plain `=` (see [Fields](#fields)).
 | `return x` / `return #x` | hands back whatever title x held (a lent value stays lent; an owned one transfers) | hands back the title |
 
 Stores (the first three rows) pass through with `#=`. Arguments and returns (the
-last two) pass through with `#x` — they are not assignments.
+last two) are not assignments, so they pass through with `#x`.
 
 A `#T` return promises the caller a title. When `return #x` finds `x` holding
 none, the general case panics `CAJETA_PANIC_TITLE_MISS` (code 3), since handing
-over a borrow as if owned would forge a title. A **`String`** is the
-exception: `return #s` of a String that holds no title (a literal-initialised
+over a borrow as if owned would forge a title. A `String` is the
+exception. `return #s` of a String that holds no title (a literal-initialised
 local, or one a skipped `#=` left borrowing) returns an owned copy, through the
 same resolve a lent String stored with `#=` takes (a copy up to 256 B, a shared
 stake above, a fresh wrapper over a static literal). This holds whether the
 missing title is known at compile time or only at run time
 (`test/ownership/SkippedTryMoveTests.cpp`; decided 2026-10-23).
 
-**`#` is a passthrough, not an unconditional move.** It hands along the title
-the source *actually* holds. From an owner, that is a transfer. From a plain
-formal — whose mode is fixed at the **call site** (`f(x)` lends, `f(#x)`
-transfers) and carried at run time by the transfer word — `#p`, or
-`this.f #= p`, forwards whichever mode arrived, and `#=` records the forwarded
-mode per slot. This is what makes mode-forwarding wrappers expressible; the
-static checker deliberately excludes plain formals from the move-of-borrow
-check (`test/expression/TransferOfBorrowTests.cpp`, 2.1.2). Only a value the
-compiler can prove is purely a borrow — a local borrowing another local, or a
-borrow returned by a plain (non-`#`) method — refuses `#` with
-`CAJETA_ERROR_MOVE_OF_BORROW`: that surrender would be a lie.
+`#` is a passthrough. It hands along the title the source actually holds. From
+an owner, that is a transfer. A plain formal's mode is fixed at the call site
+(`f(x)` lends, `f(#x)` transfers) and carried at run time by the transfer word,
+so `#p`, or `this.f #= p`, forwards whichever mode arrived, and `#=` records the
+forwarded mode per slot. This is what makes mode-forwarding wrappers
+expressible, and the static checker deliberately excludes plain formals from
+the move-of-borrow check (`test/expression/TransferOfBorrowTests.cpp`, 2.1.2).
+Only a value the compiler can prove is purely a borrow refuses `#` with
+`CAJETA_ERROR_MOVE_OF_BORROW`, because that surrender would be a lie. A local
+borrowing another local, or a borrow returned by a plain (non-`#`) method, is
+such a value.
 
-Note the second row: **a plain field store lends.** It does not quietly take
-ownership, and this holds for String fields too. A field outlives the call, so
+Note the second row. A plain field store lends, and this holds for String
+fields too. It does not quietly take ownership. A field outlives the call, so
 the compiler restricts which sources a plain `=` may keep. A `T` or `#T`
 formal, or an owned local, is kept with `#=`. A formal kept with `=` must be
 spelled `^T`. The full rule is under [Fields](#fields).
 
-**Auto-promotion for fresh heap allocations.** An anonymous `heap T(...)` expression in transfer position promotes implicitly. `p.field = heap T()` and `return heap T()` (in a `#T` function) work without explicit `#`. The temporary is an unnamed owner with no prior identity, so promotion has no use-after-move risk.
+A fresh heap allocation promotes automatically. An anonymous `heap T(...)` expression in transfer position promotes implicitly. `p.field = heap T()` and `return heap T()` (in a `#T` function) work without explicit `#`. The temporary is an unnamed owner with no prior identity, so promotion has no use-after-move risk.
 
 ---
 
@@ -162,64 +164,65 @@ The compiler tracks each owner's declaration site and scope-end. For each borrow
 
 ### Path-based borrow tracking
 
-Borrows track their *path* from the named root, not just the variable. `String n = person.address.city` records `n`'s root as `person` with path `address.city`. Reassigning any link along the path (`person.address #= x`) drops everything derived from that link; subsequent use of `n` is a static error.
+A borrow is tracked by its full path from the named root. `String n = person.address.city` records `n`'s root as `person` with path `address.city`. Reassigning any link along the path (`person.address #= x`) drops everything derived from that link; subsequent use of `n` is a static error.
 
 ### Function signatures: the transfer ABI
 
-Because the caller decides, the callee has to be *told* what it got. Every
+Because the caller decides, the callee has to be told what it got. Every
 class-typed parameter and return therefore carries a hidden per-call flag.
 
 - **Arguments.** A method with at least one pass-by-pointer class parameter takes
-  a hidden trailing word; bit *i* is set iff user-argument *i* was surrendered.
-  `@Kernel`, `@Device`, `@Native` methods and `static main` keep the plain C ABI —
-  the compiler does not own both sides of those boundaries. The word is the ONLY
-  argument-side carrier (the old `moveMask` thread-local is retired,
+  a hidden trailing word, and bit *i* is set iff user-argument *i* was surrendered.
+  `@Kernel`, `@Device`, `@Native` methods and `static main` keep the plain C ABI,
+  because the compiler does not own both sides of those boundaries. The word is the
+  only argument-side carrier (the old `moveMask` thread-local is retired,
   title-tracking 7.2.2), and constructors ride the same trailing word.
 
-  **The word is ABI, not API.** Nothing in user code reads it positionally:
-  `Cajeta.moveMask()` is retired (`CAJETA_ERROR_MOVEMASK_RETIRED`) because
-  bit-index-coupled-to-formal-order was fragile and leaked the calling convention
-  into user source. Its two successors cover what it was used for: stores spell
-  `#=` and let the field/slot bit record what the caller did, and code that
-  genuinely *branches* on ownership calls `Cajeta.owned(formal)` (below).
+  The word belongs to the ABI, and user code has no API over it. Nothing in user
+  code reads it positionally. `Cajeta.moveMask()` is retired
+  (`CAJETA_ERROR_MOVEMASK_RETIRED`) because a bit index coupled to formal order
+  was fragile and leaked the calling convention into user source. Its two
+  successors cover what it was used for. Stores spell `#=` and let the field or
+  slot bit record what the caller did, and code that genuinely branches on
+  ownership calls `Cajeta.owned(formal)` (below).
 - **Returns.** A method returning a class pointer stores a paired flag beside the
-  return value. (This one is a thread-local: nothing runs between the callee's
-  `ret` and the caller reading it, so there is no window to corrupt.)
+  return value. This flag is a thread-local. Nothing runs between the callee's
+  `ret` and the caller reading it, so there is no window to corrupt.
 - **Closures** (title-tracking 7.2.5). A class-pointer-returning function value
-  (`(T) -> #R`) rides the same return flag: the synthesized lambda sets it by
-  return shape — a fresh construction or `#x` hands out a title, a returned
-  parameter/identifier is a borrow, and a tail call lets the inner call's own
+  (`(T) -> #R`) rides the same return flag. The synthesized lambda sets it by
+  return shape. A fresh construction or `#x` hands out a title, a returned
+  parameter or identifier is a borrow, and a tail call lets the inner call's own
   flag ride through. Closure-call results arm the receiving local exactly like
   method-call results, and `T x #= src` forwards a runtime owner's flag onto
   `x`'s entry (a lent source stays lent through the hop).
 
-**Formals and call results are *runtime* owners.** A class-typed parameter is not
-statically a borrow and not statically an owner — it is whichever the caller made
-it, so its drop entry is *armed from its flag bit* on entry. The same is true of a
-local initialized from a call: it arms from the return flag.
+Formals and call results are runtime owners. A class-typed parameter is
+whichever the caller made it, since it is neither statically a borrow nor
+statically an owner, so its drop entry is armed from its flag bit on entry. The
+same is true of a local initialized from a call, which arms from the return flag.
 
 The consequences follow from that one rule:
 
-- A surrendered argument the callee never consumes **drops in the callee**, on
-  whatever exit it takes — including a `throw`, where the runtime unwinder walks
-  the drop chain.
+- A surrendered argument the callee never consumes drops in the callee, on
+  whatever exit it takes. That includes a `throw`, where the runtime unwinder
+  walks the drop chain.
 - A lent argument leaves the entry disarmed, so the callee's scope exit does not
   touch it. The caller still owns it.
-- `#v` inside the callee (a store, a forward, a return) **consumes** the formal:
-  it reads the flag, deactivates the entry, and passes that same flag on. A
-  forwarding chain therefore threads the *caller's* decision all the way down —
-  a value lent into `outer` and forwarded with `#` to `inner` arrives at `inner`
+- `#v` inside the callee (a store, a forward, a return) consumes the formal.
+  It reads the flag, deactivates the entry, and passes that same flag on. A
+  forwarding chain therefore threads the caller's decision all the way down.
+  A value lent into `outer` and forwarded with `#` to `inner` arrives at `inner`
   still lent, and nobody frees it.
 
-Ownership is never *inferred* from the body. The compiler could often guess (a
-lend at a local's last use is usually a transfer the author forgot to spell), but
-guessing is wrong in exactly the cases that matter — a value handed to a spawned
-task outlives the frame that appears to be done with it. So the compiler advises
-instead of acting: see the last-use advisory below.
+Ownership is never inferred from the body. The compiler could often guess,
+since a lend at a local's last use is usually a transfer the author forgot to
+spell, but guessing is wrong in exactly the cases that matter. A value handed to
+a spawned task outlives the frame that appears to be done with it. So the
+compiler advises instead of acting, through the last-use advisory below.
 
 ### Dangling lends
 
-A plain argument **lends**. If the holder that received the lend then escapes
+A plain argument lends. If the holder that received the lend then escapes
 the method, it escapes holding a pointer to a local that is about to drop:
 
 <!-- snippet: skip -->
@@ -235,7 +238,7 @@ the method, it escapes holding a pointer to a local that is about to drop:
 The fix is to say what was meant. `h.keep(#s)` gives the holder the title.
 
 The check is intra-procedural and deliberately conservative. It fires only when
-the receiving callee actually **retains** the argument (stores it into a field).
+the receiving callee actually retains the argument (stores it into a field).
 A method that merely reads its argument, such as `sb.append(s)` or
 `list.contains(x)`, cannot strand anything and does not poison its receiver.
 
@@ -251,16 +254,16 @@ the language does not track.
 
 ### Last-use advisory (warning)
 
-Lending a local at its **final use** is suspicious: nothing in the scope reads it
+Lending a local at its final use is suspicious. Nothing in the scope reads it
 again, so the lend usually should have been a transfer. The compiler says so and
-moves on — `CAJETA_WARN_LAST_USE_TRANSFER`, with a `#` fixit. It is a warning, not
-an error: the build stays green, because (per above) the compiler cannot know
-intent. A later read of the local suppresses it, as does a use inside a loop
+moves on, with `CAJETA_WARN_LAST_USE_TRANSFER` and a `#` fixit. It is a warning,
+so the build stays green, because the compiler cannot know intent, as stated
+above. A later read of the local suppresses it, as does a use inside a loop
 (where the "last" textual use runs again next iteration), as does spelling `#x`.
 
 ### Mode-only overloads are rejected
 
-Transfer mode is not part of a signature — dispatch erases `#` — so two
+Transfer mode is not part of a signature, because dispatch erases `#`, so two
 declarations that differ only in mode collide:
 
 ```cajeta
@@ -283,7 +286,7 @@ String name = factory.makeUser().getName();
 System.stdout.println(factory.makeUser().getName());   // accepted: used inside the statement
 ```
 
-Fix: bind the temporary to a local.
+The fix is to bind the temporary to a local.
 
 ```
 User u #= factory.makeUser();
@@ -308,17 +311,17 @@ for (String s : list) {
 
 ### Drop order
 
-LIFO within a scope; inner scopes drop before outer. A borrow declared before its source is a static error (source's scope ends first; borrow would dangle).
+Drops are LIFO within a scope, and inner scopes drop before outer ones. A borrow declared before its source is a static error, because the source's scope ends first and the borrow would dangle.
 
 ---
 
 ## Fields
 
-- **Fields may be owners or borrows.** A field's ownership status is resolved at drop time, not at declaration. The **global live-set** is the registry: every `heap` allocation is recorded in it. At parent drop, the synthesized auto-drop wrapper calls each owned-shape field's drop dispatcher directly; the dispatcher does an atomic *claim* (remove-if-present) on the field's address. The first caller to claim an address frees it (and runs `~Class()`); a later caller for the same address — the owning local's own chain pop, or another field aliasing it — finds it already gone and no-ops. See `docs/specification/lang/FieldOwnership.md`.
-- **Field assignment.** `p.field #= x` and `p.field = heap T(...)` make the field an owner — the fresh `heap` allocation is the live-set registration. `p.field = y` where `y` is a borrow stores the borrow; the field aliases `y`'s source, and the live-set claim at drop ensures whichever path reaches the shared address first frees it while the rest no-op.
+- **Fields may be owners or borrows.** A field's ownership status is resolved at drop time. The global live-set is the registry, and every `heap` allocation is recorded in it. At parent drop, the synthesized auto-drop wrapper calls each owned-shape field's drop dispatcher directly, and the dispatcher does an atomic claim (remove-if-present) on the field's address. The first caller to claim an address frees it and runs `~Class()`. A later caller for the same address, whether the owning local's own chain pop or another field aliasing it, finds it already gone and no-ops. See `docs/specification/lang/FieldOwnership.md`.
+- **Field assignment.** `p.field #= x` and `p.field = heap T(...)` make the field an owner, since the fresh `heap` allocation is the live-set registration. `p.field = y` where `y` is a borrow stores the borrow. The field aliases `y`'s source, and the live-set claim at drop ensures whichever path reaches the shared address first frees it while the rest no-op.
 - **Keeping a value in a field, slot or static.** A store into a field, an element slot or a static outlives the call that makes it, so the compiler checks its source (spec `field-store-ownership`). The same rule covers `this.data[i] = v` and a nested path such as `this.head.prev = v`.
   1. A formal kept with `=` must be spelled `^T`. A `^T` formal is a borrow on every call.
-  2. A `T` or `#T` formal that is kept is stored with `#=`. This is the sink and setter shape: `set(x)` lends and `set(#x)` transfers.
+  2. A `T` or `#T` formal that is kept is stored with `#=`. This is the sink and setter shape, where `set(x)` lends and `set(#x)` transfers.
   3. An owned local (bound from `heap`, a call, `#=` or a `+`) stored into a field or slot that outlives it is stored with `#=`.
   4. A value read out of a `T` or `#T` formal, or out of an owned local (`v.child`), is never stored with `=`. For a formal, spell it `^T` so the caller keeps the root alive. For either, `#=` takes the title the slot held.
   5. Strings follow every rule here, like every other type.
@@ -345,13 +348,13 @@ LIFO within a scope; inner scopes drop before outer. A borrow declared before it
   void watch(^Cell c) { this.seen = c; }    // only ever a borrow
   ```
 - **Field reads borrow.** `String n = p.field` makes `n` a borrow rooted at `p`.
-- **Use-after-free of an aliased field whose source has already dropped is the programmer's responsibility at v1.** A lifetime tracker (Phase 6+) will catch this statically.
+- Use-after-free of an aliased field whose source has already dropped is the programmer's responsibility at v1. A lifetime tracker (Phase 6+) will catch this statically.
 
 ---
 
 ## Destructors
 
-A class can declare a destructor with `~ClassName()`. The compiler runs it just before the instance's heap memory is reclaimed — the canonical place to release the resources the instance owns:
+A class can declare a destructor with `~ClassName()`. The compiler runs it just before the instance's heap memory is reclaimed, which is the canonical place to release the resources the instance owns:
 
 ```
 public class Lock {
@@ -369,26 +372,26 @@ public class Lock {
 
 Rules:
 
-- **Identifier must match the class.** `~Foo()` inside `class Bar` is a compile error. Same convention as the constructor's identifier.
+- **Identifier must match the class.** `~Foo()` inside `class Bar` is a compile error. This is the same convention as the constructor's identifier.
 - **No parameters, no return type.** The body has no inputs to take and nothing to hand back. `~Lock(int32 x)` is a parse error.
-- **Not user-callable.** Calling `obj.destructor()` or similar from user code is rejected — destructors are invoked exclusively by the drop chain at scope exit.
+- **Not user-callable.** Calling `obj.destructor()` or similar from user code is rejected, because destructors are invoked exclusively by the drop chain at scope exit.
 - **Inside the body, `this` is live.** Field access, intrinsic calls, even calls to other instance methods on `this` all work. The instance hasn't been freed yet.
-- **Runs once.** Each instance's destructor fires exactly once, at the point the drop chain reaches its entry. If the instance was transferred via `#` to another owner, the original owner's drop entry is deactivated; only the new owner's drop fires the destructor.
+- **Runs once.** Each instance's destructor fires exactly once, at the point the drop chain reaches its entry. If the instance was transferred via `#` to another owner, the original owner's drop entry is deactivated, and only the new owner's drop fires the destructor.
 
-The runtime mechanism — "drop chain" — is the same machinery the borrow checker uses to reclaim arrays, closures, and other owned heap blocks. A destructor is the *user-extensible* hook into it: the compiler emits a per-class wrapper `__cajeta_<ClassName>_drop` that calls your destructor and then frees the instance's memory. From a developer's perspective, the contract is simply "write `~ClassName()` if you have a resource to release; the language guarantees it runs at the right time."
+The runtime mechanism, the drop chain, is the same machinery the borrow checker uses to reclaim arrays, closures, and other owned heap blocks. A destructor is the user-extensible hook into it. The compiler emits a per-class wrapper `__cajeta_<ClassName>_drop` that calls your destructor and then frees the instance's memory. From your perspective, the contract is simple. Write `~ClassName()` if you have a resource to release, and the language guarantees it runs at the right time.
 
 Limitations (v1 / known gaps):
 
-- **Virtual dispatch on drop.** ✅ Done. The vtable header carries a dedicated `drop_fn` slot (index 3, byte offset 16; see `StructureMetadata::createVirtualTableType`). Heap class locals register the runtime helper `__cajeta_class_virtual_drop`, which loads the instance's vtable pointer and dispatches through `vtable.drop_fn` — so `Base b = heap Derived()` fires `~Derived()`, not `~Base()`. Pinned by `test/parser/VirtualDropDispatchTests.cpp`. Stack allocations stay on static dispatch (alloca size fixes the dynamic type); Task<T>-style custom layouts opt out via `CajetaClass::hasVtablePointerAtSlotZero()`.
-- **Automatic field drops via live-set claim.** ✅ Done. `CajetaClass::getOrCreateDropFunction` → `emitDropBodyInline` synthesizes an auto-drop body that, in reverse declaration order, calls each owned-shape field's drop dispatcher directly: `__cajeta_free_array` (arrays), `__cajeta_iface_drop` (interface fields), `__cajeta_class_virtual_drop` (class-ref fields). Each dispatcher does an atomic claim against the global live-set (`__cajeta_live_set_claim`): the first caller to claim a field's address frees it and runs its destructor; any later caller for the same address (the owning local's chain pop, or another field aliasing it) no-ops. That claim is what keeps aliased stdlib fields — `ArrayStream.data` aliasing `ArrayList.data`, `Optional.value`, `Pair.first/second` — from double-freeing. Doctrine and walk-throughs in `docs/specification/lang/FieldOwnership.md`. Pinned by `test/parser/AutoFieldDropTests.cpp`.
-- **Implicit destructor chaining — shipped 2026-05-21.** ✅ Done. C++ semantics. The compiler-emitted heap-drop wrapper runs: (1) this class's `~Class()` body and its own field auto-drops (in reverse declaration order), (2) every transitive ancestor's same body+own-field contribution in reverse-DFS deduped order, (3) `__cajeta_free(instance)`. Each ancestor runs exactly once — diamond-shared ancestors via the vbase ABI's single canonical sub-object are visited only on whichever branch sees them first. Chaining is automatic and non-suppressible. `super<Base>.~Base()` may be written explicitly for documentation, but it does not change codegen. The stack-drop wrapper has the same shape minus the free. Implementation: `CajetaClass::emitDropBodyInline` + `CajetaClass::collectDestructorChain`, both called from `getOrCreateDropFunction` and `getOrCreateStackDropFunction`. Pinned by `test/parser/DestructorChainTests.cpp` (9 tests, including multi-inheritance reverse-decl order and the diamond runs-once case).
-- **Block-scoped firing.** ✅ Done. Drop entries fire at the closing `}` of the declaring lexical block, not method exit. RAII patterns like back-to-back `LockGuard`s in inline blocks now work. Pinned by `test/parser/BlockScopedDropTests.cpp`.
+- **Virtual dispatch on drop.** ✅ Done. The vtable header carries a dedicated `drop_fn` slot (index 3, byte offset 16; see `StructureMetadata::createVirtualTableType`). Heap class locals register the runtime helper `__cajeta_class_virtual_drop`, which loads the instance's vtable pointer and dispatches through `vtable.drop_fn`, so `Base b = heap Derived()` fires `~Derived()`. Pinned by `test/parser/VirtualDropDispatchTests.cpp`. Stack allocations stay on static dispatch, because the alloca size fixes the dynamic type. Task<T>-style custom layouts opt out via `CajetaClass::hasVtablePointerAtSlotZero()`.
+- **Automatic field drops via live-set claim.** ✅ Done. `CajetaClass::getOrCreateDropFunction` → `emitDropBodyInline` synthesizes an auto-drop body that, in reverse declaration order, calls each owned-shape field's drop dispatcher directly. The dispatchers are `__cajeta_free_array` (arrays), `__cajeta_iface_drop` (interface fields), and `__cajeta_class_virtual_drop` (class-ref fields). Each dispatcher does an atomic claim against the global live-set (`__cajeta_live_set_claim`). The first caller to claim a field's address frees it and runs its destructor, and any later caller for the same address (the owning local's chain pop, or another field aliasing it) no-ops. That claim is what keeps aliased stdlib fields, such as `ArrayStream.data` aliasing `ArrayList.data`, `Optional.value`, and `Pair.first/second`, from double-freeing. Doctrine and walk-throughs are in `docs/specification/lang/FieldOwnership.md`. Pinned by `test/parser/AutoFieldDropTests.cpp`.
+- **Implicit destructor chaining, shipped 2026-05-21.** ✅ Done. The semantics are C++'s. The compiler-emitted heap-drop wrapper runs (1) this class's `~Class()` body and its own field auto-drops (in reverse declaration order), (2) every transitive ancestor's same body+own-field contribution in reverse-DFS deduped order, (3) `__cajeta_free(instance)`. Each ancestor runs exactly once, since diamond-shared ancestors via the vbase ABI's single canonical sub-object are visited only on whichever branch sees them first. Chaining is automatic and non-suppressible. `super<Base>.~Base()` may be written explicitly for documentation, but it does not change codegen. The stack-drop wrapper has the same shape minus the free. The implementation is `CajetaClass::emitDropBodyInline` plus `CajetaClass::collectDestructorChain`, both called from `getOrCreateDropFunction` and `getOrCreateStackDropFunction`. Pinned by `test/parser/DestructorChainTests.cpp` (9 tests, including multi-inheritance reverse-decl order and the diamond runs-once case).
+- **Block-scoped firing.** ✅ Done. Drop entries fire at the closing `}` of the declaring lexical block. They do not wait for method exit. RAII patterns like back-to-back `LockGuard`s in inline blocks now work. Pinned by `test/parser/BlockScopedDropTests.cpp`.
 
 ### No try-with-resources
 
-Cajeta does **not** have Java's `try (R r = …) { … }` syntax. It was briefly in the grammar and was removed 2026-05-20 as strictly redundant: destructors already guarantee deterministic cleanup at the closing `}` of the declaring block, including LIFO order across multiple locals and on exception unwind. The Java construct exists because Java has GC and no destructors — `AutoCloseable.close()` needs an external guarantee-mechanism that the drop chain already provides here.
+Cajeta does not have Java's `try (R r = …) { … }` syntax. It was briefly in the grammar and was removed 2026-05-20 as strictly redundant, because destructors already guarantee deterministic cleanup at the closing `}` of the declaring block, including LIFO order across multiple locals and on exception unwind. The Java construct exists because Java has GC and no destructors, so `AutoCloseable.close()` needs an external guarantee mechanism that the drop chain already provides here.
 
-The replacement pattern is "just declare the resource":
+The replacement pattern is to declare the resource:
 
 ```cajeta
 {
@@ -405,7 +408,7 @@ The replacement pattern is "just declare the resource":
 }
 ```
 
-`r.close()` is still callable for early release — destructors are idempotent (the standard Phase-A `FileReader` / `FileWriter` / `File` contract: `this.fd = -1` after the first close, subsequent calls no-op). Catch blocks still work without modification:
+`r.close()` is still callable for early release, because destructors are idempotent. That is the standard Phase-A `FileReader` / `FileWriter` / `File` contract, where `this.fd = -1` after the first close and subsequent calls no-op. Catch blocks still work without modification:
 
 ```cajeta
 try {
@@ -424,27 +427,27 @@ try {
 
 ## Containers (stdlib convention)
 
-Containers carry **no ownership spelling in their signatures** — they are the
+Containers carry no ownership spelling in their signatures. They are the
 clearest case for caller discretion, since the same container is legitimately used
 both to own its elements and to index values owned elsewhere:
 
-- `void add(T element)` — the *call site* decides: `add(x)` lends, `add(#x)` gives
-  the container the title. The entry records which, per element.
-- `T get(int32 i)` — hands back whatever the entry holds: a borrow if the entry is
-  borrowed, the title if it is owned.
-- `T remove(int32 i)` — membership ends; the return carries the entry's title if it
-  had one.
-- `for (T x : container)` — `x` is a borrow per iteration, bounded by the loop body.
+- `void add(T element)` lets the call site decide. `add(x)` lends, and `add(#x)`
+  gives the container the title. The entry records which, per element.
+- `T get(int32 i)` hands back whatever the entry holds, a borrow if the entry is
+  borrowed and the title if it is owned.
+- `T remove(int32 i)` ends membership, and the return carries the entry's title if
+  it had one.
+- `for (T x : container)` makes `x` a borrow per iteration, bounded by the loop body.
 
 There is no separate "borrowing container" type. One `HashMap<K, V>` holds owned and
 borrowed entries side by side, and drops exactly the ones it owns.
 
 ### Element slots carry their own ownership bits
 
-"The entry records which" is not container bookkeeping — it is the language's.
-Element slots get the same treatment as fields: `data[i] #= v` records `v`'s title
-in a compiler-managed **per-slot bit**, and the synthesized drop frees exactly the
-slots whose bit is set.
+"The entry records which" is the language's bookkeeping, and the container
+writes none of it. Element slots get the same treatment as fields. `data[i] #= v`
+records `v`'s title in a compiler-managed per-slot bit, and the synthesized drop
+frees exactly the slots whose bit is set.
 
 ```cajeta
 public void add(T element) {
@@ -453,17 +456,17 @@ public void add(T element) {
 }
 ```
 
-That is the whole implementation. The array's own drop walks the bits; slots that
-were lent are left alone, slots that were surrendered are freed. Writing a
-container no longer requires a parallel `owned[]` sidecar, an `@ElementCount`
+That is the whole implementation. The array's own drop walks the bits. Slots
+that were lent are left alone, and slots that were surrendered are freed. Writing
+a container no longer requires a parallel `owned[]` sidecar, an `@ElementCount`
 annotation to avoid dropping garbage past the live prefix, or any read of the
-transfer word — all three existed only because slots could not remember their own
-state. **Field symmetry is the rule:** whatever a store means for `this.f`, it
+transfer word. All three existed only because slots could not remember their own
+state. Field symmetry is the rule, so whatever a store means for `this.f`, it
 means for `this.data[i]`.
 
 Arrays that never receive a title store behave exactly as before and cost only
-`capacity/8` tail bytes. Slot-to-slot moves forward the bit verbatim — a borrow
-stays a borrow — which is what shift, sift, and split loops need:
+`capacity/8` tail bytes. Slot-to-slot moves forward the bit verbatim, so a borrow
+stays a borrow, which is what shift, sift, and split loops need:
 
 ```cajeta
 this.data[j] #= this.data[j - 1];   // move whatever title that slot holds
@@ -474,8 +477,8 @@ this.data[j] #= this.data[j - 1];   // move whatever title that slot holds
 ## `Cajeta.owned(formal)` — branching on ownership
 
 `Cajeta.owned(v)` returns whether *this* call surrendered `v`'s title. It exists
-for algorithms that genuinely branch on ownership — an interning pool that adopts
-what it is given and copies what it is only lent:
+for algorithms that genuinely branch on ownership, such as an interning pool that
+adopts what it is given and copies what it is only lent:
 
 ```cajeta
 public String intern(String s) {
@@ -484,40 +487,40 @@ public String intern(String s) {
 }
 ```
 
-**Correctness never requires it.** No container or store pattern should need
-`owned()` to be leak-free and UAF-free — `#=` and slot bits do that bookkeeping
-on their own. Treat it like `instanceof`: occasionally the honest answer, and a
-design smell when it becomes load-bearing. If some pattern seems to *need* it for
-correctness, that is a missing synthesis in the language — report it rather than
-working around it.
+Correctness never requires it. No container or store pattern should need
+`owned()` to be leak-free and UAF-free, because `#=` and slot bits do that
+bookkeeping on their own. Treat it like `instanceof`. It is occasionally the
+honest answer, and it is a design smell when it becomes load-bearing. If some
+pattern seems to need it for correctness, that is a missing synthesis in the
+language. Report it instead of working around it.
 
 ---
 
 ## Structs
 
-A `struct` is a stack-allocated value aggregate (full spec: `docs/specification/lang/Views.md`). Its interaction with the memory model:
+A `struct` is a stack-allocated value aggregate, and its full spec is `docs/specification/lang/Views.md`. It interacts with the memory model as follows:
 
-- **Lifetime is the enclosing scope.** A struct local is allocated via `alloca` and drops at scope exit — same as any other stack-resident owner.
-- **Fields participate in drop chain.** A struct field that holds an owned class reference is itself an owner; when the struct drops, owned class fields drop in reverse declaration order before the struct's bytes are reclaimed.
-- **Borrowed class refs are tracked.** A struct field holding a borrowed class reference contributes to the path-borrow tracker; the borrow is rooted at whatever the field was assigned from.
-- **Embedded structs in class fields.** A struct used as a class field lives inline in the class's heap layout — no extra allocation. When the class drops, every embedded struct field drops with it (recursively).
-- **Field-path moves apply.** `#s.field` invalidates `s.field` for subsequent reads (existing `markMovedPath` machinery); siblings of the moved field remain readable.
-- **Pass-by-pointer.** Structs cross call boundaries via the existing aggregate pass-by-pointer rule; defensive copies happen at callee entry only when the callee mutates the parameter.
+- **Lifetime is the enclosing scope.** A struct local is allocated via `alloca` and drops at scope exit, the same as any other stack-resident owner.
+- **Fields participate in drop chain.** A struct field that holds an owned class reference is itself an owner. When the struct drops, owned class fields drop in reverse declaration order before the struct's bytes are reclaimed.
+- **Borrowed class refs are tracked.** A struct field holding a borrowed class reference contributes to the path-borrow tracker. The borrow is rooted at whatever the field was assigned from.
+- **Embedded structs in class fields.** A struct used as a class field lives inline in the class's heap layout, with no extra allocation. When the class drops, every embedded struct field drops with it (recursively).
+- **Field-path moves apply.** `#s.field` invalidates `s.field` for subsequent reads (existing `markMovedPath` machinery), and siblings of the moved field remain readable.
+- **Pass-by-pointer.** Structs cross call boundaries via the existing aggregate pass-by-pointer rule. Defensive copies happen at callee entry only when the callee mutates the parameter.
 
-The borrow checker treats structs uniformly with primitive locals — the only difference is that a struct's bytes can transitively own other resources, which the drop chain unwinds in declaration order.
+The borrow checker treats structs uniformly with primitive locals. The only difference is that a struct's bytes can transitively own other resources, which the drop chain unwinds in declaration order.
 
 ---
 
 ## Views
 
-A `view` is a typed overlay onto a borrowed byte buffer — an `int8[]` (full spec: `Views.md`). Two construction forms:
+A `view` is a typed overlay onto a borrowed byte buffer, an `int8[]`, and its full spec is `Views.md`. There are two construction forms:
 
-- **Borrow form** — `RpcHeader h = RpcHeader(buf);` borrows `buf`. `h` is a path-borrow rooted at `buf`; the borrow checker enforces `h` cannot outlive `buf`, the buffer cannot be mutated through any other alias while `h` is live, and `h` cannot be sent to another fiber.
-- **Owning form** — `RpcHeader h = RpcHeader(#buf);` transfers `buf`'s ownership into `h`. The view is now an owner; standard transfer rules apply (`#h`, drop-on-scope-exit drops the contained buffer).
+- **Borrow form.** `RpcHeader h = RpcHeader(buf);` borrows `buf`. `h` is a path-borrow rooted at `buf`, and the borrow checker enforces that `h` cannot outlive `buf`, that the buffer cannot be mutated through any other alias while `h` is live, and that `h` cannot be sent to another fiber.
+- **Owning form.** `RpcHeader h = RpcHeader(#buf);` transfers `buf`'s ownership into `h`. The view is now an owner, and the standard transfer rules apply (`#h` transfers it, and the drop at scope exit drops the contained buffer).
 
-Per-field access (`h.magic`, `h.payload[i]`) is a path-borrow rooted at the buffer — same machinery as struct-field access. Mutating one field while a borrow into another field of the same view is live is allowed (different paths); mutating the buffer directly while any view borrow is live is rejected (alias-mutation).
+Per-field access (`h.magic`, `h.payload[i]`) is a path-borrow rooted at the buffer, through the same machinery as struct-field access. Mutating one field while a borrow into another field of the same view is live is allowed, because the paths differ. Mutating the buffer directly while any view borrow is live is rejected as alias-mutation.
 
-Construction-time bounds and length-prefix validation are documented in `Views.md` § Security; they are the load-bearing guarantee that makes per-access reads bounds-check-free.
+Construction-time bounds and length-prefix validation are documented in `Views.md` § Security. They are the guarantee that makes per-access reads bounds-check-free.
 
 ---
 
@@ -525,7 +528,7 @@ Construction-time bounds and length-prefix validation are documented in `Views.m
 
 ### Layout
 
-Linked list of cleanup entries. The chain head is **TLS + per-fiber**: `__cajeta_main_drop_top` (declared `__thread` in `cajeta_runtime.c`) is the main thread's head, and `__cajeta_drop_top_ptr()` returns the running fiber's `cajeta_fiber.drop_top` slot when one is active, falling back to the TLS main slot otherwise. Each `DropEntry` is alloca'd in the declaring function's frame, so a fiber's entries sit on the fiber's own stack and the per-fiber head pointer keeps the chains independent — safe under multi-carrier execution as long as each fiber's chain is touched by at most one carrier at a time.
+The chain is a linked list of cleanup entries. The chain head is TLS plus per-fiber. `__cajeta_main_drop_top` (declared `__thread` in `cajeta_runtime.c`) is the main thread's head, and `__cajeta_drop_top_ptr()` returns the running fiber's `cajeta_fiber.drop_top` slot when one is active, falling back to the TLS main slot otherwise. Each `DropEntry` is alloca'd in the declaring function's frame, so a fiber's entries sit on the fiber's own stack and the per-fiber head pointer keeps the chains independent. That is safe under multi-carrier execution as long as each fiber's chain is touched by at most one carrier at a time.
 
 ```c
 struct cajeta_drop_entry {
@@ -544,9 +547,9 @@ Each `cajeta_drop_entry` is stack-allocated (alloca) in its declaring frame.
 
 ### Codegen patterns
 
-Conceptual shape (the real push/pop go through runtime helpers
-`__cajeta_drop_push` and `__cajeta_drop_pop_run`, which read the active
-head via `__cajeta_drop_top_ptr()`):
+This is the conceptual shape. The real push and pop go through the runtime
+helpers `__cajeta_drop_push` and `__cajeta_drop_pop_run`, which read the active
+head via `__cajeta_drop_top_ptr()`:
 
 ```
 // Owner declared — entry alloca'd in the frame, pushed onto the active head
@@ -575,11 +578,11 @@ longjmp(exc_top->buf, 1);
 
 ### Special cases
 
-- **Drop-during-drop:** if a `drop_fn` throws, the runtime aborts. Same as C++ noexcept-violation.
+- **Drop-during-drop:** if a `drop_fn` throws, the runtime aborts. This is the same as a C++ noexcept-violation.
 - **Move-out then throw:** entries with `active = false` are skipped during unwind.
-- **Catch handler's locals:** catch runs in the same function frame; owners declared inside the try block were unwound by the throw; owners declared before the try are still active.
-- **Rethrow:** standard — walks up to the next outer try.
-- **Return through a try:** normal scope exit pops + drops; `__cajeta_exc_pop` runs alongside.
+- **Catch handler's locals:** catch runs in the same function frame. Owners declared inside the try block were unwound by the throw, and owners declared before the try are still active.
+- **Rethrow:** standard behaviour, which walks up to the next outer try.
+- **Return through a try:** normal scope exit pops and drops, and `__cajeta_exc_pop` runs alongside.
 
 ---
 
@@ -587,32 +590,34 @@ longjmp(exc_top->buf, 1);
 
 The runtime ships two opt-in debug aids that harden the drop machinery and
 help catch use-after-free during testing. Both are off by default and toggled
-at runtime, so they do **not** change object layout or ABI:
+at runtime, so they do not change object layout or ABI:
 
 - **Poison-on-free** (`__cajeta_set_poison_free(1)`). On every free, the
   reclaimed block is overwritten with `0xDB` up to its allocator-tracked
   chunk size before `free()`. A subsequent read through a dangling field
-  sees the poison pattern instead of stale-but-plausible data. Implemented
-  in `__cajeta_poison_buffer`.
+  sees the poison pattern instead of stale-but-plausible data. It is
+  implemented in `__cajeta_poison_buffer`.
 - **Drop-chain validation** (`__cajeta_set_drop_chain_validate(1)`).
   `__cajeta_drop_pop_run` asserts the popped entry is the chain head and has
   a sane `active` flag, catching out-of-order pops, double-pops, and bit-rot
   (`CAJETA_ERROR_DROP_CHAIN_*` corruption traps).
 
-Double-free across aliased fields is prevented unconditionally (not just in
-debug) by the global live-set claim described under § Runtime.
+Double-free across aliased fields is prevented unconditionally, in release as
+well as debug, by the global live-set claim described under § Runtime.
 
-> **Planned (not yet built):** a generation-counter borrow checker — every
+> **Planned (not yet built):** a generation-counter borrow checker. Every
 > heap object carries a generation word, borrows snapshot it at creation, and
-> each borrow access compares snapshot to current. This is the `R1` proposal
-> in `docs/specification/lang/BorrowSoundness.md`, not shipped today.
+> each borrow access compares the snapshot to the current value. This is the
+> `R1` proposal in `docs/specification/lang/BorrowSoundness.md`, and it is not
+> shipped today.
 
 ---
 
 ## Transfer demotes its source to a borrow
 
-`#` moves the **title**, not the binding. After a transfer the source is a
-borrow of the same live instance — it did not die and it is still readable.
+`#` moves the title and leaves the binding in place. After a transfer the
+source is a borrow of the same live instance. It did not die, and it is still
+readable.
 
 ```cajeta
 Tag orig = heap Tag();
@@ -622,19 +627,19 @@ orig.setValue(5);      // legal — both names denote ONE instance
 Tag other #= orig;     // error — you cannot transfer from a borrow
 ```
 
-Both names point at the same object; only ownership moved. That makes the two
-transfer errors one: transferring twice IS transferring from a borrow, so both
-raise `CAJETA_ERROR_MOVE_OF_BORROW`.
+Both names point at the same object, and only ownership moved. That makes the
+two transfer errors one. Transferring twice is transferring from a borrow, so
+both raise `CAJETA_ERROR_MOVE_OF_BORROW`.
 
 > You cannot transfer ownership more than once, or from a borrow.
 
-**`#=` is conditional acquisition, not a transfer operator.** It means *take
-ownership if the source has it*. Where ownership is statically known the
-compiler decides; at a plain formal — whose ownership is fixed by the CALL
-SITE — the store forwards whatever the caller did, so the same method body
-serves a lend, a transfer, and a fresh construction.
+`#=` is conditional acquisition. It means take ownership if the source has
+it. Where ownership is statically known the compiler decides. At a plain
+formal, whose ownership is fixed by the call site, the store forwards whatever
+the caller did, so the same method body serves a lend, a transfer, and a fresh
+construction.
 
-**The exposure this accepts:** a borrow of a transferred binding dangles once
+This accepts one exposure. A borrow of a transferred binding dangles once
 the new owner drops it, and the compiler does not diagnose it. This is the
 same programmer responsibility the table below assigns to aliases generally.
 
@@ -649,8 +654,8 @@ orig.setValue(5);          // use-after-free — compiles, faults at runtime
 | Error | Caught by |
 |-------|-----------|
 | Use-after-free | Scope-based lifetime check |
-| Transfer from a borrow (incl. transferring twice) | `CAJETA_ERROR_MOVE_OF_BORROW` — a transfer DEMOTES its source to a borrow, so a second transfer is a transfer from a borrow |
-| Reading a transferred binding | **Not an error.** `#` moves the title, not the binding: the source stays a readable borrow of the same live instance |
+| Transfer from a borrow (incl. transferring twice) | `CAJETA_ERROR_MOVE_OF_BORROW`, because a transfer demotes its source to a borrow, so a second transfer is a transfer from a borrow |
+| Reading a transferred binding | **Not an error.** `#` moves the title and leaves the binding in place, so the source stays a readable borrow of the same live instance |
 | Double-free | Impossible by construction |
 | Alias-mutation invalidation | Path-based borrow tracking |
 | Drop-order error | LIFO scope analysis |
@@ -666,37 +671,37 @@ orig.setValue(5);          // use-after-free — compiles, faults at runtime
 | Interior read of a `T` or `#T` formal kept with `=` | `CAJETA_ERROR_INTERIOR_KEEP_NEEDS_BORROW_PARAM` |
 | Transfer or owned temporary passed to a borrow-only (`^T`) formal | `CAJETA_ERROR_TRANSFER_INTO_BORROW_PARAM` |
 | Override whose `^` marks differ from the overridden method | `CAJETA_ERROR_BORROW_MARK_MISMATCH` |
-| Lend into a holder that outlives the lender, other than a returned holder local | **Not caught.** Needs lifetime information the language does not track |
+| Lend into a holder that outlives the lender, other than a returned holder local | **Not caught.** It needs lifetime information the language does not track |
 | Sibling field alias (`this.a = this.b`) followed by replacing `this.b` | **Not caught.** The alias is a legal borrow, and the replacement frees what it points at |
 | Two declarations differing only in transfer mode | `CAJETA_ERROR_TRANSFER_MODE_OVERLOAD` |
-| Lend at a local's last use (**warning**, not an error) | `CAJETA_WARN_LAST_USE_TRANSFER` — suggests `#`; never fails the build |
+| Lend at a local's last use (**warning**, not an error) | `CAJETA_WARN_LAST_USE_TRANSFER`, which suggests `#` and never fails the build |
 
 ---
 
 ## Deferred / out of scope (v1)
 
-- Multi-threading: needs a `Send`/`Sync`-style protocol. Runtime layout already accommodates per-thread state when added.
-- FFI safety: checker trusts FFI signatures.
-- `unsafe` escape hatch: not in v1.
-- Reflection / dynamic-dispatch borrow analysis: revisit when virtuals land.
-- Cycles: forbidden by single-ownership; documented behaviour, no runtime enforcement needed.
+- Multi-threading needs a `Send`/`Sync`-style protocol. The runtime layout already accommodates per-thread state when it is added.
+- FFI safety is deferred, and the checker trusts FFI signatures.
+- The `unsafe` escape hatch is not in v1.
+- Reflection and dynamic-dispatch borrow analysis will be revisited when virtuals land.
+- Cycles are forbidden by single ownership. This is documented behaviour, and no runtime enforcement is needed.
 
 ---
 
 ## Rollout
 
-Existing Cajeta code (268 tests, all Java-idiom — no `#`, no borrow/owner distinction) doesn't conform. Two paths:
+Existing Cajeta code (268 tests, all Java-idiom, with no `#` and no borrow/owner distinction) doesn't conform. There are two paths:
 
-1. **Migration (big-bang).** Rewrite all tests + stdlib to use the new model in one PR. Cleaner end state; large patch.
-2. **Opt-in legacy mode.** Code without `#` runs in "trust me" mode (no borrow checking); new code opts into checked mode via a file-level pragma or compiler flag. Migrate incrementally.
+1. **Migration (big-bang).** Rewrite all tests + stdlib to use the new model in one PR. The end state is cleaner, and the patch is large.
+2. **Opt-in legacy mode.** Code without `#` runs in "trust me" mode (no borrow checking), and new code opts into checked mode via a file-level pragma or compiler flag. Migration is incremental.
 
-Recommend **path 1**. The codebase is small enough; the inconsistency of path 2 isn't worth the maintenance overhead.
+Path 1 is recommended. The codebase is small enough, and the inconsistency of path 2 isn't worth the maintenance overhead.
 
 **Implementation order:**
 
-1. **Parser:** add `#` token in value-prefix position; allow it as a type-prefix in parameter and return position.
-2. **AST:** extend `Expression` with a `moveFlag` bit; extend signatures with a `transferred` bit on parameter and return types.
-3. **Static analysis pass:** add a borrow-checker that runs after `resolveTypes`. Intra-function first (scope + path tracking); inter-procedural elision second.
+1. **Parser:** add `#` token in value-prefix position, and allow it as a type-prefix in parameter and return position.
+2. **AST:** extend `Expression` with a `moveFlag` bit, and extend signatures with a `transferred` bit on parameter and return types.
+3. **Static analysis pass:** add a borrow-checker that runs after `resolveTypes`. Intra-function comes first (scope + path tracking), and inter-procedural elision second.
 4. **Runtime:** define `DropEntry`, add push/pop helpers, extend the exception frame with a `drop_watermark` field. Update `__cajeta_throw` to unwind drops before longjmp.
 5. **Codegen:** at each owner declaration, emit DropEntry alloca + chain push. At each scope exit, emit pop+drop. At each `#` move-out, emit `active = false`. At each try-block entry, save watermark. At each return, emit drops for the function's still-active owners.
 6. **Migration:** rewrite stdlib runtime helpers (string concat, substring, etc. currently leak) to integrate with drops. Rewrite test suite to use the new ownership idioms.
@@ -705,11 +710,11 @@ Recommend **path 1**. The codebase is small enough; the inconsistency of path 2 
 
 ## Known gaps (post-v1 rollout)
 
-The rollout left a few items deliberately out of v1 scope; they're called out here so future work knows where to pick up.
+The rollout left a few items deliberately out of v1 scope. They're called out here so future work knows where to pick up.
 
-- **String stdlib helpers leak fix.** ✅ Done. `LocalVariableDeclaration` recognizes the owned-allocating shapes — binary `+` lowered to `__cajeta_str_concat`, and the routed method intrinsics `substring` / `toUpperCase` / `toLowerCase` / `trim` / `replace` on a String receiver — and registers `__cajeta_free` as the local's drop fn. String literal aliases and `p.name` field-reads remain borrow-shaped (no drop). Pinned by `test/parser/OwnedStringDropTests.cpp`. The pragmatic detection at the assignment site replaces the proposed type-system `OwnedString` flag for v1; the flag can land later if a non-LocalVariable owner site appears.
-- **Alias-mutation through writes.** ⚠️ Partial. `Scope` carries a `liveBorrows` map (path → borrower set) populated by `LocalVariableDeclaration` for pointer-shaped path-read initializers; `Scope::findInvalidatingBorrow` exists but is **not wired up** — it has no callers, so no diagnostic fires for an overlapping write today. `AliasMutationBorrowTests` accordingly only asserts that these programs COMPILE. (Verified 2026-08-03 while retiring `CAJETA_ERROR_USE_AFTER_MOVE`; the gap predates that work.) Pinned by `test/parser/AliasMutationBorrowTests.cpp`.
-- **Multi-parameter borrow-return with annotation.** Today multi-input free functions can't return a borrow at all. Rust-style explicit lifetime annotations would lift this restriction; not part of v1.
+- **String stdlib helpers leak fix.** ✅ Done. `LocalVariableDeclaration` recognizes the owned-allocating shapes, which are a binary `+` lowered to `__cajeta_str_concat` and the routed method intrinsics `substring` / `toUpperCase` / `toLowerCase` / `trim` / `replace` on a String receiver, and registers `__cajeta_free` as the local's drop fn. String literal aliases and `p.name` field-reads remain borrow-shaped (no drop). Pinned by `test/parser/OwnedStringDropTests.cpp`. The pragmatic detection at the assignment site replaces the proposed type-system `OwnedString` flag for v1. The flag can land later if a non-LocalVariable owner site appears.
+- **Alias-mutation through writes.** ⚠️ Partial. `Scope` carries a `liveBorrows` map (path → borrower set) populated by `LocalVariableDeclaration` for pointer-shaped path-read initializers; `Scope::findInvalidatingBorrow` exists but is not wired up. It has no callers, so no diagnostic fires for an overlapping write today. `AliasMutationBorrowTests` accordingly only asserts that these programs COMPILE. (Verified 2026-08-03 while retiring `CAJETA_ERROR_USE_AFTER_MOVE`; the gap predates that work.) Pinned by `test/parser/AliasMutationBorrowTests.cpp`.
+- **Multi-parameter borrow-return with annotation.** Today multi-input free functions can't return a borrow at all. Rust-style explicit lifetime annotations would lift this restriction, and they are not part of v1.
 - **FFI / `unsafe` / multi-threading.** All explicitly deferred.
-- **A source read after its title moved through an alias that is then reassigned.** ⚠️ Open. `int8[] dev #= raw;` transfers `raw`'s title to `dev`; a later `dev #= res;` drops what `dev` held, which is `raw`'s buffer; a read of `raw` after that compiled without a use-after-move diagnostic and faulted at run time (cajeta-llm `ColsProbe`, 2026-10-01: the branch that reassigned `dev` was conditional, and the oracle read `raw` after it). The move of `raw` is recorded; what is not caught is the use of the moved name after the alias's reassignment. Until it is, choose between sources in branches that each build their own value rather than through a reassigned alias.
-- **Static class fields landed.** ✅ Done. `public static int32 total = 0;` emits an LLVM global named `<class.canonical>.<fieldName>` in the declaring class's home module via `CajetaClass::getOrCreateStaticFieldGlobal`. Cross-module references go through `ensureGlobalInModule`. `DotExpression` short-circuits class-name LHS lookups in `canonicalMap` and returns the global as an l-value for reads/writes; `loadIfLValue` treats `GlobalVariable` like a GEP slot. Static-property literal initializers (`= 100`, `= -7`, float literals) are constant-folded into the global's `setInitializer`; complex expressions fall back to zero. Statics are skipped from instance struct layout. Pinned by `test/parser/StaticFieldTests.cpp` (9 tests) plus `test/parser/LambdaStaticCaptureTests.cpp` (2 tests) for lambda-body access through globals (no captures-struct routing needed).
+- **A source read after its title moved through an alias that is then reassigned.** ⚠️ Open. `int8[] dev #= raw;` transfers `raw`'s title to `dev`. A later `dev #= res;` drops what `dev` held, which is `raw`'s buffer. A read of `raw` after that compiled without a use-after-move diagnostic and faulted at run time (cajeta-llm `ColsProbe`, 2026-10-01, where the branch that reassigned `dev` was conditional and the oracle read `raw` after it). The move of `raw` is recorded. The use of the moved name after the alias's reassignment is not caught. Until it is, choose between sources in branches that each build their own value, and avoid a reassigned alias.
+- **Static class fields landed.** ✅ Done. `public static int32 total = 0;` emits an LLVM global named `<class.canonical>.<fieldName>` in the declaring class's home module via `CajetaClass::getOrCreateStaticFieldGlobal`. Cross-module references go through `ensureGlobalInModule`. `DotExpression` short-circuits class-name LHS lookups in `canonicalMap` and returns the global as an l-value for reads/writes; `loadIfLValue` treats `GlobalVariable` like a GEP slot. Static-property literal initializers (`= 100`, `= -7`, float literals) are constant-folded into the global's `setInitializer`, and complex expressions fall back to zero. Statics are skipped from instance struct layout. Pinned by `test/parser/StaticFieldTests.cpp` (9 tests) plus `test/parser/LambdaStaticCaptureTests.cpp` (2 tests) for lambda-body access through globals (no captures-struct routing needed).

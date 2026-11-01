@@ -1,17 +1,20 @@
 # cajeta.process
 
-OS subprocess control for cajeta programs: build a command, run it to completion
-with captured output (one-shot), or spawn a long-lived child with live piped
-stdio plus wait / timeout / kill (streaming). Backed by `__cajeta_proc_*` C
-bridges (`posix_spawn`-based on POSIX; a `CreateProcess` Windows port is stubbed),
-intrinsic-lowered at the call site like `cajeta.io.file`.
+`cajeta.process` is OS subprocess control for cajeta programs. You build a
+command, then either run it to completion with captured output, which is the
+one-shot form, or spawn a long-lived child with live piped stdio plus wait,
+timeout and kill, which is the streaming form. It is backed by `__cajeta_proc_*`
+C bridges, which are `posix_spawn`-based on POSIX, with a `CreateProcess` Windows
+port stubbed, and they are intrinsic-lowered at the call site like
+`cajeta.io.file`.
 
-Spec: `specs/archive/cajeta-process-spec.md`. Tests: `test/process/ProcessTests.cpp`
-(the executable examples — every snippet below mirrors a passing test).
+The spec is `specs/archive/cajeta-process-spec.md`. The tests are
+`test/process/ProcessTests.cpp`, which are the executable examples, and every
+snippet below mirrors a passing test.
 
 ## Command
 
-`Command` builds the invocation. Construction performs no OS work; `run()` /
+`Command` builds the invocation. Construction performs no OS work. `run()` /
 `start()` is what touches the OS, and a `Command` may be run more than once.
 
 | Method | Effect |
@@ -31,7 +34,7 @@ An empty `argv` is tolerated and surfaces as a launch failure
 
 ## ProcessResult
 
-The outcome of a finished child.
+`ProcessResult` is the outcome of a finished child.
 
 | Method | Returns |
 | --- | --- |
@@ -42,8 +45,9 @@ The outcome of a finished child.
 | `code()` | exit code on normal exit, `128 + signal` if signaled, `-1` if never launched. |
 | `stdout()` / `stderr()` | captured bytes (`int8[]`), when capture was requested. |
 
-A **non-zero exit is a normal result**, not an error — inspect `code()`. A
-**launch failure** is `launched() == false` / `code() == -1`, never a throw.
+A non-zero exit is a normal result, so inspect `code()`. It never raises an
+error. A launch failure is `launched() == false` / `code() == -1`, and it never
+throws.
 
 ```cajeta
 String[] argv = heap String[2];
@@ -59,8 +63,8 @@ if (r.launched() && r.code() == 0) {
 
 ## Process (streaming)
 
-A spawned, still-running child. Pipe streams are exposed as `File`-backed
-handles you read/write incrementally.
+`Process` is a spawned, still-running child. Pipe streams are exposed as
+`File`-backed handles you read and write incrementally.
 
 | Method | Effect |
 | --- | --- |
@@ -73,8 +77,8 @@ handles you read/write incrementally.
 | `int32 pid()` | the child's process id, or -1. |
 | `close()` | reap the child (killing it first if still running) and release the handle. |
 
-There is **no auto-close-on-drop destructor** in cajeta yet (same as
-`FileReader`/`FileWriter`): call `close()` (or a blocking `waitFor()`) to reap
+There is no auto-close-on-drop destructor in cajeta yet, the same as for
+`FileReader`/`FileWriter`, so call `close()` or a blocking `waitFor()` to reap
 the child. `close()` never leaks a zombie.
 
 ```cajeta
@@ -95,8 +99,8 @@ p.close();
 
 ## v1 limits
 
-- `run()`/`waitFor()` block the **carrier thread**, not the fiber. Fiber-yielding
-  waits, async-reactor integration, pipelines/PTYs, and capability gating are
-  future work (spec §1.4, §6, §7.3).
-- Windows is a stub (`launched() == false`); the `CreateProcess` port lands with
-  the Windows runtime.
+- `run()`/`waitFor()` block the carrier thread, and the fiber does not park.
+  Fiber-yielding waits, async-reactor integration, pipelines/PTYs, and
+  capability gating are future work (spec §1.4, §6, §7.3).
+- Windows is a stub, with `launched() == false`, and the `CreateProcess` port
+  lands with the Windows runtime.

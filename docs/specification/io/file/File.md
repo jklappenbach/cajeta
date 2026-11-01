@@ -2,16 +2,16 @@
 
 `File` covers two patterns under one class name:
 
-1. **Static one-shots** — `readAllBytes` / `writeAllBytes` / the
+1. **Static one-shots** are `readAllBytes` / `writeAllBytes` and the
    `openRead` / `openWrite` factories that return streaming
-   classes. Cover ~80% of usage.
-2. **Instance methods** (Phase E) — random-access I/O on a held
-   file handle: seek, position, lock, sync. Returned by the
-   `open` / `openExclusive` factories.
+   classes. They cover about 80% of usage.
+2. **Instance methods** (Phase E) give random-access I/O on a held
+   file handle, with seek, position, lock and sync. They are
+   returned by the `open` / `openExclusive` factories.
 
 The two surfaces share one class because callers conceptually
-"want a file" — splitting into `Files` (statics) + `File`
-(instance) is Java's mistake.
+"want a file". Splitting into `Files` for the statics and `File`
+for the instance is Java's mistake.
 
 ## Surface — one-shot statics + streaming opens
 
@@ -58,41 +58,41 @@ public class File {
 }
 ```
 
-`read` / `write` return the byte count transferred (`int64`); a `0`
-return from `read` is EOF. A `Buffer`-taking overload and the
-`InputStream` / `OutputStream` interfaces are planned, not yet on
+`read` / `write` return the byte count transferred (`int64`), and a
+`0` return from `read` is EOF. A `Buffer`-taking overload and the
+`InputStream` / `OutputStream` interfaces are planned and not yet on
 the class.
 
 ## Notes
 
-- **`#` return ownership** — `readAllBytes` returns a heap-
-  allocated `int8[]` (the caller takes ownership), so the
-  multi-param + reference-return shape doesn't trip the
-  borrow-return-multi-param check. Same for `openRead` /
-  `openWrite` — the returned `FileReader` / `FileWriter` is
+- **`#` return ownership.** `readAllBytes` returns a heap-
+  allocated `int8[]` and the caller takes ownership, so the
+  multi-param + reference-return shape does not trip the
+  borrow-return-multi-param check. The same holds for `openRead` /
+  `openWrite`, where the returned `FileReader` / `FileWriter` is
   owned.
-- **Atomic write** — `writeAllBytes(path, data, len)` writes to
-  `<path>.tmp.<pid>`, fsyncs, then renames over `path` (atomic on
-  POSIX). Concurrent readers either see the OLD file or the NEW
-  file, never a half-written one. On any failure the tmp file is
-  unlinked and the destination is left untouched. A direct-write
-  overload (skip the temp+rename dance) is planned, not yet
-  present.
-- **Error reporting today** — the native helpers return
-  sentinels, not exceptions: `readAllBytes` yields `null` on a
-  missing / unreadable path, `writeAllBytes` and the instance
+- **Atomic write.** `writeAllBytes(path, data, len)` writes to
+  `<path>.tmp.<pid>`, fsyncs, then renames over `path`, which is
+  atomic on POSIX. Concurrent readers see either the OLD file or
+  the NEW file, and never a half-written one. On any failure the
+  tmp file is unlinked and the destination is left untouched. A
+  direct-write overload that skips the temp+rename step is planned
+  and not yet present.
+- **Error reporting today.** The native helpers return sentinels
+  rather than exceptions. `readAllBytes` yields `null` on a
+  missing or unreadable path, and `writeAllBytes` and the instance
   `read` / `write` return `-1` on hard error. The
   [`IoException`](Errors.md) hierarchy is defined but not yet
-  thrown from these call sites; throwing wrappers land once the
+  thrown from these call sites. Throwing wrappers land once the
   hierarchy is wired end-to-end.
-- **Drop auto-closes** — the random-access `File` instance and
+- **Drop auto-closes.** The random-access `File` instance and
   the streaming `FileReader` / `FileWriter` all close on scope
-  exit via the destructor chain (idempotent: `close()` sets
-  `fd = -1`, so the destructor skips an already-closed fd).
-  Explicit `close()` is only for early release.
-- **`InputStream` / `OutputStream` interfaces** — planned for the
+  exit via the destructor chain. This is idempotent, because
+  `close()` sets `fd = -1` and the destructor skips an
+  already-closed fd. Explicit `close()` is only for early release.
+- **`InputStream` / `OutputStream` interfaces** are planned for the
   random-access `File` so generic streaming code can work against
-  it; the interfaces are not declared on the class yet.
+  it. The interfaces are not declared on the class yet.
 
 ## See also
 

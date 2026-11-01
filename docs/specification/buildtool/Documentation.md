@@ -1,34 +1,35 @@
 # Documentation
 
-Specification for cajeta source code documentation — the comment
-syntax authors use, the conventions for what gets documented, the
+Specification for cajeta source code documentation. It covers the
+comment syntax authors use, the conventions for what gets documented, the
 tag set the doc processor understands, and the `cajeta doc`
 subcommand that turns annotated source into a browsable static
 website.
 
 Cajeta's documentation system follows the JavaDoc tradition for
-familiarity (every developer coming from Java / Kotlin / Scala /
-TypeScript already knows it) but allows full Markdown inside
-comment bodies for formatting (no XML-style HTML tags, no `<pre>`
-abuse, no nested-table escape sequences). The output is a static
+familiarity, since every developer coming from Java / Kotlin /
+Scala / TypeScript already knows it. It allows full Markdown
+inside comment bodies for formatting, so there are no XML-style
+HTML tags, no `<pre>` abuse, and no nested-table escape sequences. The output is a static
 HTML site themed for readability, with client-side search and
 cross-reference linking.
 
-> **Status (shipped vs. design).** A working generator ships: the
+> **Status (shipped vs. design).** A working generator ships. The
 > `cajeta doc` subcommand (`src/cajeta/cli/DocCommand.cpp`, gated on
 > the `-DCAJETA_BUILD_CAJETADOC=ON` build option) delegates to the
 > `cajetadoc` tool under `tools/cajetadoc/`, which parses `/** */`
 > doc comments, renders Markdown bodies, resolves cross-references,
-> and writes a static HTML site. What's **real today:** the `/** */`
-> comment form and the `//` / `/* */` distinction; CommonMark bodies;
-> the core JavaDoc tags (`@Param`, `@Return`, `@Throws`/`@Exception`,
-> `@See`, `@Since`, `@Author`, `@Version`, `@SerialField`); and the
-> CLI flags listed in [`cajeta doc` processor → CLI](#cajeta-doc-processor).
-> Everything else here — the full structured cajeta-specific tag
-> treatments (`@FiberSafe`/`@Complexity`/`@Owns`/…), `.car`-archive
-> input, themes, client-side search, `--serve`/`--watch`,
-> `--check-docs`, versioned output — is the **design target**, not yet
-> all wired up. Sections below are spec unless noted.
+> and writes a static HTML site. What is real today is the `/**
+> */` comment form and the `//` / `/* */` distinction, CommonMark
+> bodies, the core JavaDoc tags (`@Param`, `@Return`,
+> `@Throws`/`@Exception`, `@See`, `@Since`, `@Author`, `@Version`,
+> `@SerialField`), and the CLI flags listed in [`cajeta doc`
+> processor → CLI](#cajeta-doc-processor). Everything else here is
+> the design target and is not yet all wired up. That includes the
+> full structured cajeta-specific tag treatments
+> (`@FiberSafe`/`@Complexity`/`@Owns`/…), `.car`-archive input,
+> themes, client-side search, `--serve`/`--watch`, `--check-docs`,
+> and versioned output. Sections below are spec unless noted.
 
 ## Table of contents
 
@@ -45,15 +46,16 @@ cross-reference linking.
 
 ## Comment syntax
 
-Two comment forms in cajeta source code; only the first is
-documentation.
+There are two comment forms in cajeta source code, and only the
+first is documentation.
 
 ### Documentation block comments — `/** ... */`
 
 A block comment that opens with `/**` (slash, asterisk, asterisk)
 and closes with `*/` is a documentation comment. It documents the
-declaration that follows it — a class, interface, enum, struct,
-view, method, constructor, field, or annotation type.
+declaration that follows it, which may be a class, interface,
+enum, struct, view, method, constructor, field, or annotation
+type.
 
 ```cajeta
 /**
@@ -73,10 +75,10 @@ public final class String implements Collection<int32> {
 }
 ```
 
-The leading `*` on continuation lines is optional but recommended;
-the doc processor strips it during parsing. Blank lines inside the
-comment are paragraph separators — they survive into the rendered
-output.
+The leading `*` on continuation lines is optional but recommended.
+The doc processor strips it during parsing. Blank lines inside the
+comment are paragraph separators, and they survive into the
+rendered output.
 
 ### Regular comments — `//` and `/* ... */`
 
@@ -89,19 +91,20 @@ processor ignores them.
 private int64 cachedCount = -1;     // -1 sentinel: not computed yet
 ```
 
-The distinction is intentional: documentation comments are part of
-the public-facing contract, regular comments are not. Cajetadoc
-walks declarations and pairs each with the immediately preceding
-`/** */` block; any other comment style is invisible to it.
+The distinction is intentional. Documentation comments are part of
+the public-facing contract, and regular comments are not.
+Cajetadoc walks declarations and pairs each with the immediately
+preceding `/** */` block. Any other comment style is invisible to
+it.
 
 ### Why `/** */` and not `///`
 
-Rust's `///` line-doc syntax is lighter to type but trades
-something real: every doc line needs the prefix. A 20-line method
+Rust's `///` line-doc syntax is lighter to type, but every doc
+line needs the prefix. A 20-line method
 description with code blocks and lists becomes a wall of `///`s
 that hurts to skim and tempts authors to leave doc paragraphs
-short. JavaDoc's block form keeps the prose readable in source —
-the file reads almost like the rendered output. Combined with
+short. JavaDoc's block form keeps the prose readable in source, so
+the file reads almost like the rendered output. Combined with the
 Markdown body (next section), the JavaDoc block form is the right
 tradeoff for cajeta.
 
@@ -109,7 +112,7 @@ tradeoff for cajeta.
 
 ## Markdown in doc comments
 
-The body of a doc comment is **CommonMark** Markdown with a few
+The body of a doc comment is CommonMark Markdown with a few
 extensions. The doc processor renders the body the same way GitHub
 / GitLab / `pulldown-cmark` would.
 
@@ -136,8 +139,8 @@ Code blocks carry a language tag (` ```cajeta `, ` ```text `,
 ` ```bash `, ` ```json `, ...). The cajeta-tagged blocks are
 syntax-highlighted in the rendered output using the same tokenizer
 the compiler uses, so highlighting can't drift from the actual
-grammar. Other languages use a configured highlighter (default:
-Prism.js or equivalent).
+grammar. Other languages use a configured highlighter, and the
+default is Prism.js or equivalent.
 
 ### Cross-reference links
 
@@ -154,19 +157,19 @@ declaration:
 ```
 
 Bare type names like `String` in prose auto-link if the name is
-unambiguous in the current import scope. Authors don't need to
-wrap every type reference in brackets; the processor sees `String`
-as a link when one fits and as plain text when one doesn't.
+unambiguous in the current import scope. You don't need to wrap
+every type reference in brackets. The processor sees `String` as a
+link when one fits and as plain text when one doesn't.
 
 ---
 
 ## JavaDoc-style `@`-tags
 
 Cajeta supports the full JavaDoc tag set, with their familiar
-meanings. The tags are spelled in **CamelCase** (`@Param`, `@Return`,
-`@Throws`, `{@Link}`, …) for consistency with cajeta's annotations and
-its cajeta-specific doc tags — only the spelling differs from JavaDoc;
-the semantics are identical.
+meanings. The tags are spelled in CamelCase (`@Param`, `@Return`,
+`@Throws`, `{@Link}`, …) for consistency with cajeta's annotations
+and its cajeta-specific doc tags. Only the spelling differs from
+JavaDoc, and the semantics are identical.
 
 | Tag           | Purpose                                                              |
 |---------------|----------------------------------------------------------------------|
@@ -187,12 +190,12 @@ the semantics are identical.
 | `@ImplSpec`   | Implementation-required behavior (binding on subclasses).            |
 | `@ImplNote`   | Implementation-details note (non-binding, can change).               |
 
-Tag bodies are Markdown — block elements (lists, code blocks,
+Tag bodies are Markdown, so block elements (lists, code blocks,
 tables) inside a `@Param` description work the same way as in the
 body prose.
 
-Standard layout: doc body first (the prose summary + details), then
-all `@` tags in a contiguous trailing block:
+The standard layout is the doc body first (the prose summary +
+details), then all `@` tags in a contiguous trailing block:
 
 ```cajeta
 /**
@@ -251,10 +254,11 @@ public void push(#T value);
 ```
 
 The structured tags drive doc-tool features beyond just rendering:
-- `@EntryPoint` methods get aggregated into the "Entry Points" index
-  page (`entry-points.html`), grouped by package — the map of where
-  to start in each package. Also exposed in `--emit-model-json` for
-  tooling (reference-doc and tour coverage checks key off it).
+- `@EntryPoint` methods get aggregated into the "Entry Points"
+  index page (`entry-points.html`), grouped by package, as the map
+  of where to start in each package. They are also exposed in
+  `--emit-model-json` for tooling, and the reference-doc and tour
+  coverage checks key off it.
 - `@FiberSafe` declarations get aggregated into a "Fiber-safe API
   index" page in the generated docs.
 - `@Complexity` tags fuel a complexity-sortable view (find all
@@ -325,7 +329,7 @@ without any overview prose.
 ## `cajeta doc` processor
 
 The cajeta toolchain ships a subcommand that turns annotated
-cajeta source into a static HTML site. No server required; the
+cajeta source into a static HTML site. No server is required. The
 output is plain files served by any web host (Nginx, S3 static
 hosting, GitHub Pages, etc.).
 
@@ -344,7 +348,7 @@ hosting, GitHub Pages, etc.).
 - **Source view.** Each method / class header links to a
   syntax-highlighted view of the source file at the right line.
 - **Versioned output.** Multiple versions of the same library can
-  live side by side under `/v1.0/`, `/v1.1/`, etc.; the site
+  live side by side under `/v1.0/`, `/v1.1/`, etc. The site
   defaults to the latest and provides a version-picker dropdown.
 - **Theming hooks.** A `cajeta.toml` `[docs]` section overrides
   colors, logo, project metadata.
@@ -353,14 +357,15 @@ hosting, GitHub Pages, etc.).
 
 The processor reads either:
 
-1. **A source tree** — `src/main/cajeta/` plus
-   `src/main/resources/` (resources referenced by docs, e.g.
-   `images/diagram.png` embedded via markdown image syntax). Discovery follows the
+1. **A source tree**, meaning `src/main/cajeta/` plus
+   `src/main/resources/`, which holds resources referenced by
+   docs, e.g. `images/diagram.png` embedded via markdown image
+   syntax. Discovery follows the
    [Compilation.md](Compilation.md) project layout.
-2. **A `.car` archive** — every class's docs are stored in the
-   archive's class-metadata entries (see Compilation.md
-   "Archive format"). Useful for generating docs for a downloaded
-   library without its source.
+2. **A `.car` archive**, where every class's docs are stored in
+   the archive's class-metadata entries (see Compilation.md
+   "Archive format"). This is useful for generating docs for a
+   downloaded library without its source.
 
 ### Output structure
 
@@ -401,26 +406,26 @@ Each class page contains:
 
 - **Header.** Class name + signature + stability badge + fiber-
   safety badge + `@Since`.
-- **Overview prose** — the doc comment's body, Markdown-rendered.
-- **Type parameter list** (for generics).
+- **Overview prose**, the doc comment's body, Markdown-rendered.
+- **Type parameter list** (for templates).
 - **Implements / extends / annotations.**
-- **Constructors** — each with its full signature, doc, parameter
+- **Constructors**, each with its full signature, doc, parameter
   table, throws, examples.
-- **Methods** — same shape, grouped by visibility (public →
-  protected → internal) and within each group alphabetically by
-  default (configurable to source-order via a `[docs]
-  member-order = "source" | "alpha"` setting).
+- **Methods**, with the same shape, grouped by visibility (public
+  → protected → internal) and within each group alphabetically by
+  default. The order is configurable to source-order via a `[docs]
+  member-order = "source" | "alpha"` setting.
 - **Fields.**
-- **Inner classes** — each gets its own page; this one links to
-  them.
-- **Source link** — opens the syntax-highlighted source viewer
-  at the class declaration.
+- **Inner classes**, where each gets its own page and this one
+  links to them.
+- **Source link**, which opens the syntax-highlighted source
+  viewer at the class declaration.
 
 ### CLI
 
-**Shipped today** (`tools/cajetadoc/src/Cli.cpp`). The source root is a
-positional argument; `cajeta doc <source-root> …` forwards verbatim to the
-`cajetadoc <source-root> …` form:
+**Shipped today** (`tools/cajetadoc/src/Cli.cpp`). The source root
+is a positional argument, and `cajeta doc <source-root> …`
+forwards verbatim to the `cajetadoc <source-root> …` form:
 
 ```
 cajeta doc <source-root> [options]
@@ -439,29 +444,30 @@ Options:
   --render-md              Debug helper: render Markdown from stdin to HTML.
 ```
 
-**Planned (design target, not yet implemented):** the remaining flags below
-are the intended fuller CLI — `--archive` (.car input), `--theme` /
-`--custom-css` / `--custom-logo` / `--base-url`, `--include-deprecated`,
-`--include-tests`, `--member-order=alpha|source`, `--source-link`,
-`--no-search`, `--no-source`, `--serve`, `--watch`, and `-v/--verbose`.
-Source-root / project-name / version are read from CLI args today; reading
-them from `cajeta.toml` defaults is also planned.
+**Planned (design target, not yet implemented):** the remaining
+flags are the intended fuller CLI. They are `--archive` (.car
+input), `--theme` / `--custom-css` / `--custom-logo` /
+`--base-url`, `--include-deprecated`, `--include-tests`,
+`--member-order=alpha|source`, `--source-link`, `--no-search`,
+`--no-source`, `--serve`, `--watch`, and `-v/--verbose`.
+Source-root / project-name / version are read from CLI args today.
+Reading them from `cajeta.toml` defaults is also planned.
 
 ### Search
 
 A pre-computed search index (JSON, generated at doc-build time)
-gets loaded by the page's JavaScript. Search is client-side:
+gets loaded by the page's JavaScript. Search is client-side, and
 typing in the search box matches:
 
 - Type names (full and short)
 - Method names
 - Field names
-- The first paragraph of the doc summary (for natural-language
-  queries — typing "rate limit" finds methods whose summary
-  mentions rate limiting)
+- The first paragraph of the doc summary, for natural-language
+  queries, so typing "rate limit" finds methods whose summary
+  mentions rate limiting
 
-Match scoring favors exact name matches over prose matches; ties
-broken by name length (shorter = higher rank).
+Match scoring favors exact name matches over prose matches. Ties
+are broken by name length, and shorter ranks higher.
 
 For large libraries the index can be partitioned by package (one
 JSON file per top-level package) to keep individual file sizes
@@ -469,10 +475,10 @@ manageable. The JS loader fetches packages lazily as needed.
 
 ### Theming
 
-The default theme ships in two variants: light (`cajeta-default`)
+The default theme ships in two variants, light (`cajeta-default`)
 and dark (`cajeta-dark`), with a JavaScript toggle that respects
-the user's OS preference. Themes are pure CSS — no template
-overrides — so customization is `--custom-css <file>` with
+the user's OS preference. Themes are pure CSS with no template
+overrides, so customization is `--custom-css <file>` with
 overrides on the theme's named CSS variables:
 
 ```css
@@ -491,20 +497,20 @@ overrides on the theme's named CSS variables:
 ```
 
 A future RFC may add template-level customization (HTML
-overrides), but v1 is CSS-only — keeps the doc-build pipeline
+overrides), but v1 is CSS-only. That keeps the doc-build pipeline
 self-contained.
 
 ### Integration with the cajeta toolchain
 
-- `cajeta build` does NOT run `cajeta doc` automatically — docs
-  are an opt-in build target, separate from compile.
+- `cajeta build` does NOT run `cajeta doc` automatically. Docs are
+  an opt-in build target, separate from compile.
 - `cajeta publish` (when the registry story lands) bundles
   `build/docs/` into the published archive so registries can
   serve docs alongside the artifact.
 - `cajeta test` runs an optional `--check-docs` flag that
-  validates: every public declaration has a doc comment, all
-  `@Param` tags match actual parameter names, no broken
-  cross-references. Useful as a CI gate.
+  validates that every public declaration has a doc comment, all
+  `@Param` tags match actual parameter names, and there are no
+  broken cross-references. It is useful as a CI gate.
 
 ### Performance targets
 
@@ -513,23 +519,23 @@ self-contained.
 - 10K-class codebase: under 30 seconds.
 - Incremental rebuilds: under 200ms per affected page.
 
-The doc processor is implemented in cajeta itself (eats its own
-dogfood once cajeta is mature enough), using the cajeta parser to
-read source and a Markdown library (`cajeta.text.markdown`) to
-render prose. Pre-cajeta-bootstrap, the v1 implementation is in
-C++ alongside the compiler, exposed via the `cajeta doc`
-subcommand.
+The doc processor is implemented in cajeta itself once cajeta is
+mature enough, using the cajeta parser to read source and a
+Markdown library (`cajeta.text.markdown`) to render prose. Before
+the cajeta bootstrap, the v1 implementation is in C++ alongside
+the compiler, exposed via the `cajeta doc` subcommand.
 
 ---
 
 ## Style guide
 
-Conventions for writing cajeta doc comments. Not enforced by
-tooling (yet); reviewers may push back on violations.
+These are conventions for writing cajeta doc comments. They are
+not enforced by tooling yet, and reviewers may push back on
+violations.
 
 **First sentence is the summary.** The processor extracts it for
 the type-index page and the search-result snippet. Keep it
-self-contained — readers might never see the rest.
+self-contained, because readers might never see the rest.
 
 ```cajeta
 /**
@@ -562,7 +568,7 @@ are optional but encouraged. The `cajeta test --check-docs`
 linter enforces public-declaration coverage.
 
 **Markdown sparingly.** Headings inside a doc comment are usually
-unnecessary — a paragraph break is enough. Reserve `##` for
+unnecessary, and a paragraph break is enough. Reserve `##` for
 multi-section discussions on big-surface classes (`String`,
 `HashMap`).
 
@@ -572,8 +578,8 @@ references that fail to auto-resolve (overloaded methods,
 ambiguous short names).
 
 **One `@Param` per parameter, in source order.** Don't skip
-parameters with "obvious" meanings — the table reads better when
-every column is filled.
+parameters with "obvious" meanings, because the table reads better
+when every column is filled.
 
 **`@Return` is mandatory except for `void` methods.** Even if the
 return is obvious from the type, document the meaningful range or
@@ -584,8 +590,8 @@ including indirect ones from called methods if they propagate
 unchanged.**
 
 **Cajeta-specific tags first** (`@FiberSafe`, `@Complexity`,
-`@Owns`, `@Drops self`), then the standard JavaDoc tags. Renders
-in that order in the output.
+`@Owns`, `@Drops self`), then the standard JavaDoc tags. They
+render in that order in the output.
 
 ---
 
@@ -593,21 +599,22 @@ in that order in the output.
 
 The codebase mixes legacy comment styles (`//` line comments,
 plain `/* */` blocks) with what should become documentation
-comments (`/** */`). Two-step migration:
+comments (`/** */`). Migration is two steps:
 
-1. **Cajeta source files (`runtime/src/cajeta/**.cajeta`)** —
-   convert to `/** */` for declaration-attached documentation
-   immediately. Small file count; few changes.
+1. **Cajeta source files (`runtime/src/cajeta/**.cajeta`).**
+   Convert to `/** */` for declaration-attached documentation
+   immediately. The file count is small, and the changes are few.
 2. **C++ compiler / runtime source (`src/**.cpp,h`,
-   `runtime/native/cajeta_runtime.c`)** — convert opportunistically.
-   When touching a file, upgrade its function-header `// ...`
-   comments to `/** */` blocks. Doc tooling for the C++ side is
-   out of scope (the C++ code is internal compiler implementation,
-   not user-facing API); the convention is just for source
-   readability. No bulk-conversion commit; the codebase migrates
-   over time as files get touched.
+   `runtime/native/cajeta_runtime.c`).** Convert
+   opportunistically. When touching a file, upgrade its
+   function-header `// ...` comments to `/** */` blocks. Doc
+   tooling for the C++ side is out of scope, because the C++ code
+   is internal compiler implementation and is not user-facing API.
+   The convention is just for source readability. There is no
+   bulk-conversion commit, and the codebase migrates over time as
+   files get touched.
 
-The `cajeta doc` processor only reads cajeta source — the C++
+The `cajeta doc` processor only reads cajeta source, so the C++
 side is invisible to it regardless.
 
 ---
@@ -616,28 +623,29 @@ side is invisible to it regardless.
 
 - **Multi-version doc sites.** Single output directory per
   build, or scaffold a `/v1.0/`, `/v1.1/` tree that
-  accumulates across builds? Lean: per-build single tree; a
-  separate `docs-aggregator` tool handles multi-version
+  accumulates across builds? The lean is a per-build single tree,
+  with a separate `docs-aggregator` tool handling multi-version
   sites for projects that need them.
 - **Doc-comment validation strictness.** How aggressively should
   `cajeta test --check-docs` enforce? Required tags by visibility
   (every public method needs `@Param` + `@Return` + `@Throws`)?
   Or just "every public declaration has *some* doc comment"?
-  Lean: configurable per-project via `cajeta.toml [docs.lint]`,
-  defaults to "every public declaration has a comment."
+  The lean is configurable per-project via `cajeta.toml
+  [docs.lint]`, defaulting to "every public declaration has a
+  comment."
 - **Custom tags.** Library authors might want their own tags
   (`@http-route`, `@sql-table`). Allow registering custom tags
-  via `cajeta.toml`? Lean: yes, opt-in. Renders as a labeled
-  badge / section like the built-in cajeta-specific tags.
+  via `cajeta.toml`? The lean is yes, opt-in. It renders as a
+  labeled badge / section like the built-in cajeta-specific tags.
 - **Search backend.** Client-side full-text works for libraries
-  up to ~50K declarations; past that, the search index gets
+  up to ~50K declarations. Past that, the search index gets
   unwieldy. Defer the "real search backend" question until a
   cajeta project hits that scale.
 - **Code execution in docs.** Spec says "no concern about code
-  in comments executing as tests." Reasonable for v1; revisit
-  if user demand emerges (drift between docs and behavior is the
-  big motivator).
+  in comments executing as tests." That is reasonable for v1.
+  Revisit it if user demand emerges, since drift between docs and
+  behavior is the big motivator.
 - **Doc preview during authoring.** `cajeta doc --watch` rebuilds
   on save. Is that enough, or do we want a live-preview Markdown
-  editor mode? Lean: --watch is enough; live preview is editor-
-  vendor territory.
+  editor mode? The lean is that --watch is enough, and live
+  preview is editor-vendor territory.

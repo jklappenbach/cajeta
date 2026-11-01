@@ -4,18 +4,18 @@ Specification for `cajeta archive`, the CLI surface for inspecting,
 extracting, transforming, and verifying `.cja` (Cajeta ARchive) files.
 
 The `.cja` format itself is defined in [`Compilation.md` § Archive
-format](Compilation.md#archive-format). This doc covers the **tooling
-side**: what operations a user can perform on an existing `.cja`,
-the CLI shape those operations take, and the conventions (exit
-codes, JSON schemas, stdin / stdout piping) that the subcommands
-honor.
+format](Compilation.md#archive-format). This doc covers the tooling
+side. It describes what operations you can perform on an existing
+`.cja`, the CLI shape those operations take, and the conventions
+(exit codes, JSON schemas, stdin / stdout piping) that the
+subcommands honor.
 
 The operations are reachable via `cajeta archive <subcommand>` today.
 When the umbrella build tool spec'd in [`BuildTool.md`](BuildTool.md)
 ships and the binary splits (`cajetac` for the compiler back end,
 `cajeta` for the build tool), the archive subcommands migrate to the
-build-tool side — the implementation lives in `libcajeta_archive`,
-so only the CLI dispatch moves.
+build-tool side. The implementation lives in `libcajeta_archive`, so
+only the CLI dispatch moves.
 
 ## Table of contents
 
@@ -34,24 +34,24 @@ so only the CLI dispatch moves.
 ## 1. Design goals
 
 - **One tool, subcommand-shaped.** `cajeta archive list ...`,
-  `cajeta archive cat ...`, ... All operations under the same noun
-  so help is discoverable from one place.
+  `cajeta archive cat ...`, and the rest all sit under the same
+  noun, so help is discoverable from one place.
 - **Pipeable by default.** Every subcommand that produces inspectable
   output supports `--json` for structured machine consumption. Every
   subcommand that consumes or produces archive bytes accepts `-` for
   stdin/stdout where it makes sense, so `curl ... | cajeta archive
   cat - manifest.json | jq .kind` works end-to-end.
 - **Exit codes are load-bearing.** `verify` and `verify-sig` set exit
-  codes a CI pipeline can switch on. Successful operations return 0;
-  every failure category gets a distinct nonzero code (§4).
+  codes a CI pipeline can switch on. Successful operations return 0,
+  and every failure category gets a distinct nonzero code (§4).
 - **No reformatting of archive bytes by default.** Operations that
   transform an archive (`repack`, `strip`, `merge`) are explicit
-  about it; operations that read (`list`, `cat`, `info`, `extract`)
+  about it. Operations that read (`list`, `cat`, `info`, `extract`)
   never mutate the source file.
 - **Concurrency-safe reads.** Multiple `cajeta archive` invocations
-  on the same `.cja` file from different processes are safe — reads
-  open `O_RDONLY`, no lock, no temp files in the source archive's
-  directory.
+  on the same `.cja` file from different processes are safe. Reads
+  open `O_RDONLY`, take no lock, and write no temp files in the
+  source archive's directory.
 
 ---
 
@@ -73,8 +73,8 @@ so only the CLI dispatch moves.
 | [`verify-sig`](#312-verify-sig) | Verify a detached signature against a public key             |
 
 All twelve subcommands ship in the current implementation. Signing
-uses OpenSSL libcrypto for PEM key parsing + ed25519 sign/verify;
-keys are interchangeable with OpenSSL's `openssl genpkey -algorithm
+uses OpenSSL libcrypto for PEM key parsing + ed25519 sign/verify.
+Keys are interchangeable with OpenSSL's `openssl genpkey -algorithm
 ed25519` output.
 
 ---
@@ -99,7 +99,7 @@ cajeta archive list <archive> [paths...] [flags]
 
 Print one row per entry, sorted by name. With `[paths...]` arguments,
 filter to entries whose name exactly matches or sits under the given
-path prefix. Globs (`*`, `**`, `?`) supported.
+path prefix. Globs (`*`, `**`, `?`) are supported.
 
 **Output (human):**
 
@@ -146,17 +146,18 @@ cajeta archive cat <archive> <entry-path>
 ```
 
 Decompress one entry's bytes and write them to stdout. The bytes are
-**raw** — for `class_bitcode` entries that's LLVM bitcode (binary);
-for `class_source` entries that's UTF-8 cajeta source; for `resource`
-entries it's whatever the original file was. Pipe-friendly: combine
-with `llvm-dis -`, `jq`, `xxd`, etc.
+raw. For `class_bitcode` entries that is LLVM bitcode (binary), for
+`class_source` entries that is UTF-8 cajeta source, and for
+`resource` entries it is whatever the original file was. The output
+is pipe-friendly, so you can combine it with `llvm-dis -`, `jq`,
+`xxd`, etc.
 
-`<archive>` accepts `-` to read the archive from stdin (the whole
-archive is consumed into memory; not appropriate for huge archives
-streamed from sockets).
+`<archive>` accepts `-` to read the archive from stdin. The whole
+archive is consumed into memory, so this is not appropriate for huge
+archives streamed from sockets.
 
-Exits 0 on success, [`E_NOT_FOUND` (§4)](#4-exit-codes) if the named
-entry isn't in the archive.
+Exits 0 on success, and [`E_NOT_FOUND` (§4)](#4-exit-codes) if the
+named entry isn't in the archive.
 
 ### 3.3 `extract`
 
@@ -166,9 +167,9 @@ cajeta archive extract <archive> [-C <dir>] [paths...] [flags]
 
 Decompress entries to disk under `<dir>` (default: `.`). With
 `[paths...]`, only extract entries matching one of the path
-arguments — same path / glob rules as `list`. Files are written with
-their entry name as the relative path (`/` becomes the OS separator;
-parent directories are created on demand).
+arguments, with the same path / glob rules as `list`. Files are
+written with their entry name as the relative path. `/` becomes the
+OS separator, and parent directories are created on demand.
 
 **Flags:**
 
@@ -188,7 +189,7 @@ Output (when not `--quiet`): one line per extracted file.
 cajeta archive info <archive> [flags]
 ```
 
-Print the manifest's metadata block — no entry listing, no payload.
+Print the manifest's metadata block, with no entry listing and no payload.
 
 **Output (human):**
 
@@ -205,18 +206,19 @@ deps_count:          1
 total_size:          524288 bytes (compressed: 425127 bytes, ratio 1.23×)
 ```
 
-**Output (`--json`):** the manifest's JSON, verbatim — guaranteed
-schema-compatible with the manifest written by the compiler. Adding
-fields to the manifest format is backward-compatible; consumers
-ignore unknown keys.
+**Output (`--json`):** the manifest's JSON, verbatim. It is
+guaranteed schema-compatible with the manifest written by the
+compiler. Adding fields to the manifest format is
+backward-compatible, and consumers ignore unknown keys.
 
-> **Note (v1).** The compiler currently writes a *minimal* manifest —
-> `name`, `version`, `kind`, `format_version`, `entry_count`, and (for
-> uber) `deps`. `info` scans for the richer fields shown above
+> **Note (v1).** The compiler currently writes a minimal manifest,
+> holding `name`, `version`, `kind`, `format_version`,
+> `entry_count`, and (for uber) `deps`. `info` scans for the richer fields shown above
 > (`build_flavor`, `build_timestamp`, `target_triple`,
 > `cajeta_lang_version`, `total_size`) and prints them blank/derived
-> when the producing archive didn't carry them. They become populated
-> as the writer grows to emit them; the field set is additive.
+> when the producing archive didn't carry them. They become
+> populated as the writer grows to emit them. The field set is
+> additive.
 
 ### 3.5 `deps`
 
@@ -224,8 +226,8 @@ ignore unknown keys.
 cajeta archive deps <archive> [flags]
 ```
 
-Just the `deps` array of the manifest. Empty array on `cja` (project-
-only) archives; nonempty on `uber` archives.
+Print just the `deps` array of the manifest. It is an empty array on
+`cja` (project-only) archives and nonempty on `uber` archives.
 
 **Output (human):**
 
@@ -256,15 +258,15 @@ Validates the archive without extracting it. Checks:
 3. **Manifest** decompresses and parses as valid JSON with the
    required fields (`name`, `version`, `kind`).
 4. **Each entry** decompresses, its on-disk `compressed_size` matches
-   what the header claimed, its `uncompressed_size` matches the
+   what the header claimed, and its `uncompressed_size` matches the
    decompressed length.
 5. **Per-entry xxh3 checksum** (when present in the trailing index)
    matches the recomputed hash of the decompressed bytes.
 6. **No duplicate entry names.**
 7. **Index entries** (when present) point at valid offsets.
 
-Prints one line per check (or stays silent under `--quiet`). Exits 0
-on success; exits with the most-relevant nonzero code from §4 on
+Prints one line per check, or stays silent under `--quiet`. Exits 0
+on success, and exits with the most-relevant nonzero code from §4 on
 first failure.
 
 **Flags:**
@@ -281,9 +283,9 @@ first failure.
 cajeta archive diff <a.cja> <b.cja> [flags]
 ```
 
-Entry-by-entry comparison. By default uses xxh3 of the decompressed
-bytes — two entries with the same name but different content show as
-`changed`.
+Entry-by-entry comparison. By default it uses xxh3 of the
+decompressed bytes, so two entries with the same name but different
+content show as `changed`.
 
 **Output (human):**
 
@@ -314,8 +316,8 @@ bytes — two entries with the same name but different content show as
                   on uber archives usually want only the user-visible delta).
 ```
 
-Exits 0 if the archives are byte-equal in entry content; 1 if any
-difference is detected (CI-friendly).
+Exits 0 if the archives are byte-equal in entry content, and 1 if
+any difference is detected. This is CI-friendly.
 
 ### 3.8 `repack`
 
@@ -324,7 +326,7 @@ cajeta archive repack <in.cja> <out.cja> [flags]
 ```
 
 Re-emit the archive with a different compression configuration. The
-manifest is preserved; only the on-disk layout changes.
+manifest is preserved, and only the on-disk layout changes.
 
 **Flags:**
 
@@ -340,8 +342,8 @@ manifest is preserved; only the on-disk layout changes.
 cajeta archive strip <in.cja> <out.cja> [flags]
 ```
 
-Drop entries by name glob, write the result. Useful for stripping
-source entries before publishing (`--exclude="**/*.cajeta"` ships
+Drop entries by name glob and write the result. This is useful for
+stripping source entries before publishing (`--exclude="**/*.cajeta"` ships
 bitcode-only), or for trimming an uber archive to the user-visible
 slice (`--exclude="deps/**"`).
 
@@ -361,9 +363,9 @@ metadata still references.
 cajeta archive merge <out.cja> <a.cja> <b.cja> [<c.cja>...] [flags]
 ```
 
-Combine multiple archives into one. Useful for ad-hoc uber-bundling
-outside the compiler — e.g. a fixture builder that wants to bundle
-test data with compiled code.
+Combine multiple archives into one. This is useful for ad-hoc
+uber-bundling outside the compiler, such as a fixture builder that
+wants to bundle test data with compiled code.
 
 **Flags:**
 
@@ -407,16 +409,18 @@ applicable code above.
 
 Two output formats are supported uniformly across read subcommands:
 
-- **Human** (default). Aligned columns, optional color, intended for
-  interactive use. Width adapts to terminal width when stdout is a
-  tty; uses a fixed reasonable width when piped.
+- **Human** (default). It has aligned columns and optional color,
+  and it is intended for interactive use. Width adapts to terminal
+  width when stdout is a tty, and a fixed reasonable width is used
+  when piped.
 - **JSON** (`--json`). One JSON document on stdout. The schema for
-  each subcommand is documented in §3. Stable across point releases;
-  additions are backward-compatible.
+  each subcommand is documented in §3. It is stable across point
+  releases, and additions are backward-compatible.
 
 `--json` is the only format guaranteed stable across versions. The
-human-readable format may evolve (column reorderings, additional
-hint lines); scripts that depend on output should use `--json`.
+human-readable format may evolve, with column reorderings or
+additional hint lines. Scripts that depend on output should use
+`--json`.
 
 ---
 
@@ -424,15 +428,16 @@ hint lines); scripts that depend on output should use `--json`.
 
 - `<archive>` accepts `-` to read from stdin where it makes sense
   (`cat`, `list`, `info`, `deps`, `verify`). The archive is buffered
-  into memory; reading multi-gigabyte archives from stdin is
+  into memory. Reading multi-gigabyte archives from stdin is
   supported but slow.
-- `<out.cja>` accepts `-` to write to stdout. The output is binary;
-  combine with redirection (`> file.cja`) or pipe into another tool.
-- `cat`'s stdout is always raw binary — no formatting, no
-  termination character, no encoding conversion.
+- `<out.cja>` accepts `-` to write to stdout. The output is binary,
+  so combine it with redirection (`> file.cja`) or pipe it into
+  another tool.
+- `cat`'s stdout is always raw binary, with no formatting, no
+  termination character, and no encoding conversion.
 - All other read subcommands write text (or JSON with `--json`) to
   stdout. Errors write to stderr.
-- `--quiet` suppresses informational lines on stdout; errors still
+- `--quiet` suppresses informational lines on stdout. Errors still
   land on stderr.
 
 ---
@@ -507,10 +512,10 @@ cajeta archive merge bundle.cja \
 
 ## 8. Signing
 
-`sign` and `verify-sig` produce and validate **detached ed25519
-signatures** over the archive bytes. Implementation uses OpenSSL
-libcrypto (`EVP_PKEY` / `PEM_read_bio_*`); keys are PEM-encoded
-and round-trip through `openssl genpkey -algorithm ed25519`.
+`sign` and `verify-sig` produce and validate detached ed25519
+signatures over the archive bytes. The implementation uses OpenSSL
+libcrypto (`EVP_PKEY` / `PEM_read_bio_*`). Keys are PEM-encoded and
+round-trip through `openssl genpkey -algorithm ed25519`.
 
 ### 3.11 `sign`
 
@@ -520,16 +525,18 @@ cajeta archive sign <archive> --key <ed25519.pem> [--out <archive.sig>]
 
 Generates a detached 64-byte ed25519 signature over the archive's
 raw bytes and writes it to `<archive>.sig` (or the path given via
-`--out`). The signature file contains the raw 64 bytes — no
-header, no encoding, no length prefix.
+`--out`). The signature file contains the raw 64 bytes, with no
+header, no encoding, and no length prefix.
 
-The private key must be ed25519-flavored (PKCS#8-wrapped is the
-common shape, what `openssl genpkey -algorithm ed25519` emits).
+The private key must be ed25519-flavored. PKCS#8-wrapped is the
+common shape, and it is what `openssl genpkey -algorithm ed25519`
+emits.
 Non-ed25519 keys (RSA, ECDSA, etc.) are rejected with a clear
 error pointing at the expected algorithm.
 
-`<archive>` accepts `-` for stdin; when stdin is used, `--out` is
-mandatory (we can't infer a `.sig` filename without a source path).
+`<archive>` accepts `-` for stdin. When stdin is used, `--out` is
+mandatory, because we can't infer a `.sig` filename without a source
+path.
 
 ### 3.12 `verify-sig`
 
@@ -538,42 +545,43 @@ cajeta archive verify-sig <archive> --pubkey <pem> [--sig <archive.sig>]
 ```
 
 Verifies the detached signature against a public key. Exits 0 when
-the signature validates, exits 11 (`E_SIG_INVALID`) on any mismatch
-or on OpenSSL-side parse / verify failures. Public key is PEM-encoded
-(`openssl pkey -in <priv> -pubout` emits the matching shape).
+the signature validates, and exits 11 (`E_SIG_INVALID`) on any
+mismatch or on OpenSSL-side parse / verify failures. The public key
+is PEM-encoded, and `openssl pkey -in <priv> -pubout` emits the
+matching shape.
 
 `--sig` defaults to `<archive>.sig`. `<archive>` accepts `-` for
-stdin; when stdin is used, `--sig` is mandatory.
+stdin. When stdin is used, `--sig` is mandatory.
 
 ### Trust roots and key distribution
 
-The current implementation is intentionally key-agnostic: the user
-brings their own public key and decides whether to trust it. That
-matches the minimal "checksum-on-steroids" use case — a publisher
-generates a keypair, distributes the pubkey via whatever channel
-their consumers already trust, and signs every release.
+The current implementation is intentionally key-agnostic. You bring
+your own public key and decide whether to trust it. That matches the
+minimal "checksum-on-steroids" use case, where a publisher generates
+a keypair, distributes the pubkey via whatever channel their
+consumers already trust, and signs every release.
 
-For richer trust models — PGP-style web of trust, per-registry
-pinned public keys, sigstore / cosign-style transparency logs — the
-hook is `BuildTool.md`'s [repository
-protocol](BuildTool.md#7-repositories): a registry can advertise a
-pinned public key for each archive, and the build tool calls
-`cajeta archive verify-sig` automatically during ingestion. That
+Richer trust models include a PGP-style web of trust, per-registry
+pinned public keys, and sigstore / cosign-style transparency logs.
+The hook for them is `BuildTool.md`'s [repository
+protocol](BuildTool.md#7-repositories). A registry can advertise a
+pinned public key for each archive, and the build tool calls `cajeta
+archive verify-sig` automatically during ingestion. That
 integration lands when the build tool ships.
 
 ### Signature storage
 
 Detached `.sig` files are the only supported form today. A header
 flag bit is reserved in the `.cja` container for "signature embedded
-after the trailing index" — adding that as a future option only
-requires writer/reader support, not a format-version bump.
+after the trailing index". Adding that as a future option only
+requires writer/reader support and no format-version bump.
 
 ---
 
 ## 9. Open questions
 
 - **Index-checksum schema.** The v1 trailing index is a compact
-  binary record per entry (name, offset, on-disk size) with **no**
+  binary record per entry (name, offset, on-disk size) with no
   checksum slot, so `verify` and `diff` recompute xxh3 from the
   decompressed bytes on load. A richer v2 index could carry a per-
   entry `checksum_xxh3`, unlocking "fast verify without decompression
@@ -583,21 +591,22 @@ requires writer/reader support, not a format-version bump.
   An uber archive has both `tour/Tour.bc` (user) and
   `cajeta/lang/String.bc` (stdlib). Should `cat cajeta/lang/String.bc`
   Just Work, or require a `--include-stdlib` flag, mirroring `diff`'s
-  default exclusion? Current sketch: Just Work (no flag) — `cat` is
-  for inspection, hiding entries surprises users.
+  default exclusion? The current sketch is Just Work with no flag,
+  because `cat` is for inspection and hiding entries surprises
+  users.
 - **Symlinks during `extract`.** The `.cja` format has no symlink
   entry kind today. If we add one later, `extract` needs a
-  `--no-symlinks` for safety (zip-slip / tar-slip equivalents). Flag
-  reserved for a future format extension even if no symlink entries
-  exist yet.
+  `--no-symlinks` for safety (zip-slip / tar-slip equivalents). The
+  flag is reserved for a future format extension even if no symlink
+  entries exist yet.
 - **`cajeta archive merge` and origin tags.** When merging two
   user-origin archives, the output is also user-origin. When merging
   a user archive with a stdlib archive (via `--prefix-deps`), the
-  stdlib entries pick up `Origin::Dependency`. Worth a per-input
-  origin override flag.
+  stdlib entries pick up `Origin::Dependency`. A per-input origin
+  override flag is worth adding.
 - **Where does the help text live?** Currently `cajeta --help` shows
-  compile flags; subcommand help would be `cajeta archive --help`
+  compile flags. Subcommand help would be `cajeta archive --help`
   and `cajeta archive <subcommand> --help`. The dispatching pattern
-  matches `git`/`cargo`/`docker`; the help generator infrastructure
-  to do it properly is BuildTool.md-adjacent. v1 implementation can
-  hard-code subcommand help.
+  matches `git`/`cargo`/`docker`. The help generator infrastructure
+  to do it properly is BuildTool.md-adjacent, and the v1
+  implementation can hard-code subcommand help.
