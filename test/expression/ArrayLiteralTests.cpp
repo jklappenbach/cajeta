@@ -267,3 +267,29 @@ TEST(ArrayLiteralTests, ReferenceElementsReadFromFieldsLendTheFieldsObjects) {
         << "1/2 = the slot did not read the field's object; 3/4 = the array's "
            "drop freed the field's object; 5 = live count moved";
 }
+
+// A returned literal over locals types at codegen, once the locals are in scope:
+// the return's early resolve pass sees them unresolved.
+TEST(ArrayLiteralTests, ReturnedLiteralOverLocalsTypesAtCodegen) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    static #int32[] owned() {\n"
+        "        int32 a = 13;\n"
+        "        int32 b = 8;\n"
+        "        return [a, b, 5];\n"
+        "    }\n"
+        "    static #int64[] widened(int64 n) {\n"
+        "        int32 k = 2;\n"
+        "        return [n, k];\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int32[] x #= D.owned();\n"
+        "        if (x.count() != 3L || x[0] != 13 || x[1] != 8 || x[2] != 5) { return 1; }\n"
+        "        int64[] y #= D.widened(40L);\n"
+        "        if (y[0] != 40L || y[1] != 2L) { return 2; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 0) << "1 = owned return of locals, 2 = widened to the return type";
+}

@@ -799,11 +799,13 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
     }
 
     // Resolves the elements, then infers the element type unless a target type was
-    // already pushed. An empty literal with no target stays unresolved here and is
-    // decided, or diagnosed, at generateCode once the target has arrived.
+    // already pushed. An empty literal, or one whose elements are not yet in scope (an
+    // early pass over a `return`), stays unresolved here and is decided at generateCode.
     void ArrayLiteralExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
-        if (!elementType && !elements.empty()) {
+        bool allTyped = true;
+        for (auto& e : elements) allTyped = allTyped && e && e->getResolvedType();
+        if (!elementType && !elements.empty() && allTyped) {
             elementType = unifyElementType(module);
         }
         if (elementType) {
@@ -823,6 +825,7 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
         if (!elementType) {
             elementType = unifyElementType(module);
         }
+        if (!resolvedType) resolvedType = make_shared<CajetaArray>(module, elementType);
         if (auto innerArr = dynamic_pointer_cast<CajetaArray>(elementType)) {
             for (auto& e : elements) {
                 if (auto innerLit =
