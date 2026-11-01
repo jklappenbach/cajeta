@@ -93,7 +93,13 @@ namespace cajeta {
         int idx = 0;
         for (auto& node : elements) {
             llvm::Value* v = node->generateCode(module);
-            if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
+            ExpressionPtr read = std::dynamic_pointer_cast<Expression>(node);
+            while (read && read->kind() == ExprKind::Primary && !read->getChildren().empty()) {
+                read = std::dynamic_pointer_cast<Expression>(read->getChildren()[0]);
+            }
+            if (read && (read->kind() == ExprKind::Dot || read->kind() == ExprKind::ArrayIndex)) {
+                v = loadIfLValue(module, v, read);
+            } else if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
                 v = builder->CreateLoad(a->getAllocatedType(), a);
             }
             if (!v) { ++idx; continue; }

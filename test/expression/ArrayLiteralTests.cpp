@@ -187,3 +187,83 @@ TEST(ArrayLiteralTests, NestedUnifyNoTarget) {
         "}\n";
     EXPECT_EQ(runI32(src), 50);
 }
+
+// An element that reads a field, a static or another array's element stores the value
+// read, not the address of the slot it was read from.
+TEST(ArrayLiteralTests, PrimitiveElementsReadFromSlotsStoreTheirValues) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public int32 x;\n"
+        "    public int64 y;\n"
+        "    public float32 f;\n"
+        "    public O() { this.x = 21; this.y = 34L; this.f = 2.5f; return; }\n"
+        "}\n"
+        "public final class Q {\n"
+        "    public static final int32 K = 13;\n"
+        "    public static int64 L = 55L;\n"
+        "    public static float32 F = 1.5f;\n"
+        "}\n"
+        "public final class D {\n"
+        "    static final int32 OWN = 8;\n"
+        "    public static int32 run() {\n"
+        "        O o = heap O();\n"
+        "        int32[] src = [5, 6];\n"
+        "        int32[] a = [o.x, Q.K, D.OWN, src[1], 7];\n"
+        "        if (a[0] != 21) { return 1; }\n"
+        "        if (a[1] != 13) { return 2; }\n"
+        "        if (a[2] != 8) { return 3; }\n"
+        "        if (a[3] != 6) { return 4; }\n"
+        "        if (a[4] != 7) { return 5; }\n"
+        "        int64[] b = [Q.L, o.y, 9L];\n"
+        "        if (b[0] != 55L || b[1] != 34L || b[2] != 9L) { return 6; }\n"
+        "        float32[] c = [Q.F, o.f];\n"
+        "        if (c[0] != 1.5f || c[1] != 2.5f) { return 7; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 0)
+        << "1 = instance field, 2 = another class's static final, 3 = own static "
+           "final, 4 = array element, 5 = literal, 6 = int64, 7 = float32";
+}
+
+// A class or String field read into a literal lends: the slot reads the field's
+// object, and the field survives the array's drop.
+TEST(ArrayLiteralTests, ReferenceElementsReadFromFieldsLendTheFieldsObjects) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.Cajeta;\n"
+        "import cajeta.lang.String;\n"
+        "public final class Box {\n"
+        "    public int32 v;\n"
+        "    public Box(int32 v) { this.v = v; return; }\n"
+        "}\n"
+        "public final class H {\n"
+        "    public Box a;\n"
+        "    public String s;\n"
+        "    public H() { this.a #= heap Box(77); this.s #= \"name\" + 1; return; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    static int32 peek(H h) {\n"
+        "        Box[] bs = [h.a];\n"
+        "        String[] ss = [h.s];\n"
+        "        if (bs[0].v != 77) { return 1; }\n"
+        "        if (!ss[0].equals(\"name1\")) { return 2; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        H h = heap H();\n"
+        "        int64 l0 = Cajeta.liveCount();\n"
+        "        int32 r = D.peek(h);\n"
+        "        if (r != 0) { return r; }\n"
+        "        Box churn = heap Box(107800);\n"
+        "        if (h.a.v != 77) { return 3; }\n"
+        "        if (!h.s.equals(\"name1\")) { return 4; }\n"
+        "        if (Cajeta.liveCount() != l0 + 1) { return 5; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 0)
+        << "1/2 = the slot did not read the field's object; 3/4 = the array's "
+           "drop freed the field's object; 5 = live count moved";
+}
