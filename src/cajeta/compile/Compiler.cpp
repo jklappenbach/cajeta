@@ -3519,6 +3519,9 @@ namespace cajeta {
                 llvm::Type::getInt64Ty(ctx), {}, false);
             b.CreateCall(lmod->getOrInsertFunction("__cajeta_prof_shutdown",
                                                    shutdownTy));
+            // The runtime's at-exit registry (@PreDestroy, the cpu launch trace): libc atexit dangles under the JIT.
+            b.CreateCall(lmod->getOrInsertFunction("__cajeta_run_atexit_handlers",
+                llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), {}, false)));
         }
         // Translate the cajeta return into a C exit code: int32 casts through, void
         // returns 0, and any other type returns 0 (the caller inspects side effects).
