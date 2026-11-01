@@ -1724,14 +1724,18 @@ static int64_t g_cpu_trace_prev_join = 0;
 static pthread_mutex_t g_cpu_trace_mu = PTHREAD_MUTEX_INITIALIZER;
 
 void __cajeta_xpu_cpu_trace_dump(void);
+void __cajeta_atexit_push(void (*fn)(void*), void* arg);
+static void caj_cpu_trace_dump_at_exit(void* arg) { (void) arg; __cajeta_xpu_cpu_trace_dump(); }
 
+// The dump rides the runtime's own at-exit registry: a libc atexit() in JIT'd
+// code is rewritten by the ORC platform and breaks the shared-stdlib session.
 static int caj_cpu_trace_enabled(void) {
     if (g_cpu_trace_on < 0) {
         const char* e = getenv("CAJETA_XPU_CPU_TRACE");
         g_cpu_trace_on = (e && *e && strcmp(e, "0") != 0) ? 1 : 0;
         if (g_cpu_trace_on && !g_cpu_trace_dump_armed) {
             g_cpu_trace_dump_armed = 1;
-            atexit(__cajeta_xpu_cpu_trace_dump);
+            __cajeta_atexit_push(caj_cpu_trace_dump_at_exit, NULL);
         }
     }
     return g_cpu_trace_on;
