@@ -31,6 +31,19 @@
   `#=` form of a conditional was fixed on 2026-10-06 (field-store-ownership
   6.2.6, spec 4.2.11); the plain `=` local binding was not covered.
 - **1.5** Non-goals: changing what `#=` from a conditional does.
+- **1.6** Cause, found 2026-11-01. A conditional took its type from its `then`
+  arm, and a switch expression from its first labelled case. A `null` literal
+  is typed as the primitive `pointer`, so `c == null ? null : c.f` was typed as
+  a primitive. The title classifier answers "scalar" for a primitive before it
+  looks at the arms, and a scalar initializer binds the local as an owner. The
+  arm join was never reached. `c != null ? c.f : null` was typed by its field
+  arm and bound a borrow, as did the `#=` form.
+- **1.7** Fix: a conditional or switch takes its type from its first arm that
+  is not `null`, and is typed as `null` only when every arm is. The classifier
+  then joins the arms: `null` with a lending read is a borrow (2.1), `null`
+  with a producer is a runtime flag that owns only on the producer's arm (2.2,
+  2.3). Tests: `ConditionalArmOwnershipTests.nullFirstArm*`,
+  `switchWithNullFirstCase*` and `nullFieldAndFreshArms*`.
 
 ## 2. Requirements
 

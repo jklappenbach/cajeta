@@ -171,3 +171,126 @@ TEST(ConditionalArmOwnershipTests, arenaConcatArmArmsNoDrop) {
         << "12/13 = wrong arm; 14 = the field's wrapper was freed; 15 = the "
            "concat arm leaked (heap concat with no entry) or was double-freed";
 }
+
+// conditional-null-arm-bind 2.1: a `null` first arm used to type the whole conditional
+// as a scalar, so `=` took the field's title and the local's drop freed it.
+TEST(ConditionalArmOwnershipTests, nullFirstArmOverAFieldBindsABorrow) {
+    std::string src = std::string(PRE) +
+        "    static int32 pick(Holder h, int32 i) {\n"
+        "        Cell x = i == 0 ? null : h.a;\n"
+        "        return x == null ? 0 : x.v;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Holder h = heap Holder();\n"
+        "        int64 l0 = Cajeta.liveCount();\n"
+        "        if (A.pick(h, 1) != 1) { return 1; }\n"
+        "        Cell churn = heap Cell(107800);\n"
+        "        if (h.a.v != 1) { return 2; }\n"
+        "        if (Cajeta.liveCount() != l0 + 1) { return 3; }\n"
+        "        if (A.pick(h, 0) != 0) { return 4; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runVerdict(src.c_str(), "test.A"), 0)
+        << "1/4 = wrong arm; 2 = the field's cell was freed and reused; 3 = the "
+           "local freed the field's cell";
+}
+
+// The same for a String local: the null arm leaves the field's string alone.
+TEST(ConditionalArmOwnershipTests, nullFirstArmOverAStringFieldBindsABorrow) {
+    std::string src = std::string(PRE) +
+        "    static int32 pick(Holder h, int32 i) {\n"
+        "        String s = i == 0 ? null : h.name;\n"
+        "        return s == null ? 0 : s.byteLength();\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Holder h = heap Holder();\n"
+        "        int64 l0 = Cajeta.liveCount();\n"
+        "        if (A.pick(h, 1) != 6) { return 5; }\n"
+        "        String churn = \"churn\" + 107800;\n"
+        "        if (!h.name.equals(\"hello1\")) { return 6; }\n"
+        "        if (A.pick(h, 0) != 0) { return 7; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runVerdict(src.c_str(), "test.A"), 0)
+        << "5/7 = wrong arm; 6 = the field's string was freed and reused";
+}
+
+// A switch whose first case is `null` types by its other cases.
+TEST(ConditionalArmOwnershipTests, switchWithNullFirstCaseOverAFieldBindsABorrow) {
+    std::string src = std::string(PRE) +
+        "    static int32 pick(Holder h, int32 i) {\n"
+        "        Cell k = switch (i) {\n"
+        "            case 0 -> null;\n"
+        "            default -> h.a;\n"
+        "        };\n"
+        "        return k == null ? 0 : k.v;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Holder h = heap Holder();\n"
+        "        int64 l0 = Cajeta.liveCount();\n"
+        "        if (A.pick(h, 1) != 1) { return 8; }\n"
+        "        Cell churn = heap Cell(107800);\n"
+        "        if (h.a.v != 1) { return 9; }\n"
+        "        if (Cajeta.liveCount() != l0 + 1) { return 10; }\n"
+        "        if (A.pick(h, 0) != 0) { return 11; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runVerdict(src.c_str(), "test.A"), 0)
+        << "8/11 = wrong arm; 9 = the field's cell was freed and reused; 10 = "
+           "the local freed the field's cell";
+}
+
+// conditional-null-arm-bind 2.3: null, a field and a fresh cell: only the fresh cell is dropped.
+TEST(ConditionalArmOwnershipTests, nullFieldAndFreshArmsOwnOnlyTheFreshCell) {
+    std::string src = std::string(PRE) +
+        "    static int32 pick(Holder h, int32 i) {\n"
+        "        Cell k = i == 0 ? null : (i == 1 ? h.a : heap Cell(9));\n"
+        "        return k == null ? 0 : k.v;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Holder h = heap Holder();\n"
+        "        int64 l0 = Cajeta.liveCount();\n"
+        "        if (A.pick(h, 1) != 1) { return 12; }\n"
+        "        Cell churn = heap Cell(107800);\n"
+        "        if (h.a.v != 1) { return 13; }\n"
+        "        if (Cajeta.liveCount() != l0 + 1) { return 14; }\n"
+        "        int32 i = 0;\n"
+        "        while (i < 64) {\n"
+        "            if (A.pick(h, 0) != 0) { return 15; }\n"
+        "            if (A.pick(h, 2) != 9) { return 16; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        if (Cajeta.liveCount() != l0 + 1) { return 17; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runVerdict(src.c_str(), "test.A"), 0)
+        << "12/15/16 = wrong arm; 13 = the field's cell was freed and reused; "
+           "14 = the local freed the field's cell; 17 = the fresh cells leaked";
+}
+
+// conditional-null-arm-bind 2.2 (does not fire): a null arm over a fresh cell still takes the title.
+TEST(ConditionalArmOwnershipTests, nullFirstArmOverAFreshCellStillOwnsIt) {
+    std::string src = std::string(PRE) +
+        "    static int32 pick(int32 i) {\n"
+        "        Cell k = i == 0 ? null : heap Cell(9);\n"
+        "        return k == null ? 0 : k.v;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int64 l0 = Cajeta.liveCount();\n"
+        "        int32 i = 0;\n"
+        "        while (i < 64) {\n"
+        "            if (A.pick(0) != 0) { return 18; }\n"
+        "            if (A.pick(1) != 9) { return 19; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        if (Cajeta.liveCount() != l0) { return 20; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runVerdict(src.c_str(), "test.A"), 0)
+        << "18/19 = wrong arm; 20 = the fresh cells leaked";
+}

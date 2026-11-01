@@ -2334,20 +2334,26 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
         return CajetaModule::ensureGlobalInModule(module->emitTargetLlvmModule(), co);
     }
 
-    // Types the ternary from the `then` arm, or from the `else` arm when that is an
-    // interface the `then` arm's interface extends; codegen coerces the other arm.
+    // True for a `null` literal, through primary wrappers: an arm that carries no type of its own.
+    static bool isNullArm(ExpressionPtr e) {
+        while (e && e->kind() == ExprKind::Primary && !e->getChildren().empty()) {
+            e = dynamic_pointer_cast<Expression>(e->getChildren()[0]);
+        }
+        auto tl = dynamic_pointer_cast<TextLiteralExpression>(e);
+        return tl && tl->getLiteralType() == LITERAL_TYPE_NULL;
+    }
+
+    // Types the ternary from the `then` arm, or from the `else` arm when the `then` arm is
+    // `null` or an interface the `else` arm's interface extends; codegen coerces the other arm.
     void BooleanSwitchExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
-        if (children.size() >= 2) {
-            if (auto thenExpr = dynamic_pointer_cast<Expression>(children[1])) {
-                resolvedType = thenExpr->getResolvedType();
-            }
-        }
-        if (children.size() >= 3) {
-            if (auto elseExpr = dynamic_pointer_cast<Expression>(children[2])) {
-                if (CajetaClass::isInterfaceUpcast(resolvedType, elseExpr->getResolvedType())) {
-                    resolvedType = elseExpr->getResolvedType();
-                }
+        ExpressionPtr thenExpr = children.size() >= 2 ? dynamic_pointer_cast<Expression>(children[1]) : nullptr;
+        ExpressionPtr elseExpr = children.size() >= 3 ? dynamic_pointer_cast<Expression>(children[2]) : nullptr;
+        if (thenExpr) resolvedType = thenExpr->getResolvedType();
+        if (elseExpr && elseExpr->getResolvedType()) {
+            if ((isNullArm(thenExpr) && !isNullArm(elseExpr))
+                    || CajetaClass::isInterfaceUpcast(resolvedType, elseExpr->getResolvedType())) {
+                resolvedType = elseExpr->getResolvedType();
             }
         }
     }
@@ -3140,9 +3146,17 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
             if (c.body) c.body->resolveTypes(module);
         }
         for (auto& c : cases) {
-            if (!c.labels.empty() && c.body) {
+            if (!c.labels.empty() && c.body && !isNullArm(c.body)) {
                 resolvedType = c.body->getResolvedType();
                 if (resolvedType) break;
+            }
+        }
+        if (!resolvedType) {
+            for (auto& c : cases) {
+                if (c.body && c.body->getResolvedType() && !isNullArm(c.body)) {
+                    resolvedType = c.body->getResolvedType();
+                    break;
+                }
             }
         }
         if (!resolvedType) {
