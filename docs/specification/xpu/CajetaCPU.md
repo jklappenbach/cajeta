@@ -840,6 +840,24 @@ code in the latch of a barrier loop"). The lowering instead puts the barrier at 
 every pass of the innermost loop, and before each `continue`.
 
 
+### Filed 2026-10-31 (cpu-isa-variants)
+
+- **The portable build's host module costs about 2.5% of prefill.** With
+  `--cpu=portable` the host module compiles at x86-64-v3 while the kernels run
+  their v4 copies; on proton the 8B Q4_K_M single-sequence prefill was 0.975 of
+  the native build with identical kernel code. Find the host-side work that
+  slowed (the pack, the interleave, the scheduler) and whether a v4 host module
+  for a v4 host closes it (cpu-isa-variants 2.3.2).
+- **The 16-row interleave's decode takes a third of its DRAM fills on demand.**
+  cajeta-llm's 16-row Q4_K and Q6_K decode mat-vecs run at 0.94 of the 8-row
+  form with the same bytes, half the instructions and the same clock: demand
+  DRAM fills 12.0G against 1.2G (3.6% of fills for 8 rows). Software prefetch
+  of the weight stream at 2, 4 or 8 blocks ahead (`KernelBuffer.prefetch`)
+  takes the hardware-prefetch fills but leaves 7.7G of demand fills whatever
+  the distance, so those are another stream. Attribute them by instruction
+  (perf record on `ls_dmnd_fills_from_sys.dram_io_all`) before any further
+  16-row work (cpu-isa-variants 5.3.3; llm-cpu-parity 6.1.3).
+
 ## 7. x86 ISA levels — one binary from AVX2 up (cpu-isa-variants, 2026-10-31)
 
 The cpu backend compiles every `@Kernel` for a target CPU. By default that is
