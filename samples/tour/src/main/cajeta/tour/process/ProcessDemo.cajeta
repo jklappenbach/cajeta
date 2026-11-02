@@ -6,6 +6,7 @@ import cajeta.process.Process;
 import cajeta.process.ProcessResult;
 import cajeta.io.file.FileReader;
 import cajeta.io.file.FileWriter;
+import cajeta.io.file.Path;
 import cajeta.lang.String;
 
 // cajeta.process — subprocesses in two shapes:
@@ -43,6 +44,13 @@ public class ProcessDemo extends DemoClass {
     public void execute() {
         System.stdout.println("");
         System.stdout.println("-- cajeta.process: Command.run() / Process via start() --");
+
+        // The demo runs POSIX programs (/bin/echo, /bin/false, /bin/cat).
+        Path echoBin #= Path.of("/bin/echo");
+        if (!echoBin.exists()) {
+            System.stdout.println("  no /bin/echo on this host: the process demo needs a POSIX host, skipped");
+            return;
+        }
 
         // 1. One-shot run with stdout capture. /bin/echo is fully
         // deterministic: exit 0, stdout "hello, tour\n".

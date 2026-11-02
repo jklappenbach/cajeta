@@ -41,9 +41,11 @@ if [ $? -ne 0 ]; then
 # gate is unaffected. If the tour ever gains one, a warning-severity finding
 # will fail this check — which is the correct outcome, since the gate exists to
 # assert the tour builds clean, and a finding at warning severity is not clean.
-elif grep -qiE 'warning' "$BUILDLOG"; then
+# lld's "directory not found for option -L" is the host toolchain's search path
+# (the macOS arm64 runner has no /usr/local/lib), not the tour's code.
+elif grep -iE 'warning' "$BUILDLOG" | grep -qvE 'directory not found for option -L'; then
     echo "FAIL: tour build has warnings:"
-    grep -iE 'warning' "$BUILDLOG" | head -10
+    grep -iE 'warning' "$BUILDLOG" | grep -vE 'directory not found for option -L' | head -10
     fails=$((fails+1))
 else
     echo "ok:   tour builds, zero warnings"
