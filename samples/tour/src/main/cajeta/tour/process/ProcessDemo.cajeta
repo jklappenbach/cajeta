@@ -45,7 +45,7 @@ public class ProcessDemo extends DemoClass {
         System.stdout.println("");
         System.stdout.println("-- cajeta.process: Command.run() / Process via start() --");
 
-        // The demo runs POSIX programs (/bin/echo, /bin/false, /bin/cat).
+        // The demo runs POSIX programs (/bin/echo, /usr/bin/false, /bin/cat).
         Path echoBin #= Path.of("/bin/echo");
         if (!echoBin.exists()) {
             System.stdout.println("  no /bin/echo on this host: the process demo needs a POSIX host, skipped");
@@ -67,15 +67,15 @@ public class ProcessDemo extends DemoClass {
             + " (" + r.stdout().count() + " bytes, exit " + r.code() + ")");
         this.check(out.equals("hello, tour\n"), "captured stdout is the echoed text");
 
-        // 2. Non-zero exit is a value, not an exception: /bin/false
+        // 2. Non-zero exit is a value, not an exception: /usr/bin/false
         // launches fine and reports code 1.
         String[] argvFalse = heap String[1];
-        argvFalse[0] = "/bin/false";
+        argvFalse[0] = "/usr/bin/false";
         Command failing = heap Command(#argvFalse);
         ProcessResult rf #= failing.run();
-        System.stdout.println("  /bin/false -> launched = " + rf.launched()
+        System.stdout.println("  /usr/bin/false -> launched = " + rf.launched()
             + ", code = " + rf.code());
-        this.check(rf.launched() && rf.code() == 1, "/bin/false is a normal result with code 1");
+        this.check(rf.launched() && rf.code() == 1, "/usr/bin/false is a normal result with code 1");
 
         // 3. Launch failure (program not found) is ALSO a value:
         // launched() false, code() -1 — never a throw (spec §8.2).
