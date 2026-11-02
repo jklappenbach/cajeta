@@ -286,11 +286,17 @@ threshold chose for small batches.
 
 The cache must re-measure whenever something could change which candidate
 wins.
-- **Key:** an entry is keyed by the device's UUID (not its name), the driver
+- **Key:** an entry is keyed by the device's hardware class, the driver
   version, the build id, the family and the exact (M, N, K), or for a
   family whose M is not a fixed shape, (M bucketed as §4 says, N, K). A
   change to any of them misses the cache, and the next first use times again. The
   rows-per-block knob keys on the build id alone today.
+  The hardware class is the tune store's device key (the backend, SMs,
+  SIMDs, wave size, registers, shared memory and threads per SM) plus the
+  L2 and VRAM sizes, so two identical cards share entries and a deployment can ship a seeded
+  store. Until 2026-11-01 the key was the device's UUID, which kept a store
+  to the one card it was made on (cajeta-llm 15.2.14.10.4, Julian's
+  assignment of 2026-11-01).
 - **Margin:** the entry records how far the winner led. A lead under about
   3% is recorded as a TIE. A tie is decided by listing order: the
   first-listed survivor within the margin of the fastest is taken, never the

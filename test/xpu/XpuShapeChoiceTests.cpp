@@ -29,6 +29,7 @@ namespace {
 const char* kHead = R"CJ(
 package test;
 import cajeta.lang.String;
+import cajeta.xpu.Autotune;
 import cajeta.xpu.Device;
 import cajeta.xpu.DeviceFacts;
 import cajeta.xpu.KernelFacts;
@@ -253,27 +254,31 @@ TEST(XpuShapeChoice, noSurvivorRefusesAndOneSurvivorIsNotTimed) {
 )CJ", freshDir()), 0);
 }
 
-// 4.6.1.5: the cache key carries the device's UUID and the driver's version,
-// so an entry written on another device or under another driver is not
-// found, and is measured again (by the same build-id path the rebuild test
-// above pins). The identity is the device the other Device facts describe:
-// empty when the active backend is cpu, the GPU's when the query reaches one
-// (a program with no kernels has no active backend, and asks the driver).
-TEST(XpuShapeChoice, theKeyLeadsWithTheDeviceIdentity) {
+// 4.6.1.5, amended by cajeta-llm 15.2.14.10.4 (2026-11-01): the cache key
+// leads with the device's hardware class and the driver's version, never its
+// UUID, so a store tuned on one card is found on an identical card (a
+// deployment ships it), while another model, another configuration or
+// another driver misses and is measured again. The class is the facts the
+// shape filter reads; clocks stay out (§7.12).
+TEST(XpuShapeChoice, theKeyLeadsWithTheHardwareClass) {
     EXPECT_EQ(run(R"CJ(
-        String be #= Device.activeBackend();
-        String u #= Device.uuid();
-        if (be.equals("cpu") && u.count() != 0L) { return 1; }
-        if (u.count() != 0L && u.count() != 32L) { return 2; }
         ShapeFilter f #= M.three(128);
         String id #= ShapeChoice.buildIdOf(f);
-        String head #= "u" + u + "d" + Device.driverVersion() + "|";
-        if (id.indexOf(head) != 0L) { return 3; }
+        String hw #= ShapeChoice.hardwareClass();
+        String head #= "h" + hw + "d" + Device.driverVersion() + "|";
+        if (id.indexOf(head) != 0L) { return 1; }
+        String be #= Device.activeBackend();
+        String key #= Autotune.deviceKey();
+        if (hw.indexOf(key + "-l2") != 0L || hw.indexOf(be + "-") != 0L) { return 2; }
+        String u #= Device.uuid();
+        if (u.count() != 0L && id.indexOf(u) >= 0L) { return 3; }
+        String again #= ShapeChoice.buildIdOf(f);
+        if (!again.equals(id)) { return 4; }
         return 0;
 )CJ", freshDir()), 0);
 }
 
-TEST(XpuShapeChoice, theKeyCarriesTheDeviceUuidAndDriverOnNvptx) {
+TEST(XpuShapeChoice, theKeyCarriesNoUuidOnNvptx) {
     if (!cajeta::xpu::nvidia::CudaDriver::available())
         GTEST_SKIP() << "no CUDA driver";
     std::string program = std::string(kHead) + R"CJ(
@@ -284,8 +289,12 @@ TEST(XpuShapeChoice, theKeyCarriesTheDeviceUuidAndDriverOnNvptx) {
         if (d < 10000) { return 2; }
         ShapeFilter f #= M.three(128);
         String id #= ShapeChoice.buildIdOf(f);
-        String head #= "u" + u + "d" + d + "|";
-        if (id.indexOf(head) != 0L) { return 3; }
+        if (id.indexOf(u) >= 0L) { return 3; }
+        String hw #= ShapeChoice.hardwareClass();
+        String sm = "-" + Device.multiprocessorCount() + "x";
+        if (hw.indexOf(sm) < 0L) { return 4; }
+        String head #= "h" + hw + "d" + d + "|";
+        if (id.indexOf(head) != 0L) { return 5; }
         return 0;
     }
 }

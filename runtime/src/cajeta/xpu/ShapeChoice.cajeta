@@ -231,11 +231,13 @@ public final class ShapeChoice {
     }
 
     /**
-     * What a cached answer is valid for: the device's UUID and driver
-     * version (§7.12), then each survivor's code hash where the backend
-     * registered it, else the facts the filter read. Another device or
-     * driver, or a rebuild that changes any candidate, changes this, and the
-     * cached answer is re-measured.
+     * What a cached answer is valid for: the device's hardware class and the
+     * driver version (§7.12), then each survivor's code hash where the
+     * backend registered it, else the facts the filter read. Another model of
+     * device, another driver, or a rebuild that changes any candidate changes
+     * this, and the cached answer is re-measured. Two identical cards share a
+     * class, so a store tuned on one is found on the other, and a deployment
+     * can ship it (cajeta-llm 15.2.14.10.4); the UUID is never part of it.
      */
     public static #String buildIdOf(ShapeFilter f) {
         return ShapeChoice.buildId(f);
@@ -243,8 +245,8 @@ public final class ShapeChoice {
 
     static #String buildId(ShapeFilter f) {
         StringBuilder out #= heap StringBuilder();
-        String uuid #= Device.uuid();
-        out.append("u" + uuid + "d" + Device.driverVersion() + "|");
+        String hw #= ShapeChoice.hardwareClass();
+        out.append("h" + hw + "d" + Device.driverVersion() + "|");
         int32 i = 0;
         while (i < f.survivorCount()) {
             ShapeVerdict v = f.survivor(i);
@@ -253,6 +255,19 @@ public final class ShapeChoice {
             i = i + 1;
         }
         return out.toString();
+    }
+
+    /**
+     * The active device's hardware class: the tune store's device key
+     * (`Autotune.deviceKey`, the backend and the SM layout), then the L2 and
+     * VRAM sizes, as `<deviceKey>-l2<bytes>v<MiB>`. Two cards of one model
+     * and configuration answer the same; clocks are left out, since they move
+     * run to run (§7.12).
+     */
+    public static #String hardwareClass() {
+        String key #= Autotune.deviceKey();
+        int64 vramMiB = Device.vramBytes() / 1048576L;
+        return key + "-l2" + Device.l2CacheBytes() + "v" + vramMiB;
     }
 
     static #String codeOf(ShapeVerdict v) {
