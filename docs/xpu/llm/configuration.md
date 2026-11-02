@@ -24,7 +24,7 @@ its own flags of the same names.
 | `moeResidencyBudget` | -1 (auto: free device memory at the first bank's bind, less a reserve for the K/V pool and scratch) | `--moe-residency-budget` | bytes of expert weights kept resident; 0 turns residency off and every expert dispatch streams through the windowed path |
 | `widenBudget` | -1 (auto: half of available memory) | `--widen-budget` | ceiling on the int8 widen in bytes; 0 never widens |
 | `cpuInt8Decode` | true | `--cpu-int8-decode on\|off` | the CPU backend decodes Q4_K and Q6_K on its int8 kernels |
-| `cpuThreads` | 0 (one worker a physical core) | `--cpu-threads` | the CPU backend's worker threads, up to every hardware thread |
+| `cpuThreads` | 0 (measured at load) | `--cpu-threads` | the CPU backend's worker threads, up to every hardware thread; 0 times decode at half, three quarters and all of the physical cores and keeps the fastest (§6) |
 | `cpuWidth` | `auto` | `--cpu-width` | the CPU backend's interleave width for Q4_K and Q6_K weights; `auto` times 8 and 16 rows at load for decode, `auto-prefill` for prefill, and `8` or `16` pins it |
 | `colsPays` | `auto` | `--cols-pays` | whether the batched Cols kernel serves the decode batch; `auto` times it per format and width, `on` or `off` pins it |
 | `colsVariant` | `auto` | `--cols-variant` | the Cols kernel's variant for Q4_K and Q6_K; `prefetch`, `plain` or `two-row` pins it |
@@ -47,7 +47,7 @@ greedy and deterministic.
 
 The engine remembers its measured choices per machine, so that the second
 run of a model starts at the settled choice. Every timed choice in §6 is kept
-here except the CPU thread count and the prefill chunk. The directory is
+here except the prefill chunk. The directory is
 resolved in this order:
 
 1. the `tuneDir` option or `--tune-dir`;
@@ -114,7 +114,7 @@ load does no measurement and starts as fast as it can.
 | choice | what it decides | backends | cost at load | kept in the store | pin it with |
 |---|---|---|---|---|---|
 | CPU interleave width | 8 or 16 rows for the Q4_K and Q6_K int8 weights | CPU at level `v4` and above | about 5.5 s on the first load of a build | yes | `cpuWidth` |
-| CPU threads | the CPU backend's worker count | CPU | none today | no | `cpuThreads` |
+| CPU threads | the CPU backend's worker count: half, three quarters or all of the physical cores, by real decode steps after the warm-up; all of the cores unless another count is 5% faster | CPU | 1.0 to 1.4 s on the first load of a build (8B) | yes | `cpuThreads` |
 | Cols pays | whether the batched Cols kernel serves a decode batch, per format and width | GPUs | not measured separately | yes | `colsPays` |
 | Cols variant | prefetch, plain or two-row Cols kernel for Q4_K and Q6_K | GPUs | 100 to 150 ms | yes | `colsVariant` |
 | One-column prefetch | whether the decode mat-vec prefetches its weights | GPUs | not measured separately | yes | `mvPrefetch` |
