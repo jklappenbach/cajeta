@@ -1383,6 +1383,24 @@ void __cajeta_xpu_cpu_set_parallel_min(int64_t workItems) {
 }
 int64_t __cajeta_xpu_cpu_parallel_min(void) { return caj_cpu_parallel_min(); }
 
+// Chunks a participant's share of a launch is cut into: CAJETA_XPU_CPU_CHUNKS, or the setter.
+#ifndef CAJETA_XPU_CPU_CHUNKS_PER_WORKER
+#define CAJETA_XPU_CPU_CHUNKS_PER_WORKER 1
+#endif
+static int32_t g_cpu_chunks = -1;
+static int32_t caj_cpu_chunks_per_worker(void) {
+    int32_t c = __atomic_load_n(&g_cpu_chunks, __ATOMIC_RELAXED);
+    if (c > 0) return c;
+    const char* e = getenv("CAJETA_XPU_CPU_CHUNKS");
+    c = e ? atoi(e) : 0;
+    if (c < 1 || c > 64) c = CAJETA_XPU_CPU_CHUNKS_PER_WORKER;
+    __atomic_store_n(&g_cpu_chunks, c, __ATOMIC_RELAXED);
+    return c;
+}
+void __cajeta_xpu_cpu_set_chunks_per_worker(int32_t n) {
+    __atomic_store_n(&g_cpu_chunks, n >= 1 && n <= 64 ? n : CAJETA_XPU_CPU_CHUNKS_PER_WORKER, __ATOMIC_RELAXED);
+}
+
 // Spin budgets in PAUSEs before a futex sleep (a PAUSE is ~13 ns on Zen 5).
 #ifndef CAJETA_XPU_CPU_JOIN_SPIN
 #define CAJETA_XPU_CPU_JOIN_SPIN 262144
@@ -1401,17 +1419,32 @@ int64_t __cajeta_xpu_cpu_parallel_min(void) { return caj_cpu_parallel_min(); }
 // --- Persistent CPU-kernel worker pool --------------------------------------
 // Spawning pthreads per launch costs ~5-15us/thread, which dominates small,
 // frequent kernels. This pool creates its workers ONCE and reuses them.
-struct caj_kpool_slice_ref { const struct cajeta_cpu_grid_slice* s; };
+// One pooled launch, on the caller's stack: chunk i is blocks
+// [i * nblocks / nchunks, (i + 1) * nblocks / nchunks). recs[id] carries a
+// participant's first-claim and last-finish times for the trace.
+struct caj_kpool_launch {
+    struct cajeta_cpu_grid_slice proto;
+    int32_t nblocks;
+    int32_t nchunks;
+    struct cajeta_cpu_grid_slice* recs;
+};
+#define CAJ_CLAIM_LEFT_BITS 23
+#define CAJ_CLAIM_JOBS_BITS 9
+#define CAJ_CLAIM_LEFT(w) ((int32_t) ((w) & ((1u << CAJ_CLAIM_LEFT_BITS) - 1)))
+#define CAJ_CLAIM_JOBS(w) ((int32_t) (((w) >> CAJ_CLAIM_LEFT_BITS) & ((1u << CAJ_CLAIM_JOBS_BITS) - 1)))
+#define CAJ_CLAIM_GEN(w)  ((uint32_t) ((w) >> (CAJ_CLAIM_LEFT_BITS + CAJ_CLAIM_JOBS_BITS)))
 static struct {
     int            started;
     int            nthreads;                 // persistent workers (= caller cap - 1)
     pthread_t      threads[CAJETA_XPU_CPU_MAX_WORKERS];
     pthread_mutex_t mu;
     pthread_cond_t  go;                      // workers wait for a new generation
-    pthread_cond_t  done;                    // caller waits for active==0
+    pthread_cond_t  done_cv;                 // caller waits for the last chunk
+    pthread_cond_t  up_cv;                   // ensure() waits for new workers to start
+    int             running;                 // workers past their thread registration
     uint64_t        generation;              // bumped per dispatch
-    int             active;                  // workers yet to acknowledge this gen
-    int             njobs;                   // pool slices dispatched this gen
+    uint64_t        claim;                   // generation:32 | njobs:9 | chunks left:23
+    int32_t         done;                    // chunks of this launch finished
     int             shutdown;
     // Per-worker generation baseline. A worker added mid-life must not treat the
     // generation already in flight as new work — it would run and decrement a
@@ -1419,14 +1452,15 @@ static struct {
     // generation (under mu) before the thread starts, so the newcomer waits for
     // the NEXT dispatch, which counts it.
     uint64_t        worker_seen[CAJETA_XPU_CPU_MAX_WORKERS];
-    const struct cajeta_cpu_grid_slice* slices;  // slices[0..njobs-1] for workers
+    const struct caj_kpool_launch* launch;   // read only under a claim of its generation
 } g_caj_kpool = {
     // These pthread primitives MUST carry their static initializers explicitly:
     // on winpthreads the initializers are -1 sentinels, and a ZEROED mutex or
     // condvar is invalid — the first CPU launch on Windows hung forever.
     .mu   = PTHREAD_MUTEX_INITIALIZER,
     .go   = PTHREAD_COND_INITIALIZER,
-    .done = PTHREAD_COND_INITIALIZER,
+    .done_cv = PTHREAD_COND_INITIALIZER,
+    .up_cv = PTHREAD_COND_INITIALIZER,
 };
 
 // Effective spin budgets, resolved once from the environment before any spin.
@@ -1492,11 +1526,73 @@ static uint64_t caj_kpool_wait_gen(uint64_t seen) {
     return __atomic_load_n(&g_caj_kpool.shutdown, __ATOMIC_ACQUIRE) ? 0 : g;
 }
 
+// Test hook: worker `id` (-1 = every worker) sleeps `ns` after waking for the next
+// dispatch, as a preempted worker would; ns 0 clears it.
+static int32_t g_caj_hold_id = 0;
+static int64_t g_caj_hold_ns = 0;
+static uint64_t g_caj_hold_gen = 0;
+void __cajeta_xpu_cpu_test_hold_worker(int32_t id, int64_t ns) {
+    __atomic_store_n(&g_caj_hold_id, id, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_caj_hold_ns, ns, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_caj_hold_gen,
+                     ns > 0 ? __atomic_load_n(&g_caj_kpool.generation, __ATOMIC_ACQUIRE) + 1 : 0,
+                     __ATOMIC_RELEASE);
+}
+static void caj_kpool_maybe_hold(long myid, uint64_t g) {
+    if (__atomic_load_n(&g_caj_hold_gen, __ATOMIC_ACQUIRE) != g) return;
+    int32_t id = __atomic_load_n(&g_caj_hold_id, __ATOMIC_RELAXED);
+    if (id >= 0 && id != myid) return;
+    int64_t ns = __atomic_load_n(&g_caj_hold_ns, __ATOMIC_RELAXED);
+    struct timespec ts = {(time_t) (ns / 1000000000LL), (long) (ns % 1000000000LL)};
+    nanosleep(&ts, NULL);
+}
+
+// Claim and run chunks of generation `g` until none are left. A worker takes part
+// only when its id is under the launch's njobs; the caller (id < 0) always does.
+// The descriptor is read only under a claim, so the launch is still live.
+static void caj_kpool_work(long id, uint64_t g) {
+    uint32_t gen = (uint32_t) g;
+    uint64_t w = __atomic_load_n(&g_caj_kpool.claim, __ATOMIC_ACQUIRE);
+    for (;;) {
+        if (CAJ_CLAIM_GEN(w) != gen || CAJ_CLAIM_LEFT(w) == 0) return;
+        if (id >= 0 && id >= CAJ_CLAIM_JOBS(w)) return;
+        if (!__atomic_compare_exchange_n(&g_caj_kpool.claim, &w, w - 1, 0,
+                                         __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            continue;
+        const struct caj_kpool_launch* L = g_caj_kpool.launch;
+        int32_t chunk = L->nchunks - CAJ_CLAIM_LEFT(w);
+        struct cajeta_cpu_grid_slice sl = L->proto;
+        sl.bStart = (int32_t) ((int64_t) chunk * L->nblocks / L->nchunks);
+        sl.bEnd = (int32_t) ((int64_t) (chunk + 1) * L->nblocks / L->nchunks);
+        struct cajeta_cpu_grid_slice* rec = &L->recs[id >= 0 ? id : CAJ_CLAIM_JOBS(w)];
+        int64_t tb = sl.trace ? caj_cpu_trace_now_ns() : 0;
+        sl.trace = 0;
+        cajeta_xpu_cpu_run_slice(&sl);
+        if (L->proto.trace) {
+            if (rec->tBeg == 0) rec->tBeg = tb;
+            rec->tEnd = caj_cpu_trace_now_ns();
+        }
+        // L is dead once the last chunk counts: read nchunks first. ACQ_REL so the
+        // joiner that reads the last count sees this chunk's stores.
+        int32_t nchunks = L->nchunks;
+        if (__atomic_add_fetch(&g_caj_kpool.done, 1, __ATOMIC_ACQ_REL) == nchunks) {
+            pthread_mutex_lock(&g_caj_kpool.mu);
+            pthread_cond_signal(&g_caj_kpool.done_cv);
+            pthread_mutex_unlock(&g_caj_kpool.mu);
+        }
+        w = __atomic_load_n(&g_caj_kpool.claim, __ATOMIC_ACQUIRE);
+    }
+}
+
 // A pool worker runs program work: every return path unregisters it.
 static void* caj_kpool_worker_body(void* arg);
 
 static void* caj_kpool_worker_main(void* arg) {
     __cajeta_prof_thread_register();
+    pthread_mutex_lock(&g_caj_kpool.mu);
+    g_caj_kpool.running++;
+    pthread_cond_broadcast(&g_caj_kpool.up_cv);
+    pthread_mutex_unlock(&g_caj_kpool.mu);
     void* r = caj_kpool_worker_body(arg);
     __cajeta_prof_thread_unregister();
     return r;
@@ -1513,25 +1609,8 @@ static void* caj_kpool_worker_body(void* arg) {
         uint64_t g = caj_kpool_wait_gen(seen);
         if (g == 0) break;                       // shutdown
         seen = g;
-        // Run this dispatch's slice only if one was handed to this worker...
-        if (myid < g_caj_kpool.njobs) {
-            cajeta_xpu_cpu_run_slice(&g_caj_kpool.slices[myid]);
-        }
-        // ...but EVERY worker acknowledges EVERY generation. The join waits for
-        // all of them (active = nthreads), so no worker is still inside this
-        // generation — running its slice, or merely mid-decision reading
-        // njobs/slices — when the caller reclaims the stack those point into.
-        // Counting only the njobs runners left a small launch's idle workers
-        // unwaited-for: one that woke slow could read a LATER big launch's njobs,
-        // run its slice, and decrement its active a second time, so that launch's
-        // join returned early and its stragglers faulted on a freed argv.
-        // ACQ_REL so the joiner that reads active==0 sees our slice's stores.
-        if (__atomic_sub_fetch(&g_caj_kpool.active, 1, __ATOMIC_ACQ_REL) == 0) {
-            // Take mu so the signal cannot slip past the joiner's check.
-            pthread_mutex_lock(&g_caj_kpool.mu);
-            pthread_cond_signal(&g_caj_kpool.done);
-            pthread_mutex_unlock(&g_caj_kpool.mu);
-        }
+        caj_kpool_maybe_hold(myid, g);
+        caj_kpool_work(myid, g);
     }
     return NULL;
 }
@@ -1549,7 +1628,7 @@ static void caj_kpool_ensure(int cap) {
     if (want > CAJETA_XPU_CPU_MAX_WORKERS) want = CAJETA_XPU_CPU_MAX_WORKERS;
     caj_kpool_resolve_spin();
     pthread_mutex_lock(&g_caj_kpool.mu);
-    // mu/go/done carry PTHREAD_*_INITIALIZER from the designated initializer
+    // mu/go/done_cv carry PTHREAD_*_INITIALIZER from the designated initializer
     // above; do NOT pthread_mutex_init(&mu) here — we hold it.
     g_caj_kpool.started = 1;
     __cajeta_live_set_go_multithreaded();     // second-thread barrier (see live-set)
@@ -1568,39 +1647,40 @@ static void caj_kpool_ensure(int cap) {
             break;                            // spawn failed: cap the pool here
         g_caj_kpool.nthreads++;
     }
+    // A launch does not wait for a worker that never claims, so the pool is not
+    // built until every worker is running (and registered with the sampler).
+    while (g_caj_kpool.running < g_caj_kpool.nthreads)
+        pthread_cond_wait(&g_caj_kpool.up_cv, &g_caj_kpool.mu);
     pthread_mutex_unlock(&g_caj_kpool.mu);
 }
 
-// Fork-join dispatch: hand slices[0..njobs-1] to pool workers, then return.
-static void caj_kpool_dispatch(const struct cajeta_cpu_grid_slice* slices,
-                               int njobs) {
-    // Publish the job payload, then RELEASE-store generation: a worker that
-    // ACQUIRE-sees the new generation is guaranteed to see slices/njobs/active.
-    g_caj_kpool.slices = slices;
-    g_caj_kpool.njobs  = njobs;
-    // active counts EVERY worker, not just the njobs runners: each decrements
-    // once per generation, making the join a full barrier over the pool. njobs
-    // only decides which workers have a slice to run this dispatch. (Every
-    // worker woke here has seen == this dispatch's predecessor — the prior
-    // join, itself a full barrier, guaranteed it — so exactly nthreads
-    // acknowledgements arrive.)
-    __atomic_store_n(&g_caj_kpool.active, g_caj_kpool.nthreads, __ATOMIC_RELAXED);
+// Publish `L` to workers 0..njobs-1 and wake them; returns the generation.
+static uint64_t caj_kpool_dispatch(const struct caj_kpool_launch* L, int njobs) {
+    uint64_t g = g_caj_kpool.generation + 1;
+    g_caj_kpool.launch = L;
+    __atomic_store_n(&g_caj_kpool.done, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_caj_kpool.claim,
+                     ((uint64_t) (uint32_t) g << (CAJ_CLAIM_LEFT_BITS + CAJ_CLAIM_JOBS_BITS))
+                     | ((uint64_t) njobs << CAJ_CLAIM_LEFT_BITS) | (uint64_t) L->nchunks,
+                     __ATOMIC_RELEASE);
     // Hold mu across the bump + broadcast so a sleeping worker cannot miss it.
     pthread_mutex_lock(&g_caj_kpool.mu);
-    __atomic_store_n(&g_caj_kpool.generation, g_caj_kpool.generation + 1,
-                     __ATOMIC_RELEASE);
+    __atomic_store_n(&g_caj_kpool.generation, g, __ATOMIC_RELEASE);
     pthread_cond_broadcast(&g_caj_kpool.go);
     pthread_mutex_unlock(&g_caj_kpool.mu);
+    return g;
 }
 
-static void caj_kpool_join(void) {
+// Wait until every chunk of the launch has finished; a worker never claimed
+// is not waited for.
+static void caj_kpool_join(int32_t nchunks) {
     for (int spins = 0; spins < caj_join_spin; ++spins) {
-        if (__atomic_load_n(&g_caj_kpool.active, __ATOMIC_ACQUIRE) == 0) return;
+        if (__atomic_load_n(&g_caj_kpool.done, __ATOMIC_ACQUIRE) == nchunks) return;
         CAJ_CPU_PAUSE();
     }
     pthread_mutex_lock(&g_caj_kpool.mu);
-    while (__atomic_load_n(&g_caj_kpool.active, __ATOMIC_ACQUIRE) != 0)
-        pthread_cond_wait(&g_caj_kpool.done, &g_caj_kpool.mu);
+    while (__atomic_load_n(&g_caj_kpool.done, __ATOMIC_ACQUIRE) != nchunks)
+        pthread_cond_wait(&g_caj_kpool.done_cv, &g_caj_kpool.mu);
     pthread_mutex_unlock(&g_caj_kpool.mu);
 }
 
@@ -1622,10 +1702,11 @@ void __cajeta_xpu_kpool_shutdown(void) {
     // dispatch bookkeeping (generation included) races nothing.
     pthread_mutex_lock(&g_caj_kpool.mu);
     g_caj_kpool.nthreads = 0;
+    g_caj_kpool.running = 0;
     g_caj_kpool.started = 0;
-    g_caj_kpool.njobs = 0;
-    g_caj_kpool.slices = NULL;
-    __atomic_store_n(&g_caj_kpool.active, 0, __ATOMIC_RELAXED);
+    g_caj_kpool.launch = NULL;
+    __atomic_store_n(&g_caj_kpool.claim, (uint64_t) 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_caj_kpool.done, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&g_caj_kpool.generation, (uint64_t) 0, __ATOMIC_RELAXED);
     __atomic_store_n(&g_caj_kpool.shutdown, 0, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&g_caj_kpool.mu);
@@ -1770,7 +1851,7 @@ static void caj_cpu_trace_parallel(const char* name, const struct cajeta_cpu_gri
         if (i != nworkers - 1 && slices[i].tEnd > maxOther) maxOther = slices[i].tEnd;
     }
     for (int32_t i = 0; i < nworkers; ++i) {
-        if (slices[i].tEnd > 0) idle += maxEnd - slices[i].tEnd;
+        idle += maxEnd - (slices[i].tEnd > 0 ? slices[i].tEnd : t0);   // no claim: idle throughout
         if (slices[i].tBeg > t0) lag += slices[i].tBeg - t0;
     }
     int64_t callerEnd = slices[nworkers - 1].tEnd;
@@ -1939,37 +2020,24 @@ static void cajeta_xpu_launch_cpu(const char* name,
         return;
     }
 
-    // Chunk the blocks across nworkers; the caller runs the last slice itself.
+    // The caller and nworkers - 1 pool workers claim the blocks in chunks; a
+    // worker that is not yet awake leaves its share to the others.
     __atomic_store_n(&caj_last_workers, nworkers, __ATOMIC_RELEASE);
-    struct cajeta_cpu_grid_slice slices[CAJETA_XPU_CPU_MAX_WORKERS];
-    int32_t base = nblocks / nworkers, rem = nblocks % nworkers, cx = 0;
-    for (int32_t i = 0; i < nworkers; ++i) {
-        int32_t count = base + (i < rem ? 1 : 0);
-        slices[i].fn = fn;
-        slices[i].argv = (void**) argv;
-        slices[i].bx = blockX; slices[i].by = blockY; slices[i].bz = blockZ;
-        slices[i].gx = gridX;  slices[i].gy = gridY;  slices[i].gz = gridZ;
-        slices[i].bStart = cx;
-        slices[i].bEnd = cx + count;
-        slices[i].dynShared = sharedBytes;
-        slices[i].specCount = specCount;
-        slices[i].specValues = specValues;
-        slices[i].trace = trace;
-        slices[i].tBeg = 0;
-        slices[i].tEnd = 0;
-        cx += count;
-    }
     caj_kpool_ensure(nworkers);
-    // If the pool could not spawn enough workers, the surplus slices run inline
-    // after the caller's own — correctness over parallelism.
     int njobs = nworkers - 1;
     if (njobs > g_caj_kpool.nthreads) njobs = g_caj_kpool.nthreads;
-    caj_kpool_dispatch(slices, njobs);
-    cajeta_xpu_cpu_run_slice(&slices[nworkers - 1]);
-    for (int32_t i = njobs; i < nworkers - 1; ++i)
-        cajeta_xpu_cpu_run_slice(&slices[i]);   // pool-short surplus, inline
-    caj_kpool_join();
-    if (trace) caj_cpu_trace_parallel(name, slices, nworkers, t0);
+    int64_t nchunks = (int64_t) nworkers * caj_cpu_chunks_per_worker();
+    if (nchunks > nblocks) nchunks = nblocks;
+    struct cajeta_cpu_grid_slice recs[CAJETA_XPU_CPU_MAX_WORKERS + 1];
+    if (trace) memset(recs, 0, sizeof(struct cajeta_cpu_grid_slice) * (size_t) (njobs + 1));
+    struct caj_kpool_launch L = {
+        {fn, (void**) argv, blockX, blockY, blockZ, gridX, gridY, gridZ,
+         0, 0, sharedBytes, specCount, specValues, trace, 0, 0},
+        nblocks, (int32_t) nchunks, recs};
+    uint64_t g = caj_kpool_dispatch(&L, njobs);
+    caj_kpool_work(-1, g);
+    caj_kpool_join(L.nchunks);
+    if (trace) caj_cpu_trace_parallel(name, recs, njobs + 1, t0);
     cajeta_xpu_cpu_refuse_if_twin_ran(name, twinsBefore, blockX);
     cajeta_xpu_cpu_raise_align_fault(name);
 }
