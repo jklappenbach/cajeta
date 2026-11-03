@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.51.0 (2026-11-03)
+
+- **The cpu kernel pool's chunks shrink as a launch runs.** Each batch gives every participant one chunk of half the blocks left, divided among them, down to one block, so a worker slowed by other load on its core holds the launch for one small chunk instead of a whole share. On a 16-core Zen 5 host with eight busy loops beside it, cajeta-llm's 8B decode runs at 21.3 tok/s against 17.7 with one chunk a worker, and its Q4_K_M prefill at 290 tok/s against about 275; unloaded decode is level. `CAJETA_XPU_CPU_CHUNKS=n` (1 to 64) keeps n equal chunks a participant. Every chunk starts its data stream cold, so a kernel that streams weights should prefetch ahead rather than rely on the hardware prefetcher having trained.
+
 ## 0.50.0 (2026-11-02)
 
 - **`KernelBuffer.prefetch(index)` asks for a cache line before a kernel reads it.** It is advice, not an access: the cpu backend emits a read prefetch into the data cache, the GPU backends emit nothing, the reference interpreter accepts any index, and outside a kernel it is the kernel-only error that `vload` is. A kernel that consumes a cache line per load outruns the hardware prefetchers. On proton (Zen 5), cajeta-llm's 8B decode prefetching its 8-row weight block two blocks ahead went from 25.8 to 27.6 tok/s on Q3_K_M (+7.1%), 32.4 to 34.3 on Q2_K (+5.8%) and 19.5 to 20.0 on Q5_K_M (+2.7%), and was level on Q4_K, Q6_K and Q8_0. See CajetaXPU.md.
