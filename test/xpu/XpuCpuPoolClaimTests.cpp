@@ -30,6 +30,10 @@ int32_t __cajeta_xpu_cpu_worker_cap(void);
 void __cajeta_xpu_cpu_set_worker_cap(int32_t n);
 int32_t __cajeta_xpu_cpu_last_workers(void);
 void __cajeta_xpu_cpu_test_hold_worker(int32_t id, int64_t ns);
+void __cajeta_xpu_cpu_set_chunks_per_worker(int32_t n);
+int32_t __cajeta_xpu_cpu_guided_chunk_count(int32_t nblocks, int32_t parts);
+void __cajeta_xpu_cpu_guided_chunk(int32_t nblocks, int32_t parts, int32_t i,
+                                   int32_t* bStart, int32_t* bEnd);
 }
 
 namespace {
@@ -56,6 +60,20 @@ extern "C" void cajeta_pool_claim_thunk(void** argv, const int32_t* coord) {
     (void) sink;
 }
 
+struct SkewCtx {
+    int32_t heavyBlocks;          // blocks [0, heavyBlocks) cost heavySpin, the rest lightSpin
+    int32_t heavySpin;
+    int32_t lightSpin;
+};
+
+extern "C" void cajeta_pool_skew_thunk(void** argv, const int32_t* coord) {
+    SkewCtx* c = reinterpret_cast<SkewCtx*>(argv);
+    int32_t n = coord[3] < c->heavyBlocks ? c->heavySpin : c->lightSpin;
+    volatile int32_t sink = 0;
+    for (int32_t i = 0; i < n; ++i) sink += i;
+    (void) sink;
+}
+
 bool forceCpuBackend() {
     __cajeta_xpu_register_backend(kBackendCpu);
     __cajeta_xpu_force_backend(kBackendCpu);
@@ -78,6 +96,7 @@ protected:
     }
     void TearDown() override {
         __cajeta_xpu_cpu_test_hold_worker(-1, 0);
+        __cajeta_xpu_cpu_set_chunks_per_worker(0);
         __cajeta_xpu_cpu_set_worker_cap(savedCap);
     }
 
@@ -145,4 +164,58 @@ TEST_F(XpuCpuPoolClaim, everyBlockRunsExactlyOnce) {
             if (::testing::Test::HasFatalFailure()) return;
         }
     }
+}
+
+// The guided split tiles [0, nblocks) in order, each batch's chunks no larger than
+// the last batch's, starting at half a participant's share and ending at one block.
+TEST(XpuCpuGuidedChunks, chunksTileTheGridInOrderAndShrink) {
+    const int32_t grids[] = {1, 2, 7, 15, 16, 17, 31, 64, 65, 224, 1000, 4099};
+    const int32_t parts[] = {2, 4, 8, 16, 33};
+    for (int32_t B : grids) {
+        for (int32_t P : parts) {
+            int32_t n = __cajeta_xpu_cpu_guided_chunk_count(B, P);
+            ASSERT_GE(n, 1) << B << "/" << P;
+            ASSERT_LE(n, B) << B << "/" << P;
+            int32_t lg = 0;
+            while ((1 << lg) < B) ++lg;
+            EXPECT_LE(n, P * (lg + 2)) << B << "/" << P;
+            int32_t prevEnd = 0, prevSize = INT32_MAX;
+            for (int32_t i = 0; i < n; ++i) {
+                int32_t b = -1, e = -1;
+                __cajeta_xpu_cpu_guided_chunk(B, P, i, &b, &e);
+                ASSERT_EQ(b, prevEnd) << B << "/" << P << " chunk " << i;
+                ASSERT_GT(e, b) << B << "/" << P << " chunk " << i;
+                ASSERT_LE(e - b, prevSize) << B << "/" << P << " chunk " << i;
+                if (i == 0) EXPECT_EQ(e - b, (B + 2 * P - 1) / (2 * P)) << B << "/" << P;
+                prevSize = e - b;
+                prevEnd = e;
+            }
+            EXPECT_EQ(prevEnd, B) << B << "/" << P;
+            if (B >= 2 * P) EXPECT_EQ(prevSize, 1) << B << "/" << P;
+        }
+    }
+}
+
+// FIRES on one chunk a worker: the participant that takes the expensive first share
+// holds the launch, where the shrinking chunks spread that share over several.
+TEST_F(XpuCpuPoolClaim, anExpensiveShareIsSplitAcrossParticipants) {
+    __cajeta_xpu_register_cpu_kernel("cajeta.pool.skew",
+                                     reinterpret_cast<void*>(&cajeta_pool_skew_thunk));
+    SkewCtx ctx{8, 2000000, 250000};
+    std::this_thread::sleep_for(std::chrono::milliseconds(450));   // earlier tests' holds run out
+    auto best = [&](int32_t chunks) {
+        __cajeta_xpu_cpu_set_chunks_per_worker(chunks);
+        int64_t us = INT64_MAX;
+        for (int r = 0; r < 5; ++r) {
+            auto t0 = std::chrono::steady_clock::now();
+            __cajeta_xpu_launch_v3("cajeta.pool.skew", 64, 1, 1, 64, 1, 1, 0, &ctx, 0, -1, 0, nullptr);
+            int64_t t = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - t0).count();
+            if (t < us) us = t;
+        }
+        return us;
+    };
+    int64_t oneEach = best(1);
+    int64_t guided = best(0);
+    EXPECT_LT(guided * 4, oneEach * 3) << "guided " << guided << " us, one chunk a worker " << oneEach << " us";
 }

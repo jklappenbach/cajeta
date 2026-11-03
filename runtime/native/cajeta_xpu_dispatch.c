@@ -1383,14 +1383,15 @@ void __cajeta_xpu_cpu_set_parallel_min(int64_t workItems) {
 }
 int64_t __cajeta_xpu_cpu_parallel_min(void) { return caj_cpu_parallel_min(); }
 
-// Chunks a participant's share of a launch is cut into: CAJETA_XPU_CPU_CHUNKS, or the setter.
+// Equal chunks a participant's share is cut into (CAJETA_XPU_CPU_CHUNKS, or the
+// setter, 1..64); 0, the default, is the guided split below.
 #ifndef CAJETA_XPU_CPU_CHUNKS_PER_WORKER
-#define CAJETA_XPU_CPU_CHUNKS_PER_WORKER 1
+#define CAJETA_XPU_CPU_CHUNKS_PER_WORKER 0
 #endif
 static int32_t g_cpu_chunks = -1;
 static int32_t caj_cpu_chunks_per_worker(void) {
     int32_t c = __atomic_load_n(&g_cpu_chunks, __ATOMIC_RELAXED);
-    if (c > 0) return c;
+    if (c >= 0) return c;
     const char* e = getenv("CAJETA_XPU_CPU_CHUNKS");
     c = e ? atoi(e) : 0;
     if (c < 1 || c > 64) c = CAJETA_XPU_CPU_CHUNKS_PER_WORKER;
@@ -1399,6 +1400,43 @@ static int32_t caj_cpu_chunks_per_worker(void) {
 }
 void __cajeta_xpu_cpu_set_chunks_per_worker(int32_t n) {
     __atomic_store_n(&g_cpu_chunks, n >= 1 && n <= 64 ? n : CAJETA_XPU_CPU_CHUNKS_PER_WORKER, __ATOMIC_RELAXED);
+}
+
+// Guided split (factoring): each batch gives the `parts` participants one chunk
+// each of ceil(left / (2 * parts)) blocks, so chunks shrink to one block.
+int32_t __cajeta_xpu_cpu_guided_chunk_count(int32_t nblocks, int32_t parts) {
+    if (nblocks < 1) return 0;
+    if (parts < 1) parts = 1;
+    int64_t left = nblocks, n = 0;
+    while (left > 0) {
+        int64_t size = (left + 2 * (int64_t) parts - 1) / (2 * (int64_t) parts);
+        int64_t k = (left + size - 1) / size;
+        if (k > parts) k = parts;
+        n += k;
+        left -= k * size;
+    }
+    return (int32_t) n;
+}
+
+// Blocks [*bStart, *bEnd) of guided chunk `i` (chunks run in order from block 0).
+void __cajeta_xpu_cpu_guided_chunk(int32_t nblocks, int32_t parts, int32_t i,
+                                   int32_t* bStart, int32_t* bEnd) {
+    if (parts < 1) parts = 1;
+    int64_t start = 0;
+    for (;;) {
+        int64_t left = nblocks - start;
+        int64_t size = (left + 2 * (int64_t) parts - 1) / (2 * (int64_t) parts);
+        int64_t k = (left + size - 1) / size;
+        if (k > parts) k = parts;
+        if (i < k) {
+            int64_t b = start + (int64_t) i * size, e = b + size;
+            *bStart = (int32_t) b;
+            *bEnd = (int32_t) (e < nblocks ? e : nblocks);
+            return;
+        }
+        i -= (int32_t) k;
+        start += k * size;
+    }
 }
 
 // Spin budgets in PAUSEs before a futex sleep (a PAUSE is ~13 ns on Zen 5).
@@ -1419,13 +1457,15 @@ void __cajeta_xpu_cpu_set_chunks_per_worker(int32_t n) {
 // --- Persistent CPU-kernel worker pool --------------------------------------
 // Spawning pthreads per launch costs ~5-15us/thread, which dominates small,
 // frequent kernels. This pool creates its workers ONCE and reuses them.
-// One pooled launch, on the caller's stack: chunk i is blocks
-// [i * nblocks / nchunks, (i + 1) * nblocks / nchunks). recs[id] carries a
-// participant's first-claim and last-finish times for the trace.
+// One pooled launch, on the caller's stack: with `guided` 0, chunk i is blocks
+// [i * nblocks / nchunks, (i + 1) * nblocks / nchunks); otherwise the guided split
+// over `guided` participants. recs[id] carries a participant's first-claim and
+// last-finish times for the trace.
 struct caj_kpool_launch {
     struct cajeta_cpu_grid_slice proto;
     int32_t nblocks;
     int32_t nchunks;
+    int32_t guided;
     struct cajeta_cpu_grid_slice* recs;
 };
 #define CAJ_CLAIM_LEFT_BITS 23
@@ -1562,8 +1602,12 @@ static void caj_kpool_work(long id, uint64_t g) {
         const struct caj_kpool_launch* L = g_caj_kpool.launch;
         int32_t chunk = L->nchunks - CAJ_CLAIM_LEFT(w);
         struct cajeta_cpu_grid_slice sl = L->proto;
-        sl.bStart = (int32_t) ((int64_t) chunk * L->nblocks / L->nchunks);
-        sl.bEnd = (int32_t) ((int64_t) (chunk + 1) * L->nblocks / L->nchunks);
+        if (L->guided > 0) {
+            __cajeta_xpu_cpu_guided_chunk(L->nblocks, L->guided, chunk, &sl.bStart, &sl.bEnd);
+        } else {
+            sl.bStart = (int32_t) ((int64_t) chunk * L->nblocks / L->nchunks);
+            sl.bEnd = (int32_t) ((int64_t) (chunk + 1) * L->nblocks / L->nchunks);
+        }
         struct cajeta_cpu_grid_slice* rec = &L->recs[id >= 0 ? id : CAJ_CLAIM_JOBS(w)];
         int64_t tb = sl.trace ? caj_cpu_trace_now_ns() : 0;
         sl.trace = 0;
@@ -2026,14 +2070,16 @@ static void cajeta_xpu_launch_cpu(const char* name,
     caj_kpool_ensure(nworkers);
     int njobs = nworkers - 1;
     if (njobs > g_caj_kpool.nthreads) njobs = g_caj_kpool.nthreads;
-    int64_t nchunks = (int64_t) nworkers * caj_cpu_chunks_per_worker();
+    const int32_t perWorker = caj_cpu_chunks_per_worker();
+    int64_t nchunks = perWorker > 0 ? (int64_t) nworkers * perWorker
+                                    : __cajeta_xpu_cpu_guided_chunk_count(nblocks, nworkers);
     if (nchunks > nblocks) nchunks = nblocks;
     struct cajeta_cpu_grid_slice recs[CAJETA_XPU_CPU_MAX_WORKERS + 1];
     if (trace) memset(recs, 0, sizeof(struct cajeta_cpu_grid_slice) * (size_t) (njobs + 1));
     struct caj_kpool_launch L = {
         {fn, (void**) argv, blockX, blockY, blockZ, gridX, gridY, gridZ,
          0, 0, sharedBytes, specCount, specValues, trace, 0, 0},
-        nblocks, (int32_t) nchunks, recs};
+        nblocks, (int32_t) nchunks, perWorker > 0 ? 0 : nworkers, recs};
     uint64_t g = caj_kpool_dispatch(&L, njobs);
     caj_kpool_work(-1, g);
     caj_kpool_join(L.nchunks);

@@ -934,9 +934,19 @@ selection only (spec cpu-isa-variants 5.4), never by a run.
 
 ## 8. The pool's launch path (cpu-isa-variants 5.3.3, 2026-10-31)
 
-A parallel launch is a fork-join over static slices. The caller cuts the blocks
-into `min(blocks, workers)` contiguous slices, hands all but the last to the
-pool, runs the last itself and joins. Three things decide and describe that path.
+A parallel launch is a fork-join over claimed chunks. The caller publishes the
+launch, and it and the pool workers claim the blocks in chunks from one counter,
+in order from block 0, until none are left; then the caller joins. A worker that
+is slow to wake leaves its chunks to the others. By default the chunks shrink
+(factoring): each batch gives every participant one chunk of half the blocks
+left, divided among them, down to one block. A participant slowed by other load
+on its core then holds the launch for one small chunk, not a whole share. On
+proton, with eight busy loops on the box, the 8B decode ran at 21.3 tok/s
+against 17.7 with one chunk a worker, and at 23.2 unloaded either way.
+`CAJETA_XPU_CPU_CHUNKS=n` (1 to 64), or `__cajeta_xpu_cpu_set_chunks_per_worker`,
+cuts each participant's share into n equal chunks instead. A kernel that streams
+its data should not depend on a chunk's start: every chunk starts its stream
+cold. Three more things decide and describe the launch path.
 
 - **The floor.** A launch under 256 work-items runs inline on the caller
   (`CAJETA_XPU_CPU_PARALLEL_MIN`, or `__cajeta_xpu_cpu_set_parallel_min`, lowers
