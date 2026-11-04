@@ -3,6 +3,7 @@
 ## 0.51.0 (2026-11-03)
 
 - **The cpu kernel pool's chunks shrink as a launch runs.** Each batch gives every participant one chunk of half the blocks left, divided among them, down to one block, so a worker slowed by other load on its core holds the launch for one small chunk instead of a whole share. On a 16-core Zen 5 host with eight busy loops beside it, cajeta-llm's 8B decode runs at 21.3 tok/s against 17.7 with one chunk a worker, and its Q4_K_M prefill at 290 tok/s against about 275; unloaded decode is level. `CAJETA_XPU_CPU_CHUNKS=n` (1 to 64) keeps n equal chunks a participant. Every chunk starts its data stream cold, so a kernel that streams weights should prefetch ahead rather than rely on the hardware prefetcher having trained.
+- **`File.writeAllBytes` replaces an existing file on Windows.** The write is renamed into place, and the Windows CRT's rename refuses an existing target, so every overwrite kept the old bytes and said nothing: a program writing "ABC" then "XY" read back "ABC". The Windows arm now renames with `MoveFileExA` and `MOVEFILE_REPLACE_EXISTING`. Every earlier Windows release does the same.
 
 ## 0.50.0 (2026-11-02)
 
