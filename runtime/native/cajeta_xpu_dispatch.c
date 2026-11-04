@@ -1493,6 +1493,9 @@ static struct {
     // the NEXT dispatch, which counts it.
     uint64_t        worker_seen[CAJETA_XPU_CPU_MAX_WORKERS];
     const struct caj_kpool_launch* launch;   // read only under a claim of its generation
+    // Last, so the words every launch touches keep their cache lines.
+    pthread_cond_t  park_cv;                 // workers at or above park_at wait here
+    int             park_at;                 // the cap's worker count: ids at or above it park
 } g_caj_kpool = {
     // These pthread primitives MUST carry their static initializers explicitly:
     // on winpthreads the initializers are -1 sentinels, and a ZEROED mutex or
@@ -1501,6 +1504,8 @@ static struct {
     .go   = PTHREAD_COND_INITIALIZER,
     .done_cv = PTHREAD_COND_INITIALIZER,
     .up_cv = PTHREAD_COND_INITIALIZER,
+    .park_cv = PTHREAD_COND_INITIALIZER,
+    .park_at = CAJETA_XPU_CPU_MAX_WORKERS,
 };
 
 // Effective spin budgets, resolved once from the environment before any spin.
@@ -1628,6 +1633,12 @@ static void caj_kpool_work(long id, uint64_t g) {
     }
 }
 
+// Times a worker parked above the cap (a diagnostic for tests).
+static int64_t g_caj_surplus_parks = 0;
+int64_t __cajeta_xpu_cpu_dbg_surplus_parks(void) {
+    return __atomic_load_n(&g_caj_surplus_parks, __ATOMIC_RELAXED);
+}
+
 // A pool worker runs program work: every return path unregisters it.
 static void* caj_kpool_worker_body(void* arg);
 
@@ -1655,6 +1666,15 @@ static void* caj_kpool_worker_body(void* arg) {
         seen = g;
         caj_kpool_maybe_hold(myid, g);
         caj_kpool_work(myid, g);
+        if (myid < __atomic_load_n(&g_caj_kpool.park_at, __ATOMIC_ACQUIRE)) continue;
+        // Above the cap: sleep until a dispatch raises it, then join the live generation.
+        __atomic_add_fetch(&g_caj_surplus_parks, 1, __ATOMIC_RELAXED);
+        pthread_mutex_lock(&g_caj_kpool.mu);
+        while (myid >= g_caj_kpool.park_at && !__atomic_load_n(&g_caj_kpool.shutdown, __ATOMIC_ACQUIRE))
+            pthread_cond_wait(&g_caj_kpool.park_cv, &g_caj_kpool.mu);
+        seen = __atomic_load_n(&g_caj_kpool.generation, __ATOMIC_ACQUIRE) - 1;
+        pthread_mutex_unlock(&g_caj_kpool.mu);
+        if (__atomic_load_n(&g_caj_kpool.shutdown, __ATOMIC_ACQUIRE)) break;
     }
     return NULL;
 }
@@ -1700,6 +1720,8 @@ static void caj_kpool_ensure(int cap) {
 
 // Publish `L` to workers 0..njobs-1 and wake them; returns the generation.
 static uint64_t caj_kpool_dispatch(const struct caj_kpool_launch* L, int njobs) {
+    int park_at = (int) cajeta_xpu_cpu_pool_workers() - 1;
+    if (park_at < njobs) park_at = njobs;
     uint64_t g = g_caj_kpool.generation + 1;
     g_caj_kpool.launch = L;
     __atomic_store_n(&g_caj_kpool.done, 0, __ATOMIC_RELAXED);
@@ -1709,8 +1731,11 @@ static uint64_t caj_kpool_dispatch(const struct caj_kpool_launch* L, int njobs) 
                      __ATOMIC_RELEASE);
     // Hold mu across the bump + broadcast so a sleeping worker cannot miss it.
     pthread_mutex_lock(&g_caj_kpool.mu);
+    int raised = park_at > g_caj_kpool.park_at;
+    if (park_at != g_caj_kpool.park_at) __atomic_store_n(&g_caj_kpool.park_at, park_at, __ATOMIC_RELEASE);
     __atomic_store_n(&g_caj_kpool.generation, g, __ATOMIC_RELEASE);
     pthread_cond_broadcast(&g_caj_kpool.go);
+    if (raised) pthread_cond_broadcast(&g_caj_kpool.park_cv);
     pthread_mutex_unlock(&g_caj_kpool.mu);
     return g;
 }
@@ -1738,6 +1763,7 @@ void __cajeta_xpu_kpool_shutdown(void) {
     }
     __atomic_store_n(&g_caj_kpool.shutdown, 1, __ATOMIC_RELEASE);
     pthread_cond_broadcast(&g_caj_kpool.go);
+    pthread_cond_broadcast(&g_caj_kpool.park_cv);
     int n = g_caj_kpool.nthreads;
     pthread_mutex_unlock(&g_caj_kpool.mu);
     for (int i = 0; i < n; ++i)
@@ -1747,6 +1773,7 @@ void __cajeta_xpu_kpool_shutdown(void) {
     pthread_mutex_lock(&g_caj_kpool.mu);
     g_caj_kpool.nthreads = 0;
     g_caj_kpool.running = 0;
+    g_caj_kpool.park_at = CAJETA_XPU_CPU_MAX_WORKERS;
     g_caj_kpool.started = 0;
     g_caj_kpool.launch = NULL;
     __atomic_store_n(&g_caj_kpool.claim, (uint64_t) 0, __ATOMIC_RELAXED);

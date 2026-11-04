@@ -34,6 +34,9 @@ void __cajeta_xpu_cpu_set_chunks_per_worker(int32_t n);
 int32_t __cajeta_xpu_cpu_guided_chunk_count(int32_t nblocks, int32_t parts);
 void __cajeta_xpu_cpu_guided_chunk(int32_t nblocks, int32_t parts, int32_t i,
                                    int32_t* bStart, int32_t* bEnd);
+int64_t __cajeta_xpu_cpu_dbg_surplus_parks(void);
+void __cajeta_xpu_cpu_set_parallel_min(int64_t workItems);
+int64_t __cajeta_xpu_cpu_parallel_min(void);
 }
 
 namespace {
@@ -218,4 +221,45 @@ TEST_F(XpuCpuPoolClaim, anExpensiveShareIsSplitAcrossParticipants) {
     int64_t oneEach = best(1);
     int64_t guided = best(0);
     EXPECT_LT(guided * 4, oneEach * 3) << "guided " << guided << " us, one chunk a worker " << oneEach << " us";
+}
+
+// cajeta-llm 15.2.14.11.2: workers above a lowered cap park instead of waking for
+// every launch, and come back when the cap is raised.
+TEST_F(XpuCpuPoolClaim, workersAboveALoweredCapPark) {
+    int64_t ms = 0;
+    const int32_t workers = __cajeta_xpu_cpu_pool_threads();
+    __cajeta_xpu_cpu_set_worker_cap(4);
+    launch(64, 0x61, &ms);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    const int64_t parked = __cajeta_xpu_cpu_dbg_surplus_parks();
+    for (int i = 0; i < 200; ++i) {
+        launch(64, 0x6100 + i, &ms, 50);
+        if (::testing::Test::HasFatalFailure()) return;
+    }
+    EXPECT_EQ(__cajeta_xpu_cpu_dbg_surplus_parks(), parked)
+        << "a parked worker woke for launches above the cap";
+    EXPECT_GE(parked, (int64_t) (workers - 3)) << "the workers above the cap did not park";
+    __cajeta_xpu_cpu_set_worker_cap(8);
+    for (int i = 0; i < 20; ++i) {
+        launch(64, 0x6200 + i, &ms, 2000);
+        if (::testing::Test::HasFatalFailure()) return;
+    }
+    EXPECT_EQ(__cajeta_xpu_cpu_last_workers(), 8);
+}
+
+// A launch narrower than the pool does not park anyone: only the cap does, so a
+// decode that alternates small and wide launches never pays a wake.
+TEST_F(XpuCpuPoolClaim, aNarrowLaunchParksNoWorker) {
+    const int64_t floor = __cajeta_xpu_cpu_parallel_min();
+    __cajeta_xpu_cpu_set_parallel_min(1);
+    int64_t ms = 0;
+    const int64_t before = __cajeta_xpu_cpu_dbg_surplus_parks();
+    for (int i = 0; i < 100; ++i) {
+        launch(3, 0x7100 + i, &ms, 50);
+        if (::testing::Test::HasFatalFailure()) break;
+        launch(64, 0x7200 + i, &ms, 50);
+        if (::testing::Test::HasFatalFailure()) break;
+    }
+    __cajeta_xpu_cpu_set_parallel_min(floor);
+    EXPECT_EQ(__cajeta_xpu_cpu_dbg_surplus_parks(), before);
 }
