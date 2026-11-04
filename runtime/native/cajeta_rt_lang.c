@@ -409,6 +409,10 @@ static void __cajeta_install_host_triple(void) {
 #include <unistd.h>
 #if defined(_WIN32)
 #  include <io.h>   // _fstat64 / _lseeki64 / _chsize_s — the 64-bit CRT forms
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>  // MoveFileExA, the replacing rename
 #endif
 
 // 64-bit file metadata everywhere. The mingw stat/off_t family is 32-bit unless
@@ -525,7 +529,13 @@ int32_t __cajeta_file_write_all(const char* path, const void* data, int64_t len)
     // Best-effort fsync; some filesystems treat it as a no-op.
     fsync(fd);
     close(fd);
+#if defined(_WIN32)
+    // The CRT's rename fails when `path` exists, so an overwrite kept the old bytes.
+    // MoveFileEx with REPLACE_EXISTING is the Windows form of rename(2) over a target.
+    if (!MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+#else
     if (rename(tmp, path) != 0) {
+#endif
         unlink(tmp);
         return -1;
     }

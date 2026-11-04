@@ -249,6 +249,37 @@ TEST(FileIo64Tests, writeAllBytesFromStructField) {
     ::unlink(path.c_str());
 }
 
+// File.writeAllBytes over an EXISTING file replaces its contents. The write
+// goes to `<path>.tmp.<pid>` and is renamed into place; POSIX rename(2)
+// replaces the target, but the Windows CRT's rename fails when the target
+// exists, so every overwrite on Windows kept the old bytes and the call, which
+// returns void, said nothing. cajeta-cloud-local's object store saw it as a
+// stale compare-and-swap token that still won.
+TEST(FileIo64Tests, writeAllBytesReplacesAnExistingFile) {
+    const std::string path = uniquePath("overwrite.bin");
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int8[] a = heap int8[3];\n"
+        "        a[0] = 65; a[1] = 66; a[2] = 67;\n"            // "ABC"
+        "        File.writeAllBytes(\"" + path + "\", a, 3);\n"
+        "        int8[] b = heap int8[2];\n"
+        "        b[0] = 88; b[1] = 89;\n"                        // "XY"
+        "        File.writeAllBytes(\"" + path + "\", b, 2);\n"
+        "        int8[] r #= File.readAllBytes(\"" + path + "\");\n"
+        "        if (r.count() != 2) { return -1; }\n"
+        "        if (r[0] != 88) { return -2; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+    EXPECT_EQ(readRaw(path), "XY");
+    // No temp file is left beside the target.
+    const std::string tmp = path + ".tmp." + std::to_string((long long) ::getpid());
+    EXPECT_NE(::access(tmp.c_str(), F_OK), 0);
+    ::unlink(path.c_str());
+}
+
 // 4.1.3 — a runtime-constructed path (concatenation, substring) opens
 // correctly, i.e. is NUL-terminated at the native seam (spec 3.8, defect
 // runtime-path-nul-termination). Both construction forms are exercised: a

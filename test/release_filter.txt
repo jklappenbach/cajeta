@@ -43,6 +43,10 @@
 # The guard suite is NOT optional: it has exactly one test on every target
 # (the Windows arm, or the POSIX arm), so it must always match.
 FileReaderAwaitPlatformTests.*
+# File.writeAllBytes renames a temp file over its target; the Windows CRT's
+# rename refuses an existing target, so an overwrite there kept the old bytes.
+# The fix is a Windows arm, so the Windows leg must run the test that pins it.
+FileIo64Tests.writeAllBytesReplacesAnExistingFile
 # The rest are `#if !defined(_WIN32)` and therefore compile to ZERO tests on
 # Windows, which this file treats as a hard error unless marked optional.
 # They are listed so DARWIN runs them: before 3.4.1 their fixtures used
