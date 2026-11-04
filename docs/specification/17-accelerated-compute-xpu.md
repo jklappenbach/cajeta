@@ -187,7 +187,8 @@ is taken outright. Several survivors are timed against each other once,
 interleaved and by medians, and the winner is remembered in the `Autotune`
 store under the family and the exact problem. The entry is keyed against a
 build id of the device, the driver and every survivor's code, so a rebuild
-measures again and a stale value is discarded and reported. A measurement taken under foreign
+measures again, and each build keeps its own entry, so two builds sharing a
+store do not re-time each other. A measurement taken under foreign
 load is used and not stored. The store is one small file per (device, name)
 under a directory the application supplies, keyed by the backend and the
 geometry the answer depends on, so a store copied between machines is ignored

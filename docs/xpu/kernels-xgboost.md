@@ -188,8 +188,8 @@ xgb.hist.tile.g<groups>.n<log2 rows>.min    the smallest segment that tiles
 ```
 
 The store is per device and per build. The `Autotune` device key is the
-backend plus the geometry the answer depends on, and a value tuned against
-another library version is discarded. It lives under `XGB_TUNE_DIR`, or the
+backend plus the geometry the answer depends on, and each library version
+keeps its own entry, so a value tuned for another version is never read. It lives under `XGB_TUNE_DIR`, or the
 platform cache directory, and `useTuneDir("")` keeps it in memory for one
 process. The tuner's own cost is reported separately in the fit's phases, and
 a run on a box where the store is not writable tunes once per process instead

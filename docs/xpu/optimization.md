@@ -129,8 +129,9 @@ entry is removed by deleting a file. The device key is the backend plus the
 geometry the answer depends on (multiprocessors × SIMDs, wave, registers,
 shared memory, threads), so a store copied between machines is ignored, and a
 part that reports no geometry is keyed `unknown` and shares nothing.
-`rememberFor` and `recallFor` carry a build id, and a value recalled against a
-different build is dropped and reported. A box with no writable
+`rememberFor` and `recallFor` carry a build id, and each build keeps its own
+entry, so two binaries sharing a store do not re-time each other; an entry
+recorded for other code is dropped and reported. A box with no writable
 store still tunes once per execution. The test suites run with the store
 off, so no earlier run's verdict reaches a test, and tests pin the probes'
 answers where a route is asserted.

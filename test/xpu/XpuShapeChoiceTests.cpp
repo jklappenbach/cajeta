@@ -204,6 +204,38 @@ TEST(XpuShapeChoice, aRebuiltCandidateInvalidatesTheEntry) {
     EXPECT_EQ(rc, 0);
 }
 
+// cajeta-llm 15.2.19.9.2: two builds alternating over one store each keep
+// their own entry, so neither re-times the other's shapes, in one process or
+// in the next.
+TEST(XpuShapeChoice, twoBuildsOverOneStoreKeepTheirOwnEntries) {
+    std::string dir = freshDir();
+    EXPECT_EQ(run(R"CJ(
+        ShapeFilter f #= M.three(128);
+        Fake p #= heap Fake(300L, 280L, 307L);
+        ShapeResult r #= ShapeChoice.choose(dir, f, p);
+        ShapeFilter g #= M.three(136);
+        Fake q #= heap Fake(300L, 400L, 307L);
+        ShapeResult s #= ShapeChoice.choose(dir, g, q);
+        if (s.fromCache || !s.kernel.equals("a")) { return 1; }
+        Fake w #= heap Fake(1L, 1L, 1L);
+        ShapeResult t #= ShapeChoice.choose(dir, f, w);
+        if (!t.fromCache || w.calls != 0 || !t.kernel.equals("b")) { return 2; }
+        ShapeResult u #= ShapeChoice.choose(dir, g, w);
+        if (!u.fromCache || w.calls != 0 || !u.kernel.equals("a")) { return 3; }
+        return 0;
+)CJ", dir), 0);
+    EXPECT_EQ(run(R"CJ(
+        Fake w #= heap Fake(1L, 1L, 1L);
+        ShapeFilter g #= M.three(136);
+        ShapeResult u #= ShapeChoice.choose(dir, g, w);
+        if (!u.fromCache || w.calls != 0 || !u.kernel.equals("a")) { return 1; }
+        ShapeFilter f #= M.three(128);
+        ShapeResult t #= ShapeChoice.choose(dir, f, w);
+        if (!t.fromCache || w.calls != 0 || !t.kernel.equals("b")) { return 2; }
+        return 0;
+)CJ", dir), 0);
+}
+
 // 4.6.1.3: an override forces a shape and times nothing; clearing it restores
 // the cached winner.
 TEST(XpuShapeChoice, anOverrideForcesAShapeUntilCleared) {

@@ -523,9 +523,13 @@ box without a writable store tunes once per execution. The device key is
 the backend plus the geometry the answer depends on (multiprocessors × SIMDs,
 wave, registers, shared memory, threads). A part that reports nothing is
 keyed `unknown` and shares nothing. `remember`/`recall` are the plain forms.
-`rememberFor`/`recallFor` carry a build id, and a value recalled against a
-different build is discarded and reported (XPU-T02). `invalidate` drops an
-entry. `reportUnderperforming` records a tuned value that measured below its
+`rememberFor`/`recallFor` carry a build id, and each build keeps its own
+entry, `<name>.b` and 16 hex digits of a seed-free fingerprint of the build id
+(`slotOf`), so two binaries over one store do not re-time each other. Another
+build misses and tunes. An entry whose recorded build differs from the one
+asked for is discarded and reported (XPU-T02). `invalidate` drops a name for
+every build. Entries of builds that no longer run stay until `cajeta tune
+--reset`. `reportUnderperforming` records a tuned value that measured below its
 promise (XPU-T01). `claimOnce` serialises a one-time probe across threads, and
 `persists()` says whether this execution's values are surviving. `cajeta tune
 --reset <dir>` clears a store. No per-user directory is assumed. An

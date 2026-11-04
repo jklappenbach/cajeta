@@ -323,7 +323,8 @@ directory is the one the engine resolves from its option, else
 directory with `cajeta-llm/tune` appended. The device key is the backend plus
 the geometry the answer depends on, so a store copied between machines is
 ignored. Every entry written against a build id is read back only against the
-same build id, and a stale entry is discarded and reported. The test suite
+same build id. Each build keeps its own entry, so two engine builds sharing a
+store do not re-time each other. The test suite
 runs with the store off, so no earlier run's verdict reaches a test, and the
 tests pin the probes' answers (`ColsProbe.setPays`, `setShapeOverride`) where
 a route is asserted.

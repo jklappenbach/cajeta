@@ -1,10 +1,12 @@
 package cajeta.xpu;
 
+import cajeta.collection.ArrayList;
 import cajeta.io.file.File;
 import cajeta.io.file.Path;
 import cajeta.error.Exception;
 import cajeta.lang.Optional;
 import cajeta.lang.String;
+import cajeta.lang.StringBuilder;
 import cajeta.lang.System;
 import cajeta.xpu.Device;
 
@@ -20,7 +22,8 @@ import cajeta.xpu.Device;
  *
  * Entries are keyed by {@link #deviceKey}, a fingerprint of the machine shape
  * that tuning actually depends on, so a store copied between machines is
- * ignored rather than believed. One small file per (device, name): no parser,
+ * ignored rather than believed. One small file per (device, name), and per build
+ * for `rememberFor`: no parser,
  * nothing to corrupt, and a stale entry is removed by deleting a file.
  *
  * `dir` is supplied by the caller rather than discovered, because the runtime
@@ -262,42 +265,115 @@ public final class Autotune {
         while (i < Autotune.memN - 1) {
             Autotune.memName[i] #= Autotune.memName[i + 1];
             Autotune.memVal[i] = Autotune.memVal[i + 1];
+            Autotune.memBuild[i] #= Autotune.memBuild[i + 1];
             i = i + 1;
         }
         Autotune.memN = Autotune.memN - 1;
         return;
     }
 
-    /** Drop `name` for this device, from memory and from the store, so the
-     *  next execution tunes it again. */
+    /** Drop `name` for this device, for every build, from memory and from
+     *  the store, so the next execution tunes it again. */
     public static void invalidate(String dir, String name) {
         Autotune.removeMem(name);
+        int32 i = Autotune.memN - 1;
+        while (i >= 0) {
+            if (Autotune.isSlotOf(Autotune.memName[i], name)) {
+                String n #= "" + Autotune.memName[i];
+                Autotune.removeMem(n);
+            }
+            i = i - 1;
+        }
         if (dir.byteLength() == 0) { return; }
         String key #= Autotune.deviceKey();
-        String p #= dir + "/" + key + "/" + name;
-        String sp #= p + ".for";
+        String d #= dir + "/" + key;
         try {
-            Path f #= Path.of(p);
-            if (f.exists()) { f.delete(); }
-            Path s #= Path.of(sp);
-            if (s.exists()) { s.delete(); }
+            Autotune.deleteEntry(d, name);
+            Path dp #= Path.of(d);
+            if (!dp.isDir()) { return; }
+            ArrayList<Path> all #= dp.list();
+            int32 j = 0;
+            while (j < (int32) all.count()) {
+                String f #= all.get(j).name();
+                if (Autotune.isSlotOf(f, name)) { Autotune.deleteEntry(d, f); }
+                j = j + 1;
+            }
         } catch (Exception e) {
         }
         return;
     }
 
+    static void deleteEntry(String d, String entry) {
+        String p #= d + "/" + entry;
+        String sp #= p + ".for";
+        Path f #= Path.of(p);
+        if (f.exists()) { f.delete(); }
+        Path s #= Path.of(sp);
+        if (s.exists()) { s.delete(); }
+        return;
+    }
+
     /**
-     * Record `value` along with the build it was tuned against, so a later
-     * run can tell whether the hint still describes the same code. `buildId`
-     * is the caller's: a compiler version, a kernel code hash, or both.
+     * The store name of `name` tuned against `buildId`: `name.b` and 16 hex
+     * digits of a seed-free fingerprint of the build, so each build keeps its own entry.
+     */
+    public static #String slotOf(String name, String buildId) {
+        int8[] b #= buildId.toBytes();
+        int64 n = (int64) b.count();
+        int64 h1 = 2166136261L;
+        int64 h2 = 84696351L;
+        int64 i = 0L;
+        while (i < n) {
+            h1 = ((h1 ^ ((int64) b[i] & 255L)) * 16777619L) & 4294967295L;
+            h2 = ((h2 ^ ((int64) b[n - 1L - i] & 255L)) * 16777619L) & 4294967295L;
+            i = i + 1L;
+        }
+        StringBuilder out #= heap StringBuilder();
+        out.append(name + ".b");
+        Autotune.appendHex8(out, h1);
+        Autotune.appendHex8(out, h2);
+        return out.toString();
+    }
+
+    static void appendHex8(StringBuilder out, int64 v) {
+        String digits = "0123456789abcdef";
+        int32 shift = 28;
+        while (shift >= 0) {
+            int32 d = (int32) ((v >> (int64) shift) & 15L);
+            out.append(digits.substring(d, d + 1));
+            shift = shift - 4;
+        }
+        return;
+    }
+
+    /** Whether `entry` is `name`'s entry for some build: `name.b` and 16 hex digits. */
+    static boolean isSlotOf(String entry, String name) {
+        if (entry.byteLength() != name.byteLength() + 18) { return false; }
+        String head #= name + ".b";
+        if (!entry.startsWith(head)) { return false; }
+        int32 i = head.byteLength();
+        while (i < entry.byteLength()) {
+            int8 c = entry.byteAt(i);
+            boolean hex = (c >= 48 && c <= 57) || (c >= 97 && c <= 102);
+            if (!hex) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    /**
+     * Record `value` for `name` as tuned against `buildId`, in that build's
+     * own entry, so another build's entry for `name` is left as it is.
+     * `buildId` is the caller's: a compiler version, a kernel code hash, or both.
      */
     public static void rememberFor(String dir, String name, int32 value,
                                    String buildId) {
-        Autotune.remember(dir, name, value);
-        Autotune.markMem(name, buildId);
+        String slot #= Autotune.slotOf(name, buildId);
+        Autotune.remember(dir, slot, value);
+        Autotune.markMem(slot, buildId);
         if (dir.byteLength() == 0) { return; }
         String key #= Autotune.deviceKey();
-        String sp #= dir + "/" + key + "/" + name + ".for";
+        String sp #= dir + "/" + key + "/" + slot + ".for";
         int8[] b #= buildId.toBytes();
         try {
             File.writeAllBytes(sp, b, (int64) b.count());
@@ -307,35 +383,29 @@ public final class Autotune {
     }
 
     /**
-     * The tuned value for `name`, but only if it was tuned against
-     * `buildId`. A hint written for different code is DISCARDED and reported
-     * (XPU-T02) rather than trusted: it was measured on a kernel that no
-     * longer exists, and a stale hint is exactly the failure that is
-     * invisible without an alert.
+     * The tuned value for `name` under `buildId`, or absent when that build
+     * has not tuned it. An entry whose recorded build differs (a fingerprint
+     * collision or a hand edit) is DISCARDED and reported (XPU-T02), not trusted.
      */
     public static Optional<int32> recallFor(String dir, String name,
                                             String buildId) {
-        // The memo answers only when it was verified against THIS build.
-        // Keyed by name alone it would return a value measured against
-        // kernels that no longer exist, which is the failure this function
-        // exists to prevent.
-        int32 m = Autotune.findMem(name);
+        String slot #= Autotune.slotOf(name, buildId);
+        int32 m = Autotune.findMem(slot);
         if (m >= 0 && Autotune.memBuild[m].byteLength() > 0
                 && Autotune.memBuild[m].equals(buildId)) {
             return stack Optional<int32>(true, Autotune.memVal[m]);
         }
-        Optional<int32> v = Autotune.recall(dir, name);
+        Optional<int32> v = Autotune.recall(dir, slot);
         if (!v.isPresent()) { return v; }
         if (dir.byteLength() == 0) {
-            // No store: the memo is the only record, and it did not match
-            // THIS build above, so what `recall` found was measured for other
-            // code (or never checked against any).
+            // No store: the memo is the only record, and it was not verified for this build.
             Autotune.warn("XPU-T02", name, "value=" + v.get()
                 + " tunedFor=<absent or different> nowBuild=" + buildId);
+            Autotune.removeMem(slot);
             return stack Optional<int32>(false, 0);
         }
         String key #= Autotune.deviceKey();
-        String sp #= dir + "/" + key + "/" + name + ".for";
+        String sp #= dir + "/" + key + "/" + slot + ".for";
         Path s #= Path.of(sp);
         boolean ok = false;
         if (s.exists()) {
@@ -345,10 +415,14 @@ public final class Autotune {
         if (!ok) {
             Autotune.warn("XPU-T02", name, "value=" + v.get()
                 + " tunedFor=<absent or different> nowBuild=" + buildId);
-            Autotune.invalidate(dir, name);
+            Autotune.removeMem(slot);
+            try {
+                Autotune.deleteEntry(dir + "/" + key, slot);
+            } catch (Exception e) {
+            }
             return stack Optional<int32>(false, 0);
         }
-        Autotune.markMem(name, buildId);
+        Autotune.markMem(slot, buildId);
         return v;
     }
 

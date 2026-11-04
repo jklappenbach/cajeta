@@ -290,7 +290,10 @@ wins.
   version, the build id, the family and the exact (M, N, K), or for a
   family whose M is not a fixed shape, (M bucketed as §4 says, N, K). A
   change to any of them misses the cache, and the next first use times again. The
-  rows-per-block knob keys on the build id alone today.
+  rows-per-block knob keys on the build id alone today. Each build keeps its
+  own entry (`Autotune.slotOf`), so two binaries alternating over one store
+  find their own answers instead of re-timing each other's (cajeta-llm
+  15.2.19.9.2, Julian 2026-11-04).
   The hardware class is the tune store's device key (the backend, SMs,
   SIMDs, wave size, registers, shared memory and threads per SM) plus the
   L2 and VRAM sizes, so two identical cards share entries and a deployment can ship a seeded
