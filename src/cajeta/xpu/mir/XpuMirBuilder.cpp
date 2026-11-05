@@ -218,7 +218,7 @@ XpuMirKernelPtr XpuMirBuilder::buildKernelForMethod(const MethodPtr& method) {
 
     if (auto attr = XpuKernelAttr::from(*method)) {
         k->waveWidth = attr->waveWidth();
-        k->backends  = attr->backends();
+        k->targets   = attr->targets();
     }
 
     collectBodyOps(method, k->bodyOps);

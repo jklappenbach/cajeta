@@ -38,8 +38,8 @@ std::optional<XpuBackend> parseBackend(const std::string& name) {
 
 const char* backendName(XpuBackend b) {
     switch (b) {
-        case XpuBackend::Nvidia: return "nvidia";
-        case XpuBackend::Amd:    return "amd";
+        case XpuBackend::Nvidia: return "nvptx";
+        case XpuBackend::Amd:    return "amdgpu";
         case XpuBackend::Vulkan: return "vulkan";
         case XpuBackend::Cpu:    return "cpu";
     }
@@ -88,23 +88,6 @@ std::optional<XpuKernelAttr> XpuKernelAttr::fromWith(const Annotatable& a,
                         + "', which is not a backend: a target is \"cpu\", \"gpu\", "
                           "\"vulkan\", \"amdgpu\" or \"nvptx\"";
                 }
-            }
-        }
-    }
-
-    // @Backend("nvidia") and @Backend({"nvidia", "amd"}) both fill backends_.
-    // Unrecognized names are dropped here and diagnosed at MIR-build time, which
-    // is the first point with a user-facing location.
-    if (auto backend = a.findAnnotation(XpuAttr::Backend)) {
-        const auto& single = backend->getString();
-        if (!single.empty()) {
-            if (auto b = parseBackend(single)) {
-                out.backends_.push_back(*b);
-            }
-        }
-        for (const auto& s : backend->getStringList()) {
-            if (auto b = parseBackend(s)) {
-                out.backends_.push_back(*b);
             }
         }
     }
@@ -163,10 +146,7 @@ bool XpuKernelAttr::isTarget(const std::string& backend) const {
 }
 
 bool XpuKernelAttr::emitsFor(XpuBackend b) const {
-    auto allows = [b](const std::vector<XpuBackend>& set) {
-        return set.empty() || std::find(set.begin(), set.end(), b) != set.end();
-    };
-    return allows(targets_) && allows(backends_);
+    return targets_.empty() || std::find(targets_.begin(), targets_.end(), b) != targets_.end();
 }
 
 } // namespace xpu

@@ -45,9 +45,9 @@ namespace mir {
         // Mirrors method->getParameterList() in order, less `this`: kernels are static.
         std::vector<XpuKernelParam> params;
 
-        // From @Wave / @Backend; an empty `backends` means every configured backend.
+        // From @Wave and @Kernel(targets); empty `targets` means every backend.
         std::optional<int> waveWidth;
-        std::vector<XpuBackend> backends;
+        std::vector<XpuBackend> targets;
 
         // Leaf builtin ops in the body that need per-backend resolution.
         std::vector<XpuMirOpPtr> bodyOps;

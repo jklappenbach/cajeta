@@ -754,3 +754,14 @@ TEST(XpuKernelTargets, aHoldThatIsATargetsDeclarationNotesIt) {
     EXPECT_EQ(one.rc, 0) << one.log;
     EXPECT_EQ(one.log.find("[xpu-kernel-targets]"), std::string::npos) << one.log;
 }
+
+// xpu-kernel-targets 5.1.1: @Backend is retired; on a kernel it is an error pointing at
+// @Kernel(targets).
+TEST(XpuKernelTargets, aRetiredBackendAnnotationFailsTheBuildPointingAtTargets) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    Built b = build(heldProgram("", "    @Backend(\"nvidia\")\n"), "cpu");
+    EXPECT_NE(b.rc, 0) << b.log;
+    EXPECT_NE(b.log.find("CAJETA_ERROR_XPU_BACKEND_RETIRED"), std::string::npos) << b.log;
+    EXPECT_NE(b.log.find("@Kernel(targets = "), std::string::npos) << b.log;
+    EXPECT_NE(b.log.find("'scale'"), std::string::npos) << b.log;
+}

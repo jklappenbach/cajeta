@@ -18,7 +18,6 @@ namespace xpu {
 
         // Kernel co-attributes.
         static constexpr const char* Wave         = "Wave";          // @Wave(width = 32)
-        static constexpr const char* Backend      = "Backend";       // @Backend("nvidia"), or list
         static constexpr const char* PushConstant = "PushConstant";  // Vulkan-only
         // @FastMath relaxes IEEE FP over the whole body; opt-in, since it trades precision.
         static constexpr const char* FastMath     = "FastMath";

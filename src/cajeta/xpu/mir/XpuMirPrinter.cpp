@@ -49,11 +49,11 @@ std::string XpuMirPrinter::print(const XpuMirKernel& kernel) {
     if (kernel.waveWidth.has_value()) {
         out << "  wave " << *kernel.waveWidth << '\n';
     }
-    if (!kernel.backends.empty()) {
-        out << "  backend ";
-        for (size_t i = 0; i < kernel.backends.size(); ++i) {
+    if (!kernel.targets.empty()) {
+        out << "  targets ";
+        for (size_t i = 0; i < kernel.targets.size(); ++i) {
             if (i) out << ", ";
-            out << backendName(kernel.backends[i]);
+            out << backendName(kernel.targets[i]);
         }
         out << '\n';
     }

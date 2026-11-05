@@ -59,21 +59,21 @@ cajeta::MethodPtr findMethod(const cajeta::CajetaClassPtr& klass,
 // whose canonical name reflects package+class+method and whose
 // parameter list mirrors the method signature.
 
-// @Wave(width = 32) and @Backend("nvidia") flow through to the
+// @Wave(width = 32) and @Kernel(targets) flow through to the
 // MIR record via XpuKernelAttr.
 
 // buildForModule walks all @Kernel methods in a module's class
 // table and returns a populated XpuMirModule.
 
 // XpuMirPrinter produces a text dump that includes the kernel
-// canonical name, wave width, backend tag, and parameter list.
+// canonical name, wave width, targets, and parameter list.
 // The format isn't a wire-format commitment — these checks are
 // substring greps, not exact-match.
 TEST(XpuMirBuilderTests, printerRoundTrip) {
     auto src =
         "package test;\n"
         "public class K {\n"
-        "    @Kernel @Wave(width = 64) @Backend(\"amd\")\n"
+        "    @Kernel(targets = {\"amdgpu\"}) @Wave(width = 64)\n"
         "    public static void run(uint32 n) { }\n"
         "}\n";
     Compiler compiler;
@@ -89,7 +89,7 @@ TEST(XpuMirBuilderTests, printerRoundTrip) {
 
     EXPECT_NE(text.find("kernel test.K.run"), std::string::npos);
     EXPECT_NE(text.find("wave 64"), std::string::npos);
-    EXPECT_NE(text.find("backend amd"), std::string::npos);
+    EXPECT_NE(text.find("targets amdgpu"), std::string::npos) << text;
     EXPECT_NE(text.find("param n"), std::string::npos);
 }
 

@@ -2647,6 +2647,11 @@ namespace cajeta {
                     throw cajeta::Exception(
                         stored + " on kernel '" + method->getName() + "' (xpu-tile-manifest spec 4.5)",
                         "CAJETA_ERROR_XPU_STORED_WIDTH", at.file, at.line, at.column);
+                if (method->findAnnotation("Backend"))
+                    throw cajeta::Exception(
+                        "@Backend on kernel '" + method->getName() + "' is retired: declare "
+                        "@Kernel(targets = {...}) with \"cpu\", \"gpu\" or backend names",
+                        "CAJETA_ERROR_XPU_BACKEND_RETIRED", at.file, at.line, at.column);
                 if (auto attr = cajeta::xpu::XpuKernelAttr::from(*method);
                         attr && !attr->targetsError().empty())
                     throw cajeta::Exception(

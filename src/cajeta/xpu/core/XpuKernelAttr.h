@@ -1,5 +1,5 @@
 // A typed, read-only view over the XPU annotation cluster (@Kernel plus any
-// @Wave / @Backend / @Occupancy) on one declaration, so consumers need not
+// @Wave / @Occupancy) on one declaration, so consumers need not
 // re-walk the AnnotationInstance list. Build a fresh view per access.
 
 #pragma once
@@ -15,7 +15,7 @@ class Method;
 class CajetaClass;
 namespace xpu {
 
-    // Which backend(s) a kernel is restricted to.
+    // A backend a kernel can be built for.
     enum class XpuBackend {
         Nvidia,
         Amd,
@@ -26,7 +26,7 @@ namespace xpu {
     // Parses a case-insensitive backend name or alias ("cuda", "hip", "spirv"); nullopt if unrecognized.
     std::optional<XpuBackend> parseBackend(const std::string& name);
 
-    // Inverse of parseBackend: the canonical short name, for diagnostics.
+    // Inverse of parseBackend: the registration's name ("nvptx", "amdgpu", "vulkan", "cpu").
     const char* backendName(XpuBackend b);
 
     class XpuKernelAttr {
@@ -40,9 +40,6 @@ namespace xpu {
         // @Wave(width = N); nullopt lets the lowering pass pick a target default.
         std::optional<int> waveWidth() const { return waveWidth_; }
 
-        // Backend restriction; empty means emit for every configured backend.
-        const std::vector<XpuBackend>& backends() const { return backends_; }
-
         // @Kernel(targets): the backends the kernel is built for; empty means every backend.
         const std::vector<XpuBackend>& targets() const { return targets_; }
 
@@ -50,7 +47,7 @@ namespace xpu {
         // none are declared; a registration lowers nothing off target.
         bool isTarget(const std::string& backend) const;
 
-        // Does this kernel emit for `b`? An empty restriction set returns true.
+        // Does this kernel emit for `b`? True for every backend when no targets are declared.
         bool emitsFor(XpuBackend b) const;
 
         // Non-empty when @Kernel(targets) names something that is no backend;
@@ -88,7 +85,6 @@ namespace xpu {
         static std::optional<XpuKernelAttr> fromWith(const Annotatable& a,
                                                      const CajetaClass* cls);
         std::optional<int> waveWidth_;
-        std::vector<XpuBackend> backends_;
         std::vector<XpuBackend> targets_;
         std::optional<unsigned> maxThreads_;
         std::optional<unsigned> minResident_;

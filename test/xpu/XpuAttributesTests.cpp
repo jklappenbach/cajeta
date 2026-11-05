@@ -1,7 +1,7 @@
 //
 // Step 1 — XPU annotation recognition.
 //
-// Verifies that @Kernel / @Device / @Host / @Wave / @Backend on
+// Verifies that @Kernel / @Device / @Host / @Wave on
 // method declarations are captured by the annotation system (no
 // new visitor work required — they ride the same general path that
 // already handles @SuppressLint / @Component / @Native) and that
@@ -175,76 +175,6 @@ TEST(XpuAttributesTests, fromReturnsNulloptWhenKernelAbsent) {
     ASSERT_NE(run, nullptr);
 
     EXPECT_FALSE(XpuKernelAttr::from(*run).has_value());
-}
-
-// @Backend("nvidia") — single unnamed-string form. Backends vector
-// has one entry; emitsFor(Nvidia) true, others false.
-TEST(XpuAttributesTests, singleBackendRestriction) {
-    auto src =
-        "package test;\n"
-        "public class K {\n"
-        "    @Kernel @Backend(\"nvidia\") public static void run() { }\n"
-        "}\n";
-    Compiler compiler;
-    auto module = compileForInspection(compiler, src, "test.K");
-    auto klass = module->getStructures()["test.K"];
-    ASSERT_NE(klass, nullptr);
-    auto run = findMethod(klass, "run");
-    ASSERT_NE(run, nullptr);
-
-    auto attr = XpuKernelAttr::from(*run);
-    ASSERT_TRUE(attr.has_value());
-    ASSERT_EQ(attr->backends().size(), 1u);
-    EXPECT_EQ(attr->backends()[0], XpuBackend::Nvidia);
-    EXPECT_TRUE(attr->emitsFor(XpuBackend::Nvidia));
-    EXPECT_FALSE(attr->emitsFor(XpuBackend::Amd));
-    EXPECT_FALSE(attr->emitsFor(XpuBackend::Vulkan));
-}
-
-// @Backend({"nvidia", "amd"}) — StringList form. Backends vector
-// has both; emitsFor returns true for either and false for vulkan.
-TEST(XpuAttributesTests, multiBackendRestriction) {
-    auto src =
-        "package test;\n"
-        "public class K {\n"
-        "    @Kernel @Backend({\"nvidia\", \"amd\"}) public static void run() { }\n"
-        "}\n";
-    Compiler compiler;
-    auto module = compileForInspection(compiler, src, "test.K");
-    auto klass = module->getStructures()["test.K"];
-    ASSERT_NE(klass, nullptr);
-    auto run = findMethod(klass, "run");
-    ASSERT_NE(run, nullptr);
-
-    auto attr = XpuKernelAttr::from(*run);
-    ASSERT_TRUE(attr.has_value());
-    ASSERT_EQ(attr->backends().size(), 2u);
-    EXPECT_TRUE(attr->emitsFor(XpuBackend::Nvidia));
-    EXPECT_TRUE(attr->emitsFor(XpuBackend::Amd));
-    EXPECT_FALSE(attr->emitsFor(XpuBackend::Vulkan));
-}
-
-// No @Backend annotation → emit for every configured backend. The
-// emitsFor predicate returns true for all three.
-TEST(XpuAttributesTests, noBackendMeansAllBackends) {
-    auto src =
-        "package test;\n"
-        "public class K {\n"
-        "    @Kernel public static void run() { }\n"
-        "}\n";
-    Compiler compiler;
-    auto module = compileForInspection(compiler, src, "test.K");
-    auto klass = module->getStructures()["test.K"];
-    ASSERT_NE(klass, nullptr);
-    auto run = findMethod(klass, "run");
-    ASSERT_NE(run, nullptr);
-
-    auto attr = XpuKernelAttr::from(*run);
-    ASSERT_TRUE(attr.has_value());
-    EXPECT_TRUE(attr->backends().empty());
-    EXPECT_TRUE(attr->emitsFor(XpuBackend::Nvidia));
-    EXPECT_TRUE(attr->emitsFor(XpuBackend::Amd));
-    EXPECT_TRUE(attr->emitsFor(XpuBackend::Vulkan));
 }
 
 namespace {
@@ -426,14 +356,16 @@ TEST(XpuAttributesTests, shaderStageConflictDetected) {
     EXPECT_FALSE(cajeta::xpu::hasShaderStageConflict(*clean));
 }
 
-// parseBackend round-trips backendName.
+// parseBackend round-trips backendName, which answers the registrations' names.
 TEST(XpuAttributesTests, backendNameRoundTrip) {
-    EXPECT_EQ(*cajeta::xpu::parseBackend("nvidia"), XpuBackend::Nvidia);
-    EXPECT_EQ(*cajeta::xpu::parseBackend("AMD"),    XpuBackend::Amd);
+    EXPECT_EQ(*cajeta::xpu::parseBackend("nvptx"),  XpuBackend::Nvidia);
+    EXPECT_EQ(*cajeta::xpu::parseBackend("AMDGPU"), XpuBackend::Amd);
     EXPECT_EQ(*cajeta::xpu::parseBackend("Vulkan"), XpuBackend::Vulkan);
+    EXPECT_EQ(*cajeta::xpu::parseBackend("cpu"),    XpuBackend::Cpu);
     EXPECT_FALSE(cajeta::xpu::parseBackend("metal").has_value());
 
-    EXPECT_STREQ(cajeta::xpu::backendName(XpuBackend::Nvidia), "nvidia");
-    EXPECT_STREQ(cajeta::xpu::backendName(XpuBackend::Amd),    "amd");
+    EXPECT_STREQ(cajeta::xpu::backendName(XpuBackend::Nvidia), "nvptx");
+    EXPECT_STREQ(cajeta::xpu::backendName(XpuBackend::Amd),    "amdgpu");
     EXPECT_STREQ(cajeta::xpu::backendName(XpuBackend::Vulkan), "vulkan");
+    EXPECT_STREQ(cajeta::xpu::backendName(XpuBackend::Cpu),    "cpu");
 }
