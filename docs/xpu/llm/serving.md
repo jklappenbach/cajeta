@@ -14,11 +14,13 @@ cajeta-llm run  --model <path> --prompt <text> [flags]
 cajeta-llm chat --model <path> [--system <text>] [flags]
 ```
 
-`run` renders the prompt through the model's own chat template, generates,
-and streams the tokens to standard output, then prints the token count and
-the prefill and decode times. `chat` holds a conversation on the terminal
-(`/exit` to quit), re-rendering the whole history through the template each
-turn. The flags are the engine options and the sampling parameters of
+`run` continues the prompt as plain text: no chat template is applied, so an
+instruct model may answer and then keep writing until the `-n` budget. It
+streams the tokens to standard output, then prints the token count and why
+generation stopped (`eos`, `stop`, `budget` or `cancel`). `chat` is the
+command for an instruct model: it holds a conversation on the terminal
+(`/exit` to quit), re-rendering the whole history through the model's own
+template each turn, and a turn ends at the model's end-of-turn token. The flags are the engine options and the sampling parameters of
 [Configuration](configuration.md). `--verbose` sends the engine's route and
 scheduling records to the log at DEBUG.
 
