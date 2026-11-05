@@ -68,7 +68,10 @@ Declare on the kernel what only you know. `@Occupancy(maxThreads = N)` or
 budgets registers for it instead of for a worst-case 1024. `@Wave(width = N)`
 belongs only where the indexing cannot be written against `Group.width()`.
 `@Unlowered(backend, tracked)` marks a construct a backend cannot lower,
-against the plan item that tracks it. A kernel design that has a shape is a
+against the plan item that tracks it. A kernel that belongs on some backends
+only, such as a cooperative-matrix GEMM on the GPU, says so with
+`@Kernel(targets = {"gpu"})`. Elsewhere it is not built and its launch throws
+`not a target`, so a router asks `Device.kernelAvailable` before choosing it. A kernel design that has a shape is a
 class template with `@Instantiate` and `@Requires` (25.8), and the layer
 chooses the tile rather than the author.
 

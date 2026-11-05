@@ -46,7 +46,7 @@ The framework annotations live in `cajeta.*` packages, grouped by what they driv
 - **FFI** (`cajeta.ffi`) covers `@Native(value = "symbol")`. The method body is a forwarding call to the named native symbol.
 - **Lint** (`cajeta.lint`) covers `@SuppressLint("rule-id", …)`, which silences the listed rules in its scope. There is no catch-all.
 - **Verification** (`cajeta.lang`) covers `@Override` and its kin. The compiler checks them and emits no code.
-- **Accelerated compute** covers `@Kernel`, `@Device`, `@Backend`, `@Wave`, and the rest of the XPU family, which are specified in Accelerated Compute §17.
+- **Accelerated compute** covers `@Kernel`, `@Device`, `@Wave`, and the rest of the XPU family, which are specified in Accelerated Compute §17.
 
 Annotation names are stable API, so renaming one is a breaking change.
 

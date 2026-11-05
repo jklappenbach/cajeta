@@ -15,12 +15,16 @@ the catalogs of kernels built on it are under [Kernels](../xpu/README.md).
 
 ## 17.1 Kernel Declarations and the Device Subset
 
-`@Kernel` on a static method makes it a device entry point. `@Device` marks a
+`@Kernel` on a static method makes it a device entry point, and
+`@Kernel(targets = {...})` names the backends it is built for (`"cpu"`,
+`"gpu"`, or backend names). A launch on any other backend fails by name.
+`@Device` marks a
 static helper callable from kernel code as well as the host. `@Wave(width = N)`
 declares the lane count a body assumes. `@Occupancy` declares the launch
 ceiling and register pins. `@FastMath` permits fused floating-point
 contraction. `@Unlowered` and `@Unbounded` declare, against a tracked plan
 item, a construct a backend cannot lower or a launch with no constant block.
+`@Unlowered` may only name backends among the kernel's targets.
 A class template carrying `@Instantiate({T<…>, …})` and `@Requires(expr)` is
 how one kernel design is written over its shape. The listed members are built
 ahead of time, and a member the constraint rejects is refused by name at

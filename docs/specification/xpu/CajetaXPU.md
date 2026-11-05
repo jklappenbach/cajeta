@@ -60,11 +60,12 @@ public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,
 | attribute | meaning |
 |---|---|
 | `@Kernel` | a device entry point, registered under its qualified name (a class template's kernel registers once per instantiation, `Tile_128_128_32_64_128_q4kQ8`) |
+| `@Kernel(targets = {...})` | the backends the kernel is built for: `"cpu"`, `"gpu"` (vulkan, amdgpu and nvptx) or backend names; every backend when absent (§3.6) |
 | `@Device` | a static helper callable from kernels as well as from the host; lowered as an always-inlined device function per kernel that uses it |
 | `@Wave(width = N)` | the lane count the body assumes (§3.2) |
 | `@Occupancy(maxThreads, maxWaves, minResident, maxRegisters)` | the structural launch ceiling and the register and residency pins (§3.4) |
 | `@FastMath` | fused floating-point contraction permitted in this body |
-| `@Unlowered(backend, tracked, mayLower, hold, hostWaveBelow)` | a construct the named backend cannot lower, declared against the plan item that tracks it (§3.6) |
+| `@Unlowered(backend, tracked, mayLower, hold, hostWaveBelow)` | a construct one of the kernel's targets cannot lower, declared against the plan item that tracks it (§3.6) |
 | `@Unbounded(tracked)` | a kernel launched with a non-constant block and no declared ceiling, tracked (§3.6) |
 | `@Intrinsic`, `@TargetIntrinsic`, `@TargetAsm` | the escape hatches: a body-less declaration, or per-backend arms beside a portable body that the reference interpreter runs |
 | `@Instantiate({T<…>, …})`, `@Requires(expr)` | on a class template: the members built ahead of time, and the constraint a member must satisfy or be refused by name (§3.5) |
@@ -351,6 +352,16 @@ N` holds on the CPU backend only on a host narrower than N lanes.
 `@Unbounded(tracked)` tracks the derived block. A box without the assembler is
 not the kernel's failure. The line stays a note saying `no assembler`.
 `CAJETA_XPU_KERNEL_GATE=warn` demotes the gates for a sweep.
+
+A kernel written for some backends only says so with `@Kernel(targets =
+{...})`, not with a hold. A backend outside the targets does not lower or
+register it and spends no build time on it. On that backend
+`Device.kernelUnavailableReason(name)` answers `not a target`, a launch throws
+`XpuLaunchException` naming the kernel and the backend, and
+`Device.offTargetKernel(i)` lists such kernels for a census. `@Unlowered` may
+only name backends among the targets. A hold over every GPU backend, or over
+the CPU one, gets a note suggesting the targets form. `@Backend` is retired
+and is an error.
 
 ### 3.7 The CPU backend
 

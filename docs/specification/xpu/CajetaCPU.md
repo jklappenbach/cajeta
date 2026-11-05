@@ -38,7 +38,7 @@ Four design choices, made deliberately:
 4. **CPU is the lowest-priority backend on the same seam, and its `available()` is
    always true.** That turns "degrade to CPU" into "the priority chain reached its
    guaranteed terminal". It is ordinary dispatch and needs no special case. The probe order is
-   `CUDA → HIP → Vulkan → CPU`. `@Backend(...)` constrains a kernel's candidate set, and
+   `CUDA → HIP → Vulkan → CPU`. `@Kernel(targets = {...})` names the backends a kernel is built for, and
    `CAJETA_XPU_BACKEND=cpu` forces it. Forcing it is a debugging superpower, because you can run "GPU"
    kernels deterministically on the CPU.
 
