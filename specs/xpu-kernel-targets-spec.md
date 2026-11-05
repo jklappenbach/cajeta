@@ -17,7 +17,8 @@ lower it, and a launch there fails by name instead of running emulated.
   never routes a model projection to them. One of them,
   `q6kQ8WavePfMatVecKernel`, takes 31.7 s for 3,803 instructions.
 - 1.2.2 Holding the 89 cooperative-matrix kernels off the CPU cut the same
-  build from about 9:00 to 8:09.
+  build from about 9:00 to 8:09. Holding 15 of the wave mat-vec kernels as
+  well cut it to 6:01, a third off.
 - 1.2.3 cabra's CI test build went from 11 minutes (llm 0.1.5) to over its
   30-minute limit (llm 0.1.6).
 - 1.2.4 At runtime, three CPU paths for the Qwen2 72B ran GPU kernels as
@@ -44,11 +45,16 @@ lower it, and a launch there fails by name instead of running emulated.
 - 1.4.2 A per-backend hold inside `@Unlowered`. Not chosen 2026-11-05.
 - 1.4.3 Deciding routes. The library's router keeps choosing kernels; this
   spec only removes the ones that are not built.
+- 1.4.4 Not chosen 2026-11-05: a separate `@Targets` annotation,
+  `@GpuKernel`/`@CpuKernel` shorthands, vendor classes (`"amd"`,
+  `"nvidia"`), a compile-time rejection of an off-target launch, and no
+  migration note.
 
 ## 2. Declaring targets
 
-- 2.1 When a kernel declares its targets, it is lowered and registered only
-  for those backends.
+- 2.1 When a kernel declares its targets with `@Kernel(targets = {...})`, it
+  is lowered and registered only for those backends. A target is `"cpu"`,
+  `"gpu"`, or an exact backend name (`"vulkan"`, `"amdgpu"`, `"nvptx"`).
 - 2.2 When a kernel declares no targets, it is built for every backend, as
   today.
 - 2.3 When a kernel lists a backend the compiler does not know, the build
@@ -71,8 +77,9 @@ lower it, and a launch there fails by name instead of running emulated.
 - 3.1 When code asks whether a kernel is usable on a backend outside its
   targets, the answer is no, with the reason "not a target".
 - 3.2 When a kernel is launched on a backend outside its targets, the launch
-  fails with an error naming the kernel and the backend. It does not run
-  emulated.
+  fails at run time with an error naming the kernel and the backend. It does
+  not run emulated. The backend is chosen at run time, so the check is made
+  there.
 - 3.3 When the kernel census runs on a backend, a kernel outside its targets
   is listed as OUT-OF-TARGET, not UNCOVERED. A test that value-checks it
   there is not expected.
@@ -89,15 +96,9 @@ lower it, and a launch there fails by name instead of running emulated.
 - 4.2 When a kernel's vectorisation exceeds a budget, the trace names it and
   its time (`CAJETA_XPU_CPU_VECTORIZE_TRACE` already prints both).
 
-## 5. Open questions
+## 5. Migration
 
-- 5.1 Spelling: an argument on `@Kernel` (`@Kernel(targets = {"gpu"})`), a
-  separate annotation (`@Targets({"gpu"})`), or shorthands
-  (`@GpuKernel`, `@CpuKernel`)?
-- 5.2 Classes: are `"gpu"` and `"cpu"` the only class names, or do we also
-  want vendor classes (`"amd"` for amdgpu and Vulkan on AMD)?
-- 5.3 Launch off target (3.2): an exception at the launch site, or a
-  compile-time error where the backend is known statically?
-- 5.4 Migration: should the compiler warn on an existing
-  `@Unlowered(..., hold = true)` that reads as a target declaration (it
-  holds every GPU backend, or the cpu backend), and suggest the rewrite?
+- 5.1 When an `@Unlowered(..., hold = true)` holds every GPU backend, or
+  holds the cpu backend, the compiler emits a note naming the kernel and
+  suggesting `@Kernel(targets = ...)`. Nothing fails, and a library adopts
+  the form when its toolchain pin allows.
