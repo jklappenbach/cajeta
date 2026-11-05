@@ -25,6 +25,8 @@
 #include "cajeta/xpu/core/XpuKernelAttr.h"
 
 #include <filesystem>
+#include <optional>
+#include <utility>
 #include <fstream>
 #include <random>
 #include <string>
@@ -243,6 +245,119 @@ TEST(XpuAttributesTests, noBackendMeansAllBackends) {
     EXPECT_TRUE(attr->emitsFor(XpuBackend::Nvidia));
     EXPECT_TRUE(attr->emitsFor(XpuBackend::Amd));
     EXPECT_TRUE(attr->emitsFor(XpuBackend::Vulkan));
+}
+
+namespace {
+
+// The XpuKernelAttr of `run` declared as `@Kernel(<args>)`.
+std::optional<XpuKernelAttr> kernelWith(const std::string& args) {
+    auto src =
+        "package test;\n"
+        "public class K {\n"
+        "    @Kernel(" + args + ") public static void run() { }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.K");
+    auto klass = module->getStructures()["test.K"];
+    if (!klass) return std::nullopt;
+    auto run = findMethod(klass, "run");
+    if (!run) return std::nullopt;
+    return XpuKernelAttr::from(*run);
+}
+
+// The backends `attr` emits for, in a fixed order, as one string.
+std::string emitted(const XpuKernelAttr& attr) {
+    std::string out;
+    for (auto [b, n] : {std::pair{XpuBackend::Cpu, "cpu"}, {XpuBackend::Vulkan, "vulkan"},
+                        {XpuBackend::Amd, "amdgpu"}, {XpuBackend::Nvidia, "nvptx"}})
+        if (attr.emitsFor(b)) out += std::string(out.empty() ? "" : " ") + n;
+    return out;
+}
+
+} // namespace
+
+// xpu-kernel-targets 1.1.1 (spec 2.1, 2.4): "gpu" is every GPU backend,
+// "cpu" the cpu backend alone, exact names exactly those.
+TEST(XpuAttributesTests, targetsNameTheBackendsAKernelIsBuiltFor) {
+    for (auto [args, want] : {std::pair{"targets = {\"gpu\"}", "vulkan amdgpu nvptx"},
+                              {"targets = {\"cpu\"}", "cpu"},
+                              {"targets = \"cpu\"", "cpu"},
+                              {"targets = {\"vulkan\", \"amdgpu\"}", "vulkan amdgpu"},
+                              {"targets = {\"cpu\", \"nvptx\"}", "cpu nvptx"}}) {
+        auto attr = kernelWith(args);
+        ASSERT_TRUE(attr.has_value()) << args;
+        EXPECT_EQ(emitted(*attr), want) << args;
+        EXPECT_EQ(attr->targetsError(), "") << args;
+    }
+}
+
+// 1.1.1 (spec 2.2): no targets is every backend, the cpu included.
+TEST(XpuAttributesTests, noTargetsMeansEveryBackend) {
+    auto attr = kernelWith("");
+    ASSERT_TRUE(attr.has_value());
+    EXPECT_EQ(emitted(*attr), "cpu vulkan amdgpu nvptx");
+}
+
+// 1.1.3: the aliases @Unlowered accepts name the same backends.
+TEST(XpuAttributesTests, targetAliasesCanonicaliseAsUnloweredsDo) {
+    for (auto [args, want] : {std::pair{"targets = {\"cuda\"}", "nvptx"},
+                              {"targets = {\"hip\"}", "amdgpu"},
+                              {"targets = {\"spirv\"}", "vulkan"},
+                              {"targets = {\"GPU\"}", "vulkan amdgpu nvptx"}}) {
+        auto attr = kernelWith(args);
+        ASSERT_TRUE(attr.has_value()) << args;
+        EXPECT_EQ(emitted(*attr), want) << args;
+    }
+}
+
+// 1.1.2 (spec 2.3): a name that is no backend is recorded, naming it, for
+// the build to refuse.
+TEST(XpuAttributesTests, anUnknownTargetIsRecordedByName) {
+    auto attr = kernelWith("targets = {\"gpu\", \"tpu\"}");
+    ASSERT_TRUE(attr.has_value());
+    EXPECT_NE(attr->targetsError().find("'tpu'"), std::string::npos) << attr->targetsError();
+}
+
+// 1.1.4 (spec 2.7): every instantiation of a templated kernel inherits its targets.
+TEST(XpuAttributesTests, everyInstantiationInheritsItsKernelsTargets) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "public class Q<uint32 N> {\n"
+        "    public Q() { return; }\n"
+        "    @Kernel(targets = {\"gpu\"})\n"
+        "    public static void k(KernelBuffer<uint32> out) { out[KernelThread.globalIdX()] = N; }\n"
+        "    public void run(KernelBuffer<uint32> out) {\n"
+        "        KernelStream s #= KernelStream.current();\n"
+        "        k.launch(s, grid: [1], block: [32])(out);\n"
+        "        s.sync();\n"
+        "    }\n"
+        "}\n"
+        "public class M {\n"
+        "    public static int32 run() {\n"
+        "        KernelBuffer<uint32> b = heap KernelBuffer<uint32>(0, 32);\n"
+        "        Q<4> a #= heap Q<4>();\n"
+        "        a.run(b);\n"
+        "        Q<8> c #= heap Q<8>();\n"
+        "        c.run(b);\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    int seen = 0;
+    for (auto& [canon, klass] : module->getStructures()) {
+        if (canon.rfind("test.Q<", 0) != 0 || !klass) continue;
+        auto k = findMethod(klass, "k");
+        ASSERT_NE(k, nullptr) << canon;
+        auto attr = XpuKernelAttr::from(*k);
+        ASSERT_TRUE(attr.has_value()) << canon;
+        EXPECT_EQ(emitted(*attr), "vulkan amdgpu nvptx") << canon;
+        ++seen;
+    }
+    EXPECT_EQ(seen, 2);
 }
 
 // gfx §4.a — graphics shader-stage annotations (@Vertex / @Fragment / …) are

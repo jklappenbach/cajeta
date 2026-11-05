@@ -20,9 +20,10 @@ namespace xpu {
         Nvidia,
         Amd,
         Vulkan,
+        Cpu,
     };
 
-    // Parses a case-insensitive short name; nullopt if unrecognized.
+    // Parses a case-insensitive backend name or alias ("cuda", "hip", "spirv"); nullopt if unrecognized.
     std::optional<XpuBackend> parseBackend(const std::string& name);
 
     // Inverse of parseBackend: the canonical short name, for diagnostics.
@@ -42,8 +43,15 @@ namespace xpu {
         // Backend restriction; empty means emit for every configured backend.
         const std::vector<XpuBackend>& backends() const { return backends_; }
 
+        // @Kernel(targets): the backends the kernel is built for; empty means every backend.
+        const std::vector<XpuBackend>& targets() const { return targets_; }
+
         // Does this kernel emit for `b`? An empty restriction set returns true.
         bool emitsFor(XpuBackend b) const;
+
+        // Non-empty when @Kernel(targets) names something that is no backend;
+        // the build refuses the kernel with it.
+        const std::string& targetsError() const { return targetsError_; }
 
         // @Occupancy overrides: threads per workgroup, workgroups co-resident per
         // compute unit, registers per thread. Each is nullopt when absent.
@@ -77,11 +85,13 @@ namespace xpu {
                                                      const CajetaClass* cls);
         std::optional<int> waveWidth_;
         std::vector<XpuBackend> backends_;
+        std::vector<XpuBackend> targets_;
         std::optional<unsigned> maxThreads_;
         std::optional<unsigned> minResident_;
         std::optional<unsigned> maxRegisters_;
         std::optional<unsigned> maxWaves_;
         std::string occupancyError_;
+        std::string targetsError_;
     };
 
 } // namespace xpu

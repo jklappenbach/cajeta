@@ -29,9 +29,10 @@ std::string toLowerAscii(const std::string& s) {
 
 std::optional<XpuBackend> parseBackend(const std::string& name) {
     const std::string n = toLowerAscii(name);
-    if (n == "nvidia") return XpuBackend::Nvidia;
-    if (n == "amd")    return XpuBackend::Amd;
-    if (n == "vulkan") return XpuBackend::Vulkan;
+    if (n == "nvidia" || n == "nvptx" || n == "cuda") return XpuBackend::Nvidia;
+    if (n == "amd" || n == "amdgpu" || n == "hip" || n == "rocm") return XpuBackend::Amd;
+    if (n == "vulkan" || n == "spirv" || n == "spir-v") return XpuBackend::Vulkan;
+    if (n == "cpu") return XpuBackend::Cpu;
     return std::nullopt;
 }
 
@@ -40,6 +41,7 @@ const char* backendName(XpuBackend b) {
         case XpuBackend::Nvidia: return "nvidia";
         case XpuBackend::Amd:    return "amd";
         case XpuBackend::Vulkan: return "vulkan";
+        case XpuBackend::Cpu:    return "cpu";
     }
     return "?";
 }
@@ -64,6 +66,28 @@ std::optional<XpuKernelAttr> XpuKernelAttr::fromWith(const Annotatable& a,
         if (auto* arg = wave->findArg("width")) {
             if (arg->kind == AnnotationArgKind::Int64) {
                 out.waveWidth_ = static_cast<int>(arg->i64Val);
+            }
+        }
+    }
+
+    // @Kernel(targets = {...}): "gpu" is every GPU backend; an unknown name is
+    // recorded for the build to refuse (xpu-kernel-targets spec 2.1-2.4).
+    if (auto kernel = a.findAnnotation(XpuAttr::Kernel)) {
+        if (auto* arg = kernel->findArg("targets")) {
+            std::vector<std::string> names;
+            if (arg->kind == AnnotationArgKind::String) names.push_back(arg->strVal);
+            if (arg->kind == AnnotationArgKind::StringList) names = arg->strList;
+            for (const auto& name : names) {
+                if (toLowerAscii(name) == "gpu") {
+                    for (XpuBackend g : {XpuBackend::Vulkan, XpuBackend::Amd, XpuBackend::Nvidia})
+                        out.targets_.push_back(g);
+                } else if (auto b = parseBackend(name)) {
+                    out.targets_.push_back(*b);
+                } else if (out.targetsError_.empty()) {
+                    out.targetsError_ = "@Kernel(targets) names '" + name
+                        + "', which is not a backend: a target is \"cpu\", \"gpu\", "
+                          "\"vulkan\", \"amdgpu\" or \"nvptx\"";
+                }
             }
         }
     }
@@ -133,9 +157,10 @@ std::optional<XpuKernelAttr> XpuKernelAttr::fromWith(const Annotatable& a,
 }
 
 bool XpuKernelAttr::emitsFor(XpuBackend b) const {
-    if (backends_.empty()) return true;
-    return std::find(backends_.begin(), backends_.end(), b)
-        != backends_.end();
+    auto allows = [b](const std::vector<XpuBackend>& set) {
+        return set.empty() || std::find(set.begin(), set.end(), b) != set.end();
+    };
+    return allows(targets_) && allows(backends_);
 }
 
 } // namespace xpu

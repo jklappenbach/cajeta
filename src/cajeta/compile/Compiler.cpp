@@ -2647,6 +2647,11 @@ namespace cajeta {
                     throw cajeta::Exception(
                         stored + " on kernel '" + method->getName() + "' (xpu-tile-manifest spec 4.5)",
                         "CAJETA_ERROR_XPU_STORED_WIDTH", at.file, at.line, at.column);
+                if (auto attr = cajeta::xpu::XpuKernelAttr::from(*method);
+                        attr && !attr->targetsError().empty())
+                    throw cajeta::Exception(
+                        attr->targetsError() + ", on kernel '" + method->getName() + "'",
+                        "CAJETA_ERROR_XPU_UNKNOWN_TARGET", at.file, at.line, at.column);
                 if (!method->findAnnotation(cajeta::xpu::XpuAttr::Cost)) continue;
                 throw cajeta::Exception(
                     "@Cost on kernel '" + method->getName() + "': a kernel's cost is derived by the "

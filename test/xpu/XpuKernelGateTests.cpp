@@ -576,3 +576,46 @@ TEST(XpuKernelCost, aStoredWidthOffABufferOrPastItsElementFailsTheBuild) {
             << params << ": the error is located at the kernel:\n" << b.log;
     }
 }
+
+namespace {
+
+// costProgram's kernel declared `@Kernel(<args>)`.
+std::string targetsProgram(const std::string& args) {
+    return
+        "package test;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "public class M {\n"
+        "    @Kernel(" + args + ")\n"
+        "    public static void scale(KernelBuffer<float32> y, float32 a) {\n"
+        "        uint32 i = KernelThread.globalIdX();\n"
+        "        y[i] = a * y[i];\n"
+        "    }\n"
+        "    public static void main(String[] args) { }\n"
+        "}\n";
+}
+
+}  // namespace
+
+// xpu-kernel-targets 1.1.2 (spec 2.3): a target that is no backend fails the build on any
+// backend, at the kernel, naming the kernel and the name.
+TEST(XpuKernelTargets, anUnknownTargetFailsTheBuildNamingTheKernelAndTheName) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    for (const char* be : {"cpu", "amdgpu"}) {
+        Built b = build(targetsProgram("targets = {\"gpu\", \"tpu\"}"), be);
+        EXPECT_NE(b.rc, 0) << be << ": an unknown target must fail the build:\n" << b.log;
+        EXPECT_NE(b.log.find("CAJETA_ERROR_XPU_UNKNOWN_TARGET"), std::string::npos) << be << ":\n" << b.log;
+        EXPECT_NE(b.log.find("'tpu'"), std::string::npos) << be << ":\n" << b.log;
+        EXPECT_NE(b.log.find("'scale'"), std::string::npos) << be << ":\n" << b.log;
+        EXPECT_NE(b.log.find("M.cajeta:6:"), std::string::npos)
+            << be << ": the error is located at the kernel:\n" << b.log;
+    }
+}
+
+// The twin: known targets build.
+TEST(XpuKernelTargets, knownTargetsBuild) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    Built b = build(targetsProgram("targets = {\"cpu\", \"gpu\"}"), "cpu");
+    EXPECT_EQ(b.rc, 0) << b.log;
+    EXPECT_EQ(b.log.find("CAJETA_ERROR_XPU_UNKNOWN_TARGET"), std::string::npos) << b.log;
+}
