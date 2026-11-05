@@ -92,6 +92,14 @@ namespace xpu {
                            const std::string& kernelName,
                            const std::string& why);
 
+    // The backend an @Unlowered on `kernel` names outside its @Kernel(targets), or
+    // empty: that kernel is never attempted there (xpu-kernel-targets spec 2.6).
+    std::string unloweredOffTarget(const Method& kernel);
+
+    // A note when an @Unlowered(hold = true) holds every GPU backend or the cpu one,
+    // naming the @Kernel(targets) that says so (xpu-kernel-targets spec 5.1).
+    void noteHoldIsATargetsDeclaration(const Method& kernel);
+
     // Throws cajeta::Exception CAJETA_ERROR_XPU_KERNEL_GATE naming every
     // failure since the last reset, if there were any.
     void throwIfKernelGateFailed();

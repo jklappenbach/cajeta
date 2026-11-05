@@ -2652,6 +2652,12 @@ namespace cajeta {
                     throw cajeta::Exception(
                         attr->targetsError() + ", on kernel '" + method->getName() + "'",
                         "CAJETA_ERROR_XPU_UNKNOWN_TARGET", at.file, at.line, at.column);
+                if (std::string be = cajeta::xpu::unloweredOffTarget(*method); !be.empty())
+                    throw cajeta::Exception(
+                        "@Unlowered on kernel '" + method->getName() + "' names '" + be
+                        + "', which is not one of its @Kernel(targets): it is never attempted there",
+                        "CAJETA_ERROR_XPU_UNLOWERED_OFF_TARGET", at.file, at.line, at.column);
+                cajeta::xpu::noteHoldIsATargetsDeclaration(*method);
                 if (!method->findAnnotation(cajeta::xpu::XpuAttr::Cost)) continue;
                 throw cajeta::Exception(
                     "@Cost on kernel '" + method->getName() + "': a kernel's cost is derived by the "

@@ -2,6 +2,7 @@
 
 #include "XpuKernelGate.h"
 #include "XpuAttributes.h"
+#include "XpuKernelAttr.h"
 
 #include "cajeta/error/Diagnostics.h"
 #include "cajeta/error/Exception.h"
@@ -9,6 +10,7 @@
 #include "cajeta/type/Annotatable.h"
 #include "cajeta/type/CajetaClass.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -71,6 +73,22 @@ std::string unloweredHeldBy(const Annotatable& kernel, const std::string& backen
         }
     }
     return tracked;
+}
+
+// The canonical backends @Unlowered names on `kernel`, in order, without repeats.
+std::vector<std::string> unloweredBackends(const Annotatable& kernel) {
+    std::vector<std::string> out;
+    auto ann = kernel.findAnnotation(XpuAttr::Unlowered);
+    auto* arg = ann ? ann->findArg("backend") : nullptr;
+    if (!arg) return out;
+    std::vector<std::string> names;
+    if (arg->kind == AnnotationArgKind::String) names.push_back(arg->strVal);
+    if (arg->kind == AnnotationArgKind::StringList) names = arg->strList;
+    for (const auto& n : names) {
+        std::string be = canonicalBackend(n);
+        if (std::find(out.begin(), out.end(), be) == out.end()) out.push_back(be);
+    }
+    return out;
 }
 
 bool hasUnloweredFor(const Annotatable& kernel, const std::string& backend) {
@@ -161,6 +179,32 @@ void reportUnloweredKernel(const Method& kernel,
                "with @Unlowered(backend = \"" + backend + "\", tracked = \"<plan item>\") on "
                "the kernel, or CAJETA_XPU_KERNEL_GATE=warn for a sweep");
     fail(kernelName, "no " + backend + " device code");
+}
+
+std::string unloweredOffTarget(const Method& kernel) {
+    auto attr = XpuKernelAttr::from(kernel);
+    if (!attr) return "";
+    for (const auto& be : unloweredBackends(kernel))
+        if (!attr->isTarget(be)) return be;
+    return "";
+}
+
+void noteHoldIsATargetsDeclaration(const Method& kernel) {
+    auto ann = kernel.findAnnotation(XpuAttr::Unlowered);
+    auto* hold = ann ? ann->findArg("hold") : nullptr;
+    if (!hold || hold->kind != AnnotationArgKind::Bool || !hold->boolVal) return;
+    const auto held = unloweredBackends(kernel);
+    auto holds = [&](const char* be) { return std::find(held.begin(), held.end(), be) != held.end(); };
+    const bool gpus = holds("vulkan") && holds("amdgpu") && holds("nvptx");
+    std::string suggest;
+    if (gpus && !holds("cpu")) suggest = "{\"cpu\"}";
+    else if (holds("cpu") && held.size() == 1) suggest = "{\"gpu\"}";
+    if (suggest.empty()) return;
+    const std::string name = kernel.getName();
+    gateRecord(kernel, "note", "xpu-kernel-targets", name, "",
+               "[xpu-kernel-targets] " + name + ": @Unlowered(hold = true) holds it on "
+               + (gpus ? "every GPU backend" : "the cpu backend") + "; declare @Kernel(targets = "
+               + suggest + ") instead (xpu-kernel-targets spec 5.1)");
 }
 
 void noteKernelLowered(const Method& kernel,

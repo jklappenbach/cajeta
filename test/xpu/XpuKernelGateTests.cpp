@@ -703,3 +703,54 @@ TEST(XpuKernelTargets, aKernelIsStillAttemptedOnItsTargets) {
     EXPECT_NE(a.log.find("[xpu-kernel-skipped] bad: no amdgpu device code"), std::string::npos) << a.log;
     EXPECT_EQ(a.log.find("[xpu-kernel-skipped] bad: no cpu device code"), std::string::npos) << a.log;
 }
+
+namespace {
+
+// costProgram's kernel declared `@Kernel(<args>)` with `unlowered` (a full annotation line) under it.
+std::string heldProgram(const std::string& args, const std::string& unlowered) {
+    std::string src = targetsProgram(args);
+    const std::string at = "    public static void scale(";
+    src.insert(src.find(at), unlowered);
+    return src;
+}
+
+std::string hold(const std::string& backends) {
+    return "    @Unlowered(backend = " + backends + ", tracked = \"xpu-kernel-targets 4\", hold = true)\n";
+}
+
+}  // namespace
+
+// xpu-kernel-targets 4.1.1 (spec 2.6): @Unlowered naming a backend outside the kernel's targets
+// is an error naming both, since the kernel is never attempted there.
+TEST(XpuKernelTargets, anUnloweredOutsideTheTargetsFailsTheBuildNamingBoth) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    Built b = build(heldProgram("targets = {\"cpu\"}", hold("\"vulkan\"")), "cpu");
+    EXPECT_NE(b.rc, 0) << b.log;
+    EXPECT_NE(b.log.find("CAJETA_ERROR_XPU_UNLOWERED_OFF_TARGET"), std::string::npos) << b.log;
+    EXPECT_NE(b.log.find("'scale'"), std::string::npos) << b.log;
+    EXPECT_NE(b.log.find("'vulkan'"), std::string::npos) << b.log;
+}
+
+// The twin: inside the targets it composes.
+TEST(XpuKernelTargets, anUnloweredInsideTheTargetsBuilds) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    Built b = build(heldProgram("targets = {\"gpu\"}", hold("\"vulkan\"")), "cpu");
+    EXPECT_EQ(b.rc, 0) << b.log;
+    EXPECT_EQ(b.log.find("CAJETA_ERROR_XPU_UNLOWERED_OFF_TARGET"), std::string::npos) << b.log;
+}
+
+// 4.1.2 (spec 5.1): a hold that amounts to a targets declaration notes the declaration to use;
+// a tracked hold on one GPU backend does not.
+TEST(XpuKernelTargets, aHoldThatIsATargetsDeclarationNotesIt) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    Built gpus = build(heldProgram("", hold("{\"vulkan\", \"nvptx\", \"amdgpu\"}")), "cpu");
+    EXPECT_EQ(gpus.rc, 0) << gpus.log;
+    EXPECT_NE(gpus.log.find("note: [xpu-kernel-targets] scale:"), std::string::npos) << gpus.log;
+    EXPECT_NE(gpus.log.find("@Kernel(targets = {\"cpu\"})"), std::string::npos) << gpus.log;
+    Built cpu = build(heldProgram("", hold("\"cpu\"")), "cpu");
+    EXPECT_EQ(cpu.rc, 0) << cpu.log;
+    EXPECT_NE(cpu.log.find("@Kernel(targets = {\"gpu\"})"), std::string::npos) << cpu.log;
+    Built one = build(heldProgram("", hold("\"vulkan\"")), "cpu");
+    EXPECT_EQ(one.rc, 0) << one.log;
+    EXPECT_EQ(one.log.find("[xpu-kernel-targets]"), std::string::npos) << one.log;
+}
