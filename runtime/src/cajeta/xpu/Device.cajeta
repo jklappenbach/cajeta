@@ -291,6 +291,60 @@ public final class Device {
     private static int32 nativeKernelAvailable(int8[] name, int64 len);
 
     /**
+     * Why `name` cannot be launched on the active backend: "" when it can, "not a
+     * target" when its @Kernel(targets) leave this backend out, else "no usable
+     * device code".
+     *
+     * @EntryPoint
+     */
+    public static #String kernelUnavailableReason(String name) {
+        if (Device.kernelAvailable(name)) {
+            return "";
+        }
+        int8[] b #= name.toBytes();
+        if (Device.nativeKernelOffTarget(b, (int64) b.count()) != 0) {
+            return "not a target";
+        }
+        return "no usable device code";
+    }
+
+    @Native("__cajeta_xpu_kernel_off_target")
+    private static int32 nativeKernelOffTarget(int8[] name, int64 len);
+
+    /**
+     * How many kernels this build left off the active backend's targets, for a
+     * census to list rather than count as uncovered.
+     *
+     * @EntryPoint
+     */
+    public static int32 offTargetKernelCount() {
+        return Device.nativeOffTargetCount();
+    }
+
+    /**
+     * The i-th kernel off the active backend's targets; "" past the end.
+     *
+     * @EntryPoint
+     */
+    public static #String offTargetKernel(int32 i) {
+        int8[] buf #= heap int8[256];
+        int64 n = Device.nativeOffTargetName(i, buf, 256L);
+        if (n <= 0L) {
+            return "";
+        }
+        int8[] exact #= heap int8[n];
+        int64 k = 0;
+        while (k < n) { exact[k] = buf[k]; k = k + 1; }
+        return heap String(#exact, n);
+    }
+
+    @Native("__cajeta_xpu_off_target_count")
+    private static int32 nativeOffTargetCount();
+
+    @Native("__cajeta_xpu_off_target_name")
+    private static int64 nativeOffTargetName(int32 index, int8[] out, int64 cap);
+
+    /**
      * How many distinct kernels have device code registered for the active
      * backend: the registry the launch consults, counted. A device touch.
      *
@@ -429,6 +483,10 @@ public final class Device {
                           + "' broke its `align: " + stated + "` at line " + line
                           + ": element index " + index + " is not a multiple of it";
             throw heap XpuLaunchException(#broke);
+        }
+        if (reason == 10) {
+            why = "not a target: the kernel's @Kernel(targets) leave this backend out, "
+                + "so it was not built for it";
         }
         if (reason == 9) {
             int64 arg = Device.nativeLastLaunchDetail(0);

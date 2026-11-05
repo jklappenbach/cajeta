@@ -177,5 +177,11 @@ namespace xpu {
         llvm::Value* nameStr, int backendId, const std::string& arch,
         const KernelManifest& m);
 
+    /** A constructor in `host` telling the runtime that `kernelName` is not one of
+     *  `backendId`'s targets (xpu-kernel-targets 3.1), so its launch there is refused
+     *  as such and a census can list it. */
+    void emitOffTargetRegistration(llvm::Module& host, const std::string& kernelName,
+                                   int backendId);
+
 } // namespace xpu
 } // namespace cajeta

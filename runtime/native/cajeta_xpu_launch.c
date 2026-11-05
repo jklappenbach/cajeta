@@ -1785,3 +1785,40 @@ int32_t __cajeta_xpu_kernel_available(void* nameArr, int64_t len) {
     }
     return ok;
 }
+
+// 1 when `name` is off the active backend's targets (xpu-kernel-targets 3.1).
+int32_t __cajeta_xpu_kernel_off_target(void* nameArr, int64_t len) {
+    if (!nameArr || len <= 0 || len > 255) return 0;
+    char name[256];
+    memcpy(name, (const char*) nameArr + 8, (size_t) len);
+    name[len] = 0;
+    return caj_xpu_is_off_target(name, cajeta_xpu_active_backend());
+}
+
+// The active backend's off-target kernels: a count, and the i-th name into an int8[]
+// (payload at +8), 0 bytes past the end.
+int32_t __cajeta_xpu_off_target_count(void) {
+    int32_t backend = cajeta_xpu_active_backend(), n = 0;
+    pthread_mutex_lock(&g_xpu_off_target_lock);
+    for (int32_t i = 0; i < g_xpu_off_target_n; ++i)
+        if (g_xpu_off_target[i].backend == backend) ++n;
+    pthread_mutex_unlock(&g_xpu_off_target_lock);
+    return n;
+}
+
+int64_t __cajeta_xpu_off_target_name(int32_t index, void* outArr, int64_t cap) {
+    if (!outArr || cap <= 0 || index < 0) return 0;
+    int32_t backend = cajeta_xpu_active_backend(), seen = 0;
+    int64_t len = 0;
+    pthread_mutex_lock(&g_xpu_off_target_lock);
+    for (int32_t i = 0; i < g_xpu_off_target_n; ++i) {
+        if (g_xpu_off_target[i].backend != backend) continue;
+        if (seen++ != index) continue;
+        len = (int64_t) strlen(g_xpu_off_target[i].name);
+        if (len > cap) len = cap;
+        memcpy((char*) outArr + 8, g_xpu_off_target[i].name, (size_t) len);
+        break;
+    }
+    pthread_mutex_unlock(&g_xpu_off_target_lock);
+    return len;
+}

@@ -31,13 +31,48 @@ static __thread char    g_xpu_refusal_name[256];
 // 3 the kernel declares a wave width the Vulkan device cannot run.
 // 4 the launch passes a block other than the one the kernel was built for.
 // 6 the block exceeds the device's work-items per block, checked before any submit.
+// 10 the kernel is not one of the backend's targets (@Kernel(targets)).
 static __thread int32_t g_xpu_refusal_reason;
 int32_t __cajeta_xpu_last_launch_reason(void) { return g_xpu_refusal_reason; }
+
+// Kernels a build left off a backend's targets (xpu-kernel-targets 3.1), by name and
+// backend id, registered by constructors the compiler emits.
+#define CAJ_XPU_MAX_OFF_TARGET 4096
+static struct { char name[256]; int32_t backend; } g_xpu_off_target[CAJ_XPU_MAX_OFF_TARGET];
+static int32_t g_xpu_off_target_n;
+static pthread_mutex_t g_xpu_off_target_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int caj_xpu_off_target_locked(const char* name, int32_t backend) {
+    for (int32_t i = 0; i < g_xpu_off_target_n; ++i)
+        if (g_xpu_off_target[i].backend == backend && strcmp(g_xpu_off_target[i].name, name) == 0)
+            return 1;
+    return 0;
+}
+
+void __cajeta_xpu_register_off_target(const char* name, int32_t backend) {
+    if (!name || strlen(name) >= sizeof(g_xpu_off_target[0].name)) return;
+    pthread_mutex_lock(&g_xpu_off_target_lock);
+    if (!caj_xpu_off_target_locked(name, backend) && g_xpu_off_target_n < CAJ_XPU_MAX_OFF_TARGET) {
+        strcpy(g_xpu_off_target[g_xpu_off_target_n].name, name);
+        g_xpu_off_target[g_xpu_off_target_n].backend = backend;
+        ++g_xpu_off_target_n;
+    }
+    pthread_mutex_unlock(&g_xpu_off_target_lock);
+}
+
+/** Is `name` registered as off target on `backend`? */
+static int caj_xpu_is_off_target(const char* name, int32_t backend) {
+    if (!name) return 0;
+    pthread_mutex_lock(&g_xpu_off_target_lock);
+    int r = caj_xpu_off_target_locked(name, backend);
+    pthread_mutex_unlock(&g_xpu_off_target_lock);
+    return r;
+}
 
 static void cajeta_xpu_note_launch_refusal(const char* name, int32_t backend) {
     cajeta_xpu_note_launch_failure();
     g_xpu_refusal_pending = 1;
-    g_xpu_refusal_reason = 0;
+    g_xpu_refusal_reason = caj_xpu_is_off_target(name, backend) ? 10 : 0;
     g_xpu_refusal_backend = backend;
     if (name) {
         size_t n = strlen(name);

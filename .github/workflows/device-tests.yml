@@ -374,7 +374,7 @@ jobs:
             echo "| stale skips | $STALE |"
             echo "| suite | $TESTS (rc $SUITE) |"
             echo ""
-            grep -E '^  (SKIP|UNCOVERED|STALE-SKIP) ' llm-census.log | sed 's/^/    /' || true
+            grep -E '^  (SKIP|UNCOVERED|STALE-SKIP|OUT-OF-TARGET) ' llm-census.log | sed 's/^/    /' || true
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "${RAN:-0}" -eq 0 ]; then
             echo "::error::the kernel census says nothing ran on nvptx — an empty census is not a clean one"

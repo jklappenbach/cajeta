@@ -12,6 +12,7 @@
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/BasicBlock.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Intrinsics.h"
@@ -452,6 +453,26 @@ namespace xpu {
                      m.kernel.c_str(), m.target.c_str(), *m.spillBytes,
                      m.vgpr.value_or(0));
         return true;
+    }
+
+    void emitOffTargetRegistration(llvm::Module& host, const std::string& kernelName,
+                                   int backendId) {
+        llvm::LLVMContext& ctx = host.getContext();
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* voidTy = llvm::Type::getVoidTy(ctx);
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::FunctionCallee reg = host.getOrInsertFunction(
+            "__cajeta_xpu_register_off_target",
+            llvm::FunctionType::get(voidTy, {ptrTy, i32Ty}, false));
+        const std::string tag = std::to_string(backendId) + "." + kernelName;
+        llvm::Function* ctor = llvm::Function::Create(
+            llvm::FunctionType::get(voidTy, false), llvm::GlobalValue::InternalLinkage,
+            "__cajeta_xpu_off_target_ctor." + tag, host);
+        llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", ctor));
+        b.CreateCall(reg, {b.CreateGlobalString(kernelName, "xpu.offtarget." + tag),
+                           llvm::ConstantInt::get(i32Ty, backendId)});
+        b.CreateRetVoid();
+        llvm::appendToGlobalCtors(host, ctor, /*priority=*/65535);
     }
 
     void emitManifestRegistration(

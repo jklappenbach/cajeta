@@ -148,3 +148,123 @@ TEST(XpuKernelCensus, aRefusedLaunchIsNotCounted) {
     std::snprintf(arr + 8, 32, "%s", name);
     EXPECT_EQ(count(arr, (int64_t) std::string(name).size()), 0);
 }
+
+namespace {
+
+// xpu-kernel-targets Unit 3: a GPU-only kernel beside a plain one, on the cpu backend.
+const char* kOffTargetSource =
+    "package test;\n"
+    "import cajeta.lang.String;\n"
+    "import cajeta.xpu.Device;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
+    "import cajeta.xpu.XpuLaunchException;\n"
+    "public class Off {\n"
+    "    @Kernel\n"
+    "    public static void here(KernelBuffer<float32> y, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        if (i < n) { y[i] = 2.0f; }\n"
+    "    }\n"
+    "    @Kernel(targets = {\"gpu\"})\n"
+    "    public static void gpuOnly(KernelBuffer<float32> y, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        if (i < n) { y[i] = 3.0f; }\n"
+    "    }\n"
+    "    /** Bit 1: `here` is available; bit 2: `gpuOnly` is. */\n"
+    "    public static int32 available() {\n"
+    "        int32 bits = 0;\n"
+    "        if (Device.kernelAvailable(\"here\")) { bits = bits | 1; }\n"
+    "        if (Device.kernelAvailable(\"gpuOnly\")) { bits = bits | 2; }\n"
+    "        return bits;\n"
+    "    }\n"
+    "    /** Bit 1: `gpuOnly` is not a target; bit 2: `here` has no reason; bit 4: an\n"
+    "     *  unknown name has no device code. */\n"
+    "    public static int32 reasons() {\n"
+    "        int32 bits = 0;\n"
+    "        String off #= Device.kernelUnavailableReason(\"gpuOnly\");\n"
+    "        String on #= Device.kernelUnavailableReason(\"here\");\n"
+    "        String none #= Device.kernelUnavailableReason(\"noSuchKernelAnywhere\");\n"
+    "        if (off.equals(\"not a target\")) { bits = bits | 1; }\n"
+    "        if (on.equals(\"\")) { bits = bits | 2; }\n"
+    "        if (none.equals(\"no usable device code\")) { bits = bits | 4; }\n"
+    "        return bits;\n"
+    "    }\n"
+    "    /** 1 when the launch threw, plus 2/4/8 for the kernel, the backend and the\n"
+    "     *  reason in its message; 100 + y[0] when it ran. */\n"
+    "    public static int32 launchOff() {\n"
+    "        uint32 n = 64;\n"
+    "        KernelBuffer<float32> y = heap KernelBuffer<float32>(0, n);\n"
+    "        y.allocate();\n"
+    "        KernelStream s #= KernelStream.current();\n"
+    "        int32 r = 0;\n"
+    "        try {\n"
+    "            gpuOnly.launch(s, grid: [1], block: [64])(y, n);\n"
+    "            s.sync();\n"
+    "            float32[] h = heap float32[64];\n"
+    "            y.download(h);\n"
+    "            r = 100 + (int32) h[0];\n"
+    "        } catch (XpuLaunchException e) {\n"
+    "            String m = e.getMessage();\n"
+    "            r = 1;\n"
+    "            if (m.contains(\"'gpuOnly'\")) { r = r + 2; }\n"
+    "            if (m.contains(\"'cpu'\")) { r = r + 4; }\n"
+    "            if (m.contains(\"not a target\")) { r = r + 8; }\n"
+    "        }\n"
+    "        y.free();\n"
+    "        return r;\n"
+    "    }\n"
+    "    /** Bit 1: `gpuOnly` is listed off target; bit 2: `here` is not; bit 4: an\n"
+    "     *  out-of-range index answers an empty name. */\n"
+    "    public static int32 listed() {\n"
+    "        int32 bits = 0;\n"
+    "        int32 n = Device.offTargetKernelCount();\n"
+    "        int32 i = 0;\n"
+    "        while (i < n) {\n"
+    "            String name #= Device.offTargetKernel(i);\n"
+    "            if (name.equals(\"gpuOnly\")) { bits = bits | 1; }\n"
+    "            if (name.equals(\"here\")) { bits = bits | 8; }\n"
+    "            i = i + 1;\n"
+    "        }\n"
+    "        if ((bits & 8) == 0) { bits = bits | 2; }\n"
+    "        String past #= Device.offTargetKernel(100000);\n"
+    "        if (past.count() == 0L) { bits = bits | 4; }\n"
+    "        return bits & 7;\n"
+    "    }\n"
+    "}\n";
+
+std::unique_ptr<CajetaJit> offTargetOnCpu() {
+    return CajetaJit::compile(kOffTargetSource, "test.Off", withBackend(cajeta::xpu::Backend::Cpu));
+}
+
+} // namespace
+
+// xpu-kernel-targets 3.1.1 (spec 3.1): an off-target kernel is unavailable, and the reason
+// says it is not a target, apart from a name with no device code.
+TEST(XpuKernelTargetsRuntime, anOffTargetKernelIsUnavailableBecauseItIsNotATarget) {
+    auto jit = offTargetOnCpu();
+    ASSERT_NE(jit, nullptr);
+    auto available = jit->lookup<int32_t (*)()>("available");
+    auto reasons = jit->lookup<int32_t (*)()>("reasons");
+    ASSERT_TRUE(available && reasons);
+    EXPECT_EQ(available(), 1);
+    EXPECT_EQ(reasons(), 1 | 2 | 4);
+}
+
+// 3.1.2 (spec 3.2): launching it throws, naming the kernel, the backend and the reason.
+TEST(XpuKernelTargetsRuntime, launchingAnOffTargetKernelThrowsNamingIt) {
+    auto jit = offTargetOnCpu();
+    ASSERT_NE(jit, nullptr);
+    auto launchOff = jit->lookup<int32_t (*)()>("launchOff");
+    ASSERT_NE(launchOff, nullptr);
+    EXPECT_EQ(launchOff(), 1 + 2 + 4 + 8);
+}
+
+// 3.1.3 (spec 3.3): the build's off-target kernels are listed for the active backend.
+TEST(XpuKernelTargetsRuntime, theOffTargetKernelsAreListed) {
+    auto jit = offTargetOnCpu();
+    ASSERT_NE(jit, nullptr);
+    auto listed = jit->lookup<int32_t (*)()>("listed");
+    ASSERT_NE(listed, nullptr);
+    EXPECT_EQ(listed(), 1 | 2 | 4);
+}
