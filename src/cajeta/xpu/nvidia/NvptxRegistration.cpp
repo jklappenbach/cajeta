@@ -106,6 +106,7 @@ namespace nvidia {
         for (auto& method : kernels) {
             if (!method || !isKernel(*method)) continue;
             const std::string entryName = kernelRegistryName(method);
+            if (auto attr = XpuKernelAttr::from(*method); attr && !attr->isTarget("nvptx")) continue;
             if (unloweredHoldsBeforeLowering(*method, "nvptx")) {
                 reportUnloweredKernel(*method, entryName, "nvptx",
                                       "held before lowering (@Unlowered hold = true)", arch);

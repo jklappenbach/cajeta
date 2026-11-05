@@ -46,6 +46,10 @@ namespace xpu {
         // @Kernel(targets): the backends the kernel is built for; empty means every backend.
         const std::vector<XpuBackend>& targets() const { return targets_; }
 
+        // Is `backend` ("cpu", "vulkan", "amdgpu", "nvptx") among @Kernel(targets)? True when
+        // none are declared; a registration lowers nothing off target.
+        bool isTarget(const std::string& backend) const;
+
         // Does this kernel emit for `b`? An empty restriction set returns true.
         bool emitsFor(XpuBackend b) const;
 

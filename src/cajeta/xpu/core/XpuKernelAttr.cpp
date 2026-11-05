@@ -156,6 +156,12 @@ std::optional<XpuKernelAttr> XpuKernelAttr::fromWith(const Annotatable& a,
     return out;
 }
 
+bool XpuKernelAttr::isTarget(const std::string& backend) const {
+    if (targets_.empty()) return true;
+    auto b = parseBackend(backend);
+    return b && std::find(targets_.begin(), targets_.end(), *b) != targets_.end();
+}
+
 bool XpuKernelAttr::emitsFor(XpuBackend b) const {
     auto allows = [b](const std::vector<XpuBackend>& set) {
         return set.empty() || std::find(set.begin(), set.end(), b) != set.end();

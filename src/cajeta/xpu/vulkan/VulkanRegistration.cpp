@@ -231,6 +231,7 @@ namespace vulkan {
         for (auto& method : kernels) {
             if (!method || !isKernel(*method)) continue;
             const std::string entryName = kernelRegistryName(method);
+            if (auto attr = XpuKernelAttr::from(*method); attr && !attr->isTarget("vulkan")) continue;
             if (!emitVariant(method, entryName, /*software=*/false,
                              /*registerKparams=*/true))
                 continue;

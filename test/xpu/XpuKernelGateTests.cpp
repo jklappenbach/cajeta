@@ -619,3 +619,87 @@ TEST(XpuKernelTargets, knownTargetsBuild) {
     EXPECT_EQ(b.rc, 0) << b.log;
     EXPECT_EQ(b.log.find("CAJETA_ERROR_XPU_UNKNOWN_TARGET"), std::string::npos) << b.log;
 }
+
+namespace {
+
+// program()'s pair, with `bad` declared `@Kernel(<badArgs>)`: a kernel no backend can lower.
+std::string targetedPair(const std::string& badArgs) {
+    std::string src = program("");
+    const std::string from = "    @Kernel\n    public static void bad(";
+    src.replace(src.find(from), from.size(), "    @Kernel(" + badArgs + ")\n    public static void bad(");
+    return src;
+}
+
+// A cooperative-matrix kernel the cpu backend lowers onto its software tile-matmul, noting it
+// as [mma-tiering], declared `@Kernel(<args>)`, beside a plain kernel.
+std::string coopProgram(const std::string& args) {
+    return
+        "package test;\n"
+        "import cajeta.xpu.CooperativeMatrix;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "public class M {\n"
+        "    @Kernel(" + args + ")\n"
+        "    public static void tile(KernelBuffer<float32> c) {\n"
+        "        CooperativeMatrix<float32,16,16,0> acc;\n"
+        "        acc.splat(1.0f);\n"
+        "        acc.store(c, 0, 0, 16);\n"
+        "    }\n"
+        "    @Kernel\n"
+        "    public static void good(KernelBuffer<float32> y, float32 a, uint32 n) {\n"
+        "        uint32 i = KernelThread.globalIdX();\n"
+        "        if (i < n) { y[i] = a * y[i]; }\n"
+        "    }\n"
+        "    public static void main(String[] args) { }\n"
+        "}\n";
+}
+
+}  // namespace
+
+// xpu-kernel-targets 2.1.1 (spec 3.4): a GPU-only kernel is not attempted on the cpu backend:
+// the build passes though no backend can lower it, and nothing names it.
+TEST(XpuKernelTargets, aGpuKernelIsNotAttemptedOnTheCpu) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    Built b = build(targetedPair("targets = {\"gpu\"}"), "cpu");
+    EXPECT_EQ(b.rc, 0) << b.log;
+    EXPECT_EQ(b.log.find("bad"), std::string::npos) << b.log;
+}
+
+// 2.1.1: and no cooperative-matrix lowering, so no [mma-tiering] note and no vectorize pass.
+TEST(XpuKernelTargets, aGpuCoopKernelCostsTheCpuBuildNothing) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    Built on = build(coopProgram(""), "cpu", "CAJETA_XPU_CPU_VECTORIZE_TRACE=1 ");
+    ASSERT_EQ(on.rc, 0) << on.log;
+    ASSERT_NE(on.log.find("[mma-tiering]"), std::string::npos)
+        << "the instrument: an untargeted coop kernel notes its cpu software path:\n" << on.log;
+    ASSERT_NE(on.log.find("tile"), std::string::npos) << on.log;
+    Built off = build(coopProgram("targets = {\"gpu\"}"), "cpu", "CAJETA_XPU_CPU_VECTORIZE_TRACE=1 ");
+    EXPECT_EQ(off.rc, 0) << off.log;
+    EXPECT_EQ(off.log.find("[mma-tiering]"), std::string::npos) << off.log;
+    EXPECT_EQ(off.log.find("tile"), std::string::npos) << off.log;
+    EXPECT_NE(off.log.find("[vectorize] "), std::string::npos)
+        << "`good` still vectorises:\n" << off.log;
+}
+
+// 2.1.2: a cpu-only kernel is not attempted on any GPU backend.
+TEST(XpuKernelTargets, aCpuKernelIsNotAttemptedOnAGpu) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    for (const char* be : {"amdgpu", "nvptx", "vulkan"}) {
+        if (std::string(be) == "nvptx" && cajeta::xpu::nvidia::findPtxas().empty()) continue;
+        Built b = build(targetedPair("targets = {\"cpu\"}"), be);
+        EXPECT_EQ(b.rc, 0) << be << ":\n" << b.log;
+        EXPECT_EQ(b.log.find("bad"), std::string::npos) << be << ":\n" << b.log;
+    }
+}
+
+// 2.1.3: on its own targets the kernel is still attempted, and still gated.
+TEST(XpuKernelTargets, aKernelIsStillAttemptedOnItsTargets) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    Built b = build(targetedPair("targets = {\"cpu\", \"gpu\"}"), "cpu");
+    EXPECT_NE(b.rc, 0) << b.log;
+    EXPECT_NE(b.log.find("[xpu-kernel-skipped] bad: no cpu device code"), std::string::npos) << b.log;
+    Built a = build(targetedPair("targets = {\"amdgpu\"}"), "cpu,amdgpu");
+    EXPECT_NE(a.rc, 0) << a.log;
+    EXPECT_NE(a.log.find("[xpu-kernel-skipped] bad: no amdgpu device code"), std::string::npos) << a.log;
+    EXPECT_EQ(a.log.find("[xpu-kernel-skipped] bad: no cpu device code"), std::string::npos) << a.log;
+}

@@ -80,6 +80,7 @@ namespace amd {
         for (auto& method : kernels) {
             if (!method || !isKernel(*method)) continue;
             const std::string entryName = kernelRegistryName(method);
+            if (auto attr = XpuKernelAttr::from(*method); attr && !attr->isTarget("amdgpu")) continue;
             if (unloweredHoldsBeforeLowering(*method, "amdgpu")) {
                 reportUnloweredKernel(*method, entryName, "amdgpu",
                                       "held before lowering (@Unlowered hold = true)", arch);

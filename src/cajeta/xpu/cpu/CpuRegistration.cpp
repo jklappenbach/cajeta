@@ -1399,6 +1399,7 @@ void foldWaveVariants(llvm::Function& f) {
             if (!method || !isKernel(*method)) continue;
             const std::string entryName = kernelRegistryName(method);
             const std::string sym = "__cajeta_xpu_cpu." + symSuffix(method) + lvl;
+            if (auto attr = XpuKernelAttr::from(*method); attr && !attr->isTarget("cpu")) continue;
 
             // hold = true: not attempted. The only lever for a kernel whose
             // lowering does not end (the vectorize deadline below names it);
