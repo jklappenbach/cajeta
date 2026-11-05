@@ -765,3 +765,35 @@ TEST(XpuKernelTargets, aRetiredBackendAnnotationFailsTheBuildPointingAtTargets) 
     EXPECT_NE(b.log.find("@Kernel(targets = "), std::string::npos) << b.log;
     EXPECT_NE(b.log.find("'scale'"), std::string::npos) << b.log;
 }
+
+namespace {
+
+// The `ms=` of `kernel`'s [vectorize] trace line in `log`, or -1.
+double vectorizeMs(const std::string& log, const std::string& kernel) {
+    const std::string at = "[vectorize] " + kernel + " ";
+    size_t p = log.find(at);
+    if (p == std::string::npos) return -1;
+    size_t ms = log.find("ms=", p);
+    size_t eol = log.find('\n', p);
+    if (ms == std::string::npos || ms > eol) return -1;
+    return std::atof(log.c_str() + ms + 3);
+}
+
+}  // namespace
+
+// xpu-kernel-targets 7.1.2 (spec 4.1): a prefetch loop vectorises in proportion to its size.
+// The twin carries block b + 1's loads across the loop and is 13% larger; LoopVectorize's
+// simplifyRecipes took 65x as long on it (16.1 s against 0.25 s), walking to the plan's
+// entry once per recipe. Both kernels build in one compile, so the ratio holds under load.
+TEST(XpuKernelTargets, aPrefetchLoopVectorizesInProportionToItsSize) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    const std::string src = readFile(fs::path(sourceRoot()) / "test/xpu/fixtures/test/M.cajeta");
+    ASSERT_FALSE(src.empty());
+    Built b = build(src, "cpu", "CAJETA_XPU_CPU_VECTORIZE_TRACE=1 ", " --release");
+    ASSERT_EQ(b.rc, 0) << b.log.substr(0, 4000);
+    const double plain = vectorizeMs(b.log, "q4kQ8WaveMatVecKernel");
+    const double pf = vectorizeMs(b.log, "q4kQ8WavePfMatVecKernel");
+    ASSERT_GT(plain, 0) << b.log.substr(0, 4000);
+    ASSERT_GT(pf, 0) << b.log.substr(0, 4000);
+    EXPECT_LT(pf, 4 * plain + 250) << "prefetch " << pf << " ms, plain " << plain << " ms";
+}

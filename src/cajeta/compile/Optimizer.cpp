@@ -112,7 +112,7 @@ struct DumpBeforeLoopVectorizePass : llvm::PassInfoMixin<DumpBeforeLoopVectorize
     llvm::PreservedAnalyses run(llvm::Function& f, llvm::FunctionAnalysisManager&) {
         std::error_code ec;
         llvm::raw_fd_ostream os(dir + "/" + f.getName().str() + ".prelv.ll", ec);
-        if (!ec) f.print(os);
+        if (!ec) f.getParent()->print(os, nullptr);
         return llvm::PreservedAnalyses::all();
     }
 };
@@ -604,7 +604,7 @@ void vectorizeFunction(llvm::Function& f, llvm::TargetMachine* tm,
                        bool scalarizeVectorValues, llvm::StringRef kernelName,
                        llvm::Value* blockX) {
     if (f.isDeclaration()) return;
-    PassEnv env(tm);
+    PassEnv env(tm, &f.getContext());
 
     // Nothing to scalarize, nothing to do: a wave kernel with no vector value
     // keeps exactly the pipeline it had before this parameter existed.

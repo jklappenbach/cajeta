@@ -1,0 +1,620 @@
+// The cajeta-llm Q4_K wave mat-vec and its prefetch twin (llm 4b448d9, QuantKernel.cajeta):
+// the twin vectorised 65x slower on the cpu backend (xpu-kernel-targets 7.1.1).
+package test;
+import cajeta.lang.Cajeta;
+import cajeta.xpu.Group;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelThread;
+public class M {
+    @Device
+    public static float32 halfBitsToF32Branchless(int32 h) {
+        int32 sgn = (h >> 15) << 31;
+        int32 exp = (h >> 10) & 31;
+        int32 man = h & 1023;
+        int32 norm = sgn | ((exp + 112) << 23) | (man << 13);
+        int32 inf = sgn | (255 << 23) | (man << 13);
+        int32 sub = Cajeta.f32ToBits((float32) man * 5.9604644775390625e-8f) | sgn;
+        int32 m0 = (exp - 1) >> 31;
+        int32 m31 = (30 - exp) >> 31;
+        int32 mn = (m0 | m31) ^ (0 - 1);
+        return Cajeta.bitsToF32((norm & mn) | (inf & m31) | (sub & m0));
+    }
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void q4kQ8WaveMatVecKernel(KernelBuffer<float32> y,
+            KernelBuffer<int8> packed, KernelBuffer<int8> xp,
+            uint32 rows, int64 blocksPerRow, int64 yOff, uint32 accum) {
+        // Wave-relative (xpu-kernel-adaptor Unit 9): the wave index is global,
+        // so a workgroup may carry several waves; the segment count below
+        // is the wave width over the lanes a row takes, never a literal 32.
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 wave = KernelThread.globalIdX() / wv;
+        // Unit 47: four lanes per block, so a row shorter than eight
+        // blocks would idle the rest of the wave (a 3-block row ran
+        // at 92 GB/s where 8-block rows ran 277). Short rows pack
+        // rowsPerWave rows per wave in lane segments.
+        //
+        // Unit 58/60: rows of eight or more blocks take FOUR rows per
+        // wave, in slots — the q6k kernel's shape. A lane's block index
+        // and sub-block pair are fixed by its lane number, so its 64
+        // bytes of x are the same for every row: loaded once per block
+        // trip they serve all four slots, where one row per wave paid
+        // the x loads and the wave's whole fixed cost per row (4096
+        // one-row waves on a 4.7 MB launch measured 134 GB/s where the
+        // four-slot q6k measured 156 for MORE bytes). All four slots'
+        // loads are in flight together; out-of-range slots clamp to the
+        // last row and weigh zero, so every load is unconditional.
+        uint32 lpr = 4 * (uint32) blocksPerRow;
+        uint32 rpw = 1;
+        uint32 rl = lane;
+        uint32 sub = 0;
+        uint32 R = 4;
+        if (lpr < wv) { rpw = wv / lpr; sub = lane / lpr; rl = lane - sub * lpr; R = 1; }
+        uint32 row0 = wave * R * rpw + sub;
+        // Unit 61: every offset in uint32 (a slab is far below 4 GB) — int64
+        // index math was a v_mad_u64_u32 pair per offset and a two-
+        // instruction add per load address; a zext'd 32-bit offset lets
+        // the backend address loads as SGPR base + VGPR offset.
+        uint32 rowBytes = (uint32) blocksPerRow * 144;
+        uint32 bpr = (uint32) blocksPerRow;
+        float32 acc0 = 0.0f;
+        float32 acc1 = 0.0f;
+        float32 acc2 = 0.0f;
+        float32 acc3 = 0.0f;
+        if (sub < rpw && row0 < rows) {
+            uint32 last = rows - 1;
+            uint32 r1 = row0 + 1; if (r1 > last) { r1 = last; }
+            uint32 r2 = row0 + 2; if (r2 > last) { r2 = last; }
+            uint32 r3 = row0 + 3; if (r3 > last) { r3 = last; }
+            float32 w1 = 0.0f; if (R > 1 && row0 + 1 < rows) { w1 = 1.0f; }
+            float32 w2 = 0.0f; if (R > 1 && row0 + 2 < rows) { w2 = 1.0f; }
+            float32 w3 = 0.0f; if (R > 1 && row0 + 3 < rows) { w3 = 1.0f; }
+            uint32 rb0 = row0 * rowBytes;
+            uint32 rb1 = r1 * rowBytes;
+            uint32 rb2 = r2 * rowBytes;
+            uint32 rb3 = r3 * rowBytes;
+            int32 g = (int32) (rl % 4);
+            uint32 b = rl / 4;
+            int32 sh0 = 16 * (g & 1);
+            int32 sh1 = sh0 + 8;
+            Vector<int32,8> zv = heap Vector<int32,8>(0, 0, 0, 0, 0, 0, 0, 0);
+            while (b < bpr) {
+                // The header — { f16 d; f16 dmin; u8 scales[12] } = 16 bytes,
+                // and this lane's 32 bytes of quants (sub-blocks 2g, 2g+1:
+                // Q4_K packs sub-blocks 0-3 and 4-7 in different fields,
+                // and reading field `g` instead of sub-block `2g` was the
+                // shape of the first version, wrong on every row).
+                uint32 xb = b * 320 + (uint32) (64 * g);
+                uint32 xr = b * 320;
+                Vector<int8,32> a0 = xp.vload<32>((int64) xb);
+                Vector<int8,32> a1 = xp.vload<32>((int64) xb + 32L);
+                Vector<int8,4> dv = xp.vload<4>((int64) xr + 288L);
+                uint32 ro0 = rb0 + b * 144;
+                uint32 rw0 = ro0 + (uint32) (32 * g);
+                Vector<int8,16> hv0 = packed.vload<16>((int64) ro0);
+                Vector<uint8,32> raw0 = packed.vload<32>(
+                    (int64) rw0 + 16L).asUnsigned();
+                uint32 ro1 = rb1 + b * 144;
+                uint32 rw1 = ro1 + (uint32) (32 * g);
+                Vector<int8,16> hv1 = packed.vload<16>((int64) ro1);
+                Vector<uint8,32> raw1 = packed.vload<32>(
+                    (int64) rw1 + 16L).asUnsigned();
+                uint32 ro2 = rb2 + b * 144;
+                uint32 rw2 = ro2 + (uint32) (32 * g);
+                Vector<int8,16> hv2 = packed.vload<16>((int64) ro2);
+                Vector<uint8,32> raw2 = packed.vload<32>(
+                    (int64) rw2 + 16L).asUnsigned();
+                uint32 ro3 = rb3 + b * 144;
+                uint32 rw3 = ro3 + (uint32) (32 * g);
+                Vector<int8,16> hv3 = packed.vload<16>((int64) ro3);
+                Vector<uint8,32> raw3 = packed.vload<32>(
+                    (int64) rw3 + 16L).asUnsigned();
+                float32 xs = Cajeta.bitsToF32(((int32) dv[0] & 255)
+                    | (((int32) dv[1] & 255) << 8)
+                    | (((int32) dv[2] & 255) << 16)
+                    | (((int32) dv[3] & 255) << 24));
+                // The dmin term needs the sum of THIS LANE's activations:
+                // llama.cpp's `dp4a(0x01010101, u)`, any lane granularity.
+                Vector<uint8,32> ones = (a0 ^ a0).asUnsigned() | 1;
+                // Unit 61: the activation sums and the two dot sums are reduced
+                // FIRST and scaled as scalars — integer-exact, so bit-identical to
+                // scaling the eight lanes, and 2 quarter-rate multiplies where
+                // there were 16 (v_mul_lo/v_mad_u64 are 4-cycle on RDNA).
+                Vector<int32,8> os0 = ones.dotAccum(a0, zv);
+                Vector<int32,8> os1 = ones.dotAccum(a1, zv);
+                int32 as0 = os0[0] + os0[1] + os0[2] + os0[3]
+                    + os0[4] + os0[5] + os0[6] + os0[7];
+                int32 as1 = os1[0] + os1[1] + os1[2] + os1[3]
+                    + os1[4] + os1[5] + os1[6] + os1[7];
+                float32 d0 = M.halfBitsToF32Branchless(((int32) hv0[0] & 255)
+                    | (((int32) hv0[1] & 255) << 8));
+                float32 dmin0 = M.halfBitsToF32Branchless(((int32) hv0[2] & 255)
+                    | (((int32) hv0[3] & 255) << 8));
+                // Unit 60: the scale bytes by WORD and runtime SHIFT, not by
+                // runtime lane index — `hv[4 + j]` with j from the lane
+                // number lowered to a 16-way compare/select chain per
+                // byte (600 v_cndmask_b16 in the kernel), and both g
+                // branches executed. Words 1..3 of the header are the
+                // scale, min and high fields; the lane's two bytes sit at
+                // shift 8j, 8j + 8 with j = 2 (g & 1) in EITHER branch.
+                Vector<int32,4> hw0 = hv0.asWords();
+                int32 scw0 = hw0[1];
+                int32 mnw0 = hw0[2];
+                int32 hiw0 = hw0[3];
+                int32 sA0 = (scw0 >> sh0) & 255;
+                int32 sB0 = (scw0 >> sh1) & 255;
+                int32 mC0 = (mnw0 >> sh0) & 255;
+                int32 mD0 = (mnw0 >> sh1) & 255;
+                int32 sc0_0 = sA0 & 63;
+                int32 sc1_0 = sB0 & 63;
+                int32 mn0_0 = mC0 & 63;
+                int32 mn1_0 = mD0 & 63;
+                if (g >= 2) {
+                    int32 k0 = (hiw0 >> sh0) & 255;
+                    int32 k1 = (hiw0 >> sh1) & 255;
+                    sc0_0 = (k0 & 15) | ((sA0 >> 2) & 48);
+                    sc1_0 = (k1 & 15) | ((sB0 >> 2) & 48);
+                    mn0_0 = (k0 >> 4) | ((mC0 >> 2) & 48);
+                    mn1_0 = (k1 >> 4) | ((mD0 >> 2) & 48);
+                }
+                Vector<int32,8> rv0 = raw0.asWords();
+                Vector<uint8,32> lo0 = (rv0 & 252645135).asBytes().asUnsigned();
+                Vector<uint8,32> hi0 = ((rv0 >> 4) & 252645135).asBytes().asUnsigned();
+                Vector<int32,8> dl0 = lo0.dotAccum(a0, zv);
+                Vector<int32,8> dh0 = hi0.dotAccum(a1, zv);
+                int32 sumi0 = (dl0[0] + dl0[1] + dl0[2] + dl0[3]
+                    + dl0[4] + dl0[5] + dl0[6] + dl0[7]) * sc0_0
+                             + (dh0[0] + dh0[1] + dh0[2] + dh0[3]
+                                 + dh0[4] + dh0[5] + dh0[6] + dh0[7]) * sc1_0;
+                int32 dmins0 = as0 * mn0_0 + as1 * mn1_0;
+                acc0 = acc0 + d0 * xs * (float32) sumi0
+                          - dmin0 * xs * (float32) dmins0;
+                float32 d1 = M.halfBitsToF32Branchless(((int32) hv1[0] & 255)
+                    | (((int32) hv1[1] & 255) << 8));
+                float32 dmin1 = M.halfBitsToF32Branchless(((int32) hv1[2] & 255)
+                    | (((int32) hv1[3] & 255) << 8));
+                // Unit 60: the scale bytes by WORD and runtime SHIFT, not by
+                // runtime lane index — `hv[4 + j]` with j from the lane
+                // number lowered to a 16-way compare/select chain per
+                // byte (600 v_cndmask_b16 in the kernel), and both g
+                // branches executed. Words 1..3 of the header are the
+                // scale, min and high fields; the lane's two bytes sit at
+                // shift 8j, 8j + 8 with j = 2 (g & 1) in EITHER branch.
+                Vector<int32,4> hw1 = hv1.asWords();
+                int32 scw1 = hw1[1];
+                int32 mnw1 = hw1[2];
+                int32 hiw1 = hw1[3];
+                int32 sA1 = (scw1 >> sh0) & 255;
+                int32 sB1 = (scw1 >> sh1) & 255;
+                int32 mC1 = (mnw1 >> sh0) & 255;
+                int32 mD1 = (mnw1 >> sh1) & 255;
+                int32 sc0_1 = sA1 & 63;
+                int32 sc1_1 = sB1 & 63;
+                int32 mn0_1 = mC1 & 63;
+                int32 mn1_1 = mD1 & 63;
+                if (g >= 2) {
+                    int32 k0 = (hiw1 >> sh0) & 255;
+                    int32 k1 = (hiw1 >> sh1) & 255;
+                    sc0_1 = (k0 & 15) | ((sA1 >> 2) & 48);
+                    sc1_1 = (k1 & 15) | ((sB1 >> 2) & 48);
+                    mn0_1 = (k0 >> 4) | ((mC1 >> 2) & 48);
+                    mn1_1 = (k1 >> 4) | ((mD1 >> 2) & 48);
+                }
+                Vector<int32,8> rv1 = raw1.asWords();
+                Vector<uint8,32> lo1 = (rv1 & 252645135).asBytes().asUnsigned();
+                Vector<uint8,32> hi1 = ((rv1 >> 4) & 252645135).asBytes().asUnsigned();
+                Vector<int32,8> dl1 = lo1.dotAccum(a0, zv);
+                Vector<int32,8> dh1 = hi1.dotAccum(a1, zv);
+                int32 sumi1 = (dl1[0] + dl1[1] + dl1[2] + dl1[3]
+                    + dl1[4] + dl1[5] + dl1[6] + dl1[7]) * sc0_1
+                             + (dh1[0] + dh1[1] + dh1[2] + dh1[3]
+                                 + dh1[4] + dh1[5] + dh1[6] + dh1[7]) * sc1_1;
+                int32 dmins1 = as0 * mn0_1 + as1 * mn1_1;
+                acc1 = acc1 + d1 * xs * (float32) sumi1
+                          - dmin1 * xs * (float32) dmins1;
+                float32 d2 = M.halfBitsToF32Branchless(((int32) hv2[0] & 255)
+                    | (((int32) hv2[1] & 255) << 8));
+                float32 dmin2 = M.halfBitsToF32Branchless(((int32) hv2[2] & 255)
+                    | (((int32) hv2[3] & 255) << 8));
+                // Unit 60: the scale bytes by WORD and runtime SHIFT, not by
+                // runtime lane index — `hv[4 + j]` with j from the lane
+                // number lowered to a 16-way compare/select chain per
+                // byte (600 v_cndmask_b16 in the kernel), and both g
+                // branches executed. Words 1..3 of the header are the
+                // scale, min and high fields; the lane's two bytes sit at
+                // shift 8j, 8j + 8 with j = 2 (g & 1) in EITHER branch.
+                Vector<int32,4> hw2 = hv2.asWords();
+                int32 scw2 = hw2[1];
+                int32 mnw2 = hw2[2];
+                int32 hiw2 = hw2[3];
+                int32 sA2 = (scw2 >> sh0) & 255;
+                int32 sB2 = (scw2 >> sh1) & 255;
+                int32 mC2 = (mnw2 >> sh0) & 255;
+                int32 mD2 = (mnw2 >> sh1) & 255;
+                int32 sc0_2 = sA2 & 63;
+                int32 sc1_2 = sB2 & 63;
+                int32 mn0_2 = mC2 & 63;
+                int32 mn1_2 = mD2 & 63;
+                if (g >= 2) {
+                    int32 k0 = (hiw2 >> sh0) & 255;
+                    int32 k1 = (hiw2 >> sh1) & 255;
+                    sc0_2 = (k0 & 15) | ((sA2 >> 2) & 48);
+                    sc1_2 = (k1 & 15) | ((sB2 >> 2) & 48);
+                    mn0_2 = (k0 >> 4) | ((mC2 >> 2) & 48);
+                    mn1_2 = (k1 >> 4) | ((mD2 >> 2) & 48);
+                }
+                Vector<int32,8> rv2 = raw2.asWords();
+                Vector<uint8,32> lo2 = (rv2 & 252645135).asBytes().asUnsigned();
+                Vector<uint8,32> hi2 = ((rv2 >> 4) & 252645135).asBytes().asUnsigned();
+                Vector<int32,8> dl2 = lo2.dotAccum(a0, zv);
+                Vector<int32,8> dh2 = hi2.dotAccum(a1, zv);
+                int32 sumi2 = (dl2[0] + dl2[1] + dl2[2] + dl2[3]
+                    + dl2[4] + dl2[5] + dl2[6] + dl2[7]) * sc0_2
+                             + (dh2[0] + dh2[1] + dh2[2] + dh2[3]
+                                 + dh2[4] + dh2[5] + dh2[6] + dh2[7]) * sc1_2;
+                int32 dmins2 = as0 * mn0_2 + as1 * mn1_2;
+                acc2 = acc2 + d2 * xs * (float32) sumi2
+                          - dmin2 * xs * (float32) dmins2;
+                float32 d3 = M.halfBitsToF32Branchless(((int32) hv3[0] & 255)
+                    | (((int32) hv3[1] & 255) << 8));
+                float32 dmin3 = M.halfBitsToF32Branchless(((int32) hv3[2] & 255)
+                    | (((int32) hv3[3] & 255) << 8));
+                // Unit 60: the scale bytes by WORD and runtime SHIFT, not by
+                // runtime lane index — `hv[4 + j]` with j from the lane
+                // number lowered to a 16-way compare/select chain per
+                // byte (600 v_cndmask_b16 in the kernel), and both g
+                // branches executed. Words 1..3 of the header are the
+                // scale, min and high fields; the lane's two bytes sit at
+                // shift 8j, 8j + 8 with j = 2 (g & 1) in EITHER branch.
+                Vector<int32,4> hw3 = hv3.asWords();
+                int32 scw3 = hw3[1];
+                int32 mnw3 = hw3[2];
+                int32 hiw3 = hw3[3];
+                int32 sA3 = (scw3 >> sh0) & 255;
+                int32 sB3 = (scw3 >> sh1) & 255;
+                int32 mC3 = (mnw3 >> sh0) & 255;
+                int32 mD3 = (mnw3 >> sh1) & 255;
+                int32 sc0_3 = sA3 & 63;
+                int32 sc1_3 = sB3 & 63;
+                int32 mn0_3 = mC3 & 63;
+                int32 mn1_3 = mD3 & 63;
+                if (g >= 2) {
+                    int32 k0 = (hiw3 >> sh0) & 255;
+                    int32 k1 = (hiw3 >> sh1) & 255;
+                    sc0_3 = (k0 & 15) | ((sA3 >> 2) & 48);
+                    sc1_3 = (k1 & 15) | ((sB3 >> 2) & 48);
+                    mn0_3 = (k0 >> 4) | ((mC3 >> 2) & 48);
+                    mn1_3 = (k1 >> 4) | ((mD3 >> 2) & 48);
+                }
+                Vector<int32,8> rv3 = raw3.asWords();
+                Vector<uint8,32> lo3 = (rv3 & 252645135).asBytes().asUnsigned();
+                Vector<uint8,32> hi3 = ((rv3 >> 4) & 252645135).asBytes().asUnsigned();
+                Vector<int32,8> dl3 = lo3.dotAccum(a0, zv);
+                Vector<int32,8> dh3 = hi3.dotAccum(a1, zv);
+                int32 sumi3 = (dl3[0] + dl3[1] + dl3[2] + dl3[3]
+                    + dl3[4] + dl3[5] + dl3[6] + dl3[7]) * sc0_3
+                             + (dh3[0] + dh3[1] + dh3[2] + dh3[3]
+                                 + dh3[4] + dh3[5] + dh3[6] + dh3[7]) * sc1_3;
+                int32 dmins3 = as0 * mn0_3 + as1 * mn1_3;
+                acc3 = acc3 + d3 * xs * (float32) sumi3
+                          - dmin3 * xs * (float32) dmins3;
+                b = b + wv / 4;
+            }
+            acc1 = acc1 * w1;
+            acc2 = acc2 * w2;
+            acc3 = acc3 * w3;
+        }
+        // ONE subgroup reduction per row slot (2026-08-26: a five-barrier
+        // LDS tree moved through memory what the hardware reduces across
+        // lanes; the shuffle butterfly tried in 2026-08 was wrong and no
+        // faster).
+        if (R > 1) {
+            float32 t0 = Wave.reduceSumF32(acc0);
+            float32 t1 = Wave.reduceSumF32(acc1);
+            float32 t2 = Wave.reduceSumF32(acc2);
+            float32 t3 = Wave.reduceSumF32(acc3);
+            if (lane == 0) {
+                int64 o = yOff + (int64) row0;
+                if (accum != 0) {
+                    if (row0 < rows) { y[o] = y[o] + t0; }
+                    if (row0 + 1 < rows) { y[o + 1L] = y[o + 1L] + t1; }
+                    if (row0 + 2 < rows) { y[o + 2L] = y[o + 2L] + t2; }
+                    if (row0 + 3 < rows) { y[o + 3L] = y[o + 3L] + t3; }
+                } else {
+                    if (row0 < rows) { y[o] = t0; }
+                    if (row0 + 1 < rows) { y[o + 1L] = t1; }
+                    if (row0 + 2 < rows) { y[o + 2L] = t2; }
+                    if (row0 + 3 < rows) { y[o + 3L] = t3; }
+                }
+            }
+        } else {
+            uint32 r = 0;
+            while (r < rpw) {
+                float32 part = 0.0f;
+                if (sub == r) { part = acc0; }
+                float32 tot = Wave.reduceSumF32(part);
+                if (lane == 0 && wave * rpw + r < rows) {
+                    // Unit 48: accumulate form — the decode o-projection
+                    // folds its residual add into the store.
+                    if (accum != 0) {
+                        y[yOff + (int64) (wave * rpw + r)] =
+                            y[yOff + (int64) (wave * rpw + r)] + tot;
+                    } else {
+                        y[yOff + (int64) (wave * rpw + r)] = tot;
+                    }
+                }
+                r = r + 1;
+            }
+        }
+    }
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void q4kQ8WavePfMatVecKernel(KernelBuffer<float32> y,
+            KernelBuffer<int8> packed, KernelBuffer<int8> xp,
+            uint32 rows, int64 blocksPerRow, int64 yOff, uint32 accum) {
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 wave = KernelThread.globalIdX() / wv;
+        uint32 lpr = 4 * (uint32) blocksPerRow;
+        uint32 rpw = 1;
+        uint32 rl = lane;
+        uint32 sub = 0;
+        uint32 R = 4;
+        if (lpr < wv) { rpw = wv / lpr; sub = lane / lpr; rl = lane - sub * lpr; R = 1; }
+        uint32 row0 = wave * R * rpw + sub;
+        uint32 rowBytes = (uint32) blocksPerRow * 144;
+        uint32 bpr = (uint32) blocksPerRow;
+        float32 acc0 = 0.0f;
+        float32 acc1 = 0.0f;
+        float32 acc2 = 0.0f;
+        float32 acc3 = 0.0f;
+        if (sub < rpw && row0 < rows) {
+            uint32 last = rows - 1;
+            uint32 r1 = row0 + 1; if (r1 > last) { r1 = last; }
+            uint32 r2 = row0 + 2; if (r2 > last) { r2 = last; }
+            uint32 r3 = row0 + 3; if (r3 > last) { r3 = last; }
+            float32 w1 = 0.0f; if (R > 1 && row0 + 1 < rows) { w1 = 1.0f; }
+            float32 w2 = 0.0f; if (R > 1 && row0 + 2 < rows) { w2 = 1.0f; }
+            float32 w3 = 0.0f; if (R > 1 && row0 + 3 < rows) { w3 = 1.0f; }
+            uint32 rb0 = row0 * rowBytes;
+            uint32 rb1 = r1 * rowBytes;
+            uint32 rb2 = r2 * rowBytes;
+            uint32 rb3 = r3 * rowBytes;
+            int32 g = (int32) (rl % 4);
+            uint32 b = rl / 4;
+            int32 sh0 = 16 * (g & 1);
+            int32 sh1 = sh0 + 8;
+            int32 hiSel = 0 - (g >> 1);
+            int32 loSel = hiSel ^ (0 - 1);
+            Vector<int32,8> zv = heap Vector<int32,8>(0, 0, 0, 0, 0, 0, 0, 0);
+            uint32 stepB = wv / 4;
+            Vector<int8,32> na0 = xp.vload<32>((int64) (b * 320 + (uint32) (64 * g)));
+            Vector<int8,32> na1 = xp.vload<32>((int64) (b * 320 + (uint32) (64 * g)) + 32L);
+            Vector<int8,4> ndv = xp.vload<4>((int64) (b * 320) + 288L);
+            Vector<int8,16> nhv0 = packed.vload<16>((int64) (rb0 + b * 144));
+            Vector<uint8,32> nraw0 = packed.vload<32>((int64) (rb0 + b * 144 + (uint32) (32 * g)) + 16L).asUnsigned();
+            Vector<int8,16> nhv1 = packed.vload<16>((int64) (rb1 + b * 144));
+            Vector<uint8,32> nraw1 = packed.vload<32>((int64) (rb1 + b * 144 + (uint32) (32 * g)) + 16L).asUnsigned();
+            Vector<int8,16> nhv2 = packed.vload<16>((int64) (rb2 + b * 144));
+            Vector<uint8,32> nraw2 = packed.vload<32>((int64) (rb2 + b * 144 + (uint32) (32 * g)) + 16L).asUnsigned();
+            Vector<int8,16> nhv3 = packed.vload<16>((int64) (rb3 + b * 144));
+            Vector<uint8,32> nraw3 = packed.vload<32>((int64) (rb3 + b * 144 + (uint32) (32 * g)) + 16L).asUnsigned();
+            while (b < bpr) {
+                Vector<int8,32> a0 = na0;
+                Vector<int8,32> a1 = na1;
+                Vector<int8,4> dv = ndv;
+                Vector<int8,16> hv0 = nhv0;
+                Vector<uint8,32> raw0 = nraw0;
+                Vector<int8,16> hv1 = nhv1;
+                Vector<uint8,32> raw1 = nraw1;
+                Vector<int8,16> hv2 = nhv2;
+                Vector<uint8,32> raw2 = nraw2;
+                Vector<int8,16> hv3 = nhv3;
+                Vector<uint8,32> raw3 = nraw3;
+                uint32 bn = b + stepB;
+                int32 inr = (((int32) bn - (int32) bpr) >> 31) & 1;
+                uint32 bl = b + (uint32) (inr * (int32) stepB);
+                na0 = xp.vload<32>((int64) (bl * 320 + (uint32) (64 * g)));
+                na1 = xp.vload<32>((int64) (bl * 320 + (uint32) (64 * g)) + 32L);
+                ndv = xp.vload<4>((int64) (bl * 320) + 288L);
+                nhv0 = packed.vload<16>((int64) (rb0 + bl * 144));
+                nraw0 = packed.vload<32>((int64) (rb0 + bl * 144 + (uint32) (32 * g)) + 16L).asUnsigned();
+                nhv1 = packed.vload<16>((int64) (rb1 + bl * 144));
+                nraw1 = packed.vload<32>((int64) (rb1 + bl * 144 + (uint32) (32 * g)) + 16L).asUnsigned();
+                nhv2 = packed.vload<16>((int64) (rb2 + bl * 144));
+                nraw2 = packed.vload<32>((int64) (rb2 + bl * 144 + (uint32) (32 * g)) + 16L).asUnsigned();
+                nhv3 = packed.vload<16>((int64) (rb3 + bl * 144));
+                nraw3 = packed.vload<32>((int64) (rb3 + bl * 144 + (uint32) (32 * g)) + 16L).asUnsigned();
+                float32 xs = Cajeta.bitsToF32(((int32) dv[0] & 255)
+                    | (((int32) dv[1] & 255) << 8)
+                    | (((int32) dv[2] & 255) << 16)
+                    | (((int32) dv[3] & 255) << 24));
+                Vector<uint8,32> ones = (a0 ^ a0).asUnsigned() | 1;
+                Vector<int32,8> os0 = ones.dotAccum(a0, zv);
+                Vector<int32,8> os1 = ones.dotAccum(a1, zv);
+                int32 as0 = os0[0] + os0[1] + os0[2] + os0[3]
+                    + os0[4] + os0[5] + os0[6] + os0[7];
+                int32 as1 = os1[0] + os1[1] + os1[2] + os1[3]
+                    + os1[4] + os1[5] + os1[6] + os1[7];
+                float32 d0 = M.halfBitsToF32Branchless(((int32) hv0[0] & 255)
+                    | (((int32) hv0[1] & 255) << 8));
+                float32 dmin0 = M.halfBitsToF32Branchless(((int32) hv0[2] & 255)
+                    | (((int32) hv0[3] & 255) << 8));
+                Vector<int32,4> hw0 = hv0.asWords();
+                int32 scw0 = hw0[1];
+                int32 mnw0 = hw0[2];
+                int32 hiw0 = hw0[3];
+                int32 sA0 = (scw0 >> sh0) & 255;
+                int32 sB0 = (scw0 >> sh1) & 255;
+                int32 mC0 = (mnw0 >> sh0) & 255;
+                int32 mD0 = (mnw0 >> sh1) & 255;
+                int32 sc0_0 = sA0 & 63;
+                int32 sc1_0 = sB0 & 63;
+                int32 mn0_0 = mC0 & 63;
+                int32 mn1_0 = mD0 & 63;
+                int32 k0_0 = (hiw0 >> sh0) & 255;
+                int32 k1_0 = (hiw0 >> sh1) & 255;
+                sc0_0 = (((k0_0 & 15) | ((sA0 >> 2) & 48)) & hiSel) | (sc0_0 & loSel);
+                sc1_0 = (((k1_0 & 15) | ((sB0 >> 2) & 48)) & hiSel) | (sc1_0 & loSel);
+                mn0_0 = (((k0_0 >> 4) | ((mC0 >> 2) & 48)) & hiSel) | (mn0_0 & loSel);
+                mn1_0 = (((k1_0 >> 4) | ((mD0 >> 2) & 48)) & hiSel) | (mn1_0 & loSel);
+                Vector<int32,8> rv0 = raw0.asWords();
+                Vector<uint8,32> lo0 = (rv0 & 252645135).asBytes().asUnsigned();
+                Vector<uint8,32> hi0 = ((rv0 >> 4) & 252645135).asBytes().asUnsigned();
+                Vector<int32,8> dl0 = lo0.dotAccum(a0, zv);
+                Vector<int32,8> dh0 = hi0.dotAccum(a1, zv);
+                int32 sumi0 = (dl0[0] + dl0[1] + dl0[2] + dl0[3]
+                    + dl0[4] + dl0[5] + dl0[6] + dl0[7]) * sc0_0
+                             + (dh0[0] + dh0[1] + dh0[2] + dh0[3]
+                                 + dh0[4] + dh0[5] + dh0[6] + dh0[7]) * sc1_0;
+                int32 dmins0 = as0 * mn0_0 + as1 * mn1_0;
+                acc0 = acc0 + d0 * xs * (float32) sumi0
+                          - dmin0 * xs * (float32) dmins0;
+                float32 d1 = M.halfBitsToF32Branchless(((int32) hv1[0] & 255)
+                    | (((int32) hv1[1] & 255) << 8));
+                float32 dmin1 = M.halfBitsToF32Branchless(((int32) hv1[2] & 255)
+                    | (((int32) hv1[3] & 255) << 8));
+                Vector<int32,4> hw1 = hv1.asWords();
+                int32 scw1 = hw1[1];
+                int32 mnw1 = hw1[2];
+                int32 hiw1 = hw1[3];
+                int32 sA1 = (scw1 >> sh0) & 255;
+                int32 sB1 = (scw1 >> sh1) & 255;
+                int32 mC1 = (mnw1 >> sh0) & 255;
+                int32 mD1 = (mnw1 >> sh1) & 255;
+                int32 sc0_1 = sA1 & 63;
+                int32 sc1_1 = sB1 & 63;
+                int32 mn0_1 = mC1 & 63;
+                int32 mn1_1 = mD1 & 63;
+                int32 k0_1 = (hiw1 >> sh0) & 255;
+                int32 k1_1 = (hiw1 >> sh1) & 255;
+                sc0_1 = (((k0_1 & 15) | ((sA1 >> 2) & 48)) & hiSel) | (sc0_1 & loSel);
+                sc1_1 = (((k1_1 & 15) | ((sB1 >> 2) & 48)) & hiSel) | (sc1_1 & loSel);
+                mn0_1 = (((k0_1 >> 4) | ((mC1 >> 2) & 48)) & hiSel) | (mn0_1 & loSel);
+                mn1_1 = (((k1_1 >> 4) | ((mD1 >> 2) & 48)) & hiSel) | (mn1_1 & loSel);
+                Vector<int32,8> rv1 = raw1.asWords();
+                Vector<uint8,32> lo1 = (rv1 & 252645135).asBytes().asUnsigned();
+                Vector<uint8,32> hi1 = ((rv1 >> 4) & 252645135).asBytes().asUnsigned();
+                Vector<int32,8> dl1 = lo1.dotAccum(a0, zv);
+                Vector<int32,8> dh1 = hi1.dotAccum(a1, zv);
+                int32 sumi1 = (dl1[0] + dl1[1] + dl1[2] + dl1[3]
+                    + dl1[4] + dl1[5] + dl1[6] + dl1[7]) * sc0_1
+                             + (dh1[0] + dh1[1] + dh1[2] + dh1[3]
+                                 + dh1[4] + dh1[5] + dh1[6] + dh1[7]) * sc1_1;
+                int32 dmins1 = as0 * mn0_1 + as1 * mn1_1;
+                acc1 = acc1 + d1 * xs * (float32) sumi1
+                          - dmin1 * xs * (float32) dmins1;
+                float32 d2 = M.halfBitsToF32Branchless(((int32) hv2[0] & 255)
+                    | (((int32) hv2[1] & 255) << 8));
+                float32 dmin2 = M.halfBitsToF32Branchless(((int32) hv2[2] & 255)
+                    | (((int32) hv2[3] & 255) << 8));
+                Vector<int32,4> hw2 = hv2.asWords();
+                int32 scw2 = hw2[1];
+                int32 mnw2 = hw2[2];
+                int32 hiw2 = hw2[3];
+                int32 sA2 = (scw2 >> sh0) & 255;
+                int32 sB2 = (scw2 >> sh1) & 255;
+                int32 mC2 = (mnw2 >> sh0) & 255;
+                int32 mD2 = (mnw2 >> sh1) & 255;
+                int32 sc0_2 = sA2 & 63;
+                int32 sc1_2 = sB2 & 63;
+                int32 mn0_2 = mC2 & 63;
+                int32 mn1_2 = mD2 & 63;
+                int32 k0_2 = (hiw2 >> sh0) & 255;
+                int32 k1_2 = (hiw2 >> sh1) & 255;
+                sc0_2 = (((k0_2 & 15) | ((sA2 >> 2) & 48)) & hiSel) | (sc0_2 & loSel);
+                sc1_2 = (((k1_2 & 15) | ((sB2 >> 2) & 48)) & hiSel) | (sc1_2 & loSel);
+                mn0_2 = (((k0_2 >> 4) | ((mC2 >> 2) & 48)) & hiSel) | (mn0_2 & loSel);
+                mn1_2 = (((k1_2 >> 4) | ((mD2 >> 2) & 48)) & hiSel) | (mn1_2 & loSel);
+                Vector<int32,8> rv2 = raw2.asWords();
+                Vector<uint8,32> lo2 = (rv2 & 252645135).asBytes().asUnsigned();
+                Vector<uint8,32> hi2 = ((rv2 >> 4) & 252645135).asBytes().asUnsigned();
+                Vector<int32,8> dl2 = lo2.dotAccum(a0, zv);
+                Vector<int32,8> dh2 = hi2.dotAccum(a1, zv);
+                int32 sumi2 = (dl2[0] + dl2[1] + dl2[2] + dl2[3]
+                    + dl2[4] + dl2[5] + dl2[6] + dl2[7]) * sc0_2
+                             + (dh2[0] + dh2[1] + dh2[2] + dh2[3]
+                                 + dh2[4] + dh2[5] + dh2[6] + dh2[7]) * sc1_2;
+                int32 dmins2 = as0 * mn0_2 + as1 * mn1_2;
+                acc2 = acc2 + d2 * xs * (float32) sumi2
+                          - dmin2 * xs * (float32) dmins2;
+                float32 d3 = M.halfBitsToF32Branchless(((int32) hv3[0] & 255)
+                    | (((int32) hv3[1] & 255) << 8));
+                float32 dmin3 = M.halfBitsToF32Branchless(((int32) hv3[2] & 255)
+                    | (((int32) hv3[3] & 255) << 8));
+                Vector<int32,4> hw3 = hv3.asWords();
+                int32 scw3 = hw3[1];
+                int32 mnw3 = hw3[2];
+                int32 hiw3 = hw3[3];
+                int32 sA3 = (scw3 >> sh0) & 255;
+                int32 sB3 = (scw3 >> sh1) & 255;
+                int32 mC3 = (mnw3 >> sh0) & 255;
+                int32 mD3 = (mnw3 >> sh1) & 255;
+                int32 sc0_3 = sA3 & 63;
+                int32 sc1_3 = sB3 & 63;
+                int32 mn0_3 = mC3 & 63;
+                int32 mn1_3 = mD3 & 63;
+                int32 k0_3 = (hiw3 >> sh0) & 255;
+                int32 k1_3 = (hiw3 >> sh1) & 255;
+                sc0_3 = (((k0_3 & 15) | ((sA3 >> 2) & 48)) & hiSel) | (sc0_3 & loSel);
+                sc1_3 = (((k1_3 & 15) | ((sB3 >> 2) & 48)) & hiSel) | (sc1_3 & loSel);
+                mn0_3 = (((k0_3 >> 4) | ((mC3 >> 2) & 48)) & hiSel) | (mn0_3 & loSel);
+                mn1_3 = (((k1_3 >> 4) | ((mD3 >> 2) & 48)) & hiSel) | (mn1_3 & loSel);
+                Vector<int32,8> rv3 = raw3.asWords();
+                Vector<uint8,32> lo3 = (rv3 & 252645135).asBytes().asUnsigned();
+                Vector<uint8,32> hi3 = ((rv3 >> 4) & 252645135).asBytes().asUnsigned();
+                Vector<int32,8> dl3 = lo3.dotAccum(a0, zv);
+                Vector<int32,8> dh3 = hi3.dotAccum(a1, zv);
+                int32 sumi3 = (dl3[0] + dl3[1] + dl3[2] + dl3[3]
+                    + dl3[4] + dl3[5] + dl3[6] + dl3[7]) * sc0_3
+                             + (dh3[0] + dh3[1] + dh3[2] + dh3[3]
+                                 + dh3[4] + dh3[5] + dh3[6] + dh3[7]) * sc1_3;
+                int32 dmins3 = as0 * mn0_3 + as1 * mn1_3;
+                acc3 = acc3 + d3 * xs * (float32) sumi3
+                          - dmin3 * xs * (float32) dmins3;
+                b = bn;
+            }
+            acc1 = acc1 * w1;
+            acc2 = acc2 * w2;
+            acc3 = acc3 * w3;
+        }
+        if (R > 1) {
+            float32 t0 = Wave.reduceSumF32(acc0);
+            float32 t1 = Wave.reduceSumF32(acc1);
+            float32 t2 = Wave.reduceSumF32(acc2);
+            float32 t3 = Wave.reduceSumF32(acc3);
+            if (lane == 0) {
+                int64 o = yOff + (int64) row0;
+                if (accum != 0) {
+                    if (row0 < rows) { y[o] = y[o] + t0; }
+                    if (row0 + 1 < rows) { y[o + 1L] = y[o + 1L] + t1; }
+                    if (row0 + 2 < rows) { y[o + 2L] = y[o + 2L] + t2; }
+                    if (row0 + 3 < rows) { y[o + 3L] = y[o + 3L] + t3; }
+                } else {
+                    if (row0 < rows) { y[o] = t0; }
+                    if (row0 + 1 < rows) { y[o + 1L] = t1; }
+                    if (row0 + 2 < rows) { y[o + 2L] = t2; }
+                    if (row0 + 3 < rows) { y[o + 3L] = t3; }
+                }
+            }
+        } else {
+            uint32 r = 0;
+            while (r < rpw) {
+                float32 part = 0.0f;
+                if (sub == r) { part = acc0; }
+                float32 tot = Wave.reduceSumF32(part);
+                if (lane == 0 && wave * rpw + r < rows) {
+                    if (accum != 0) {
+                        y[yOff + (int64) (wave * rpw + r)] =
+                            y[yOff + (int64) (wave * rpw + r)] + tot;
+                    } else {
+                        y[yOff + (int64) (wave * rpw + r)] = tot;
+                    }
+                }
+                r = r + 1;
+            }
+        }
+    }
+    public static void main(String[] args) { }
+}
