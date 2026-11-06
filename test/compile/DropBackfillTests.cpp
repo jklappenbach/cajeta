@@ -24,6 +24,8 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Linker/Linker.h"
+#include "llvm/TargetParser/Host.h"
+#include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 
 #include "cajeta/compile/Compiler.h"
@@ -279,6 +281,51 @@ TEST(DropBackfillTests, UnpinnedDropThunkIsDiscardedByLazyLinkMerge) {
 
 TEST(DropBackfillTests, PinnedDropThunkSurvivesLazyLinkMerge) {
     EXPECT_TRUE(dropThunkSurvivesAdversarialMerge(/*pin=*/true));
+}
+
+// Object emission pins too (a stack drop only another module calls was deleted
+// by the owner module's own GlobalDCE), but keeps the comdat so the system
+// linker still merges the copies. The JIT pin sheds it. Returns the pinned
+// stack drop's comdat, or a sentinel when the layout is not as expected.
+const llvm::Comdat* comdatAfterPin(bool shedComdat, bool& weakOdr) {
+    static const llvm::Comdat* const kUnexpected =
+        reinterpret_cast<const llvm::Comdat*>(uintptr_t(1));
+    weakOdr = false;
+    TempTree tree({{"test/S.cajeta", kValueClassSource}});
+    Compiler compiler;
+    compileTree(compiler, tree);
+    auto klass = classFor("test.S");
+    if (!klass) { ADD_FAILURE() << "test.S not registered"; return kUnexpected; }
+    llvm::Function* def = klass->getOrCreateStackDropFunction();
+    if (!def || !def->hasLinkOnceODRLinkage() || !def->getComdat()) {
+        ADD_FAILURE() << "expected a linkonce_odr stack drop in a comdat";
+        return kUnexpected;
+    }
+    auto moduleList = compiler.getModules();
+    std::vector<CajetaModulePtr> all(moduleList.begin(), moduleList.end());
+    pinDropFunctionDefinitions(all, shedComdat);
+    weakOdr = def->hasWeakODRLinkage();
+    return def->getComdat();
+}
+
+bool machOHost() {
+    return llvm::Triple(llvm::sys::getDefaultTargetTriple()).isOSBinFormatMachO();
+}
+
+TEST(DropBackfillTests, ObjectPinKeepsTheComdat) {
+    if (machOHost()) GTEST_SKIP() << "Mach-O drops carry no comdat";
+    bool weakOdr = false;
+    const llvm::Comdat* c = comdatAfterPin(/*shedComdat=*/false, weakOdr);
+    EXPECT_TRUE(weakOdr);
+    EXPECT_NE(nullptr, c);
+}
+
+TEST(DropBackfillTests, JitPinShedsTheComdat) {
+    if (machOHost()) GTEST_SKIP() << "Mach-O drops carry no comdat";
+    bool weakOdr = false;
+    const llvm::Comdat* c = comdatAfterPin(/*shedComdat=*/true, weakOdr);
+    EXPECT_TRUE(weakOdr);
+    EXPECT_EQ(nullptr, c);
 }
 
 // 1.1.6 — stale-class guard. The canonical type map is a persistent

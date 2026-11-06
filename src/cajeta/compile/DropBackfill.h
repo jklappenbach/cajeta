@@ -20,9 +20,13 @@ namespace cajeta {
     void backfillDropFunctions(const std::vector<CajetaModulePtr>& modulesToScan,
                                const std::vector<CajetaModulePtr>& currentModules);
 
-    // JIT-merge only: promote every drop-thunk definition to weak_odr and shed its
-    // comdat, so llvm::Linker cannot discard a linkonce_odr thunk nothing references yet
-    // and leave a later consumer's extern dangling. The AOT path must NOT do this.
-    void pinDropFunctionDefinitions(const std::vector<CajetaModulePtr>& modules);
+    // Promote every drop-thunk definition to weak_odr, so nothing can discard a
+    // linkonce_odr thunk that its own module never calls and leave another module's
+    // extern dangling. The JIT merge (`shedComdat`) also drops the comdat, because
+    // llvm::Linker discards lazily at the in-process merge. Object emission keeps the
+    // comdat for the system linker to merge, and pins only because each module is
+    // optimized alone, where GlobalDCE deletes an uncalled linkonce_odr thunk.
+    void pinDropFunctionDefinitions(const std::vector<CajetaModulePtr>& modules,
+                                    bool shedComdat = true);
 
 } // namespace cajeta

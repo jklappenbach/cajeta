@@ -68,7 +68,8 @@ namespace cajeta {
         }
     }
 
-    void pinDropFunctionDefinitions(const std::vector<CajetaModulePtr>& modules) {
+    void pinDropFunctionDefinitions(const std::vector<CajetaModulePtr>& modules,
+                                    bool shedComdat) {
         auto classByDropSymbol = buildDropSymbolMap();
         for (auto& module : modules) {
             for (auto& fn : module->getLlvmModule()->functions()) {
@@ -83,7 +84,7 @@ namespace cajeta {
                               << ")\n";
                 }
                 fn.setLinkage(llvm::GlobalValue::WeakODRLinkage);
-                fn.setComdat(nullptr);
+                if (shedComdat) fn.setComdat(nullptr);
             }
         }
     }

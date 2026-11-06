@@ -2409,6 +2409,18 @@ namespace cajeta {
             }
         }
 
+        // A drop function is emitted linkonce_odr in the module that owns its
+        // class, and each module is optimized alone. A stack drop that only a
+        // classpath archive's code calls has no caller in its own module, so the
+        // optimizer discarded it and the link failed. Pin them weak_odr, keeping
+        // the comdat so the system linker still merges the copies.
+        if (emitMode == EmitMode::Obj || emitMode == EmitMode::Exe) {
+            std::vector<CajetaModulePtr> pinned(modules.begin(), modules.end());
+            pinned.insert(pinned.end(), externalModules.begin(), externalModules.end());
+            if (auto stdlib = CajetaModule::getStdlibModule()) pinned.push_back(stdlib);
+            pinDropFunctionDefinitions(pinned, /*shedComdat=*/false);
+        }
+
         codegenPhase.reset();
         std::unique_ptr<ProgressPhase> emitPhase =
             std::make_unique<ProgressPhase>("emit", "Emitting objects");
