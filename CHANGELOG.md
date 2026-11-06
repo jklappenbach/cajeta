@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.52.0 (2026-11-05)
+
+- **`@Kernel(targets = {...})` names the backends a kernel is built for.** A target is `"cpu"`, `"gpu"` (vulkan, amdgpu and nvptx) or a backend name, with `@Unlowered`'s aliases; with none, a kernel is built for every backend as before. A backend outside the targets does not lower or register the kernel and spends no build time on it. There, `Device.kernelUnavailableReason(name)` answers `not a target`, a launch throws `XpuLaunchException` naming the kernel and the backend, and `Device.offTargetKernelCount()` and `offTargetKernel(i)` list such kernels for a census. An unknown target name fails the build (`CAJETA_ERROR_XPU_UNKNOWN_TARGET`). Before, a GPU-only kernel was lowered for the cpu backend and ran there as emulated blocks when a router reached it: cajeta-llm's 72B on cpu stalled for over ten minutes in one, and its cpu build spent 123 s vectorising wave kernels the cpu decode never routes to.
+- **`@Unlowered` may only name backends among a kernel's targets** (`CAJETA_ERROR_XPU_UNLOWERED_OFF_TARGET`). A `hold = true` over every GPU backend, or over the cpu backend alone, notes the `@Kernel(targets = ...)` that says the same thing.
+- **`@Backend` is retired.** It was parsed and never enforced; on a kernel it is now an error pointing at `@Kernel(targets)`.
+- **A prefetch loop vectorises in proportion to its size on the cpu backend.** LoopVectorize looked a block's plan up by walking every predecessor back to the plan entry, once per recipe in `simplifyRecipes` and once per probe in its CSE, each probe also rebuilding a type analysis. cajeta-llm's Q6_K prefetch wave mat-vec took 31.7 s to vectorise and takes 0.67 s, and the library's cpu build spends 31 s vectorising instead of 170 s. The toolchain builds against `cajeta-llvm-23-r12`, which carries the fix.
+- **cpu kernel pool workers above a lowered cap park until it is raised**, instead of waking for every launch.
+- **Autotune keeps one entry per build**, so two binaries over one store do not re-time each other.
+- `CAJETA_TIME_PASSES` reports the cpu vectorize pipeline, and `CAJETA_XPU_CPU_DUMP_PRELV` writes the whole module, so `opt` can replay LoopVectorize on it.
+
 ## 0.51.0 (2026-11-03)
 
 - **The cpu kernel pool's chunks shrink as a launch runs.** Each batch gives every participant one chunk of half the blocks left, divided among them, down to one block, so a worker slowed by other load on its core holds the launch for one small chunk instead of a whole share. On a 16-core Zen 5 host with eight busy loops beside it, cajeta-llm's 8B decode runs at 21.3 tok/s against 17.7 with one chunk a worker, and its Q4_K_M prefill at 290 tok/s against about 275; unloaded decode is level. `CAJETA_XPU_CPU_CHUNKS=n` (1 to 64) keeps n equal chunks a participant. Every chunk starts its data stream cold, so a kernel that streams weights should prefetch ahead rather than rely on the hardware prefetcher having trained.
