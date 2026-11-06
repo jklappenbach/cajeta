@@ -1,6 +1,6 @@
 # cajeta-ml-gpu — cajeta-ml as a GPU library
 
-Status: draft, being written with Julian (2026-11-06).
+Status: approved by Julian 2026-11-06.
 
 ## 1. Definition
 
