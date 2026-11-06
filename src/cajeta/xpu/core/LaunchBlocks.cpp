@@ -41,7 +41,7 @@ namespace xpu {
         for (auto& module : modules) {
             if (!module) continue;
             bool hasKernel = false;
-            for (auto& method : module->getAllMethods())
+            for (auto& method : module->getXpuMethods())
                 if (method && isKernel(*method)) { hasKernel = true; break; }
             if (!hasKernel) continue;
             auto mir = mir::XpuMirBuilder::buildForModule(module);
@@ -68,7 +68,7 @@ namespace xpu {
             if (b && !broken.count(qualified)) out.pinned.emplace(qualified, *b);
         for (auto& module : modules) {
             if (!module) continue;
-            for (auto& method : module->getAllMethods()) {
+            for (auto& method : module->getXpuMethods()) {
                 if (!method || !isKernel(*method)) continue;
                 auto it = out.pinned.find(qualifiedKernelName(method));
                 method->setPinnedLaunchBlock(it == out.pinned.end()

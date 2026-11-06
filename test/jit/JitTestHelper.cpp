@@ -1480,7 +1480,7 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     {
         std::vector<cajeta::MethodPtr> kernels;
         for (auto& m : compiler->getModules()) {
-            for (auto& method : m->getAllMethods()) {
+            for (auto& method : m->getXpuMethods()) {
                 if (method && cajeta::xpu::isKernel(*method)) {
                     kernels.push_back(method);
                 }

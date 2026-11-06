@@ -1351,9 +1351,7 @@ void foldWaveVariants(llvm::Function& f) {
         // registry is keyed by the SIMPLE name, so symbols are qualified by the
         // declaring class and the registry collision is diagnosed here.
         auto symSuffix = [](const cajeta::MethodPtr& m) {
-            std::string q = m->getParent() ? m->getParent()->toCanonical()
-                                           : std::string();
-            std::string full = q.empty() ? m->getName() : q + "." + m->getName();
+            std::string full = qualifiedKernelName(m);
             for (char& c : full)
                 if (!std::isalnum((unsigned char) c) && c != '.' && c != '_')
                     c = '_';

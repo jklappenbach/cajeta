@@ -1254,7 +1254,7 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
             std::vector<cajeta::MethodPtr> kernels;
             for (auto& m : mods) {
                 if (!m) continue;
-                for (auto& method : m->getAllMethods())
+                for (auto& method : m->getXpuMethods())
                     if (method && cajeta::xpu::isKernel(*method))
                         kernels.push_back(method);
             }

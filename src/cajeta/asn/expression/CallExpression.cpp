@@ -3,6 +3,9 @@
 //
 
 #include "CallExpression.h"
+#include <cctype>
+#include <set>
+#include <map>
 #include "Identifier.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/type/CajetaClass.h"
@@ -47,6 +50,97 @@ namespace cajeta {
             if (!label.empty() && label.back() == ':')
                 return label.substr(0, label.size() - 1);
             return label;
+        }
+
+        std::string trimmed(const std::string& t) {
+            std::size_t b = t.find_first_not_of(" \t\r\n");
+            std::size_t e = t.find_last_not_of(" \t\r\n");
+            return b == std::string::npos ? std::string() : t.substr(b, e - b + 1);
+        }
+
+        // Splits `t` at the commas outside any `<...>`.
+        std::vector<std::string> splitTopLevel(const std::string& t) {
+            std::vector<std::string> out;
+            int depth = 0;
+            std::string cur;
+            for (char c : t) {
+                if (c == '<') ++depth;
+                if (c == '>') --depth;
+                if (c == ',' && depth == 0) { out.push_back(trimmed(cur)); cur.clear(); continue; }
+                cur += c;
+            }
+            if (!trimmed(cur).empty()) out.push_back(trimmed(cur));
+            return out;
+        }
+
+        // The declared type text of each parameter of a method template, read from its source.
+        std::vector<std::string> declaredParamTypes(const MethodPtr& m) {
+            const std::string& src = m->getMethodSource();
+            const std::string& name = m->getName();
+            std::size_t at = 0;
+            while ((at = src.find(name, at)) != std::string::npos) {
+                std::size_t i = at + name.size();
+                while (i < src.size() && std::isspace((unsigned char) src[i])) ++i;
+                if (i < src.size() && src[i] == '<') {
+                    int depth = 0;
+                    for (; i < src.size(); ++i) {
+                        if (src[i] == '<') ++depth;
+                        else if (src[i] == '>' && --depth == 0) { ++i; break; }
+                    }
+                    while (i < src.size() && std::isspace((unsigned char) src[i])) ++i;
+                }
+                if (i < src.size() && src[i] == '(') {
+                    std::size_t close = src.find(')', i);
+                    if (close == std::string::npos) return {};
+                    std::vector<std::string> types;
+                    for (auto& p : splitTopLevel(src.substr(i + 1, close - i - 1))) {
+                        std::string decl = trimmed(p);
+                        while (!decl.empty() && decl[0] == '@') {
+                            std::size_t sp = decl.find(' ');
+                            decl = sp == std::string::npos ? std::string() : trimmed(decl.substr(sp));
+                        }
+                        if (decl.rfind("final ", 0) == 0) decl = trimmed(decl.substr(6));
+                        std::size_t sp = decl.find_last_of(" \t");
+                        types.push_back(sp == std::string::npos ? decl : trimmed(decl.substr(0, sp)));
+                    }
+                    return types;
+                }
+                at += name.size();
+            }
+            return {};
+        }
+
+        // Binds the method type parameters `tparams` that `text` mentions to the matching parts
+        // of the concrete type `actual`. False on a conflicting binding.
+        bool bindTypeParams(std::string text, const CajetaTypePtr& actual,
+                            const std::set<std::string>& tparams,
+                            std::map<std::string, CajetaTypePtr>& bound) {
+            text = trimmed(text);
+            while (!text.empty() && (text[0] == '#' || text[0] == '^')) text = trimmed(text.substr(1));
+            if (!actual || text.empty()) return true;
+            if (text.size() > 2 && text.compare(text.size() - 2, 2, "[]") == 0) {
+                auto arr = std::dynamic_pointer_cast<CajetaArray>(actual);
+                return !arr || bindTypeParams(text.substr(0, text.size() - 2), arr->getElementType(),
+                                              tparams, bound);
+            }
+            if (tparams.count(text)) {
+                auto it = bound.find(text);
+                if (it != bound.end() && it->second && actual->getQName() && it->second->getQName()
+                        && it->second->getQName()->toCanonical() != actual->getQName()->toCanonical())
+                    return false;
+                bound[text] = actual;
+                return true;
+            }
+            std::size_t open = text.find('<');
+            if (open == std::string::npos || text.back() != '>') return true;
+            auto cls = std::dynamic_pointer_cast<CajetaClass>(actual);
+            if (!cls) return true;
+            auto inner = splitTopLevel(text.substr(open + 1, text.size() - open - 2));
+            const auto& targs = cls->getTypeArguments();
+            if (inner.size() != targs.size()) return true;
+            for (std::size_t k = 0; k < inner.size(); ++k)
+                if (!bindTypeParams(inner[k], targs[k], tparams, bound)) return false;
+            return true;
         }
     }
 
@@ -101,8 +195,41 @@ namespace cajeta {
                 for (auto& [mkey, m] : launcher->getMethods()) {
                     if (m && m->getName() == kernelName && m->findAnnotation("Kernel")) {
                         declared = true;
+                        MethodPtr kernel = m;
+                        if (m->isMethodTemplate()) {
+                            // A generic kernel is instantiated here for its arguments' types.
+                            std::set<std::string> tparams;
+                            for (auto& tp : m->getMethodTypeParameters()) tparams.insert(tp.name);
+                            std::map<std::string, CajetaTypePtr> bound;
+                            auto texts = declaredParamTypes(m);
+                            for (std::size_t i = 0; i < texts.size() && i < args.size(); ++i) {
+                                auto e = args[i].expression;
+                                if (!e) continue;
+                                if (!e->getResolvedType()) e->resolveTypes(module);
+                                if (!bindTypeParams(texts[i], e->getResolvedType(), tparams, bound))
+                                    throw Exception("generic kernel '" + kernelName
+                                        + "' is launched with conflicting types for one type parameter",
+                                        "XPU-N02");
+                            }
+                            std::vector<CajetaTypePtr> targs;
+                            for (auto& tp : m->getMethodTypeParameters()) {
+                                auto it = bound.find(tp.name);
+                                if (it == bound.end() || !it->second)
+                                    throw Exception("cannot infer type parameter '" + tp.name
+                                        + "' of generic kernel '" + kernelName
+                                        + "' from its launch arguments", "XPU-N02");
+                                targs.push_back(it->second);
+                            }
+                            kernel = m->instantiateMethodTemplate(targs);
+                            // The captured source starts after the modifiers, so the
+                            // instantiation takes the template's annotations here.
+                            if (!kernel->findAnnotation("Kernel"))
+                                for (auto& ann : m->getAnnotationInstances())
+                                    kernel->addAnnotationInstance(ann);
+                            module->noteXpuKernelInstantiation(kernel);
+                        }
                         // An instantiation's kernel registers under its own name.
-                        registryName = cajeta::xpu::kernelRegistryName(m);
+                        registryName = cajeta::xpu::kernelRegistryName(kernel);
                         break;
                     }
                 }

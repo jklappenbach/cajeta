@@ -2651,7 +2651,7 @@ namespace cajeta {
     // module, and with --xpu-emit also drop a per-kernel artifact. Never throws.
     void Compiler::emitXpuKernels(const std::string& archiveRootPath) {
         for (auto& module : modules) {
-            for (auto& method : module->getAllMethods()) {
+            for (auto& method : module->getXpuMethods()) {
                 if (!method || !cajeta::xpu::isKernel(*method)) continue;
                 SourceSite at = method->declarationSite();
                 std::string stored = cajeta::xpu::storedAnnotationError(method);
@@ -2796,7 +2796,7 @@ namespace cajeta {
         for (auto& module : xpuModules) {
             std::vector<MethodPtr> kernels;
             std::vector<MethodPtr> shaders;
-            for (auto& method : module->getAllMethods()) {
+            for (auto& method : module->getXpuMethods()) {
                 if (!method) continue;
                 if (cajeta::xpu::isKernel(*method)) {
                     kernels.push_back(method);

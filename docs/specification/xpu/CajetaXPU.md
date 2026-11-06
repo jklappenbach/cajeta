@@ -59,7 +59,7 @@ public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,
 
 | attribute | meaning |
 |---|---|
-| `@Kernel` | a device entry point, registered under its qualified name (a class template's kernel registers once per instantiation, `Tile_128_128_32_64_128_q4kQ8`) |
+| `@Kernel` | a device entry point, registered under its qualified name (a class template's kernel registers once per instantiation, `Tile_128_128_32_64_128_q4kQ8`, and a generic kernel once per element type its launches use, `twiceK_float32`, §3.5) |
 | `@Kernel(targets = {...})` | the backends the kernel is built for: `"cpu"`, `"gpu"` (vulkan, amdgpu and nvptx) or backend names; every backend when absent (§3.6) |
 | `@Device` | a static helper callable from kernels as well as from the host; lowered as an always-inlined device function per kernel that uses it |
 | `@Wave(width = N)` | the lane count the body assumes (§3.2) |
@@ -324,6 +324,30 @@ member that fails it is refused by name with the failing clause
 that lists the members and chooses among them is the library's (§6.2).
 The specification is xpu-tile-shape-selection, and the template mechanics are
 [ExplicitInstantiation](../lang/templates/ExplicitInstantiation.md).
+
+A kernel may also be generic over its element type, as a method template. Its
+launch sits in code generic over that type, and the kernel is instantiated
+for the concrete types at that launch, inferred from the launch arguments:
+
+```cajeta
+@Kernel
+public static void twiceK<E>(KernelBuffer<E> y, KernelBuffer<E> x, uint32 n) {
+    uint32 i = KernelThread.globalIdX();
+    if (i < n) { y[i] = x[i] + x[i]; }
+}
+public static void twice<E>(KernelBuffer<E> y, KernelBuffer<E> x, uint32 n) {
+    KernelStream s #= KernelStream.current();
+    twiceK.launch(s, grid: [(n + 63) / 64], block: [64])(y, x, n);
+    s.sync();
+}
+```
+
+`Gen.twice<float32>(…)` and `Gen.twice<float16>(…)` build and register
+`twiceK_float32` and `twiceK_float16`, once each however many launches reach
+them. The uninstantiated template builds nothing. A type parameter the
+arguments do not determine, or two arguments that disagree, fails the build
+(`XPU-N02`), and an instantiation that a backend cannot lower is named by the
+build gates with its type (§3.6).
 
 ### 3.6 The build gates
 

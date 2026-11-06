@@ -38,7 +38,30 @@ namespace xpu {
         return registryNameOf(kernel);
     }
 
+    // A method instantiation's `<args>` suffix as a symbol: `twiceK<float32>` -> `twiceK_float32`.
+    static std::string symbolOfMethodPart(const std::string& part) {
+        std::string out;
+        for (const char c : part) {
+            if (std::isalnum((unsigned char) c) || c == '_') out += c;
+            else if (!out.empty() && out.back() != '_') out += '_';
+        }
+        while (!out.empty() && out.back() == '_') out.pop_back();
+        return out;
+    }
+
     std::string registryNameOf(const std::string& qualified) {
+        // A qualified kernel name ends with its method, so a trailing `>` closes the
+        // method's own type arguments.
+        if (!qualified.empty() && qualified.back() == '>') {
+            int depth = 0;
+            std::size_t i = qualified.size();
+            while (i-- > 0) {
+                if (qualified[i] == '>') ++depth;
+                else if (qualified[i] == '<' && --depth == 0) break;
+            }
+            if (i < qualified.size())
+                return symbolOfMethodPart(registryNameOf(qualified.substr(0, i)) + qualified.substr(i));
+        }
         const auto open = qualified.find('<');
         const auto dot = qualified.rfind('.');
         if (open == std::string::npos || dot == std::string::npos || dot < open)
@@ -65,9 +88,19 @@ namespace xpu {
 
     std::string qualifiedKernelName(const MethodPtr& kernel) {
         if (!kernel) return {};
+        std::string name = kernel->getName();
+        if (kernel->isMethodTemplateInstantiation()) {
+            name += "<";
+            const auto& args = kernel->getMethodTypeArguments();
+            for (std::size_t i = 0; i < args.size(); ++i) {
+                if (i) name += ",";
+                name += args[i] && args[i]->getQName() ? args[i]->getQName()->getTypeName() : "?";
+            }
+            name += ">";
+        }
         if (auto parent = kernel->getParent())
-            return parent->toCanonical() + "." + kernel->getName();
-        return kernel->getName();
+            return parent->toCanonical() + "." + name;
+        return name;
     }
 
     void applyAccess(KernelManifest& m, const KernelAccessSummary& access) {

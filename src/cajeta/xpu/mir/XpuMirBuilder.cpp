@@ -3,6 +3,7 @@
 #include "XpuMirBuilder.h"
 
 #include "../core/XpuAttributes.h"
+#include "../core/KernelManifest.h"
 #include "../core/AddressSpace.h"
 
 #include "../../method/Method.h"
@@ -208,13 +209,7 @@ XpuMirKernelPtr XpuMirBuilder::buildKernelForMethod(const MethodPtr& method) {
     k->method = method;
     k->params = buildParams(method);
 
-    std::string parentCanonical;
-    if (method->getParent()) {
-        parentCanonical = method->getParent()->toCanonical();
-    }
-    k->canonicalName = parentCanonical.empty()
-        ? method->getName()
-        : (parentCanonical + "." + method->getName());
+    k->canonicalName = qualifiedKernelName(method);
 
     if (auto attr = XpuKernelAttr::from(*method)) {
         k->waveWidth = attr->waveWidth();
@@ -228,7 +223,7 @@ XpuMirKernelPtr XpuMirBuilder::buildKernelForMethod(const MethodPtr& method) {
 XpuMirModulePtr XpuMirBuilder::buildForModule(const CajetaModulePtr& module) {
     auto m = std::make_shared<XpuMirModule>();
     if (!module) return m;
-    for (auto& method : module->getAllMethods()) {
+    for (auto& method : module->getXpuMethods()) {
         if (auto k = buildKernelForMethod(method)) {
             m->kernels.push_back(std::move(k));
         }

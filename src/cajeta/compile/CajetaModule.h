@@ -230,6 +230,9 @@ namespace cajeta {
         // a skipped (clean) module replays them, since they do not ride its IR.
         std::set<std::string> instantiationObligations;
 
+        // Generic kernels this module launched, instantiated at the launch for concrete types.
+        std::vector<MethodPtr> xpuKernelInstantiations;
+
         // Manifest incremental state: a clean module is parsed but codegen-skipped,
         // its llvm::Module replaced from cacheBcSlot and obligations replayed.
         bool incrementalClean = false;
@@ -972,6 +975,23 @@ namespace cajeta {
             DropFrames* prev = lambdaDropFrames;
             lambdaDropFrames = frames;
             return prev;
+        }
+
+        /** Records a generic kernel's instantiation made at one of this module's launches. */
+        void noteXpuKernelInstantiation(const MethodPtr& inst) {
+            for (auto& k : xpuKernelInstantiations)
+                if (k == inst) return;
+            xpuKernelInstantiations.push_back(inst);
+        }
+
+        /** This module's methods for kernel emission: method templates left out, launch-site
+         *  instantiations of generic kernels added. */
+        list<MethodPtr> getXpuMethods() {
+            list<MethodPtr> result;
+            for (auto& m : getAllMethods())
+                if (m && !m->isMethodTemplate()) result.push_back(m);
+            for (auto& k : xpuKernelInstantiations) result.push_back(k);
+            return result;
         }
 
         list<MethodPtr> getAllMethods() {

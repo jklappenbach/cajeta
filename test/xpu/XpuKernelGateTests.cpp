@@ -797,3 +797,45 @@ TEST(XpuKernelTargets, aPrefetchLoopVectorizesInProportionToItsSize) {
     ASSERT_GT(pf, 0) << b.log.substr(0, 4000);
     EXPECT_LT(pf, 4 * plain + 250) << "prefetch " << pf << " ms, plain " << plain << " ms";
 }
+
+// cajeta-ml-gpu 1.1.4 (spec 2.2): a generic kernel that cannot lower fails the build once per
+// instantiation, each named with its type, on the backend that refused it.
+TEST(XpuGenericKernel, anInstantiationThatCannotLowerFailsTheBuildByName) {
+    const std::string src =
+        "package test;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void scratchK<E>(KernelBuffer<E> y, KernelBuffer<E> x, uint32 n) {\n"
+        "        uint32 i = KernelThread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            int32[] scratch #= heap int32[4];\n"
+        "            scratch[0] = 7;\n"
+        "            y[i] = x[i];\n"
+        "        }\n"
+        "    }\n"
+        "    public static void run<E>(KernelBuffer<E> y, KernelBuffer<E> x, uint32 n) {\n"
+        "        KernelStream s #= KernelStream.current();\n"
+        "        scratchK.launch(s, grid: [1], block: [64])(y, x, n);\n"
+        "        s.sync();\n"
+        "    }\n"
+        "    public static void main(String[] args) {\n"
+        "        KernelBuffer<float32> a = heap KernelBuffer<float32>(0, 4);\n"
+        "        KernelBuffer<float32> b = heap KernelBuffer<float32>(0, 4);\n"
+        "        M.run<float32>(a, b, 4);\n"
+        "        KernelBuffer<int32> c = heap KernelBuffer<int32>(0, 4);\n"
+        "        KernelBuffer<int32> d = heap KernelBuffer<int32>(0, 4);\n"
+        "        M.run<int32>(c, d, 4);\n"
+        "    }\n"
+        "}\n";
+    Built b = build(src, "cpu");
+    if (b.rc == -1) GTEST_SKIP() << "no build/src/cajeta";
+    EXPECT_NE(b.rc, 0) << b.log;
+    EXPECT_NE(b.log.find("[xpu-kernel-skipped] scratchK_float32: no cpu device code"), std::string::npos)
+        << b.log;
+    EXPECT_NE(b.log.find("[xpu-kernel-skipped] scratchK_int32: no cpu device code"), std::string::npos)
+        << b.log;
+    EXPECT_EQ(b.log.find("[xpu-kernel-skipped] scratchK:"), std::string::npos) << b.log;
+}
