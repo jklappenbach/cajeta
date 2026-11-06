@@ -53,6 +53,14 @@ consumers then use its components in place of their own copies.
 - 1.4.3 Device data is `Tensor`, made fit for the purpose (§2, §3). No second
   container.
 - 1.4.4 Both consumers adopt the library's components (§9).
+- 1.4.5 Each area measures against its own reference (§8.2).
+- 1.4.6 Delivery goes foundations first: the compiler and `Tensor` changes (one
+  cajeta release), kernel support, primitives, GEMM and epilogues, nn ops
+  forward, backward, then adoption.
+- 1.4.7 Backward kernels for the whole op table are in this spec, as the last
+  library phase.
+- 1.4.8 cajeta-ml splits out a kernel package; the consumers depend on it alone
+  (§10).
 
 ### 1.5 Constraints
 - 1.5.1 No consumer regresses. cajeta-llm keeps its measured parity with
@@ -166,8 +174,14 @@ value-checked against a host reference.
 - 8.1 When the library ships, every kernel runs on cuda, hip, vulkan and cpu, or
   declares its targets.
 - 8.2 When a library op is measured against its reference on the same box the
-  same day, it is equal or better (Julian's parity bar for cajeta-llm).
-  References are named in §10.
+  same day, it is equal or better (Julian's parity bar for cajeta-llm). The
+  references:
+  - 8.2.1 nn ops: torch on ROCm and CUDA.
+  - 8.2.2 GEMM: rocBLAS and cuBLAS, and torch for f16 and bf16.
+  - 8.2.3 Primitives: CUB and rocPRIM.
+  - 8.2.4 The consumers: llama.cpp and upstream XGBoost, as today.
+  - 8.2.5 Vulkan, which has no vendor library: llama.cpp's Vulkan backend for the
+    ops it shares; otherwise the same op's hip numbers on the same box.
 - 8.3 When a consumer switches to a library component, its own measured numbers
   do not regress.
 
@@ -182,16 +196,16 @@ value-checked against a host reference.
 - 9.4 When adoption is done, each consumer's general kernel count falls to what
   it has a measured reason to keep.
 
-## 10. Open questions
-- 10.1 Performance references per area: torch for the nn ops, cuBLAS/rocBLAS for
-  GEMM, CUB/rocPRIM for the primitives, upstream XGBoost and llama.cpp for the
-  consumers?
-- 10.2 Which epilogue and decode-step mechanism (§5.4, §5.5): a function
+## 10. Packaging
+- 10.1 When a consumer needs the GPU library, it depends on cajeta-ml's kernel
+  package (primitives, GEMM, nn ops, kernel support) and not on the estimators,
+  autograd or classical-ML surface.
+- 10.2 When cajeta-ml's autograd runs on the device, it uses the kernel package
+  like any other consumer.
+- 10.3 When the kernel package releases, it does so on its own version, without a
+  cajeta release unless it needs a new stdlib.
+
+## 11. Open questions
+- 11.1 Which epilogue and decode-step mechanism (§5.4, §5.5): a function
   parameter the compiler inlines into the kernel, or a template the consumer
-  instantiates?
-- 10.3 Order of delivery within the library: the compiler and `Tensor` changes
-  first (they need a cajeta release), then primitives, GEMM, nn ops?
-- 10.4 Backward kernels for the whole op table (§6.6) in this spec, or a
-  follow-on spec?
-- 10.5 Does cajeta-llm take a dependency on cajeta-ml as a whole, or does
-  cajeta-ml split into a kernel package both consumers depend on?
+  instantiates? To be settled in the plan's first kernel-support unit.
