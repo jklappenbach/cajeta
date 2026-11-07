@@ -102,9 +102,11 @@ int topStores(const Built& b, const std::string& fn) {
 
 }  // namespace
 
-// 8.1.1: flatSet and Storage.set inline into the loop; their two pushes and two pops become
-// one top update each, so the loop function stores the top at most two thirds as often.
-TEST(LineFrameCoalesce, inlinedFramesShareOneTopUpdate) {
+// 8.1.1: flatSet inlines into the loop. Since cajeta-ml-gpu 5.2.2 an accessor-shaped method
+// pushes its frame only on its throw path, so flatSet's own definition has no top update at
+// entry or at its return, and the loop function keeps only its own frame's traffic plus
+// the hoisted cold path; with and without coalescing the program agrees.
+TEST(LineFrameCoalesce, inlinedAccessorFramesLeaveTheLoop) {
     Workspace w;
     w.write("src/app/Main.cajeta", kFill);
     Built on = compile(w, "on", "--emit=exe --opt=O2", "app.Main.main", "src");
@@ -112,9 +114,10 @@ TEST(LineFrameCoalesce, inlinedFramesShareOneTopUpdate) {
     Built off = compile(w, "off", "--emit=exe --opt=O2", "app.Main.main", "src",
                         {{"CAJETA_LINE_FRAME_COALESCE", "0"}});
     ASSERT_TRUE(off.ok) << off.log;
-    int a = topStores(on, "app.Main::fill"), b = topStores(off, "app.Main::fill");
-    EXPECT_GT(a, 0) << bodiesOf(dumpedIr(on), "app.Main::fill");
-    EXPECT_LE(3 * a, 2 * b) << "coalesced " << a << " vs " << b << ":\n" << bodiesOf(dumpedIr(on), "app.Main::fill");
+    std::string flatSet = bodiesOf(dumpedIr(on), "cajeta.math.Tensor<float64>::flatSet");
+    ASSERT_FALSE(flatSet.empty());
+    size_t firstLabel = flatSet.find("\n\n");
+    EXPECT_EQ(flatSet.substr(0, firstLabel).find("shadow.top"), std::string::npos) << flatSet;
     EXPECT_EQ(run(on).out, "last 63\n");
     EXPECT_EQ(run(off).out, "last 63\n");
 }

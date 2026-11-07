@@ -105,8 +105,8 @@ TEST(CrossModuleInline, inlinedAccessorsStillRefuseDeviceResidentData) {
         ASSERT_TRUE(b.ok) << flags << "\n" << b.log;
         Ran r = run(b, cajeta_env_prefix({{"CAJETA_XPU_BACKEND", "cpu"}}));
         EXPECT_EQ(r.rc, 0) << r.err;
-        EXPECT_NE(r.out.find("Storage.get: the data is device-resident"), std::string::npos) << flags << "\n" << r.out;
-        EXPECT_NE(r.out.find("Storage.set: the data is device-resident"), std::string::npos) << flags << "\n" << r.out;
+        EXPECT_NE(r.out.find("flatGet: the data is device-resident"), std::string::npos) << flags << "\n" << r.out;
+        EXPECT_NE(r.out.find("flatSet: the data is device-resident"), std::string::npos) << flags << "\n" << r.out;
         EXPECT_NE(r.out.find("back 5"), std::string::npos) << flags << "\n" << r.out;
     }
 }

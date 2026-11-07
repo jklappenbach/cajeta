@@ -266,6 +266,9 @@ Unlike sampling, this needs a rebuild and it is not free. That is the trade.
 The probe is inside the callee's body, so it counts calls the machine actually
 made, including calls into methods the optimizer inlined away, which a
 profiler reading DWARF or frame pointers cannot see at all.
+One exception: an accessor-shaped method (no calls outside its `throw`
+statements, no loops) pushes its frame only when it throws, so its time is
+attributed to its caller.
 
 The run reports what it cost itself. `instr_probe_ns` on the run record is the
 per-pair cost measured on the machine that ran, and `instr_overhead_ns` is

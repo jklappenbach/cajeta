@@ -427,6 +427,16 @@ public final class Device {
         return Device.nativeStreamSyncCount();
     }
 
+    /** Host-device transfers (uploads and downloads, sync or async) in this
+     *  process. Monotonic; a test brackets a move with it to assert one bulk
+     *  copy. @EntryPoint */
+    public static int64 transferCount() {
+        return Device.nativeTransferCount();
+    }
+
+    @Native("__cajeta_xpu_transfer_count")
+    private static int64 nativeTransferCount();
+
     @Native("__cajeta_xpu_buffer_alloc_count")
     private static int64 nativeBufferAllocCount();
 

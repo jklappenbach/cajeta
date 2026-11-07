@@ -2241,6 +2241,10 @@ static void caj_poison_fill(int64_t h, uint64_t byteCount, int32_t kind) {
 // Device.streamSyncCount). Monotonic.
 static int64_t g_xpu_buffer_allocs;
 static int64_t g_xpu_stream_syncs;
+static int64_t g_xpu_transfers;
+int64_t __cajeta_xpu_transfer_count(void) {
+    return __atomic_load_n(&g_xpu_transfers, __ATOMIC_RELAXED);
+}
 int64_t __cajeta_xpu_buffer_alloc_count(void) {
     return __atomic_load_n(&g_xpu_buffer_allocs, __ATOMIC_RELAXED);
 }
@@ -2365,6 +2369,7 @@ void __cajeta_xpu_buffer_host_copy(void* self, int64_t handle, void* host,
 // stream's next sync. CPU and the Vulkan coherent map copy synchronously.
 void __cajeta_xpu_buffer_upload_async(void* self, int64_t handle, void* host,
                                       uint64_t byteCount, int64_t stream) {
+    __atomic_fetch_add(&g_xpu_transfers, (int64_t) 1, __ATOMIC_RELAXED);
     (void) self;
     if (!handle || !host || byteCount == 0) return;
     const void* data = (const void*) ((const char*) host + 8);
@@ -2400,6 +2405,7 @@ void __cajeta_xpu_buffer_upload_async(void* self, int64_t handle, void* host,
 }
 void __cajeta_xpu_buffer_download_async(void* self, int64_t handle, void* host,
                                         uint64_t byteCount, int64_t stream) {
+    __atomic_fetch_add(&g_xpu_transfers, (int64_t) 1, __ATOMIC_RELAXED);
     (void) self;
     if (!handle || !host || byteCount == 0) return;
     void* data = (void*) ((char*) host + 8);
@@ -2900,11 +2906,14 @@ void __cajeta_xpu_fence_destroy(void* self, int64_t handle) {
     __cajeta_xpu_event_destroy(self, handle);
 }
 // Synchronous host->device copy of a cajeta array's bytes (header skipped).
-void __cajeta_xpu_buffer_upload(void* self, int64_t handle, void* host,
-                                uint64_t byteCount) {
+// Host->device copy of `byteCount` bytes from a cajeta array's bytes, starting
+// `hostByteOffset` into the array's elements.
+void __cajeta_xpu_buffer_upload_from(void* self, int64_t handle, void* host,
+                                     uint64_t hostByteOffset, uint64_t byteCount) {
     (void) self;
     if (!handle || !host || byteCount == 0) return;
-    const void* data = (const void*) ((const char*) host + 8);
+    __atomic_fetch_add(&g_xpu_transfers, (int64_t) 1, __ATOMIC_RELAXED);
+    const void* data = (const void*) ((const char*) host + 8 + hostByteOffset);
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_CUDA:
             g_xpu_cuda.cuMemcpyHtoD((cajeta_cudeviceptr) handle, data,
@@ -2926,12 +2935,17 @@ void __cajeta_xpu_buffer_upload(void* self, int64_t handle, void* host,
         default: return;
     }
 }
+void __cajeta_xpu_buffer_upload(void* self, int64_t handle, void* host,
+                                uint64_t byteCount) {
+    __cajeta_xpu_buffer_upload_from(self, handle, host, 0, byteCount);
+}
 // Synchronous device->host copy into a cajeta array's bytes.
-void __cajeta_xpu_buffer_download(void* self, int64_t handle, void* host,
-                                  uint64_t byteCount) {
+void __cajeta_xpu_buffer_download_to(void* self, int64_t handle, void* host,
+                                     uint64_t hostByteOffset, uint64_t byteCount) {
     (void) self;
     if (!handle || !host || byteCount == 0) return;
-    void* data = (void*) ((char*) host + 8);
+    __atomic_fetch_add(&g_xpu_transfers, (int64_t) 1, __ATOMIC_RELAXED);
+    void* data = (void*) ((char*) host + 8 + hostByteOffset);
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_CUDA:
             g_xpu_cuda.cuMemcpyDtoH(data, (cajeta_cudeviceptr) handle,
@@ -2951,6 +2965,10 @@ void __cajeta_xpu_buffer_download(void* self, int64_t handle, void* host,
             return;
         default: return;
     }
+}
+void __cajeta_xpu_buffer_download(void* self, int64_t handle, void* host,
+                                  uint64_t byteCount) {
+    __cajeta_xpu_buffer_download_to(self, handle, host, 0, byteCount);
 }
 // Free a buffer handle that was allocated with MemoryKind `kind`.
 void __cajeta_xpu_buffer_free(void* self, int64_t handle, int32_t kind) {

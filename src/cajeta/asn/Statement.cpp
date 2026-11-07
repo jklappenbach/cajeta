@@ -2738,6 +2738,9 @@ namespace cajeta {
         if (!throwFn) {
             return nullptr;
         }
+        // An accessor-shaped method pushes its line frame here, on the throw path only.
+        if (MethodPtr lm = module->getCurrentMethod(); lm && lm->hasLazyLineFrame())
+            dbg::emitLineEnter(module, lm->getLazyFrameType(), lm->getLazyFrameMethod(), lm->getLazyFrameFile());
 
         namespace own = cajeta::ownership;
         llvm::Value* title = llvm::ConstantInt::get(i64Ty, 0);

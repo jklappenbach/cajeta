@@ -11,12 +11,14 @@ namespace llvm {
 
 namespace cajeta {
 
-    /** Instruction count above which a function is not copied into its callers' modules. */
+    /** Hot-path instruction count (blocks on some path to a return) above which a function is not
+     *  copied into its callers' modules; a throw's construction and trap blocks are cold. */
     constexpr unsigned kCrossModuleInlineMaxInstructions = 64;
 
-    /** Unoptimized hot-path size (blocks that do not end in `unreachable`, line-frame calls excluded) at or
-     *  below which a copy is always inlined: accessor-sized bodies such as Storage.get. */
-    constexpr unsigned kCrossModuleAlwaysInlineHotInstructions = 32;
+    /** Unoptimized hot-path size (line-frame calls excluded) at or below which a copy is always
+     *  inlined: accessor-sized bodies such as Tensor.get1, whose index arithmetic and bounds checks
+     *  measure about 46. */
+    constexpr unsigned kCrossModuleAlwaysInlineHotInstructions = 64;
 
     /** For each module in `mods`, adds an available_externally copy of every small function it
      *  calls directly that another module in `mods` defines; returns how many copies were made.

@@ -4,6 +4,8 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/IR/CFG.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/ValueMapper.h"
@@ -20,14 +22,6 @@ namespace cajeta {
 
     namespace {
 
-        bool tooBig(const llvm::Function& f) {
-            unsigned n = 0;
-            for (const llvm::BasicBlock& bb : f) {
-                n += bb.size();
-                if (n > kCrossModuleInlineMaxInstructions) return true;
-            }
-            return false;
-        }
 
         bool isLineFrameCall(const llvm::Instruction& i) {
             auto* cb = llvm::dyn_cast<llvm::CallBase>(&i);
@@ -35,10 +29,38 @@ namespace cajeta {
             return callee && callee->getName().starts_with("__cajeta_line_");
         }
 
-        unsigned hotSize(const llvm::Function& f) {
+        /** The blocks on some path to a return; a throw's construction and the trap blocks it
+         *  leads to are cold and count toward neither size below. */
+        std::unordered_map<const llvm::BasicBlock*, bool> warmBlocks(const llvm::Function& f) {
+            std::vector<const llvm::BasicBlock*> work;
+            std::unordered_map<const llvm::BasicBlock*, bool> warm;
+            for (const llvm::BasicBlock& bb : f)
+                if (llvm::isa<llvm::ReturnInst>(bb.getTerminator())) { warm[&bb] = true; work.push_back(&bb); }
+            while (!work.empty()) {
+                const llvm::BasicBlock* bb = work.back();
+                work.pop_back();
+                for (const llvm::BasicBlock* p : llvm::predecessors(bb))
+                    if (!warm[p]) { warm[p] = true; work.push_back(p); }
+            }
+            return warm;
+        }
+
+        bool tooBig(const llvm::Function& f) {
+            auto warm = warmBlocks(f);
             unsigned n = 0;
             for (const llvm::BasicBlock& bb : f) {
-                if (llvm::isa<llvm::UnreachableInst>(bb.getTerminator())) continue;
+                if (!warm[&bb]) continue;
+                n += bb.size();
+                if (n > kCrossModuleInlineMaxInstructions) return true;
+            }
+            return false;
+        }
+
+        unsigned hotSize(const llvm::Function& f) {
+            auto warm = warmBlocks(f);
+            unsigned n = 0;
+            for (const llvm::BasicBlock& bb : f) {
+                if (!warm[&bb]) continue;
                 for (const llvm::Instruction& i : bb)
                     if (!isLineFrameCall(i) && !i.isDebugOrPseudoInst()) ++n;
             }
@@ -69,18 +91,24 @@ namespace cajeta {
             return false;
         }
 
-        bool copyable(const llvm::Function& f) {
-            if (f.isDeclaration() || f.hasLocalLinkage() || f.isVarArg() || tooBig(f)) return false;
-            if (touchesShadow(f)) return false;
+        /** Why `f` cannot be copied into a caller's module, or null when it can. */
+        const char* uncopyable(const llvm::Function& f) {
+            if (f.isDeclaration()) return "declaration";
+            if (f.hasLocalLinkage()) return "local linkage";
+            if (f.isVarArg()) return "varargs";
+            if (tooBig(f)) return "too big";
+            if (touchesShadow(f)) return "touches the shadow stack";
             if (f.hasFnAttribute(llvm::Attribute::NoInline) || f.hasFnAttribute(llvm::Attribute::OptimizeNone))
-                return false;
-            if (f.hasPersonalityFn()) return false;
+                return "noinline";
+            if (f.hasPersonalityFn()) return "personality";
             for (const llvm::BasicBlock& bb : f)
                 for (const llvm::Instruction& i : bb)
                     if (auto* cb = llvm::dyn_cast<llvm::CallBase>(&i))
-                        if (cb->hasFnAttr(llvm::Attribute::ReturnsTwice)) return false;
-            return true;
+                        if (cb->hasFnAttr(llvm::Attribute::ReturnsTwice)) return "returns-twice call";
+            return nullptr;
         }
+
+        bool copyable(const llvm::Function& f) { return uncopyable(f) == nullptr; }
 
         /** Collects the local globals and functions `c` reaches, through constant expressions only. */
         void localsIn(llvm::Constant* c, std::vector<llvm::GlobalValue*>& out, int depth = 0) {
@@ -160,7 +188,16 @@ namespace cajeta {
                 auto it = defs.find(decl->getName().str());
                 if (it == defs.end() || it->second->getParent() == m) continue;
                 llvm::Function* src = it->second;
-                if (!copyable(*src) || src->getFunctionType() != decl->getFunctionType()) continue;
+                // CAJETA_XMODULE_INLINE_TRACE=1 names every candidate the copy skips and why.
+                static const bool trace = std::getenv("CAJETA_XMODULE_INLINE_TRACE") != nullptr;
+                if (const char* why = uncopyable(*src)) {
+                    if (trace) llvm::errs() << "[xmodule-inline] skip " << src->getName() << ": " << why << "\n";
+                    continue;
+                }
+                if (src->getFunctionType() != decl->getFunctionType()) {
+                    if (trace) llvm::errs() << "[xmodule-inline] skip " << src->getName() << ": type mismatch\n";
+                    continue;
+                }
                 promoteLocals(*src);
                 auto argIt = decl->arg_begin();
                 for (llvm::Argument& a : src->args()) mat.map[&a] = &*argIt++;
@@ -168,8 +205,10 @@ namespace cajeta {
                 llvm::CloneFunctionInto(decl, src, mat.map,
                     llvm::CloneFunctionChangeType::DifferentModule, rets, "", nullptr, nullptr, &mat);
                 decl->setLinkage(llvm::GlobalValue::AvailableExternallyLinkage);
-                decl->addFnAttr(hotSize(*decl) <= kCrossModuleAlwaysInlineHotInstructions
+                unsigned hot = hotSize(*decl);
+                decl->addFnAttr(hot <= kCrossModuleAlwaysInlineHotInstructions
                     ? llvm::Attribute::AlwaysInline : llvm::Attribute::InlineHint);
+                if (trace) llvm::errs() << "[xmodule-inline] copy " << src->getName() << ": hot " << hot << "\n";
                 decl->setComdat(nullptr);
                 ++copies;
                 // Callees the copy declares are candidates too, so flatGet brings Storage.get.

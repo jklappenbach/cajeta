@@ -253,6 +253,39 @@ public final class KernelBuffer<T> {
         this.deviceUpload(h, host, bytes);
     }
 
+    /**
+     * Upload `count` elements of `host` starting at element `offset` into the
+     * front of this buffer, as one transfer: the window form of {@link #upload},
+     * for a tensor's elements inside a larger host array. Clamped to both.
+     */
+    public void uploadFrom(T[] host, int64 offset, int64 count) {
+        int64 n = count;
+        if (offset < 0) { return; }
+        if (n > (int64) host.count() - offset) { n = (int64) host.count() - offset; }
+        if (n > (int64) this.elementCount) { n = (int64) this.elementCount; }
+        if (n <= 0) { return; }
+        this.deviceUploadFrom(this.deviceHandle, host, (uint64) offset * elementBytes(),
+            (uint64) n * elementBytes());
+    }
+
+    /** Download the front `count` elements of this buffer into `host` starting
+     *  at element `offset`, as one transfer: the window form of {@link #download}. */
+    public void downloadTo(T[] host, int64 offset, int64 count) {
+        int64 n = count;
+        if (offset < 0) { return; }
+        if (n > (int64) host.count() - offset) { n = (int64) host.count() - offset; }
+        if (n > (int64) this.elementCount) { n = (int64) this.elementCount; }
+        if (n <= 0) { return; }
+        this.deviceDownloadTo(this.deviceHandle, host, (uint64) offset * elementBytes(),
+            (uint64) n * elementBytes());
+    }
+
+    @Native("__cajeta_xpu_buffer_upload_from")
+    private void deviceUploadFrom(int64 handle, T[] host, uint64 hostByteOffset, uint64 byteCount);
+
+    @Native("__cajeta_xpu_buffer_download_to")
+    private void deviceDownloadTo(int64 handle, T[] host, uint64 hostByteOffset, uint64 byteCount);
+
     public void download(T[] host) {
         uint64 bytes = this.elementCount * elementBytes();
         int64 h = this.deviceHandle;

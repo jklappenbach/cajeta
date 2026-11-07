@@ -496,22 +496,26 @@ public class Tensor<T> {
 
     /** 1-D element read. */
     public T get1(int64 i) {
-        return this.store.get(this.offsetVal + i * this.strideDims[0]);
+        if (this.store.onDevice) { throw heap PlacementException("Tensor.get1: the data is device-resident and the host mirror was released — a host read here would return stale bytes. Bring it back with cpu()/toHost() first."); }
+        return this.store.host[this.store.offset + this.offsetVal + i * this.strideDims[0]];
     }
 
     /** 1-D element write. */
     public void set1(int64 i, T v) {
-        this.store.set(this.offsetVal + i * this.strideDims[0], v);
+        if (this.store.onDevice) { throw heap PlacementException("Tensor.set1: the data is device-resident and the host mirror was released — a host read here would return stale bytes. Bring it back with cpu()/toHost() first."); }
+        this.store.host[this.store.offset + this.offsetVal + i * this.strideDims[0]] = v;
     }
 
     /** 2-D element read. */
     public T get2(int64 r, int64 c) {
-        return this.store.get(this.offsetVal + r * this.strideDims[0] + c * this.strideDims[1]);
+        if (this.store.onDevice) { throw heap PlacementException("Tensor.get2: the data is device-resident and the host mirror was released — a host read here would return stale bytes. Bring it back with cpu()/toHost() first."); }
+        return this.store.host[this.store.offset + this.offsetVal + r * this.strideDims[0] + c * this.strideDims[1]];
     }
 
     /** 2-D element write. */
     public void set2(int64 r, int64 c, T v) {
-        this.store.set(this.offsetVal + r * this.strideDims[0] + c * this.strideDims[1], v);
+        if (this.store.onDevice) { throw heap PlacementException("Tensor.set2: the data is device-resident and the host mirror was released — a host read here would return stale bytes. Bring it back with cpu()/toHost() first."); }
+        this.store.host[this.store.offset + this.offsetVal + r * this.strideDims[0] + c * this.strideDims[1]] = v;
     }
 
     /**
@@ -519,12 +523,14 @@ public class Tensor<T> {
      * `i` to logical C-order). The op-dispatch seam's CPU path reads through this.
      */
     public T flatGet(int64 i) {
-        return this.store.get(this.offsetVal + i);
+        if (this.store.onDevice) { throw heap PlacementException("Tensor.flatGet: the data is device-resident and the host mirror was released — a host read here would return stale bytes. Bring it back with cpu()/toHost() first."); }
+        return this.store.host[this.store.offset + this.offsetVal + i];
     }
 
     /** Linear (flat) write by storage index — contiguous-tensor companion of {@link #flatGet}. */
     public void flatSet(int64 i, T v) {
-        this.store.set(this.offsetVal + i, v);
+        if (this.store.onDevice) { throw heap PlacementException("Tensor.flatSet: the data is device-resident and the host mirror was released — a host read here would return stale bytes. Bring it back with cpu()/toHost() first."); }
+        this.store.host[this.store.offset + this.offsetVal + i] = v;
     }
 
     // ────────────────────────────── device placement (Phase 6) ───────────────
@@ -571,6 +577,27 @@ public class Tensor<T> {
     /** First element index of this tensor inside {@link #hostBuffer}. */
     public int64 hostBase() {
         return this.store.hostOffset() + this.offsetVal;
+    }
+
+    /**
+     * Upload this host-resident, contiguous tensor's elements into the front of
+     * `dst` as one transfer: the bridge for a consumer that keeps its own
+     * `KernelBuffer`s (no per-element copy into a staging array).
+     */
+    public void uploadTo(KernelBuffer<T> dst) {
+        if (!this.isContiguous()) {
+            Placement.noKernel("Tensor.uploadTo", DType.of<T>(), "for a strided view");
+        }
+        dst.uploadFrom(this.store.hostBuffer(), this.hostBase(), this.size());
+    }
+
+    /** Download the front `size()` elements of `src` into this host-resident,
+     *  contiguous tensor as one transfer: the inverse of {@link #uploadTo}. */
+    public void downloadFrom(KernelBuffer<T> src) {
+        if (!this.isContiguous()) {
+            Placement.noKernel("Tensor.downloadFrom", DType.of<T>(), "for a strided view");
+        }
+        src.downloadTo(this.store.hostBuffer(), this.hostBase(), this.size());
     }
 
     public KernelBuffer<T> deviceBuffer() {

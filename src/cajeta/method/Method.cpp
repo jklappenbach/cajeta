@@ -28,6 +28,7 @@
 #include "../asn/expression/MethodCallExpression.h"
 #include "../asn/expression/CreatorRest.h"
 #include "../asn/expression/NewExpression.h"
+#include "../asn/expression/CallExpression.h"
 #include "../asn/expression/AggregateInitializerExpression.h"
 #include "../asn/expression/BinaryOpExpression.h"
 #include "../asn/expression/Identifier.h"
@@ -41,6 +42,60 @@
 #include "cajeta/dbg/LineInfoCodegen.h"
 #include "../xpu/core/KernelArgTrait.h"
 #include "../xpu/core/XpuAttributes.h"
+
+namespace {
+    // True when nothing under `n`, outside throw statements, could push a line frame
+    // or run long: no method, constructor, closure, lambda or spawn, no loop, no try
+    // or scope, and no `+` that may call a toString (a String literal or a class
+    // operand). Walks the same sub-node fields as astHasSpawnSite.
+    bool accessorShaped(const cajeta::AbstractSyntaxNodePtr& n) {
+        using namespace cajeta;
+        if (!n) return true;
+        if (std::dynamic_pointer_cast<ThrowStatement>(n)) return true;
+        if (std::dynamic_pointer_cast<MethodCallExpression>(n) || std::dynamic_pointer_cast<NewExpression>(n)
+                || std::dynamic_pointer_cast<CallExpression>(n) || std::dynamic_pointer_cast<LambdaExpression>(n)
+                || std::dynamic_pointer_cast<SpawnExpression>(n) || std::dynamic_pointer_cast<DetachExpression>(n)
+                || std::dynamic_pointer_cast<WhileStatement>(n) || std::dynamic_pointer_cast<DoStatement>(n)
+                || std::dynamic_pointer_cast<ForStatement>(n) || std::dynamic_pointer_cast<EnhancedForStatement>(n)
+                || std::dynamic_pointer_cast<TryStatement>(n) || std::dynamic_pointer_cast<YieldStatement>(n)
+                || std::dynamic_pointer_cast<ScopeStatement>(n) || std::dynamic_pointer_cast<SynchronizedStatement>(n))
+            return false;
+        if (std::dynamic_pointer_cast<BinaryOpExpression>(n)) {
+            for (auto& c : n->getChildren()) {
+                auto lit = std::dynamic_pointer_cast<TextLiteralExpression>(c);
+                if (lit && (lit->getLiteralType() == LITERAL_TYPE_STRING
+                            || lit->getLiteralType() == LITERAL_TYPE_TEXT_BLOCK)) return false;
+                auto e = std::dynamic_pointer_cast<Expression>(c);
+                if (e && std::dynamic_pointer_cast<CajetaClass>(e->getResolvedType())) return false;
+            }
+        }
+        if (std::dynamic_pointer_cast<SwitchStatement>(n)) {
+            bool ok = true;
+            n->forEachSubNode([&](const AbstractSyntaxNodePtr& sub) { if (ok && !accessorShaped(sub)) ok = false; });
+            return ok;
+        }
+        for (auto& c : n->getChildren())
+            if (!accessorShaped(c)) return false;
+        if (auto st = std::dynamic_pointer_cast<IfStatement>(n))
+            return accessorShaped(st->getCondition()) && accessorShaped(st->getThenBranch())
+                && accessorShaped(st->getElseBranch());
+        if (auto st = std::dynamic_pointer_cast<ReturnStatement>(n)) return accessorShaped(st->getExpression());
+        if (auto st = std::dynamic_pointer_cast<ExpressionStatement>(n)) return accessorShaped(st->getExpression());
+        if (auto st = std::dynamic_pointer_cast<LabelStatement>(n)) return accessorShaped(st->getBlock());
+        if (auto d = std::dynamic_pointer_cast<LocalVariableDeclaration>(n)) {
+            for (auto& v : d->getVariableDeclarators())
+                if (v && !accessorShaped(v->getInitializer())) return false;
+            return true;
+        }
+        if (auto init = std::dynamic_pointer_cast<Initializer>(n)) {
+            bool ok = true;
+            init->forEachSubNode([&](const AbstractSyntaxNodePtr& sub) { if (ok && !accessorShaped(sub)) ok = false; });
+            return ok;
+        }
+        return true;
+    }
+}
+
 
 using namespace std;
 
@@ -2662,6 +2717,7 @@ namespace cajeta {
         // a leave unlinks exactly this invocation's frame.
         dbgFrameSlot = nullptr;
         lineFrameEmitted = false;
+        lazyLineFrame = false;
         profFrame = prof::ProfileFrame{};
         if (llvm::Value* dbgNode =
                 dbg::emitDbgFrameEnter(module, getLlvmSymbolName())) {
@@ -2693,10 +2749,21 @@ namespace cajeta {
                     frameMethod = "<script>";
                 }
             }
-            dbg::emitLineEnter(module, typeName, frameMethod, fileName);
-            // Record that this method HAS a shadow frame, so a leave site can tell it
-            // from an inline-codegen'd lambda body that never pushed one.
-            lineFrameEmitted = true;
+            // Statement marks write the top frame, so under debug info or safepoints the
+            // frame must exist from the first statement: lazy only in plain `line` builds.
+            lazyLineFrame = module->getFlags().lineInfo && !module->getFlags().debugInfo
+                && !module->getFlags().safepoints && !isConstructor()
+                && accessorShaped(std::static_pointer_cast<AbstractSyntaxNode>(block));
+            if (lazyLineFrame) {
+                lazyFrameType = typeName;
+                lazyFrameMethod = frameMethod;
+                lazyFrameFile = fileName;
+            } else {
+                dbg::emitLineEnter(module, typeName, frameMethod, fileName);
+                // Record that this method HAS a shadow frame, so a leave site can tell it
+                // from an inline-codegen'd lambda body that never pushed one.
+                lineFrameEmitted = true;
+            }
 
             // The exact-count / exact-time probe pair, carrying the same names as the
             // shadow frame. No-op unless --profiler=instrument selects this class.

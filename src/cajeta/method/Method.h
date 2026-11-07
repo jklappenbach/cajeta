@@ -170,6 +170,11 @@ namespace cajeta {
         // no argument — an unpaired one pops the ENCLOSING method's frame.
         bool lineFrameEmitted = false;
 
+        // An accessor-shaped method (no calls outside its throw statements, no loops)
+        // pushes its line frame only on a throw path; the names are kept for that push.
+        bool lazyLineFrame = false;
+        std::string lazyFrameType, lazyFrameMethod, lazyFrameFile;
+
         // Exact-instrumentation probe pair (descriptor + timestamp slot). Empty
         // when the profiler is off or this class is outside the selection.
         prof::ProfileFrame profFrame;
@@ -177,6 +182,10 @@ namespace cajeta {
         llvm::Value* getDbgFrameSlot() const { return dbgFrameSlot; }
         bool hasLineFrame() const { return lineFrameEmitted; }
         void setHasLineFrame(bool v) { lineFrameEmitted = v; }
+        bool hasLazyLineFrame() const { return lazyLineFrame; }
+        const std::string& getLazyFrameType() const { return lazyFrameType; }
+        const std::string& getLazyFrameMethod() const { return lazyFrameMethod; }
+        const std::string& getLazyFrameFile() const { return lazyFrameFile; }
         const prof::ProfileFrame& getProfileFrame() const { return profFrame; }
     protected:
 
