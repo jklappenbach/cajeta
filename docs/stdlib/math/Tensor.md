@@ -96,11 +96,14 @@ public final class Demo {
 | `boolean isOnGpu()` | `true` when the storage currently resides on the device |
 | `int32 device()` | Placement code: `0` = host (CPU), `1` = device (GPU) |
 | `KernelBuffer<T> deviceBuffer()` | The device buffer backing this tensor (null until `gpu()`) — the handle a `cajeta.xpu` kernel launch binds |
+| `#KernelBuffer<T> deviceView(String op)` | This tensor's elements as a view of its device buffer at its offset, for a launch by `op`; a strided view is refused by name |
 
-An op never moves its operands. With both operands on the device,
-`add`/`sub`/`mul`/`div<E>` at `float32`, `float16` or `bfloat16` run a device
-kernel over views of the operands' buffers (equal shapes, contiguous, any
-offset) and return a tensor allocated on the device; an op with no
+An op never moves its operands. Every `Ewise` entry binds its operands as
+views at their offsets, so a contiguous view (`slice`) works on the device
+and a strided one (`transpose`) throws `PlacementException` naming the op.
+With both operands on the device, `add`/`sub`/`mul`/`div<E>` at `float32`,
+`float16` or `bfloat16` run a device kernel over such views (equal shapes)
+and return a tensor allocated on the device; an op with no
 device kernel for its operands throws `PlacementException` naming the op, and
 an op given one host and one device operand throws the same. Call `cpu()` on
 the operands to take the host path.

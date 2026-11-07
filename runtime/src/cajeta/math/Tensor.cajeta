@@ -575,6 +575,19 @@ public class Tensor<T> {
         return this.store.deviceBuffer();
     }
 
+    /**
+     * This tensor's elements as a view of its device buffer, for a kernel launch by
+     * `op`: a slice at the tensor's offset. A strided view has no such binding and
+     * is refused by name (PlacementException). The view borrows the buffer; keep it
+     * until the launch has synced.
+     */
+    public #KernelBuffer<T> deviceView(String op) {
+        if (!this.isContiguous()) {
+            Placement.noKernel(op, DType.of<T>(), "for a strided view");
+        }
+        return this.store.deviceBuffer().slice((uint64) this.offsetVal, (uint64) this.size());
+    }
+
     // ────────────────────────────── interop protocol (Phase 7) ───────────────
 
     /**

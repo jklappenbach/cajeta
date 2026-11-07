@@ -72,6 +72,7 @@ public final class Ewise {
         KernelStream s #= KernelStream.current();
         arith.launch(s, grid: [(un + 63) / 64], block: [64])(ob, av, bv, un, op);
         s.sync();
+        Device.checkLaunch();
         Storage<E> st = heap Storage<E>(#ob, n);
         int64[] shp #= Tensor.shapeOf<E>(a);
         int64[] strides #= Tensor.contigStrides(shp);
@@ -190,9 +191,11 @@ public final class Ewise {
             acc.gpu();
             uint32 un = (uint32) n;
             KernelStream s #= KernelStream.current();
+            KernelBuffer<float32> tV #= t.deviceView("Ewise.sumF32");
             reduceSum.launch(s, grid: [(un + 63) / 64], block: [64])
-                (acc.deviceBuffer(), t.deviceBuffer(), un);
+                (acc.deviceBuffer(), tV, un);
             s.sync();
+            Device.checkLaunch();
             acc.cpu();
             return acc.get1(0);
         }
@@ -220,9 +223,11 @@ public final class Ewise {
             acc.gpu();
             uint32 un = (uint32) n;
             KernelStream s #= KernelStream.current();
+            KernelBuffer<float16> tV #= t.deviceView("Ewise.sumF16");
             reduceSum.launch(s, grid: [(un + 63) / 64], block: [64])
-                (acc.deviceBuffer(), t.deviceBuffer(), un);
+                (acc.deviceBuffer(), tV, un);
             s.sync();
+            Device.checkLaunch();
             acc.cpu();
             return acc.get1(0);
         }
@@ -245,9 +250,11 @@ public final class Ewise {
             acc.gpu();
             uint32 un = (uint32) n;
             KernelStream s #= KernelStream.current();
+            KernelBuffer<bfloat16> tV #= t.deviceView("Ewise.sumBf16");
             reduceSum.launch(s, grid: [(un + 63) / 64], block: [64])
-                (acc.deviceBuffer(), t.deviceBuffer(), un);
+                (acc.deviceBuffer(), tV, un);
             s.sync();
+            Device.checkLaunch();
             acc.cpu();
             return acc.get1(0);
         }
@@ -290,9 +297,11 @@ public final class Ewise {
             acc.gpu();
             uint32 un = (uint32) n;
             KernelStream s #= KernelStream.current();
+            KernelBuffer<float32> tV #= t.deviceView("Ewise.minF32");
             reduceMinF32.launch(s, grid: [(un + 63) / 64], block: [64])
-                (acc.deviceBuffer(), t.deviceBuffer(), un);
+                (acc.deviceBuffer(), tV, un);
             s.sync();
+            Device.checkLaunch();
             acc.cpu();
             return acc.get1(0);
         }
@@ -317,9 +326,11 @@ public final class Ewise {
             acc.gpu();
             uint32 un = (uint32) n;
             KernelStream s #= KernelStream.current();
+            KernelBuffer<float32> tV #= t.deviceView("Ewise.maxF32");
             reduceMaxF32.launch(s, grid: [(un + 63) / 64], block: [64])
-                (acc.deviceBuffer(), t.deviceBuffer(), un);
+                (acc.deviceBuffer(), tV, un);
             s.sync();
+            Device.checkLaunch();
             acc.cpu();
             return acc.get1(0);
         }
@@ -359,9 +370,12 @@ public final class Ewise {
             out.gpu();
             uint32 um = (uint32) m;
             KernelStream s #= KernelStream.current();
+            KernelBuffer<float32> tV #= t.deviceView("Ewise.takeF32");
+            KernelBuffer<int64> idxV #= idx.deviceView("Ewise.takeF32");
             gatherF32.launch(s, grid: [(um + 63) / 64], block: [64])
-                (out.deviceBuffer(), t.deviceBuffer(), idx.deviceBuffer(), um);
+                (out.deviceBuffer(), tV, idxV, um);
             s.sync();
+            Device.checkLaunch();
         } else {
             int64 i = 0;
             while (i < m) {
@@ -399,9 +413,12 @@ public final class Ewise {
             out.gpu();                                 // uploads the zero-init buffer
             uint32 um = (uint32) m;
             KernelStream s #= KernelStream.current();
+            KernelBuffer<float32> valuesV #= values.deviceView("Ewise.scatterF32Op");
+            KernelBuffer<int64> idxV #= idx.deviceView("Ewise.scatterF32Op");
             scatterF32.launch(s, grid: [(um + 63) / 64], block: [64])
-                (out.deviceBuffer(), values.deviceBuffer(), idx.deviceBuffer(), um);
+                (out.deviceBuffer(), valuesV, idxV, um);
             s.sync();
+            Device.checkLaunch();
         } else {
             int64 i = 0;
             while (i < m) {
@@ -439,9 +456,11 @@ public final class Ewise {
             counts.gpu();                              // uploads the zero-init histogram
             uint32 un = (uint32) n;
             KernelStream s #= KernelStream.current();
+            KernelBuffer<int64> tV #= t.deviceView("Ewise.bincountI32Op");
             bincountI32.launch(s, grid: [(un + 63) / 64], block: [64])
-                (counts.deviceBuffer(), t.deviceBuffer(), un);
+                (counts.deviceBuffer(), tV, un);
             s.sync();
+            Device.checkLaunch();
         } else {
             int64 i = 0;
             while (i < n) {
@@ -545,7 +564,9 @@ public final class Ewise {
         Tensor<float32> out #= Tensor.zeros<float32>(shp);
         if (Placement.pair("matmulF32", "a", a.isOnGpu(), "b", b.isOnGpu())) {
             out.gpu();
-            Ewise.matmulF32Into(out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), m, n, k);
+            KernelBuffer<float32> aV #= a.deviceView("Ewise.matmulF32Op");
+            KernelBuffer<float32> bV #= b.deviceView("Ewise.matmulF32Op");
+            Ewise.matmulF32Into(out.deviceBuffer(), aV, bV, m, n, k);
         } else {
             int64 i = 0;
             while (i < m) {
@@ -594,6 +615,7 @@ public final class Ewise {
                 matmulF32.launch(s, grid: [(um / 16) * (un / 16)], block: [64])
                     (c, a, b, um, un, uk);
                 s.sync();
+            Device.checkLaunch();
             } else {
                 // Ragged shape (spec §2.6). The kernel owns whole 16x16 tiles and
                 // truncates on every dimension — grid drops the partial row/col
@@ -628,13 +650,16 @@ public final class Ewise {
                 pad.launch(s, grid: [(bn + 63) / 64], block: [64])
                     (bp.deviceBuffer(), b, ukp, unp, uk, un);
                 s.sync();
+            Device.checkLaunch();
                 matmulF32.launch(s, grid: [(ump / 16) * (unp / 16)], block: [64])
                     (cp.deviceBuffer(), ap.deviceBuffer(), bp.deviceBuffer(), ump, unp, ukp);
                 s.sync();
+            Device.checkLaunch();
                 uint32 on = um * un;
                 crop.launch(s, grid: [(on + 63) / 64], block: [64])
                     (c, cp.deviceBuffer(), um, un, unp);
                 s.sync();
+            Device.checkLaunch();
             }
     }
 
@@ -687,9 +712,12 @@ public final class Ewise {
             uint32 un = (uint32) n;
             uint32 uk = (uint32) k;
             KernelStream s #= KernelStream.current();
+            KernelBuffer<float64> aV #= a.deviceView("Ewise.matmulF64Op");
+            KernelBuffer<float64> bV #= b.deviceView("Ewise.matmulF64Op");
             matmulF64.launch(s, grid: [(um / 16) * (un / 16)], block: [64])
-                (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), um, un, uk);
+                (out.deviceBuffer(), aV, bV, um, un, uk);
             s.sync();
+            Device.checkLaunch();
         } else {
             int64 i = 0;
             while (i < m) {
@@ -878,9 +906,12 @@ public final class Ewise {
             uint32 un = (uint32) n;
             uint32 uk = (uint32) k;
             KernelStream s #= KernelStream.current();
+            KernelBuffer<int8> aV #= a.deviceView("Ewise.matmulI8Op");
+            KernelBuffer<int8> bV #= b.deviceView("Ewise.matmulI8Op");
             matmulI8.launch(s, grid: [(um / 16) * (un / 16)], block: [64])
-                (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), um, un, uk);
+                (out.deviceBuffer(), aV, bV, um, un, uk);
             s.sync();
+            Device.checkLaunch();
         } else {
             boolean staged = onDevice;   // ragged int8 stays on the floor (no pad family yet)
             if (staged) { a.cpu(); b.cpu(); }
@@ -944,9 +975,12 @@ public final class Ewise {
             uint32 un = (uint32) n;
             uint32 uk = (uint32) k;
             KernelStream s #= KernelStream.current();
+            KernelBuffer<float16> aV #= a.deviceView("Ewise.matmulF16Op");
+            KernelBuffer<float16> bV #= b.deviceView("Ewise.matmulF16Op");
             matmulF16.launch(s, grid: [(um / 16) * (un / 16)], block: [64])
-                (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), um, un, uk);
+                (out.deviceBuffer(), aV, bV, um, un, uk);
             s.sync();
+            Device.checkLaunch();
         } else if (onDevice) {
             // Ragged on-device shape (2.2.5): pad operands to 16-multiples on
             // the device, multiply, crop the leading (m, n) block back. The
@@ -954,6 +988,8 @@ public final class Ewise {
             // the crop is at float32; only the operands need the f16 pad.
             out.gpu();
             KernelStream s #= KernelStream.current();
+            KernelBuffer<float16> aV #= a.deviceView("Ewise.matmulF16Op");
+            KernelBuffer<float16> bV #= b.deviceView("Ewise.matmulF16Op");
             int64 mp = ((m + 15) / 16) * 16;
             int64 np = ((n + 15) / 16) * 16;
             int64 kp = ((k + 15) / 16) * 16;
@@ -980,18 +1016,21 @@ public final class Ewise {
             uint32 uk = (uint32) k;
             uint32 an = ump * ukp;
             pad.launch(s, grid: [(an + 63) / 64], block: [64])
-                (ap.deviceBuffer(), a.deviceBuffer(), ump, ukp, um, uk);
+                (ap.deviceBuffer(), aV, ump, ukp, um, uk);
             uint32 bn = ukp * unp;
             pad.launch(s, grid: [(bn + 63) / 64], block: [64])
-                (bp.deviceBuffer(), b.deviceBuffer(), ukp, unp, uk, un);
+                (bp.deviceBuffer(), bV, ukp, unp, uk, un);
             s.sync();
+            Device.checkLaunch();
             matmulF16.launch(s, grid: [(ump / 16) * (unp / 16)], block: [64])
                 (cp.deviceBuffer(), ap.deviceBuffer(), bp.deviceBuffer(), ump, unp, ukp);
             s.sync();
+            Device.checkLaunch();
             uint32 on = um * un;
             crop.launch(s, grid: [(on + 63) / 64], block: [64])
                 (out.deviceBuffer(), cp.deviceBuffer(), um, un, unp);
             s.sync();
+            Device.checkLaunch();
         } else {
             int64 i = 0;
             while (i < m) {
@@ -1045,20 +1084,26 @@ public final class Ewise {
             narrowF32ToBf16.launch(s, grid: [(umn + 63) / 64], block: [64])
                 (out.deviceBuffer(), w.deviceBuffer(), umn);
             s.sync();
+            Device.checkLaunch();
         } else if (onDevice && aligned) {
             out.gpu();
             uint32 um = (uint32) m;
             uint32 un = (uint32) n;
             uint32 uk = (uint32) k;
             KernelStream s #= KernelStream.current();
+            KernelBuffer<bfloat16> aV #= a.deviceView("Ewise.matmulBf16Op");
+            KernelBuffer<bfloat16> bV #= b.deviceView("Ewise.matmulBf16Op");
             matmulBf16.launch(s, grid: [(um / 16) * (un / 16)], block: [64])
-                (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), um, un, uk);
+                (out.deviceBuffer(), aV, bV, um, un, uk);
             s.sync();
+            Device.checkLaunch();
         } else if (onDevice) {
             // Ragged all-bf16 (2.2.5): pad, multiply, crop — everything at
             // bf16, the kernel's accumulator dtype.
             out.gpu();
             KernelStream s #= KernelStream.current();
+            KernelBuffer<bfloat16> aV #= a.deviceView("Ewise.matmulBf16Op");
+            KernelBuffer<bfloat16> bV #= b.deviceView("Ewise.matmulBf16Op");
             int64 mp = ((m + 15) / 16) * 16;
             int64 np = ((n + 15) / 16) * 16;
             int64 kp = ((k + 15) / 16) * 16;
@@ -1085,18 +1130,21 @@ public final class Ewise {
             uint32 uk = (uint32) k;
             uint32 an = ump * ukp;
             pad.launch(s, grid: [(an + 63) / 64], block: [64])
-                (ap.deviceBuffer(), a.deviceBuffer(), ump, ukp, um, uk);
+                (ap.deviceBuffer(), aV, ump, ukp, um, uk);
             uint32 bn = ukp * unp;
             pad.launch(s, grid: [(bn + 63) / 64], block: [64])
-                (bp.deviceBuffer(), b.deviceBuffer(), ukp, unp, uk, un);
+                (bp.deviceBuffer(), bV, ukp, unp, uk, un);
             s.sync();
+            Device.checkLaunch();
             matmulBf16.launch(s, grid: [(ump / 16) * (unp / 16)], block: [64])
                 (cp.deviceBuffer(), ap.deviceBuffer(), bp.deviceBuffer(), ump, unp, ukp);
             s.sync();
+            Device.checkLaunch();
             uint32 on = um * un;
             crop.launch(s, grid: [(on + 63) / 64], block: [64])
                 (out.deviceBuffer(), cp.deviceBuffer(), um, un, unp);
             s.sync();
+            Device.checkLaunch();
         } else {
             int64 i = 0;
             while (i < m) {
@@ -1145,12 +1193,17 @@ public final class Ewise {
             uint32 un = (uint32) n;
             uint32 uk = (uint32) k;
             KernelStream s #= KernelStream.current();
+            KernelBuffer<bfloat16> aV #= a.deviceView("Ewise.matmulBf16WideOp");
+            KernelBuffer<bfloat16> bV #= b.deviceView("Ewise.matmulBf16WideOp");
             matmulBf16Wide.launch(s, grid: [(um / 16) * (un / 16)], block: [64])
-                (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), um, un, uk);
+                (out.deviceBuffer(), aV, bV, um, un, uk);
             s.sync();
+            Device.checkLaunch();
         } else if (onDevice && launchable) {
             out.gpu();
             KernelStream s #= KernelStream.current();
+            KernelBuffer<bfloat16> aV #= a.deviceView("Ewise.matmulBf16WideOp");
+            KernelBuffer<bfloat16> bV #= b.deviceView("Ewise.matmulBf16WideOp");
             int64 mp = ((m + 15) / 16) * 16;
             int64 np = ((n + 15) / 16) * 16;
             int64 kp = ((k + 15) / 16) * 16;
@@ -1177,18 +1230,21 @@ public final class Ewise {
             uint32 uk = (uint32) k;
             uint32 an = ump * ukp;
             pad.launch(s, grid: [(an + 63) / 64], block: [64])
-                (ap.deviceBuffer(), a.deviceBuffer(), ump, ukp, um, uk);
+                (ap.deviceBuffer(), aV, ump, ukp, um, uk);
             uint32 bn = ukp * unp;
             pad.launch(s, grid: [(bn + 63) / 64], block: [64])
-                (bp.deviceBuffer(), b.deviceBuffer(), ukp, unp, uk, un);
+                (bp.deviceBuffer(), bV, ukp, unp, uk, un);
             s.sync();
+            Device.checkLaunch();
             matmulBf16Wide.launch(s, grid: [(ump / 16) * (unp / 16)], block: [64])
                 (cp.deviceBuffer(), ap.deviceBuffer(), bp.deviceBuffer(), ump, unp, ukp);
             s.sync();
+            Device.checkLaunch();
             uint32 on = um * un;
             crop.launch(s, grid: [(on + 63) / 64], block: [64])
                 (out.deviceBuffer(), cp.deviceBuffer(), um, un, unp);
             s.sync();
+            Device.checkLaunch();
         } else {
             boolean staged = onDevice;   // no wide device path here (Vulkan)
             if (staged) { a.cpu(); b.cpu(); }
@@ -1252,19 +1308,17 @@ public final class Ewise {
     public static #Tensor<float32> sortF32Op(Tensor<float32> t) {
         int64 n = t.size();
         if (Placement.single(t.isOnGpu())) {
-            t.cpu();                                   // stage input to host to seed the copy
             int64[] shp = heap int64[1];
             shp[0] = n;
             Tensor<float32> out #= Tensor.zeros<float32>(shp);
-            int64 c = 0;
-            while (c < n) {
-                out.flatSet(c, t.flatGet(c));
-                c = c + 1;
-            }
-            t.gpu();                                   // restore caller's placement invariant
             out.gpu();
             uint32 un = (uint32) n;
             KernelStream s #= KernelStream.current();
+            KernelBuffer<float32> tV #= t.deviceView("Ewise.sortF32Op");
+            copyRangeF32.launch(s, grid: [(un + 63) / 64], block: [64])
+                (out.deviceBuffer(), tV, un, 0, 0);
+            s.sync();
+            Device.checkLaunch();
             uint32 k = 2;
             while (k <= un) {
                 uint32 j = k / 2;
@@ -1272,6 +1326,7 @@ public final class Ewise {
                     bitonicStepF32.launch(s, grid: [(un + 63) / 64], block: [64])
                         (out.deviceBuffer(), un, k, j);
                     s.sync();
+            Device.checkLaunch();
                     j = j / 2;
                 }
                 k = k * 2;
@@ -1305,18 +1360,19 @@ public final class Ewise {
     public static #Tensor<float32> cumsumF32Op(Tensor<float32> t) {
         int64 n = t.size();
         if (Placement.single(t.isOnGpu())) {
-            t.cpu();                                   // stage input to seed buffer A
             int64[] sa = heap int64[1]; sa[0] = n;
             Tensor<float32> a #= Tensor.zeros<float32>(sa);
-            int64 c = 0;
-            while (c < n) { a.flatSet(c, t.flatGet(c)); c = c + 1; }
-            t.gpu();
             a.gpu();
             int64[] sb = heap int64[1]; sb[0] = n;
             Tensor<float32> b #= Tensor.zeros<float32>(sb);
             b.gpu();
             uint32 un = (uint32) n;
             KernelStream s #= KernelStream.current();
+            KernelBuffer<float32> tV #= t.deviceView("Ewise.cumsumF32Op");
+            copyRangeF32.launch(s, grid: [(un + 63) / 64], block: [64])
+                (a.deviceBuffer(), tV, un, 0, 0);
+            s.sync();
+            Device.checkLaunch();
             boolean srcIsA = true;                     // `a` holds the latest result
             uint32 offset = 1;
             while (offset < un) {
@@ -1328,6 +1384,7 @@ public final class Ewise {
                         (a.deviceBuffer(), b.deviceBuffer(), un, offset);
                 }
                 s.sync();
+            Device.checkLaunch();
                 srcIsA = !srcIsA;                      // the just-written buffer is now src
                 offset = offset * 2;
             }
@@ -1374,11 +1431,14 @@ public final class Ewise {
             uint32 una = (uint32) na;
             uint32 unb = (uint32) nb;
             KernelStream s #= KernelStream.current();
+            KernelBuffer<float32> aV #= a.deviceView("Ewise.concatF32Op");
+            KernelBuffer<float32> bV #= b.deviceView("Ewise.concatF32Op");
             copyRangeF32.launch(s, grid: [(una + 63) / 64], block: [64])
-                (out.deviceBuffer(), a.deviceBuffer(), una, 0, 0);
+                (out.deviceBuffer(), aV, una, 0, 0);
             copyRangeF32.launch(s, grid: [(unb + 63) / 64], block: [64])
-                (out.deviceBuffer(), b.deviceBuffer(), unb, 0, una);
+                (out.deviceBuffer(), bV, unb, 0, una);
             s.sync();
+            Device.checkLaunch();
         } else {
             int64 i = 0;
             while (i < na) { out.flatSet(i, a.flatGet(i)); i = i + 1; }
@@ -1403,9 +1463,11 @@ public final class Ewise {
             uint32 ul = (uint32) len;
             uint32 us = (uint32) start;
             KernelStream s #= KernelStream.current();
+            KernelBuffer<float32> tV #= t.deviceView("Ewise.sliceF32Op");
             copyRangeF32.launch(s, grid: [(ul + 63) / 64], block: [64])
-                (out.deviceBuffer(), t.deviceBuffer(), ul, us, 0);
+                (out.deviceBuffer(), tV, ul, us, 0);
             s.sync();
+            Device.checkLaunch();
         } else {
             int64 i = 0;
             while (i < len) { out.flatSet(i, t.flatGet(start + i)); i = i + 1; }
@@ -1436,9 +1498,11 @@ public final class Ewise {
             acc.gpu();
             uint32 un = (uint32) n;
             KernelStream s #= KernelStream.current();
+            KernelBuffer<float32> tV #= t.deviceView("Ewise.normFroF32");
             reduceSumSqF32.launch(s, grid: [(un + 63) / 64], block: [64])
-                (acc.deviceBuffer(), t.deviceBuffer(), un);
+                (acc.deviceBuffer(), tV, un);
             s.sync();
+            Device.checkLaunch();
             acc.cpu();
             return Math.sqrt(acc.get1(0));
         }
