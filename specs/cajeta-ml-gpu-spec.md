@@ -208,4 +208,8 @@ value-checked against a host reference.
 ## 11. Open questions
 - 11.1 Which epilogue and decode-step mechanism (§5.4, §5.5): a function
   parameter the compiler inlines into the kernel, or a template the consumer
-  instantiates? To be settled in the plan's first kernel-support unit.
+  instantiates? CLOSED 2026-11-07 (plan 9.2.1): a class template over the
+  epilogue or decode type; the kernel calls the type's `@Device` statics, and
+  the lowering resolves them through the instantiation's argument. A function
+  parameter would need closures in device code, which the lowering has no
+  shape for.

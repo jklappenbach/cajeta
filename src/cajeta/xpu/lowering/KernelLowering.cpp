@@ -6965,6 +6965,17 @@ private:
             }
         }
         if (recv.empty()) return nullptr;
+        // A receiver naming a type parameter of the kernel's class template resolves to
+        // the instantiation's argument: `E.apply` in `Fused<BiasRelu>` is BiasRelu.apply.
+        if (cls) {
+            CajetaClassPtr origin = cls->getTemplateOrigin();
+            const auto& tps = origin ? origin->getTypeParameters() : cls->getTypeParameters();
+            const auto& targs = cls->getTypeArguments();
+            for (std::size_t i = 0; i < tps.size() && i < targs.size(); ++i) {
+                if (tps[i].isNonType || tps[i].name != recv) continue;
+                if (auto m = findIn(std::dynamic_pointer_cast<CajetaClass>(targs[i]))) return m;
+            }
+        }
         for (auto& kv : CajetaType::getCanonicalMap()) {
             auto c = std::dynamic_pointer_cast<CajetaClass>(kv.second);
             if (!c) continue;
