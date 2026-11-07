@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.53.1 (2026-11-07)
 
+- **`await` loads a Task kept in a field or a static.** `await this.t`, a bare field name and `await S.t` lowered the operand to the slot's address and used it as the Task, so the done flag, exception and value were read from the slot's own memory: the value came back as garbage, and a task that threw faulted the awaiter. Only a local's alloca was loaded through. A Task is kept behind a pointer everywhere, so `await` now loads through all three slot kinds. Found by cajeta-cabra's host awaiting the serve task it kept in a field; `AwaitFieldTests` pins the field read, the bare name, the static, a throw caught through a field, and a task kept by one method and awaited by another.
 - **An f32 cooperative-matrix operand takes the portable tile on Vulkan.** RADV advertises f16 and 8-bit integer operands only, with f32 and int32 accumulators; an f32 x f32 `CooperativeMatrix` multiply was tiered native and the driver segfaulted compiling it at pipeline creation. The lowering now demotes f32 operands (the accumulator stays native) and says so in the `[mma-tiering]` note. Found by the kernels package's f32 GEMM (cajeta-ml-gpu 20.2.2).
 - **A Vulkan kernel narrows to `bfloat16` by rounding to nearest even,** as the host, cpu and hip do. The SPIR-V path handed `(bfloat16) x` to the driver's `OpFConvert`, which truncated on RADV (259 became 258, -93.75 became -93.5); the backend now emits the integer form of the rounding for a `float32` or an integer source. Found by the kernels package's conversion check (cajeta-ml-gpu 11.2.2).
 
