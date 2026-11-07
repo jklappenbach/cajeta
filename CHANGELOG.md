@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **An f32 cooperative-matrix operand takes the portable tile on Vulkan.** RADV advertises f16 and 8-bit integer operands only, with f32 and int32 accumulators; an f32 x f32 `CooperativeMatrix` multiply was tiered native and the driver segfaulted compiling it at pipeline creation. The lowering now demotes f32 operands (the accumulator stays native) and says so in the `[mma-tiering]` note. Found by the kernels package's f32 GEMM (cajeta-ml-gpu 20.2.2).
 - **A Vulkan kernel narrows to `bfloat16` by rounding to nearest even,** as the host, cpu and hip do. The SPIR-V path handed `(bfloat16) x` to the driver's `OpFConvert`, which truncated on RADV (259 became 258, -93.75 became -93.5); the backend now emits the integer form of the rounding for a `float32` or an integer source. Found by the kernels package's conversion check (cajeta-ml-gpu 11.2.2).
 
 ## 0.53.0 (2026-11-07)

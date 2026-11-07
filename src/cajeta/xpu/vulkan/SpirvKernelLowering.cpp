@@ -701,14 +701,15 @@ public:
         return vkRayQueryType(m.getContext());
     }
 
-    // Native SPV_KHR_cooperative_matrix only for the dtype configs drivers advertise
-    // (f16 and 8-bit integer operands); bf16 has none and takes the portable matmul.
+    // Native SPV_KHR_cooperative_matrix only for the configs drivers advertise: f16 and
+    // 8-bit integer operands, f32 and int32 accumulators. bf16 has none, and an f32
+    // OPERAND has none either (RADV segfaults compiling one); both take the portable matmul.
     ImplTier coopMatrixTier(llvm::Type* elem, uint32_t /*rows*/,
-                            uint32_t /*cols*/, uint32_t /*use*/) override {
+                            uint32_t /*cols*/, uint32_t use) override {
 #if CAJETA_HAS_SPV_COOP_MATRIX
         if (elem->isBFloatTy()) return ImplTier::Portable;
-        if (elem->isHalfTy() || elem->isFloatTy() || elem->isIntegerTy())
-            return ImplTier::Native;
+        if (elem->isFloatTy()) return use == 2 ? ImplTier::Native : ImplTier::Portable;
+        if (elem->isHalfTy() || elem->isIntegerTy()) return ImplTier::Native;
 #endif
         return ImplTier::Portable;
     }
