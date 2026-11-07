@@ -97,6 +97,14 @@ public final class Demo {
 | `int32 device()` | Placement code: `0` = host (CPU), `1` = device (GPU) |
 | `KernelBuffer<T> deviceBuffer()` | The device buffer backing this tensor (null until `gpu()`) — the handle a `cajeta.xpu` kernel launch binds |
 
+An op never moves its operands. With both operands on the device,
+`add`/`sub`/`mul`/`div<E>` at `float32`, `float16` or `bfloat16` run a device
+kernel over views of the operands' buffers (equal shapes, contiguous, any
+offset) and return a tensor allocated on the device; an op with no
+device kernel for its operands throws `PlacementException` naming the op, and
+an op given one host and one device operand throws the same. Call `cpu()` on
+the operands to take the host path.
+
 ### Interop (TensorProtocol)
 
 | Signature | |
@@ -186,6 +194,7 @@ caller pick the result width; the same-dtype forms keep `E`.
 | `static #Tensor<E> add<E>(Tensor<E> a, Tensor<E> b)` | Elementwise `a + b`, fresh C-contiguous result |
 | `static #Tensor<E> sub<E>(Tensor<E> a, Tensor<E> b)` | Elementwise `a - b` |
 | `static #Tensor<E> mul<E>(Tensor<E> a, Tensor<E> b)` | Elementwise `a * b` |
+| `static #Tensor<E> div<E extends Floating>(Tensor<E> a, Tensor<E> b)` | Same-dtype true division `a / b` at a floating `E` |
 | `static #Tensor<R> add<A extends Numeric, B extends Numeric, R extends Numeric>(Tensor<A> a, Tensor<B> b)` | Cross-dtype `a + b`; explicit result width `R` |
 | `static #Tensor<R> sub<A extends Numeric, B extends Numeric, R extends Numeric>(Tensor<A> a, Tensor<B> b)` | Cross-dtype `a - b` |
 | `static #Tensor<R> mul<A extends Numeric, B extends Numeric, R extends Numeric>(Tensor<A> a, Tensor<B> b)` | Cross-dtype `a * b` |

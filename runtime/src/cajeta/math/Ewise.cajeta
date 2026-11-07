@@ -7,6 +7,7 @@ import cajeta.xpu.Workgroup;
 import cajeta.xpu.CooperativeMatrix;
 import cajeta.xpu.Capability;
 import cajeta.xpu.Device;
+import cajeta.lang.String;
 
 /**
  * Elementwise GPU lowering for the `Tensor` ufunc surface (numpy-porting-plan
@@ -17,12 +18,12 @@ import cajeta.xpu.Device;
  * CPU loop — and a `cajeta.xpu` CPU backend backs the buffer when no GPU is present,
  * so it runs everywhere.
  *
- * The lowering is **per-concrete-dtype**: a generic `@Kernel` does not monomorphize
- * at the launch site (the launch receiver takes no explicit type args, and an
- * inferred generic instantiation lowers to a no-op), so each dtype family member is
- * its own kernel. `float32` is the first member — the workhorse dtype. The generic,
- * broadcasting, dtype-promoting surface stays the `Tensor` CPU binop family; this
- * fast-path requires **equal-shaped** operands (no broadcast, contiguous).
+ * Kernels whose body is the same at every element type are generic (`arith<E>`,
+ * `pad<E>`, `crop<E>`, `reduceSum<E>`): a launch instantiates them for the buffers'
+ * element type, from concrete or generic code. The matmul kernels stay per dtype
+ * because their `CooperativeMatrix` configs do. The device fast path requires
+ * **equal-shaped**, contiguous operands (no broadcast); the broadcasting,
+ * dtype-promoting surface is `Tensor`'s host binop family.
  *
  * `op` selects the arithmetic: `0`=add, `1`=sub, `2`=mul, `3`=div — the same op
  * codes as the CPU `Tensor.binop`, so device and host compute the identical IEEE
@@ -30,15 +31,15 @@ import cajeta.xpu.Device;
  */
 public final class Ewise {
 
-    /** Fused float32 elementwise-arithmetic kernel: `out[i] = a[i] <op> b[i]`. */
+    /** Fused elementwise-arithmetic kernel at `E`: `out[i] = a[i] <op> b[i]`. */
     @Kernel
-    public static void arithF32(KernelBuffer<float32> out, KernelBuffer<float32> a,
-                                KernelBuffer<float32> b, uint32 n, int32 op) {
+    public static void arith<E>(KernelBuffer<E> out, KernelBuffer<E> a,
+                                KernelBuffer<E> b, uint32 n, int32 op) {
         uint32 i = KernelThread.globalIdX();
         if (i < n) {
-            float32 va = a[i];
-            float32 vb = b[i];
-            float32 vc = va + vb;
+            E va = a[i];
+            E vb = b[i];
+            E vc = va + vb;
             if (op == 1) { vc = va - vb; }
             if (op == 2) { vc = va * vb; }
             if (op == 3) { vc = va / vb; }
@@ -47,123 +48,116 @@ public final class Ewise {
     }
 
     /**
+     * `op` over two device-resident tensors through {@link #arith}'s `E` instantiation.
+     * The operands bind as views of their buffers at their offsets; the result is
+     * allocated on the device, with no host mirror. Throws {@link PlacementException}
+     * naming `name` when no kernel serves the operands: a broadcast shape, a strided
+     * view, or a dtype the active backend did not lower. `op`: 0=add, 1=sub, 2=mul,
+     * 3=div.
+     */
+    public static #Tensor<E> arithDevice<E>(String name, Tensor<E> a, Tensor<E> b, int32 op) {
+        if (!Ewise.sameShape<E>(a, b)) {
+            Placement.noKernel(name, DType.of<E>(), "for broadcast shapes");
+        }
+        if (!a.isContiguous() || !b.isContiguous()) {
+            Placement.noKernel(name, DType.of<E>(), "for a strided view");
+        }
+        Placement.requireKernel(name, "arith", DType.of<E>());
+        int64 n = a.size();
+        uint64 count = (uint64) n;
+        KernelBuffer<E> av #= a.deviceBuffer().slice((uint64) a.offset(), count);
+        KernelBuffer<E> bv #= b.deviceBuffer().slice((uint64) b.offset(), count);
+        KernelBuffer<E> ob = heap KernelBuffer<E>(count);
+        uint32 un = (uint32) n;
+        KernelStream s #= KernelStream.current();
+        arith.launch(s, grid: [(un + 63) / 64], block: [64])(ob, av, bv, un, op);
+        s.sync();
+        Storage<E> st = heap Storage<E>(#ob, n);
+        int64[] shp #= Tensor.shapeOf<E>(a);
+        int64[] strides #= Tensor.contigStrides(shp);
+        return heap Tensor<E>(#st, 0, shp, strides);
+    }
+
+    /** `true` when `a` and `b` have the same rank and extents. */
+    static boolean sameShape<E>(Tensor<E> a, Tensor<E> b) {
+        int32 nd = a.ndim();
+        if (b.ndim() != nd) { return false; }
+        int32 i = 0;
+        while (i < nd) {
+            if (a.shapeAt(i) != b.shapeAt(i)) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    /**
      * Elementwise arithmetic on two equal-shaped `float32` tensors, routed on
-     * placement: both on-device → the {@link #arithF32} GPU kernel; otherwise the
+     * placement: both on-device → the {@link #arith} GPU kernel; otherwise the
      * CPU loop. Returns a fresh C-order `float32` tensor (on the device when the
      * GPU path ran — call {@code cpu()} to read it on the host). `op`: 0=add,
      * 1=sub, 2=mul, 3=div.
      */
     public static #Tensor<float32> arithF32Op(Tensor<float32> a, Tensor<float32> b, int32 op) {
+        if (Placement.pair("arith", "a", a.isOnGpu(), "b", b.isOnGpu())) {
+            return Ewise.arithDevice<float32>("Ewise.arithF32Op", a, b, op);
+        }
         Tensor<float32> out #= Tensor.zerosLike<float32>(a);
         int64 n = a.size();
-        if (Placement.pair("arith", "a", a.isOnGpu(), "b", b.isOnGpu())) {
-            out.gpu();
-            uint32 un = (uint32) n;
-            KernelStream s #= KernelStream.current();
-            arithF32.launch(s, grid: [(un + 63) / 64], block: [64])
-                (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), un, op);
-            s.sync();
-        } else {
-            int64 i = 0;
-            while (i < n) {
-                float32 va = a.flatGet(i);
-                float32 vb = b.flatGet(i);
-                float32 vc = va + vb;
-                if (op == 1) { vc = va - vb; }
-                if (op == 2) { vc = va * vb; }
-                if (op == 3) { vc = va / vb; }
-                out.flatSet(i, vc);
-                i = i + 1;
-            }
+        int64 i = 0;
+        while (i < n) {
+            float32 va = a.flatGet(i);
+            float32 vb = b.flatGet(i);
+            float32 vc = va + vb;
+            if (op == 1) { vc = va - vb; }
+            if (op == 2) { vc = va * vb; }
+            if (op == 3) { vc = va / vb; }
+            out.flatSet(i, vc);
+            i = i + 1;
         }
         return #out;
-    }
-
-    /** {@link #arithF32} at **float16** storage (cajeta-llama 2.2.2): `out[i] = a[i] <op> b[i]`, computed and stored at f16 — elementwise has no accumulation, so the storage dtype is the honest compute dtype. */
-    @Kernel
-    public static void arithF16(KernelBuffer<float16> out, KernelBuffer<float16> a,
-                                KernelBuffer<float16> b, uint32 n, int32 op) {
-        uint32 i = KernelThread.globalIdX();
-        if (i < n) {
-            float16 va = a[i];
-            float16 vb = b[i];
-            float16 vc = va + vb;
-            if (op == 1) { vc = va - vb; }
-            if (op == 2) { vc = va * vb; }
-            if (op == 3) { vc = va / vb; }
-            out[i] = vc;
-        }
-    }
-
-    /** {@link #arithF32} at **bfloat16** storage (cajeta-llama 2.2.2). */
-    @Kernel
-    public static void arithBf16(KernelBuffer<bfloat16> out, KernelBuffer<bfloat16> a,
-                                 KernelBuffer<bfloat16> b, uint32 n, int32 op) {
-        uint32 i = KernelThread.globalIdX();
-        if (i < n) {
-            bfloat16 va = a[i];
-            bfloat16 vb = b[i];
-            bfloat16 vc = va + vb;
-            if (op == 1) { vc = va - vb; }
-            if (op == 2) { vc = va * vb; }
-            if (op == 3) { vc = va / vb; }
-            out[i] = vc;
-        }
     }
 
     /**
      * Elementwise arithmetic on two equal-shaped `float16` tensors — {@link #arithF32Op}
-     * at f16, through the {@link #arithF16} kernel. Same placement routing and op codes.
+     * at f16, through the {@link #arith} kernel. Same placement routing and op codes.
      */
     public static #Tensor<float16> arithF16Op(Tensor<float16> a, Tensor<float16> b, int32 op) {
+        if (Placement.pair("arithF16", "a", a.isOnGpu(), "b", b.isOnGpu())) {
+            return Ewise.arithDevice<float16>("Ewise.arithF16Op", a, b, op);
+        }
         Tensor<float16> out #= Tensor.zerosLike<float16>(a);
         int64 n = a.size();
-        if (Placement.pair("arithF16", "a", a.isOnGpu(), "b", b.isOnGpu())) {
-            out.gpu();
-            uint32 un = (uint32) n;
-            KernelStream s #= KernelStream.current();
-            arithF16.launch(s, grid: [(un + 63) / 64], block: [64])
-                (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), un, op);
-            s.sync();
-        } else {
-            int64 i = 0;
-            while (i < n) {
-                float16 va = a.flatGet(i);
-                float16 vb = b.flatGet(i);
-                float16 vc = va + vb;
-                if (op == 1) { vc = va - vb; }
-                if (op == 2) { vc = va * vb; }
-                if (op == 3) { vc = va / vb; }
-                out.flatSet(i, vc);
-                i = i + 1;
-            }
+        int64 i = 0;
+        while (i < n) {
+            float16 va = a.flatGet(i);
+            float16 vb = b.flatGet(i);
+            float16 vc = va + vb;
+            if (op == 1) { vc = va - vb; }
+            if (op == 2) { vc = va * vb; }
+            if (op == 3) { vc = va / vb; }
+            out.flatSet(i, vc);
+            i = i + 1;
         }
         return #out;
     }
 
-    /** {@link #arithF16Op} at **bfloat16**, through the {@link #arithBf16} kernel. */
+    /** {@link #arithF16Op} at **bfloat16**, through the {@link #arith} kernel. */
     public static #Tensor<bfloat16> arithBf16Op(Tensor<bfloat16> a, Tensor<bfloat16> b, int32 op) {
+        if (Placement.pair("arithBf16", "a", a.isOnGpu(), "b", b.isOnGpu())) {
+            return Ewise.arithDevice<bfloat16>("Ewise.arithBf16Op", a, b, op);
+        }
         Tensor<bfloat16> out #= Tensor.zerosLike<bfloat16>(a);
         int64 n = a.size();
-        if (Placement.pair("arithBf16", "a", a.isOnGpu(), "b", b.isOnGpu())) {
-            out.gpu();
-            uint32 un = (uint32) n;
-            KernelStream s #= KernelStream.current();
-            arithBf16.launch(s, grid: [(un + 63) / 64], block: [64])
-                (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), un, op);
-            s.sync();
-        } else {
-            int64 i = 0;
-            while (i < n) {
-                bfloat16 va = a.flatGet(i);
-                bfloat16 vb = b.flatGet(i);
-                bfloat16 vc = va + vb;
-                if (op == 1) { vc = va - vb; }
-                if (op == 2) { vc = va * vb; }
-                if (op == 3) { vc = va / vb; }
-                out.flatSet(i, vc);
-                i = i + 1;
-            }
+        int64 i = 0;
+        while (i < n) {
+            bfloat16 va = a.flatGet(i);
+            bfloat16 vb = b.flatGet(i);
+            bfloat16 vc = va + vb;
+            if (op == 1) { vc = va - vb; }
+            if (op == 2) { vc = va * vb; }
+            if (op == 3) { vc = va / vb; }
+            out.flatSet(i, vc);
+            i = i + 1;
         }
         return #out;
     }
@@ -175,14 +169,14 @@ public final class Ewise {
      * atomic RMW). The accumulator must be pre-zeroed.
      */
     @Kernel
-    public static void reduceSumF32(KernelBuffer<float32> out, KernelBuffer<float32> in, uint32 n) {
+    public static void reduceSum<E>(KernelBuffer<float32> out, KernelBuffer<E> in, uint32 n) {
         uint32 i = KernelThread.globalIdX();
-        if (i < n) { out.atomicAdd(0, in[i]); }
+        if (i < n) { out.atomicAdd(0, (float32) in[i]); }
     }
 
     /**
      * Full-array sum of a **contiguous** `float32` tensor, routed on placement: when
-     * on-device → the {@link #reduceSumF32} atomic GPU reduction over a 1-element
+     * on-device → the {@link #reduceSum} atomic GPU reduction over a 1-element
      * accumulator; otherwise the CPU loop. The two agree (the Phase-4 reduction
      * cross-check). Sum is exact (order-independent) for integer-valued floats whose
      * total stays below 2^24, so the atomic order does not perturb agreement there.
@@ -196,7 +190,7 @@ public final class Ewise {
             acc.gpu();
             uint32 un = (uint32) n;
             KernelStream s #= KernelStream.current();
-            reduceSumF32.launch(s, grid: [(un + 63) / 64], block: [64])
+            reduceSum.launch(s, grid: [(un + 63) / 64], block: [64])
                 (acc.deviceBuffer(), t.deviceBuffer(), un);
             s.sync();
             acc.cpu();
@@ -212,28 +206,8 @@ public final class Ewise {
     }
 
     /**
-     * Sum-reduction over **float16** storage into a **float32** accumulator
-     * (cajeta-llama 2.2.2 / 2.1.4 on the device path): each element widens to f32
-     * before the atomic add, so the accumulator never stalls at f16's 2^11
-     * integer ceiling. The accumulator buffer is f32 by signature — the width is
-     * stated, not incidental (2.3.2).
-     */
-    @Kernel
-    public static void reduceSumF16(KernelBuffer<float32> out, KernelBuffer<float16> in, uint32 n) {
-        uint32 i = KernelThread.globalIdX();
-        if (i < n) { out.atomicAdd(0, (float32) in[i]); }
-    }
-
-    /** {@link #reduceSumF16} at **bfloat16** storage — same f32 accumulator. */
-    @Kernel
-    public static void reduceSumBf16(KernelBuffer<float32> out, KernelBuffer<bfloat16> in, uint32 n) {
-        uint32 i = KernelThread.globalIdX();
-        if (i < n) { out.atomicAdd(0, (float32) in[i]); }
-    }
-
-    /**
      * Full-array sum of a contiguous `float16` tensor, returning **float32** —
-     * {@link #sumF32} at f16 storage, through the {@link #reduceSumF16} widening
+     * {@link #sumF32} at f16 storage, through the {@link #reduceSum} widening
      * reduction on the device path; the CPU floor accumulates at f32 for the same
      * numerics.
      */
@@ -246,7 +220,7 @@ public final class Ewise {
             acc.gpu();
             uint32 un = (uint32) n;
             KernelStream s #= KernelStream.current();
-            reduceSumF16.launch(s, grid: [(un + 63) / 64], block: [64])
+            reduceSum.launch(s, grid: [(un + 63) / 64], block: [64])
                 (acc.deviceBuffer(), t.deviceBuffer(), un);
             s.sync();
             acc.cpu();
@@ -261,7 +235,7 @@ public final class Ewise {
         return sum;
     }
 
-    /** {@link #sumF16} at **bfloat16** storage, through {@link #reduceSumBf16}. */
+    /** {@link #sumF16} at **bfloat16** storage, through {@link #reduceSum}. */
     public static float32 sumBf16(Tensor<bfloat16> t) {
         int64 n = t.size();
         if (Placement.single(t.isOnGpu())) {
@@ -271,7 +245,7 @@ public final class Ewise {
             acc.gpu();
             uint32 un = (uint32) n;
             KernelStream s #= KernelStream.current();
-            reduceSumBf16.launch(s, grid: [(un + 63) / 64], block: [64])
+            reduceSum.launch(s, grid: [(un + 63) / 64], block: [64])
                 (acc.deviceBuffer(), t.deviceBuffer(), un);
             s.sync();
             acc.cpu();
@@ -489,13 +463,13 @@ public final class Ewise {
      * exactly the unpadded answer.
      */
     @Kernel
-    public static void padF32(KernelBuffer<float32> out, KernelBuffer<float32> in,
+    public static void pad<E>(KernelBuffer<E> out, KernelBuffer<E> in,
                               uint32 orows, uint32 ocols, uint32 irows, uint32 icols) {
         uint32 i = KernelThread.globalIdX();
         if (i < orows * ocols) {
             uint32 r = i / ocols;
             uint32 c = i % ocols;
-            float32 v = 0.0f;
+            E v = (E) 0.0;
             if (r < irows) {
                 if (c < icols) { v = in[r * icols + c]; }
             }
@@ -504,65 +478,12 @@ public final class Ewise {
     }
 
     /**
-     * The inverse of {@link #padF32}: copy the leading `(orows, ocols)` block out of
+     * The inverse of {@link #pad}: copy the leading `(orows, ocols)` block out of
      * a matrix whose row stride is `icols`.
      */
     @Kernel
-    public static void cropF32(KernelBuffer<float32> out, KernelBuffer<float32> in,
+    public static void crop<E>(KernelBuffer<E> out, KernelBuffer<E> in,
                                uint32 orows, uint32 ocols, uint32 icols) {
-        uint32 i = KernelThread.globalIdX();
-        if (i < orows * ocols) {
-            uint32 r = i / ocols;
-            uint32 c = i % ocols;
-            out[i] = in[r * icols + c];
-        }
-    }
-
-    /**
-     * {@link #padF32} at float16 — the ragged f16 device GEMM's square-up
-     * (cajeta-llama 2.2.5). Only the OPERANDS need an f16 pad: the f16 GEMM's
-     * output buffer is float32 (the accumulator's dtype), so its crop-back is
-     * {@link #cropF32}.
-     */
-    @Kernel
-    public static void padF16(KernelBuffer<float16> out, KernelBuffer<float16> in,
-                              uint32 orows, uint32 ocols, uint32 irows, uint32 icols) {
-        uint32 i = KernelThread.globalIdX();
-        if (i < orows * ocols) {
-            uint32 r = i / ocols;
-            uint32 c = i % ocols;
-            float16 v = (float16) 0.0;
-            if (r < irows) {
-                if (c < icols) { v = in[r * icols + c]; }
-            }
-            out[i] = v;
-        }
-    }
-
-    /** {@link #padF32} at bfloat16 (cajeta-llama 2.2.5). */
-    @Kernel
-    public static void padBf16(KernelBuffer<bfloat16> out, KernelBuffer<bfloat16> in,
-                               uint32 orows, uint32 ocols, uint32 irows, uint32 icols) {
-        uint32 i = KernelThread.globalIdX();
-        if (i < orows * ocols) {
-            uint32 r = i / ocols;
-            uint32 c = i % ocols;
-            bfloat16 v = (bfloat16) 0.0;
-            if (r < irows) {
-                if (c < icols) { v = in[r * icols + c]; }
-            }
-            out[i] = v;
-        }
-    }
-
-    /**
-     * {@link #cropF32} at bfloat16 — the crop-back for the ragged ALL-bf16
-     * GEMM, whose padded product carries the bf16 accumulator dtype
-     * (cajeta-llama 2.2.5).
-     */
-    @Kernel
-    public static void cropBf16(KernelBuffer<bfloat16> out, KernelBuffer<bfloat16> in,
-                                uint32 orows, uint32 ocols, uint32 icols) {
         uint32 i = KernelThread.globalIdX();
         if (i < orows * ocols) {
             uint32 r = i / ocols;
@@ -657,7 +578,7 @@ public final class Ewise {
      * helper produces a `markSharedView` handle, so the source tensor's drop would
      * free the buffer out from under it.
      *
-     * Handles ragged shapes by padding (see {@link #padF32}); tile-aligned shapes
+     * Handles ragged shapes by padding (see {@link #pad}); tile-aligned shapes
      * take the single-launch path.
      */
     public static void matmulF32Into(KernelBuffer<float32> c, KernelBuffer<float32> a,
@@ -701,17 +622,17 @@ public final class Ewise {
                 uint32 un = (uint32) n;
                 uint32 uk = (uint32) k;
                 uint32 an = ump * ukp;
-                padF32.launch(s, grid: [(an + 63) / 64], block: [64])
+                pad.launch(s, grid: [(an + 63) / 64], block: [64])
                     (ap.deviceBuffer(), a, ump, ukp, um, uk);
                 uint32 bn = ukp * unp;
-                padF32.launch(s, grid: [(bn + 63) / 64], block: [64])
+                pad.launch(s, grid: [(bn + 63) / 64], block: [64])
                     (bp.deviceBuffer(), b, ukp, unp, uk, un);
                 s.sync();
                 matmulF32.launch(s, grid: [(ump / 16) * (unp / 16)], block: [64])
                     (cp.deviceBuffer(), ap.deviceBuffer(), bp.deviceBuffer(), ump, unp, ukp);
                 s.sync();
                 uint32 on = um * un;
-                cropF32.launch(s, grid: [(on + 63) / 64], block: [64])
+                crop.launch(s, grid: [(on + 63) / 64], block: [64])
                     (c, cp.deviceBuffer(), um, un, unp);
                 s.sync();
             }
@@ -1030,7 +951,7 @@ public final class Ewise {
             // Ragged on-device shape (2.2.5): pad operands to 16-multiples on
             // the device, multiply, crop the leading (m, n) block back. The
             // padded product is float32 — the accumulator/output dtype — so
-            // the crop is cropF32; only the operands need the f16 pad.
+            // the crop is at float32; only the operands need the f16 pad.
             out.gpu();
             KernelStream s #= KernelStream.current();
             int64 mp = ((m + 15) / 16) * 16;
@@ -1058,17 +979,17 @@ public final class Ewise {
             uint32 un = (uint32) n;
             uint32 uk = (uint32) k;
             uint32 an = ump * ukp;
-            padF16.launch(s, grid: [(an + 63) / 64], block: [64])
+            pad.launch(s, grid: [(an + 63) / 64], block: [64])
                 (ap.deviceBuffer(), a.deviceBuffer(), ump, ukp, um, uk);
             uint32 bn = ukp * unp;
-            padF16.launch(s, grid: [(bn + 63) / 64], block: [64])
+            pad.launch(s, grid: [(bn + 63) / 64], block: [64])
                 (bp.deviceBuffer(), b.deviceBuffer(), ukp, unp, uk, un);
             s.sync();
             matmulF16.launch(s, grid: [(ump / 16) * (unp / 16)], block: [64])
                 (cp.deviceBuffer(), ap.deviceBuffer(), bp.deviceBuffer(), ump, unp, ukp);
             s.sync();
             uint32 on = um * un;
-            cropF32.launch(s, grid: [(on + 63) / 64], block: [64])
+            crop.launch(s, grid: [(on + 63) / 64], block: [64])
                 (out.deviceBuffer(), cp.deviceBuffer(), um, un, unp);
             s.sync();
         } else {
@@ -1163,17 +1084,17 @@ public final class Ewise {
             uint32 un = (uint32) n;
             uint32 uk = (uint32) k;
             uint32 an = ump * ukp;
-            padBf16.launch(s, grid: [(an + 63) / 64], block: [64])
+            pad.launch(s, grid: [(an + 63) / 64], block: [64])
                 (ap.deviceBuffer(), a.deviceBuffer(), ump, ukp, um, uk);
             uint32 bn = ukp * unp;
-            padBf16.launch(s, grid: [(bn + 63) / 64], block: [64])
+            pad.launch(s, grid: [(bn + 63) / 64], block: [64])
                 (bp.deviceBuffer(), b.deviceBuffer(), ukp, unp, uk, un);
             s.sync();
             matmulBf16.launch(s, grid: [(ump / 16) * (unp / 16)], block: [64])
                 (cp.deviceBuffer(), ap.deviceBuffer(), bp.deviceBuffer(), ump, unp, ukp);
             s.sync();
             uint32 on = um * un;
-            cropBf16.launch(s, grid: [(on + 63) / 64], block: [64])
+            crop.launch(s, grid: [(on + 63) / 64], block: [64])
                 (out.deviceBuffer(), cp.deviceBuffer(), um, un, unp);
             s.sync();
         } else {
@@ -1255,17 +1176,17 @@ public final class Ewise {
             uint32 un = (uint32) n;
             uint32 uk = (uint32) k;
             uint32 an = ump * ukp;
-            padBf16.launch(s, grid: [(an + 63) / 64], block: [64])
+            pad.launch(s, grid: [(an + 63) / 64], block: [64])
                 (ap.deviceBuffer(), a.deviceBuffer(), ump, ukp, um, uk);
             uint32 bn = ukp * unp;
-            padBf16.launch(s, grid: [(bn + 63) / 64], block: [64])
+            pad.launch(s, grid: [(bn + 63) / 64], block: [64])
                 (bp.deviceBuffer(), b.deviceBuffer(), ukp, unp, uk, un);
             s.sync();
             matmulBf16Wide.launch(s, grid: [(ump / 16) * (unp / 16)], block: [64])
                 (cp.deviceBuffer(), ap.deviceBuffer(), bp.deviceBuffer(), ump, unp, ukp);
             s.sync();
             uint32 on = um * un;
-            cropF32.launch(s, grid: [(on + 63) / 64], block: [64])
+            crop.launch(s, grid: [(on + 63) / 64], block: [64])
                 (out.deviceBuffer(), cp.deviceBuffer(), um, un, unp);
             s.sync();
         } else {

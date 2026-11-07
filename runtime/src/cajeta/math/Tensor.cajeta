@@ -2855,7 +2855,9 @@ public class Tensor<T> {
      * never wrapped in droppable views (no early free of the inputs' `Storage`).
      */
     public static #Tensor<E> add<E>(Tensor<E> a, Tensor<E> b) {
-        Placement.guardPair<E>("Tensor.add", a, b);
+        if (Placement.devicePair<E>("Tensor.add", a, b)) {
+            return Ewise.arithDevice<E>("Tensor.add", a, b, 0);
+        }
         int64[] rshape #= Tensor.broadcastShape<E>(a.shapeDims, b.shapeDims);
         int64 n = Tensor.productOf(rshape);
         Storage<E> st = heap Storage<E>(n);
@@ -2892,7 +2894,9 @@ public class Tensor<T> {
     /** Elementwise `a - b` with broadcasting (numpy `-`). See {@link #add} on why the
      *  arithmetic lives in a static method-type-param op (concrete dtype at the call). */
     public static #Tensor<E> sub<E>(Tensor<E> a, Tensor<E> b) {
-        Placement.guardPair<E>("Tensor.sub", a, b);
+        if (Placement.devicePair<E>("Tensor.sub", a, b)) {
+            return Ewise.arithDevice<E>("Tensor.sub", a, b, 1);
+        }
         int64[] rshape #= Tensor.broadcastShape<E>(a.shapeDims, b.shapeDims);
         int64 n = Tensor.productOf(rshape);
         Storage<E> st = heap Storage<E>(n);
@@ -2929,7 +2933,9 @@ public class Tensor<T> {
     /** Elementwise `a * b` with broadcasting (numpy `*`). See {@link #add} on why the
      *  arithmetic lives in a static method-type-param op (concrete dtype at the call). */
     public static #Tensor<E> mul<E>(Tensor<E> a, Tensor<E> b) {
-        Placement.guardPair<E>("Tensor.mul", a, b);
+        if (Placement.devicePair<E>("Tensor.mul", a, b)) {
+            return Ewise.arithDevice<E>("Tensor.mul", a, b, 2);
+        }
         int64[] rshape #= Tensor.broadcastShape<E>(a.shapeDims, b.shapeDims);
         int64 n = Tensor.productOf(rshape);
         Storage<E> st = heap Storage<E>(n);
@@ -2945,6 +2951,45 @@ public class Tensor<T> {
             E va = a.readBroadcast(idx);
             E vb = b.readBroadcast(idx);
             E vc = va * vb;
+            st.set(lin, vc);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides #= Tensor.contigStrides(rshape);
+        return heap Tensor<E>(#st, 0, rshape, rstrides);
+    }
+
+    /** Same-dtype true division `a / b` with broadcasting, at a floating `E`. See
+     *  {@link #add}; the integer and cross-dtype forms are {@link #div(Tensor, Tensor)}. */
+    public static #Tensor<E> div<E extends Floating>(Tensor<E> a, Tensor<E> b) {
+        if (Placement.devicePair<E>("Tensor.div", a, b)) {
+            return Ewise.arithDevice<E>("Tensor.div", a, b, 3);
+        }
+        int64[] rshape #= Tensor.broadcastShape<E>(a.shapeDims, b.shapeDims);
+        int64 n = Tensor.productOf(rshape);
+        Storage<E> st = heap Storage<E>(n);
+        int32 nd = (int32) rshape.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            E va = a.readBroadcast(idx);
+            E vb = b.readBroadcast(idx);
+            E vc = va / vb;
             st.set(lin, vc);
             lin = lin + 1;
             int32 ax = nd - 1;

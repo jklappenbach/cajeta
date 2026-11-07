@@ -184,6 +184,9 @@ namespace cajeta {
             throw Exception("launch receiver is not a kernel name", "XPU-N02");
         }
         std::string registryName = kernelName;
+        // Arguments lowered early, for a generic kernel's type inference (a call's
+        // type is known only once it is lowered). The argv loop reuses them.
+        std::vector<llvm::Value*> preGen(args.size(), nullptr);
         {
             // The receiver must be a @Kernel of the launching class (XPU-N02): a
             // name nothing declares used to lower to a runtime refusal with no
@@ -206,6 +209,8 @@ namespace cajeta {
                                 auto e = args[i].expression;
                                 if (!e) continue;
                                 if (!e->getResolvedType()) e->resolveTypes(module);
+                                if (!e->getResolvedType())
+                                    preGen[i] = loadIfLValue(module, e->generateCode(module), e);
                                 if (!bindTypeParams(texts[i], e->getResolvedType(), tparams, bound))
                                     throw Exception("generic kernel '" + kernelName
                                         + "' is launched with conflicting types for one type parameter",
@@ -214,10 +219,18 @@ namespace cajeta {
                             std::vector<CajetaTypePtr> targs;
                             for (auto& tp : m->getMethodTypeParameters()) {
                                 auto it = bound.find(tp.name);
-                                if (it == bound.end() || !it->second)
+                                if (it == bound.end() || !it->second) {
+                                    std::string seen;
+                                    for (std::size_t i = 0; i < texts.size() && i < args.size(); ++i) {
+                                        auto e = args[i].expression;
+                                        auto t = e ? e->getResolvedType() : nullptr;
+                                        if (i) seen += ", ";
+                                        seen += texts[i] + " = " + (t ? t->toCanonical() : std::string("?"));
+                                    }
                                     throw Exception("cannot infer type parameter '" + tp.name
                                         + "' of generic kernel '" + kernelName
-                                        + "' from its launch arguments", "XPU-N02");
+                                        + "' from its launch arguments (" + seen + ")", "XPU-N02");
+                                }
                                 targs.push_back(it->second);
                             }
                             kernel = m->instantiateMethodTemplate(targs);
@@ -398,8 +411,8 @@ namespace cajeta {
 
         for (size_t i = 0; i < n; ++i) {
             ExpressionPtr argExpr = args[i].expression;
-            llvm::Value* v = argExpr->generateCode(module);
-            v = loadIfLValue(module, v, argExpr);
+            llvm::Value* v = preGen[i];
+            if (!v) v = loadIfLValue(module, argExpr->generateCode(module), argExpr);
             if (!v) {
                 throw Exception("launch argument " + std::to_string(i + 1)
                     + " did not lower to a value; it names an unknown or "

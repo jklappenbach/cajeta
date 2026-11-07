@@ -344,7 +344,9 @@ public static void twice<E>(KernelBuffer<E> y, KernelBuffer<E> x, uint32 n) {
 
 `Gen.twice<float32>(…)` and `Gen.twice<float16>(…)` build and register
 `twiceK_float32` and `twiceK_float16`, once each however many launches reach
-them. The uninstantiated template builds nothing. A type parameter the
+them. The uninstantiated template builds nothing. The arguments may be any
+expressions, `t.deviceBuffer()` on a `Tensor<E>` included; a call's type is
+read once it is lowered. A type parameter the
 arguments do not determine, or two arguments that disagree, fails the build
 (`XPU-N02`), and an instantiation that a backend cannot lower is named by the
 build gates with its type (§3.6).

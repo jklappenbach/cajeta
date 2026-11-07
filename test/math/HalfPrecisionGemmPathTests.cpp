@@ -3,7 +3,7 @@
 // GEMM paths that Unit 2 deferred.
 //
 //   2.2.5 — ragged (non-multiple-of-16) f16/bf16 shapes take a PADDED DEVICE
-//   path (padF16/padBf16 + crop siblings, the matmulF32Into recipe) instead
+//   path (the generic pad and crop kernels, the matmulF32Into recipe) instead
 //   of staging device operands back to the host floor. The §2.6 bug class —
 //   the tiled kernel owns whole 16x16 tiles and truncates every dimension —
 //   is what the pad/crop guards against, so the ragged tests would catch a

@@ -54,6 +54,16 @@ public class Storage<T> {
         this.owned = true;
     }
 
+    /** Wrap a device buffer of `length` elements as device-resident storage with no host mirror. */
+    public Storage(#KernelBuffer<T> dev, int64 length) {
+        this.length = length;
+        this.host = null;
+        this.offset = 0;
+        this.dev #= dev;
+        this.onDevice = true;
+        this.owned = true;
+    }
+
     /**
      * Borrow a `length`-element window of `parent`'s buffer starting at element
      * `offset` (relative to the parent's own window). No copy: reads and writes
