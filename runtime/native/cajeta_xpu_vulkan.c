@@ -1232,6 +1232,8 @@ static struct {
     int chunkHasEvent;             // the open chunk carries an event's set command
     int64_t pendingFree[CAJ_VK_PENDING_FREES];
     int npendingFree;
+    int64_t pendingView[CAJ_VK_PENDING_FREES];   // view slots released once the batch lands
+    int npendingView;
     int64_t pendingSampler[CAJ_VK_PENDING_SAMPLERS];
     int npendingSampler;
 } g_vk_batch;
@@ -1688,14 +1690,27 @@ static void cajeta_xpu_vk_free_now(int64_t handle) {
 }
 
 // Release a slice VIEW's table slot; guarded on is_view, since nothing else owns one.
-static void cajeta_xpu_vk_view_release(int64_t handle) {
-    pthread_mutex_lock(&g_xpu_vk_submit_mu);
+static void cajeta_xpu_vk_view_release_now(int64_t handle) {
     struct cajeta_vk_buf* r = cajeta_xpu_vk_rec(handle);
     if (r && r->is_view) {
         g_vk_buf_free_hint = (int) (handle - 1);
         r->live = 0; r->mapped = NULL; r->buffer = VK_NULL_HANDLE;
         r->memory = VK_NULL_HANDLE; r->is_view = 0; r->view_offset = 0;
     }
+}
+// A recorded-but-unexecuted dispatch may still bind the view's slot, so while a
+// batch is open the release is parked until the batch lands (as frees are).
+static void cajeta_xpu_vk_view_release(int64_t handle) {
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);
+    if (g_vk_batch.open) {
+        if (g_vk_batch.npendingView < CAJ_VK_PENDING_FREES) {
+            g_vk_batch.pendingView[g_vk_batch.npendingView++] = handle;
+            pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+            return;
+        }
+        cajeta_xpu_vk_flush();
+    }
+    cajeta_xpu_vk_view_release_now(handle);
     pthread_mutex_unlock(&g_xpu_vk_submit_mu);
 }
 
@@ -3428,6 +3443,9 @@ static void cajeta_xpu_vk_flush(void) {
     for (int i = 0; i < g_vk_batch.npendingFree; ++i)
         cajeta_xpu_vk_free_now(g_vk_batch.pendingFree[i]);
     g_vk_batch.npendingFree = 0;
+    for (int i = 0; i < g_vk_batch.npendingView; ++i)
+        cajeta_xpu_vk_view_release_now(g_vk_batch.pendingView[i]);
+    g_vk_batch.npendingView = 0;
     for (int i = 0; i < g_vk_batch.npendingSampler; ++i)
         g_xpu_vk.vkDestroySampler(
             g_xpu_vk.device,

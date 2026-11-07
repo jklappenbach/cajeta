@@ -101,9 +101,13 @@ public final class Demo {
 An op never moves its operands. Every `Ewise` entry binds its operands as
 views at their offsets, so a contiguous view (`slice`) works on the device
 and a strided one (`transpose`) throws `PlacementException` naming the op.
-With both operands on the device, `add`/`sub`/`mul`/`div<E>` at `float32`,
-`float16` or `bfloat16` run a device kernel over such views (equal shapes)
-and return a tensor allocated on the device; an op with no
+With both operands on the device, `add`/`sub`/`mul`/`div<E>` run a device
+kernel and return a tensor allocated on the device: equal contiguous shapes
+take the elementwise kernel, broadcast or strided operands (up to four axes)
+the broadcast kernel. `addInto`/`subInto`/`mulInto`/`divInto<E>(out, a, b)`
+and `a.addInPlace(b)` (and `sub`/`mul`/`div`) write into an existing device
+tensor without allocating. Device ops do not sync the stream; `cpu()` (any
+host read) syncs once before it downloads. An op with no
 device kernel for its operands throws `PlacementException` naming the op, and
 an op given one host and one device operand throws the same. Call `cpu()` on
 the operands to take the host path.
@@ -198,6 +202,8 @@ caller pick the result width; the same-dtype forms keep `E`.
 | `static #Tensor<E> sub<E>(Tensor<E> a, Tensor<E> b)` | Elementwise `a - b` |
 | `static #Tensor<E> mul<E>(Tensor<E> a, Tensor<E> b)` | Elementwise `a * b` |
 | `static #Tensor<E> div<E extends Floating>(Tensor<E> a, Tensor<E> b)` | Same-dtype true division `a / b` at a floating `E` |
+| `static void addInto<E>(Tensor<E> out, Tensor<E> a, Tensor<E> b)` | `out = a + b` into the caller's tensor; `subInto`, `mulInto`, `divInto<E extends Floating>` likewise |
+| `void addInPlace(Tensor<T> b)` | `this += b`; `subInPlace`, `mulInPlace`, `divInPlace` likewise |
 | `static #Tensor<R> add<A extends Numeric, B extends Numeric, R extends Numeric>(Tensor<A> a, Tensor<B> b)` | Cross-dtype `a + b`; explicit result width `R` |
 | `static #Tensor<R> sub<A extends Numeric, B extends Numeric, R extends Numeric>(Tensor<A> a, Tensor<B> b)` | Cross-dtype `a - b` |
 | `static #Tensor<R> mul<A extends Numeric, B extends Numeric, R extends Numeric>(Tensor<A> a, Tensor<B> b)` | Cross-dtype `a * b` |

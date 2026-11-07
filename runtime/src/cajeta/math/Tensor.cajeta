@@ -42,6 +42,7 @@ public class Tensor<T> {
     int64[] strideDims;
     boolean viewFlag;
     Tensor<T> baseTensor;
+    KernelBuffer<T> devView;    // this tensor's slice of the device buffer; null until deviceView
 
     /**
      * Wrap a `Storage` with an offset + shape + strides. Copies `shape`/`strides`
@@ -55,6 +56,7 @@ public class Tensor<T> {
         // consuming spelling records the title on the field bit; a plain
         // store left the armed formal to free the Storage at ctor exit.
         this.store #= store;
+        this.devView = null;
         this.offsetVal = offset;
         int32 nd = (int32) shape.count();
         this.shapeDims = heap int64[nd];
@@ -577,15 +579,18 @@ public class Tensor<T> {
 
     /**
      * This tensor's elements as a view of its device buffer, for a kernel launch by
-     * `op`: a slice at the tensor's offset. A strided view has no such binding and
-     * is refused by name (PlacementException). The view borrows the buffer; keep it
-     * until the launch has synced.
+     * `op`: a slice at the tensor's offset, made once and kept by the tensor, so a
+     * launch borrows a field, not a local, and needs no sync before the caller
+     * returns. A strided view has no such binding and is refused by name.
      */
-    public #KernelBuffer<T> deviceView(String op) {
+    public KernelBuffer<T> deviceView(String op) {
         if (!this.isContiguous()) {
             Placement.noKernel(op, DType.of<T>(), "for a strided view");
         }
-        return this.store.deviceBuffer().slice((uint64) this.offsetVal, (uint64) this.size());
+        if (this.devView == null) {
+            this.devView #= this.store.deviceBuffer().slice((uint64) this.offsetVal, (uint64) this.size());
+        }
+        return this.devView;
     }
 
     // ────────────────────────────── interop protocol (Phase 7) ───────────────
@@ -2981,6 +2986,71 @@ public class Tensor<T> {
         int64[] rstrides #= Tensor.contigStrides(rshape);
         return heap Tensor<E>(#st, 0, rshape, rstrides);
     }
+
+    /**
+     * `out = a <op> b` into the caller's tensor (numpy's `out=`): on the device
+     * through {@link Ewise#arithInto} with no allocation and no sync; on the host a
+     * broadcast loop into `out`, whose shape must be the broadcast shape. `out`
+     * may be `a` or `b`. `op`: 0=add, 1=sub, 2=mul, 3=div.
+     */
+    static void arithInto<E>(String name, Tensor<E> out, Tensor<E> a, Tensor<E> b, int32 op) {
+        if (Placement.devicePair<E>(name, a, b)) {
+            Ewise.arithInto<E>(name, out, a, b, op);
+            return;
+        }
+        if (out.isOnGpu()) {
+            Placement.noKernel(name, DType.of<E>(), "with the output on the device and the operands on the host");
+        }
+        int64[] rshape #= Tensor.broadcastShape<E>(a.shapeDims, b.shapeDims);
+        int64 n = Tensor.productOf(rshape);
+        int32 nd = (int32) rshape.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            E va = a.readBroadcast(idx);
+            E vb = b.readBroadcast(idx);
+            E vc = va + vb;
+            if (op == 1) { vc = va - vb; }
+            if (op == 2) { vc = va * vb; }
+            if (op == 3) { vc = va / vb; }
+            out.flatSet(lin, vc);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+    }
+
+    /** `out = a + b` into the caller's tensor; see {@link #arithInto}. */
+    public static void addInto<E>(Tensor<E> out, Tensor<E> a, Tensor<E> b) { Tensor.arithInto<E>("Tensor.addInto", out, a, b, 0); }
+    /** `out = a - b` into the caller's tensor. */
+    public static void subInto<E>(Tensor<E> out, Tensor<E> a, Tensor<E> b) { Tensor.arithInto<E>("Tensor.subInto", out, a, b, 1); }
+    /** `out = a * b` into the caller's tensor. */
+    public static void mulInto<E>(Tensor<E> out, Tensor<E> a, Tensor<E> b) { Tensor.arithInto<E>("Tensor.mulInto", out, a, b, 2); }
+    /** `out = a / b` into the caller's tensor, at a floating `E`. */
+    public static void divInto<E extends Floating>(Tensor<E> out, Tensor<E> a, Tensor<E> b) { Tensor.arithInto<E>("Tensor.divInto", out, a, b, 3); }
+
+    /** `this += b` in place. */
+    public void addInPlace(Tensor<T> b) { Tensor.arithInto<T>("Tensor.addInPlace", this, this, b, 0); }
+    /** `this -= b` in place. */
+    public void subInPlace(Tensor<T> b) { Tensor.arithInto<T>("Tensor.subInPlace", this, this, b, 1); }
+    /** `this *= b` in place. */
+    public void mulInPlace(Tensor<T> b) { Tensor.arithInto<T>("Tensor.mulInPlace", this, this, b, 2); }
+    /** `this /= b` in place. */
+    public void divInPlace(Tensor<T> b) { Tensor.arithInto<T>("Tensor.divInPlace", this, this, b, 3); }
 
     /** Same-dtype true division `a / b` with broadcasting, at a floating `E`. See
      *  {@link #add}; the integer and cross-dtype forms are {@link #div(Tensor, Tensor)}. */

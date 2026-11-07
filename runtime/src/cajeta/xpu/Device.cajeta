@@ -415,6 +415,24 @@ public final class Device {
     @Native("__cajeta_xpu_launch_failures")
     private static int64 nativeLaunchFailures();
 
+    /** Device buffer allocations in this process. Monotonic; a test brackets an
+     *  op with it to assert the op allocated nothing. @EntryPoint */
+    public static int64 deviceAllocationCount() {
+        return Device.nativeBufferAllocCount();
+    }
+
+    /** Stream syncs in this process. Monotonic; a test brackets a sequence of
+     *  ops with it to assert they synced only at the host read. @EntryPoint */
+    public static int64 streamSyncCount() {
+        return Device.nativeStreamSyncCount();
+    }
+
+    @Native("__cajeta_xpu_buffer_alloc_count")
+    private static int64 nativeBufferAllocCount();
+
+    @Native("__cajeta_xpu_stream_sync_count")
+    private static int64 nativeStreamSyncCount();
+
     /**
      * Raise {@link XpuLaunchException} if the most recent launch on this thread
      * was REFUSED — no device code registered for the kernel on the active

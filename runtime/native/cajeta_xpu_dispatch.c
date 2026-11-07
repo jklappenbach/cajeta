@@ -2236,9 +2236,22 @@ static void caj_poison_fill(int64_t h, uint64_t byteCount, int32_t kind) {
                        done ? "filled" : "NOT filled", (unsigned long long) byteCount, kind,
                        (unsigned long long) h);
 }
+// Process-wide counts of device allocations and stream syncs, for tests that
+// assert an op allocates nothing or syncs once (Device.deviceAllocationCount,
+// Device.streamSyncCount). Monotonic.
+static int64_t g_xpu_buffer_allocs;
+static int64_t g_xpu_stream_syncs;
+int64_t __cajeta_xpu_buffer_alloc_count(void) {
+    return __atomic_load_n(&g_xpu_buffer_allocs, __ATOMIC_RELAXED);
+}
+int64_t __cajeta_xpu_stream_sync_count(void) {
+    return __atomic_load_n(&g_xpu_stream_syncs, __ATOMIC_RELAXED);
+}
+
 int64_t __cajeta_xpu_buffer_alloc(void* self, uint64_t byteCount, int32_t kind) {
     (void) self;
     int64_t h = caj_buffer_alloc_raw(byteCount, kind);
+    if (h) __atomic_fetch_add(&g_xpu_buffer_allocs, (int64_t) 1, __ATOMIC_RELAXED);
     if (h && caj_poison_on()) caj_poison_fill(h, byteCount, kind);
     if (h && caj_alloc_trace_on()) caj_ledger_note(h, byteCount, kind, 1);
     if (h) caj_record_alloc(h, byteCount);
@@ -2442,6 +2455,7 @@ int64_t __cajeta_xpu_stream_create(void) {
 }
 void __cajeta_xpu_stream_sync(void* self, int64_t handle) {
     (void) self;
+    __atomic_fetch_add(&g_xpu_stream_syncs, (int64_t) 1, __ATOMIC_RELAXED);
     void* st = (void*) (intptr_t) handle;
     if (st) {
         switch (cajeta_xpu_active_backend()) {

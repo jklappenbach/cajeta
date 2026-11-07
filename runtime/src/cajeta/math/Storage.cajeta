@@ -1,6 +1,7 @@
 package cajeta.math;
 
 import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
 
 /**
  * `Storage<T>` — the owning host backing of a `Tensor<T>` (tensor-spec.md §4).
@@ -141,6 +142,8 @@ public class Storage<T> {
         if (this.host == null) {
             this.host = heap T[this.length];
         }
+        KernelStream s #= KernelStream.current();
+        s.sync();
         this.dev.download(this.host);
         this.onDevice = false;
     }

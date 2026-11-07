@@ -143,8 +143,8 @@ TEST(TensorDeviceOpsTests, deviceArithmeticOnOffsetViewsReadsTheViews) {
 }
 
 // 2.1.2 — an op with no kernel for its placement throws naming the op, and the
-// caller's tensors keep their placement: `sort` has no device path at all, and
-// `add` has none for broadcast shapes.
+// caller's tensors keep their placement: neither `sort` nor the generic `matmul`
+// has a device path.
 //
 // RED until 2.2.1: the guard notes `[op-tiering]` and downloads in place.
 TEST(TensorDeviceOpsTests, anOpWithoutAKernelThrowsByNameAndLeavesPlacement) {
@@ -163,18 +163,17 @@ TEST(TensorDeviceOpsTests, anOpWithoutAKernelThrowsByNameAndLeavesPlacement) {
         "        }\n"
         "        if (!named) { return 1; }\n"
         "        if (!t.isOnGpu()) { return 2; }\n"
-        "        float32[] d1 = [ 2.0f ];\n"
-        "        int64[] s1 = heap int64[1]; s1[0] = 1;\n"
-        "        Tensor<float32> one #= Tensor.of<float32>(d1, s1);\n"
-        "        one.gpu();\n"
+        "        int64[] s2 = heap int64[2]; s2[0] = 2; s2[1] = 2;\n"
+        "        Tensor<float32> sq #= Tensor.of<float32>(d, s2);\n"
+        "        sq.gpu();\n"
         "        named = false;\n"
         "        try {\n"
-        "            Tensor<float32> r2 #= Tensor.add<float32>(t, one);\n"
+        "            Tensor<float32> r2 #= Tensor.matmul<float32>(sq, sq);\n"
         "        } catch (PlacementException ex) {\n"
-        "            named = ex.message.contains(\"Tensor.add\");\n"
+        "            named = ex.message.contains(\"Tensor.matmul\");\n"
         "        }\n"
         "        if (!named) { return 3; }\n"
-        "        if (!t.isOnGpu() || !one.isOnGpu()) { return 4; }\n"
+        "        if (!t.isOnGpu() || !sq.isOnGpu()) { return 4; }\n"
         "        return 0;\n"
         "    }\n"
         "}\n";
