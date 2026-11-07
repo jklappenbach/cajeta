@@ -1,8 +1,7 @@
 // cajeta-ml-gpu Unit 9 (9.1.2, 9.2.1; spec §5.4, §11.1): a consumer supplies work fused
 // into a library kernel by instantiating a class template over the epilogue TYPE; the
 // kernel calls the type's @Device helper, which the lowering resolves through the
-// instantiation's argument. Built as an executable: the same program segfaults at launch
-// under the JIT test harness (cajeta-ml-gpu 9.2.3), while the AOT build runs it.
+// instantiation's argument. The AOT path; the JIT path is test/xpu/XpuTemplateEpilogueTests.cpp.
 #include <gtest/gtest.h>
 #include <string>
 #include "AotProgram.h"

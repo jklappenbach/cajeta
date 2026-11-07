@@ -1541,9 +1541,11 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         std::string shortName = (lparen == std::string::npos)
             ? fullName.substr(colon + 2)
             : fullName.substr(colon + 2, lparen - colon - 2);
-        // Only the first match wins for a given short name (avoids ambiguity from
-        // overloaded methods; tests should use unique names within a file).
-        jitState->nameMap.emplace(shortName, fullName);
+        // The first match wins a short name, except that the entry class's method
+        // beats a same-named method of another class (a wrong-ABI call otherwise).
+        auto [slot, fresh] = jitState->nameMap.emplace(shortName, fullName);
+        if (!fresh && fullName.rfind(fqEntryClass + "::", 0) == 0
+            && slot->second.rfind(fqEntryClass + "::", 0) != 0) slot->second = fullName;
     }
 
     // Print before verify so a failed verify still shows the IR.
