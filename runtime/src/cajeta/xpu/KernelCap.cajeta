@@ -1,0 +1,120 @@
+package cajeta.xpu;
+
+import cajeta.collection.HashMap;
+import cajeta.lang.String;
+
+/**
+ * Whether a kernel can be launched HERE and be trusted (cajeta-ml-gpu spec §7.1):
+ * registered on the active backend, not held by a recorded defect, and not pinned
+ * off by a test. The question every route and every device test asks before it
+ * picks a kernel. {@link Device#kernelUsable} and {@link Device#kernelUnusableReason}
+ * are the same answers from Device.
+ */
+public final class KernelCap {
+    public KernelCap() { }
+
+    // Holds are keyed "backend:kernel"; an override pins an answer (1 on, 2 off).
+    static HashMap<String, String> holds;
+    static HashMap<String, int32> overrides;
+
+    static #String key(String backend, String name) {
+        return backend + ":" + name;
+    }
+
+    /** An owned copy of `s`, for a key or value the maps keep. */
+    static #String cp(String s) {
+        int8[] b #= s.toBytes();
+        return heap String(#b, s.byteLength());
+    }
+
+    /**
+     * Record that `name` lowers on `backend` but was measured wrong there, under
+     * `why` (the plan item that owns the defect). No route launches a held kernel
+     * and every test skips it by name until {@link #release}.
+     */
+    public static void hold(String backend, String name, String why) {
+        if (KernelCap.holds == null) {
+            KernelCap.holds = heap HashMap<String, String>(32L);
+        }
+        String k #= KernelCap.key(backend, name);
+        String w #= KernelCap.cp(why);
+        KernelCap.holds.put(#k, #w);
+    }
+
+    /** Lift a {@link #hold}. */
+    public static void release(String backend, String name) {
+        if (KernelCap.holds == null) { return; }
+        String k #= KernelCap.key(backend, name);
+        KernelCap.holds.remove(k);
+    }
+
+    /** Why `name` is held on the active backend, or "" when it is not. */
+    public static String heldHere(String name) {
+        if (KernelCap.holds == null) { return ""; }
+        String k #= KernelCap.key(Device.activeBackend(), name);
+        if (!KernelCap.holds.containsKey(k)) { return ""; }
+        return KernelCap.holds.get(k);
+    }
+
+    /**
+     * Pin `name`'s answer, for the arm of a test that proves a gate FIRES: a check
+     * needs a test that asserts it fires and one that asserts it does not, and
+     * without an override the absent arm is reachable only on a backend that
+     * happens to lack the kernel.
+     */
+    public static void setOverride(String name, boolean on) {
+        if (KernelCap.overrides == null) {
+            KernelCap.overrides = heap HashMap<String, int32>(32L);
+        }
+        String k #= KernelCap.cp(name);
+        KernelCap.overrides.put(#k, on ? 1 : 2);
+    }
+
+    /** Drop every override, so the next ask goes back to the registry. */
+    public static void clearOverrides() {
+        KernelCap.overrides = null;
+    }
+
+    static int32 overrideOf(String name) {
+        if (KernelCap.overrides == null) { return 0; }
+        if (!KernelCap.overrides.containsKey(name)) { return 0; }
+        return KernelCap.overrides.get(name);
+    }
+
+    /** Can `name` be launched on the active backend and be trusted. */
+    public static boolean usable(String name) {
+        int32 o = KernelCap.overrideOf(name);
+        if (o != 0) { return o == 1; }
+        if (!Device.kernelAvailable(name)) { return false; }
+        return KernelCap.heldHere(name).count() == 0L;
+    }
+
+    /**
+     * Why `name` is not usable here: "" when it is, "overridden off", "not a target",
+     * "no usable device code", or "held: <why>".
+     */
+    public static #String unusableReason(String name) {
+        int32 o = KernelCap.overrideOf(name);
+        if (o == 1) { return ""; }
+        if (o == 2) { return "overridden off"; }
+        if (!Device.kernelAvailable(name)) {
+            return Device.kernelUnavailableReason(name);
+        }
+        String held = KernelCap.heldHere(name);
+        if (held.count() > 0L) { return "held: " + held; }
+        return "";
+    }
+
+    /** The tier the compiler recorded for `name`'s mma: 1 native, 2 the software tile,
+     *  0 when its manifest records no mma. */
+    public static int32 mmaTier(String name) {
+        KernelManifest m = KernelManifest.of(name);
+        if (m == null) { return 0; }
+        int32 i = 0;
+        while (i < m.nativeOpCount()) {
+            if (m.nativeOp(i).equals("mma")) { return m.nativeOpTier(i).equals("native") ? 1 : 2; }
+            i = i + 1;
+        }
+        return 0;
+    }
+}

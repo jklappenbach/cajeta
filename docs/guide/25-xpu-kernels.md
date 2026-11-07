@@ -32,6 +32,7 @@ workaround, and it stands in for no capability.
 | L2 size, integrated or discrete, memory | `Device.l2CacheBytes()`, `integrated()`, `memoryBytes()`, `freeMemoryBytes()` (live), `peakBandwidthGBps()` |
 | can I use a feature | `Device.supports(Capability)` |
 | is this kernel on this build and does it fit here | `Device.kernelAvailable(name)` |
+| may a route launch it: available, not held by a recorded defect, not pinned off by a test | `Device.kernelUsable(name)`, `kernelUnusableReason(name)`; holds and overrides on `KernelCap` |
 | what the compiler measured about your kernel | `KernelManifest.of(name)`: `vgpr`, `spillBytes`, `ldsStaticBytes`, `threadsPerGroup`, `residentGroupsPerCu`, `occupancyLimiter`, the native ops and their tiers |
 | which of my shapes fit here, and which is fastest | `ShapeFilter` over `DeviceFacts.current()` and `KernelFacts.measured`, then `ShapeChoice.choose` (25.8) |
 | a measured per-device setting | `Autotune.recallFor / rememberFor` with a build id; `reportUnderperforming` |

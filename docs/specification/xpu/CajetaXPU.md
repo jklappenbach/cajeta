@@ -461,7 +461,7 @@ report.
 | clocks and bandwidth | `clockKHz()`, `memoryClockKHz()`, `memoryBusWidthBits()`, `peakBandwidthGBps()` |
 | identity and neighbours | `uuid()`, `driverVersion()`, `foreignLoadPercent()` |
 | capabilities | `supports(Capability)`: `RayQueryNative`, `RayQueryRtCore`, `CoopMatrixBf16F32Acc`, `AtomicInt64` |
-| the registry | `kernelAvailable(name)`, `registeredKernelCount()`, `registeredKernel(i)`, `kernelLaunchCount(name)`, `launchFailures()`, `checkLaunch()` |
+| the registry | `kernelAvailable(name)`, `kernelUsable(name)`, `kernelUnusableReason(name)`, `registeredKernelCount()`, `registeredKernel(i)`, `kernelLaunchCount(name)`, `launchFailures()`, `checkLaunch()` |
 
 The per-block shared limit is the load-bearing one. An RTX 4090 holds 100 KB
 a multiprocessor and caps a block at 48 KB unless the launch opts in to
@@ -476,6 +476,14 @@ A route asks it before considering a candidate, and nothing falls through to a
 kernel it denies. The remaining capability traits that older versions of this
 document described as `xpu.cap.*` are empty markers nothing reads. The
 capability surface is `Device.supports` and the registry.
+
+`kernelUsable(name)` is the route's question: available here, not held, not pinned
+off. `KernelCap.hold(backend, name, why)` records a kernel that lowers on a backend
+but was measured wrong there (the plan item that owns the defect), so no route
+launches it and tests skip it by name until `release`; `KernelCap.setOverride(name,
+on)` pins an answer for the arm of a test that proves a gate fires, and
+`clearOverrides()` returns to the registry. `kernelUnusableReason(name)` says which:
+`not a target`, `no usable device code`, `held: <why>` or `overridden off`.
 
 ### 5.3 Timing
 

@@ -290,6 +290,17 @@ public final class Device {
     @Native("__cajeta_xpu_kernel_available")
     private static int32 nativeKernelAvailable(int8[] name, int64 len);
 
+    /** Can `name` be launched here and be trusted: registered, not held by a recorded
+     *  defect, not pinned off by a test. See {@link KernelCap}. @EntryPoint */
+    public static boolean kernelUsable(String name) {
+        return KernelCap.usable(name);
+    }
+
+    /** Why `name` is not usable here, or "" (see {@link KernelCap#unusableReason}). @EntryPoint */
+    public static #String kernelUnusableReason(String name) {
+        return KernelCap.unusableReason(name);
+    }
+
     /**
      * Why `name` cannot be launched on the active backend: "" when it can, "not a
      * target" when its @Kernel(targets) leave this backend out, else "no usable
