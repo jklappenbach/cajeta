@@ -75,6 +75,52 @@ void ensureTargetsInitialized() {
     });
 }
 
+// The driver's OpFConvert to bfloat16 truncates (RADV gfx1151, 2026-11-07) where every
+// other backend and the host round to nearest even, so a narrowing to bf16 becomes the
+// integer form of that rounding: a float32 or integer source is widened to float32 first.
+void expandBf16Narrowing(llvm::Module& m) {
+    auto toBf16 = [](llvm::Type* t) {
+        return t->isBFloatTy() || (t->isVectorTy() && t->getScalarType()->isBFloatTy());
+    };
+    llvm::SmallVector<llvm::CastInst*, 8> casts;
+    for (auto& f : m)
+        for (auto& bb : f)
+            for (auto& inst : bb)
+                if (auto* ci = llvm::dyn_cast<llvm::CastInst>(&inst))
+                    if (toBf16(ci->getType())
+                        && (ci->getOpcode() == llvm::Instruction::FPTrunc
+                            || ci->getOpcode() == llvm::Instruction::UIToFP
+                            || ci->getOpcode() == llvm::Instruction::SIToFP))
+                        casts.push_back(ci);
+    for (llvm::CastInst* ci : casts) {
+        llvm::IRBuilder<> b(ci);
+        llvm::Type* bfTy = ci->getType();
+        llvm::Type* fTy = bfTy->getWithNewType(b.getFloatTy());
+        llvm::Type* i32Ty = bfTy->getWithNewType(b.getInt32Ty());
+        llvm::Type* i16Ty = bfTy->getWithNewType(b.getInt16Ty());
+        llvm::Value* src = ci->getOperand(0);
+        llvm::Value* f;
+        if (ci->getOpcode() == llvm::Instruction::UIToFP) f = b.CreateUIToFP(src, fTy, "bf16.wf");
+        else if (ci->getOpcode() == llvm::Instruction::SIToFP) f = b.CreateSIToFP(src, fTy, "bf16.wf");
+        else if (src->getType()->getScalarType()->isFloatTy()) f = src;
+        else f = b.CreateFPTrunc(src, fTy, "bf16.wf");
+        llvm::Value* u = b.CreateBitCast(f, i32Ty, "bf16.u");
+        llvm::Value* lsb = b.CreateAnd(b.CreateLShr(u, llvm::ConstantInt::get(i32Ty, 16)),
+                                       llvm::ConstantInt::get(i32Ty, 1));
+        llvm::Value* rounded = b.CreateLShr(
+            b.CreateAdd(b.CreateAdd(u, llvm::ConstantInt::get(i32Ty, 0x7fff)), lsb),
+            llvm::ConstantInt::get(i32Ty, 16));
+        llvm::Value* quietNan = b.CreateOr(b.CreateLShr(u, llvm::ConstantInt::get(i32Ty, 16)),
+                                           llvm::ConstantInt::get(i32Ty, 0x40));
+        llvm::Value* isNan = b.CreateICmpUGT(
+            b.CreateAnd(u, llvm::ConstantInt::get(i32Ty, 0x7fffffff)),
+            llvm::ConstantInt::get(i32Ty, 0x7f800000));
+        llvm::Value* bits = b.CreateTrunc(b.CreateSelect(isNan, quietNan, rounded), i16Ty);
+        ci->replaceAllUsesWith(b.CreateBitCast(bits, bfTy, "bf16.rne"));
+        ci->eraseFromParent();
+    }
+}
+
 // GLSL Round leaves the direction at .5 to the driver: llvm.round becomes trunc plus a
 // half-away step, exact for every finite float, so Vulkan rounds as the other backends do.
 void expandRoundHalfAway(llvm::Module& m) {
@@ -402,6 +448,7 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
         }
     }
 
+    expandBf16Narrowing(m);
     expandRoundHalfAway(m);
 
     // SPIRVLegalizePointerCast crashes on an address that is a constant-expression GEP, a

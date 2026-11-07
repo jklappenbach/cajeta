@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **A Vulkan kernel narrows to `bfloat16` by rounding to nearest even,** as the host, cpu and hip do. The SPIR-V path handed `(bfloat16) x` to the driver's `OpFConvert`, which truncated on RADV (259 became 258, -93.75 became -93.5); the backend now emits the integer form of the rounding for a `float32` or an integer source. Found by the kernels package's conversion check (cajeta-ml-gpu 11.2.2).
+
 ## 0.53.0 (2026-11-07)
 
 - **A generic kernel launched from generic code is instantiated for its arguments' types.** `twiceK<E>(KernelBuffer<E> y, …)` launched from `twice<E>` builds and registers `twiceK_float32`, `twiceK_float16`, … once each; a type the arguments do not determine, or a conflict, fails the build (`XPU-N02`), and an instantiation a backend cannot lower is named by the build gates. A launch argument may be any expression, `t.deviceBuffer()` included.
