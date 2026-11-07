@@ -5274,8 +5274,12 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
         }
         auto* builder = module->getBuilder();
         auto* ctx = module->getLlvmContext();
-        if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(v)) {
-            v = builder->CreateLoad(llvm::PointerType::get(*ctx, 0), a);
+        // A Task lives behind a pointer wherever it is kept, so a local's alloca, a field's
+        // GEP and a static's global are all slots holding that pointer: load through each.
+        // A call or a spawn hands back the pointer itself.
+        if (llvm::isa<llvm::AllocaInst>(v) || llvm::isa<llvm::GetElementPtrInst>(v)
+                || llvm::isa<llvm::GlobalVariable>(v)) {
+            v = builder->CreateLoad(llvm::PointerType::get(*ctx, 0), v);
         }
         llvm::Value* doneSlot = builder->CreateStructGEP(
             task->getLlvmType(), v, CajetaTask::DONE_FIELD_INDEX, "task_done_slot");
