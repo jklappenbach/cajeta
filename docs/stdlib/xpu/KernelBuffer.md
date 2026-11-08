@@ -60,6 +60,30 @@ its allocation fill is the complement of the byte, never `0xFF`, and it
 does not reach a GPU. Run a suite under the lever before trusting a
 nondeterministic red to be flaky.
 
+## Freed blocks are cached on hip and cuda
+
+A `Device`-kind block freed on the hip or cuda backend is not returned to the
+driver. It is kept in a per-process cache and handed to the next allocation of
+its size class: requests round up to 512-byte steps below 1 MB and 2 MB steps
+above, and a freed block serves any request that rounds to its class. The
+driver's allocate and free cost about 0.7 ms for a 16 MB block on gfx1151,
+which was most of the time of every op that returned a fresh tensor; a cache
+hit costs a table lookup. A cached block is idle when it is reused, because a
+buffer a launch borrowed cannot be freed before its stream synced (XPU-K02).
+Pinned and unified blocks, and every block on the cpu and vulkan backends, go
+to the backend each time.
+
+The cache holds at most 2 GB by default; `CAJETA_XPU_ALLOC_CACHE_MB` sets the
+cap and `CAJETA_XPU_ALLOC_CACHE=0` turns the cache off for a process. A
+backend allocation that fails flushes the cache and tries once more. In code,
+`Device.setDeviceCache(false)` turns it off (and flushes),
+`Device.setDeviceCacheLimit(bytes)` caps it, `Device.deviceCacheFlush()`
+returns every cached block to the backend, and `Device.deviceCacheBytes()`
+says what it holds. `Device.deviceAllocationCount()` keeps counting every
+allocation, cached or not, so a test that asserts an op allocates nothing
+still means that; `Device.deviceRawAllocationCount()` counts the allocations
+that reached the backend, which is how a test sees a cache hit.
+
 ## See also
 
 - Tour: [XpuTour](../../../samples/tour/xpu/src/tour/xpu/XpuTour.cajeta)

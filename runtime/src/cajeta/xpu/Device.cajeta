@@ -451,6 +451,55 @@ public final class Device {
     @Native("__cajeta_xpu_buffer_alloc_count")
     private static int64 nativeBufferAllocCount();
 
+    /** Backend (driver) allocations in this process: the allocations the device
+     *  block cache did not serve. Monotonic; a test brackets an alloc-free-alloc
+     *  with it to see the cache hit. @EntryPoint */
+    public static int64 deviceRawAllocationCount() {
+        return Device.nativeBufferRawAllocCount();
+    }
+
+    /** Bytes the device block cache holds for reuse right now. @EntryPoint */
+    public static int64 deviceCacheBytes() {
+        return Device.nativeBufferCacheBytes();
+    }
+
+    /** Returns every cached device block to the backend. @EntryPoint */
+    public static void deviceCacheFlush() {
+        Device.nativeBufferCacheFlush();
+    }
+
+    /** Turns the device block cache on or off for this process (off also flushes
+     *  it). The default is on unless CAJETA_XPU_ALLOC_CACHE=0. @EntryPoint */
+    public static void setDeviceCache(boolean on) {
+        if (on) {
+            Device.nativeBufferCacheSet(1);
+        } else {
+            Device.nativeBufferCacheSet(0);
+        }
+    }
+
+    /** Caps the bytes the device block cache holds, trimming to the cap; -1
+     *  removes the cap, -2 restores the default (CAJETA_XPU_ALLOC_CACHE_MB, else
+     *  2048 MB). @EntryPoint */
+    public static void setDeviceCacheLimit(int64 bytes) {
+        Device.nativeBufferCacheSetLimit(bytes);
+    }
+
+    @Native("__cajeta_xpu_buffer_raw_alloc_count")
+    private static int64 nativeBufferRawAllocCount();
+
+    @Native("__cajeta_xpu_buffer_cache_bytes")
+    private static int64 nativeBufferCacheBytes();
+
+    @Native("__cajeta_xpu_buffer_cache_flush")
+    private static void nativeBufferCacheFlush();
+
+    @Native("__cajeta_xpu_buffer_cache_set")
+    private static void nativeBufferCacheSet(int32 mode);
+
+    @Native("__cajeta_xpu_buffer_cache_set_limit")
+    private static void nativeBufferCacheSetLimit(int64 bytes);
+
     @Native("__cajeta_xpu_stream_sync_count")
     private static int64 nativeStreamSyncCount();
 

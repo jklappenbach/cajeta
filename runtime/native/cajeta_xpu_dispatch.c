@@ -2252,9 +2252,180 @@ int64_t __cajeta_xpu_stream_sync_count(void) {
     return __atomic_load_n(&g_xpu_stream_syncs, __ATOMIC_RELAXED);
 }
 
+// --- Device block cache (cajeta-ml-gpu 28.2.2) --------------------------------
+// A freed Device-kind block on hip or cuda is kept here and handed to the next
+// allocation of its size class (512 B steps below 1 MB, 2 MB steps above), so
+// an op that returns a fresh tensor does not pay the driver's allocate and free
+// (0.7 ms of a 0.75 ms elementwise op on gfx1151). Every free is ordered after
+// the stream that used the buffer synced (XPU-K02), so a cached block is idle
+// when it is reused. Pinned and unified kinds, cpu and vulkan go to the backend.
+// CAJETA_XPU_ALLOC_CACHE=0 turns it off; CAJETA_XPU_ALLOC_CACHE_MB caps it
+// (default 2048); a backend allocation that fails flushes the cache and retries.
+static pthread_mutex_t g_xpu_bcache_lock = PTHREAD_MUTEX_INITIALIZER;
+static int64_t g_xpu_buffer_raw_allocs;      // backend allocations (the misses)
+static int g_xpu_bcache_mode = -1;           // -1 unread env, 0 off, 1 on
+static int64_t g_xpu_bcache_limit = -2;      // bytes held at most; -1 none, -2 unread env
+static int64_t g_xpu_bcache_bytes;           // bytes in the free list
+struct caj_bcache_block { int64_t handle; uint64_t bytes; };
+static struct caj_bcache_block* g_xpu_bcache_free;   // freed blocks, newest last
+static int g_xpu_bcache_free_n, g_xpu_bcache_free_cap;
+static struct caj_bcache_block* g_xpu_bcache_live;   // handles the cache owns -> class bytes
+static size_t g_xpu_bcache_live_cap, g_xpu_bcache_live_used;   // used counts tombstones
+
+static int caj_bcache_on(void) {
+    if (g_xpu_bcache_mode < 0) {
+        const char* e = getenv("CAJETA_XPU_ALLOC_CACHE");
+        g_xpu_bcache_mode = (e && *e == '0') ? 0 : 1;
+    }
+    return g_xpu_bcache_mode;
+}
+static int64_t caj_bcache_limit(void) {
+    if (g_xpu_bcache_limit == -2) {
+        const char* e = getenv("CAJETA_XPU_ALLOC_CACHE_MB");
+        long long mb = (e && *e) ? strtoll(e, NULL, 10) : 2048;
+        g_xpu_bcache_limit = mb < 0 ? -1 : mb * 1048576LL;
+    }
+    return g_xpu_bcache_limit;
+}
+static int caj_bcache_backend(void) {
+    int be = cajeta_xpu_active_backend();
+    return be == CAJ_XPU_HIP || be == CAJ_XPU_CUDA;
+}
+static uint64_t caj_bcache_round(uint64_t bytes) {
+    uint64_t step = bytes < 1048576u ? 512u : 2097152u;
+    return (bytes + step - 1) / step * step;
+}
+static size_t caj_bcache_slot(int64_t h, size_t cap) {
+    return (size_t) (((uint64_t) h * 0x9E3779B97F4A7C15ull) >> 17) & (cap - 1);
+}
+// The live table: open addressing on the handle, -1 a tombstone; grows at half full.
+static void caj_bcache_live_insert(int64_t h, uint64_t bytes) {
+    if ((g_xpu_bcache_live_used + 1) * 2 > g_xpu_bcache_live_cap) {
+        size_t ncap = g_xpu_bcache_live_cap ? g_xpu_bcache_live_cap * 2 : 1024;
+        struct caj_bcache_block* nt = (struct caj_bcache_block*) calloc(ncap, sizeof(*nt));
+        if (!nt) return;
+        size_t live = 0;
+        for (size_t i = 0; i < g_xpu_bcache_live_cap; i++) {
+            int64_t oh = g_xpu_bcache_live[i].handle;
+            if (oh == 0 || oh == -1) continue;
+            size_t j = caj_bcache_slot(oh, ncap);
+            while (nt[j].handle) j = (j + 1) & (ncap - 1);
+            nt[j] = g_xpu_bcache_live[i];
+            live++;
+        }
+        free(g_xpu_bcache_live);
+        g_xpu_bcache_live = nt; g_xpu_bcache_live_cap = ncap; g_xpu_bcache_live_used = live;
+    }
+    size_t j = caj_bcache_slot(h, g_xpu_bcache_live_cap);
+    while (g_xpu_bcache_live[j].handle && g_xpu_bcache_live[j].handle != -1)
+        j = (j + 1) & (g_xpu_bcache_live_cap - 1);
+    g_xpu_bcache_live[j].handle = h;
+    g_xpu_bcache_live[j].bytes = bytes;
+    g_xpu_bcache_live_used++;
+}
+// Removes `h` from the live table; its class bytes, or 0 when the cache never owned it.
+static uint64_t caj_bcache_live_take(int64_t h) {
+    if (!g_xpu_bcache_live_cap) return 0;
+    size_t j = caj_bcache_slot(h, g_xpu_bcache_live_cap);
+    for (size_t n = 0; n < g_xpu_bcache_live_cap; n++, j = (j + 1) & (g_xpu_bcache_live_cap - 1)) {
+        int64_t oh = g_xpu_bcache_live[j].handle;
+        if (oh == 0) return 0;
+        if (oh == h) { g_xpu_bcache_live[j].handle = -1; return g_xpu_bcache_live[j].bytes; }
+    }
+    return 0;
+}
+static void caj_buffer_free_raw(int64_t handle, int32_t kind);
+static int64_t caj_bcache_take(uint64_t cls) {
+    for (int i = g_xpu_bcache_free_n - 1; i >= 0; i--) {
+        if (g_xpu_bcache_free[i].bytes != cls) continue;
+        int64_t h = g_xpu_bcache_free[i].handle;
+        g_xpu_bcache_free[i] = g_xpu_bcache_free[--g_xpu_bcache_free_n];
+        g_xpu_bcache_bytes -= (int64_t) cls;
+        return h;
+    }
+    return 0;
+}
+static int caj_bcache_put(int64_t h, uint64_t cls) {
+    int64_t lim = caj_bcache_limit();
+    if (lim >= 0 && g_xpu_bcache_bytes + (int64_t) cls > lim) return 0;
+    if (g_xpu_bcache_free_n == g_xpu_bcache_free_cap) {
+        int ncap = g_xpu_bcache_free_cap ? g_xpu_bcache_free_cap * 2 : 64;
+        struct caj_bcache_block* nf = (struct caj_bcache_block*)
+            realloc(g_xpu_bcache_free, (size_t) ncap * sizeof(*nf));
+        if (!nf) return 0;
+        g_xpu_bcache_free = nf; g_xpu_bcache_free_cap = ncap;
+    }
+    g_xpu_bcache_free[g_xpu_bcache_free_n].handle = h;
+    g_xpu_bcache_free[g_xpu_bcache_free_n].bytes = cls;
+    g_xpu_bcache_free_n++;
+    g_xpu_bcache_bytes += (int64_t) cls;
+    return 1;
+}
+// Returns the oldest cached blocks to the backend until at most `keep` bytes remain.
+static void caj_bcache_trim_locked(int64_t keep) {
+    int i = 0;
+    while (i < g_xpu_bcache_free_n && g_xpu_bcache_bytes > keep) {
+        caj_buffer_free_raw(g_xpu_bcache_free[i].handle, CAJ_MEMKIND_DEVICE);
+        g_xpu_bcache_bytes -= (int64_t) g_xpu_bcache_free[i].bytes;
+        i++;
+    }
+    if (i) {
+        memmove(g_xpu_bcache_free, g_xpu_bcache_free + i,
+                (size_t) (g_xpu_bcache_free_n - i) * sizeof(*g_xpu_bcache_free));
+        g_xpu_bcache_free_n -= i;
+    }
+}
+int64_t __cajeta_xpu_buffer_raw_alloc_count(void) {
+    return __atomic_load_n(&g_xpu_buffer_raw_allocs, __ATOMIC_RELAXED);
+}
+int64_t __cajeta_xpu_buffer_cache_bytes(void) {
+    pthread_mutex_lock(&g_xpu_bcache_lock);
+    int64_t b = g_xpu_bcache_bytes;
+    pthread_mutex_unlock(&g_xpu_bcache_lock);
+    return b;
+}
+void __cajeta_xpu_buffer_cache_flush(void) {
+    pthread_mutex_lock(&g_xpu_bcache_lock);
+    caj_bcache_trim_locked(0);
+    pthread_mutex_unlock(&g_xpu_bcache_lock);
+}
+// mode 1 on, 0 off (and flushed), -1 back to the environment's default.
+void __cajeta_xpu_buffer_cache_set(int32_t mode) {
+    pthread_mutex_lock(&g_xpu_bcache_lock);
+    g_xpu_bcache_mode = mode < 0 ? -1 : (mode ? 1 : 0);
+    if (!caj_bcache_on()) caj_bcache_trim_locked(0);
+    pthread_mutex_unlock(&g_xpu_bcache_lock);
+}
+// bytes >= 0 caps the cache (trimming to it), -1 removes the cap, -2 restores the default.
+void __cajeta_xpu_buffer_cache_set_limit(int64_t bytes) {
+    pthread_mutex_lock(&g_xpu_bcache_lock);
+    g_xpu_bcache_limit = bytes < -1 ? -2 : bytes;
+    int64_t lim = caj_bcache_limit();
+    if (lim >= 0) caj_bcache_trim_locked(lim);
+    pthread_mutex_unlock(&g_xpu_bcache_lock);
+}
+
 int64_t __cajeta_xpu_buffer_alloc(void* self, uint64_t byteCount, int32_t kind) {
     (void) self;
-    int64_t h = caj_buffer_alloc_raw(byteCount, kind);
+    int64_t h = 0;
+    if (byteCount && kind == CAJ_MEMKIND_DEVICE && caj_bcache_backend() && caj_bcache_on()) {
+        uint64_t cls = caj_bcache_round(byteCount);
+        pthread_mutex_lock(&g_xpu_bcache_lock);
+        h = caj_bcache_take(cls);
+        if (!h) {
+            h = caj_buffer_alloc_raw(cls, kind);
+            if (!h && g_xpu_bcache_free_n) {
+                caj_bcache_trim_locked(0);
+                h = caj_buffer_alloc_raw(cls, kind);
+            }
+            if (h) __atomic_fetch_add(&g_xpu_buffer_raw_allocs, (int64_t) 1, __ATOMIC_RELAXED);
+        }
+        if (h) caj_bcache_live_insert(h, cls);
+        pthread_mutex_unlock(&g_xpu_bcache_lock);
+    } else {
+        h = caj_buffer_alloc_raw(byteCount, kind);
+        if (h) __atomic_fetch_add(&g_xpu_buffer_raw_allocs, (int64_t) 1, __ATOMIC_RELAXED);
+    }
     if (h) __atomic_fetch_add(&g_xpu_buffer_allocs, (int64_t) 1, __ATOMIC_RELAXED);
     if (h && caj_poison_on()) caj_poison_fill(h, byteCount, kind);
     if (h && caj_alloc_trace_on()) caj_ledger_note(h, byteCount, kind, 1);
@@ -2970,12 +3141,23 @@ void __cajeta_xpu_buffer_download(void* self, int64_t handle, void* host,
                                   uint64_t byteCount) {
     __cajeta_xpu_buffer_download_to(self, handle, host, 0, byteCount);
 }
-// Free a buffer handle that was allocated with MemoryKind `kind`.
+// Free a buffer handle that was allocated with MemoryKind `kind`: a Device-kind
+// block the cache owns goes back to the cache when it fits, else to the backend.
 void __cajeta_xpu_buffer_free(void* self, int64_t handle, int32_t kind) {
     (void) self;
     if (!handle) return;
     if (caj_alloc_trace_on()) caj_ledger_note(handle, 0, kind, 0);
     caj_record_free(handle);
+    if (kind == CAJ_MEMKIND_DEVICE && caj_bcache_backend()) {
+        pthread_mutex_lock(&g_xpu_bcache_lock);
+        uint64_t cls = caj_bcache_live_take(handle);
+        int kept = cls && caj_bcache_on() && caj_bcache_put(handle, cls);
+        pthread_mutex_unlock(&g_xpu_bcache_lock);
+        if (kept) return;
+    }
+    caj_buffer_free_raw(handle, kind);
+}
+static void caj_buffer_free_raw(int64_t handle, int32_t kind) {
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_CUDA:
             // Pinned frees with cuMemFreeHost; device + managed with cuMemFree.

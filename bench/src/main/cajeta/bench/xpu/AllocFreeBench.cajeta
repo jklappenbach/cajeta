@@ -8,7 +8,9 @@ import bench.xpu.XpuEnv;
 // xpu/kernelbuffer-alloc-free: 1e4 allocate-and-free of a 64 MB KernelBuffer
 // (16M float32) per trial (1e2 under CAJETA_BENCH_SMOKE=1 on the cpu and vulkan backends),
 // `heap KernelBuffer<float32>(n)` then an explicit free(). Nothing is written,
-// so this is the allocator's cost, not first-touch paging. Check: every
+// so this is the allocator's cost, not first-touch paging: on hip and cuda the
+// block cache's (docs/stdlib/xpu/KernelBuffer.md), the driver's with
+// CAJETA_XPU_ALLOC_CACHE=0. Check: every
 // allocation reported the requested length, and the count matches the trials.
 // Throughput: allocations/s.
 public class AllocFreeBench extends XpuBench {
@@ -36,7 +38,7 @@ public class AllocFreeBench extends XpuBench {
     }
 
     public String competitorNote() {
-        return "" + this.count + " x 64 MB allocate + free per trial; competitors: cudaMalloc/cudaFree and hipMalloc/hipFree (devserver), PyTorch caching allocator (torch.empty + del)";
+        return "" + this.count + " x 64 MB allocate + free per trial through KernelBuffer's block cache on hip/cuda (CAJETA_XPU_ALLOC_CACHE=0 for the driver's cost); competitors: cudaMalloc/cudaFree and hipMalloc/hipFree (devserver), PyTorch caching allocator (torch.empty + del)";
     }
 
     public void setupDevice() {

@@ -6,7 +6,7 @@
 
 | id | workload | against | check |
 |---|---|---|---|
-| `xpu/kernelbuffer-alloc-free` | 1e4 allocate-and-free of 64 MB | `cudaMalloc`/`hipMalloc`, PyTorch caching allocator | count |
+| `xpu/kernelbuffer-alloc-free` | 1e4 allocate-and-free of 64 MB through the block cache (`CAJETA_XPU_ALLOC_CACHE=0` for the driver's cost) | `cudaMalloc`/`hipMalloc`, PyTorch caching allocator | count |
 | `xpu/host-device-transfer` | copy 1 GB host → device → host | `cudaMemcpy`/`hipMemcpy`, PyTorch `.to()` | checksum |
 
 ## Results
