@@ -17,6 +17,7 @@ import cajeta.lang.StringBuilder;
  * - R5, the grid fills the multiprocessors, or carries the split-K count
  *   that does (cajeta-llm's `TcTile.splitsFor`, generalized). Never prunes.
  * - R6, the padding the shape costs at the problem. Never prunes.
+ * - R7, a tile of no extent (tileM or tileN 0) prunes by name instead of trapping.
  *
  * A fact the backend does not report prunes nothing. Every pruned candidate
  * is kept with its rule, and an empty survivor set is a named `refusal()`,
@@ -123,6 +124,14 @@ public final class ShapeFilter {
             v.rule = 3;
             v.need = (int64) kf.sharedBytes;
             v.limit = sharedLimit;
+            return v;
+        }
+        // R7: a tile with no extent cannot cover a problem; refusing it by name here
+        // keeps R5 and R6 from dividing by it.
+        if (c.tileM <= 0 || c.tileN <= 0) {
+            v.rule = 7;
+            v.need = (int64) c.tileM;
+            v.limit = (int64) c.tileN;
             return v;
         }
         // R4: the fewest workgroups any budget admits.

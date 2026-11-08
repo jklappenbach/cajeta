@@ -5,7 +5,8 @@ import cajeta.lang.String;
 /**
  * ShapeVerdict — what the feasibility filter decided for one candidate
  * (xpu-tile-shape-selection §3). `rule` is 0 for a survivor, else the rule
- * that pruned it (1 spill, 2 register file, 3 shared memory, 4 residency).
+ * that pruned it (1 spill, 2 register file, 3 shared memory, 4 residency,
+ * 7 a tile of no extent).
  * A survivor carries R4's resident count, R5's split-K count and R6's
  * padding.
  */
@@ -57,6 +58,9 @@ public final class ShapeVerdict {
         }
         if (this.rule == 4) {
             return head + "R4: no workgroup fits on a multiprocessor";
+        }
+        if (this.rule == 7) {
+            return head + "R7: a tile of no extent (" + this.need + " x " + this.limit + ")";
         }
         return head + "feasible: " + this.residentGroups + " resident, "
             + this.splits + " split, " + this.padWastePerMille

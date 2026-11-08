@@ -92,6 +92,27 @@ TEST(XpuShapeFilter, aSpillingCandidateIsPrunedByR1) {
 )CJ"), 0);
 }
 
+// cajeta-ml-gpu 15.2.2: R7. A candidate whose tile has no extent is pruned by name;
+// R5 and R6 never divide by it (v0.53.0 trapped in ceilDiv).
+TEST(XpuShapeFilter, aTileOfNoExtentIsPrunedByR7NotTrapped) {
+    EXPECT_EQ(run(R"CJ(
+    public static int32 run() {
+        ShapeFilter f #= heap ShapeFilter("hist", M.ada(), 512L, 4096L, 4096L);
+        f.consider(#heap ShapeCandidate("zero", 0, 128, 256, 0, 1),
+                   #heap KernelFacts(32, 0, 0));
+        f.consider(#heap ShapeCandidate("fine", 128, 128, 256, 0, 1),
+                   #heap KernelFacts(32, 0, 0));
+        if (f.survivorCount() != 1) { return 1; }
+        if (f.prunedCount() != 1) { return 2; }
+        ShapeVerdict p = f.pruned(0);
+        if (p.rule != 7) { return 3; }
+        if (!p.candidate.kernel.equals("zero")) { return 4; }
+        if (p.text().indexOf("R7") < 0L) { return 5; }
+        return 0;
+    }
+)CJ"), 0);
+}
+
 // 4.5.1.2: R2 and R3. Threads times registers over the register file prunes,
 // and shared memory over the opt-in limit prunes; at the opt-in limit fits.
 TEST(XpuShapeFilter, theRegisterFileAndSharedMemoryPrune) {
