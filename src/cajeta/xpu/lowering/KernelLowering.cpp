@@ -332,6 +332,7 @@ public:
     }
 
     void lowerBody(const MethodPtr& method) {
+        bodyMethod_ = method;
         if (!cls) cls = method->getParent();   // for @Device helper resolution
         // A build with ubTraps on checks every `align:` statement the proof
         // does not confirm (kernel-load-alignment spec 4.1, 4.2).
@@ -575,6 +576,7 @@ private:
     // Vector<T,4>, so membership here routes `*` and the methods to quaternions.
     std::set<std::string> quaternionLocals;
     std::shared_ptr<CajetaClass> cls;              // declaring class (helper resolution)
+    MethodPtr bodyMethod_;                          // the method whose body this lowers (type bindings)
     DeviceFnCache* deviceFns = nullptr;            // shared @Device function cache
     // A dynamic shared array kept typed (Vulkan): name -> {global, array type}.
     // Indexed as gep(arrTy, gv, {0, i}) so the OpTypeArray survives.
@@ -4321,7 +4323,11 @@ private:
             }
         }
 
-        if (auto m = resolveDeviceMethod(recv, name, mc)) {
+        if (auto found = resolveDeviceMethod(recv, name, mc)) {
+            // A generic helper (`beats<E>(E a, int32 i, E b, int32 j)`) is instantiated
+            // for this call before it is lowered: its formals are then concrete types,
+            // not the kernel's type parameter (cajeta-ml-gpu 14.2.2).
+            MethodPtr m = found->isMethodTemplate() ? instantiateDeviceHelper(found, mc) : found;
             llvm::Function* hfn = lowerDeviceFn(m);
             const auto& args = mc->getParameters();
             std::vector<llvm::Value*> argv;
@@ -6935,6 +6941,61 @@ private:
             return target.transcendental(builder, mod, name, {a, b});
         }
         unsupported("Math." + name + " is not available in a kernel on device");
+    }
+
+    // A type argument a helper call names: a kernel's or its class template's type
+    // parameter is rebound to the instantiation's argument (`beats<E>` in `argmax<float32>`
+    // is `beats<float32>`); a concrete type passes through.
+    CajetaTypePtr bindHelperTypeArg(const CajetaTypePtr& t) {
+        if (!t) return t;
+        if (deviceScalarType(t, ctx) || deviceVectorType(t, ctx)) return t;
+        const std::string canon = t->toCanonical();
+        if (bodyMethod_) {
+            const auto& tps = bodyMethod_->getMethodTypeParameters();
+            const auto& targs = bodyMethod_->getMethodTypeArguments();
+            for (std::size_t i = 0; i < tps.size() && i < targs.size(); ++i)
+                if (tps[i].name == canon && targs[i]) return targs[i];
+        }
+        if (cls) {
+            CajetaClassPtr origin = cls->getTemplateOrigin();
+            const auto& tps = origin ? origin->getTypeParameters() : cls->getTypeParameters();
+            const auto& targs = cls->getTypeArguments();
+            for (std::size_t i = 0; i < tps.size() && i < targs.size(); ++i)
+                if (!tps[i].isNonType && tps[i].name == canon && targs[i]) return targs[i];
+        }
+        return t;
+    }
+
+    // Instantiate a generic @Device helper for a call from a kernel. The call's explicit
+    // type arguments bind it (`D.beats<E>(...)`, with `E` rebound to the kernel's argument);
+    // a call without them is refused by name, since a kernel body's arguments carry no
+    // host-resolved types to infer from.
+    MethodPtr instantiateDeviceHelper(const MethodPtr& m,
+                                      const std::shared_ptr<MethodCallExpression>& mc) {
+        const auto& tps = m->getMethodTypeParameters();
+        const auto& explicitArgs = mc->getExplicitMethodTypeArgs();
+        if (explicitArgs.size() != tps.size())
+            unsupported("@Device helper " + m->getName() + " is generic over " +
+                        std::to_string(tps.size()) + " type parameter(s); a kernel calls it "
+                        "with explicit type arguments (`" + m->getName() + "<E>(...)`)");
+        std::vector<CajetaTypePtr> targs;
+        targs.reserve(tps.size());
+        for (std::size_t i = 0; i < tps.size(); ++i) {
+            CajetaTypePtr bound = bindHelperTypeArg(explicitArgs[i]);
+            if (!bound || (!deviceScalarType(bound, ctx) && !deviceVectorType(bound, ctx) &&
+                           !std::dynamic_pointer_cast<CajetaClass>(bound)))
+                unsupported("@Device helper " + m->getName() + ": type argument '" +
+                            (explicitArgs[i] ? explicitArgs[i]->toCanonical() : std::string("?")) +
+                            "' for `" + tps[i].name + "` is not a device type here");
+            targs.push_back(bound);
+        }
+        MethodPtr inst = m->instantiateMethodTemplate(targs);
+        if (!inst) unsupported("@Device helper " + m->getName() + ": instantiation failed");
+        // The captured source starts after the modifiers, so the instantiation takes the
+        // template's annotations here (as a kernel instantiation does).
+        if (!inst->findAnnotation("Device"))
+            for (auto& ann : m->getAnnotationInstances()) inst->addAnnotationInstance(ann);
+        return inst;
     }
 
     // Resolve `name(args)` / `Cls.name(args)` to a @Device method by name and
