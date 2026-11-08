@@ -1432,7 +1432,7 @@ void foldWaveVariants(llvm::Function& f) {
             }
             if (!kfn) continue;
             kfn->setName(sym);
-            kfn->setLinkage(llvm::GlobalValue::ExternalLinkage);
+            kfn->setLinkage(llvm::GlobalValue::WeakODRLinkage);
 
             // Identity only: the CPU has no VGPR or LDS footprint to report.
             KernelManifest manifest;
@@ -1483,7 +1483,7 @@ void foldWaveVariants(llvm::Function& f) {
             wtys.push_back(i32);            // dynamic shared-memory byte count
             llvm::Function* wrapper = llvm::Function::Create(
                 llvm::FunctionType::get(voidTy, wtys, false),
-                llvm::GlobalValue::ExternalLinkage,
+                llvm::GlobalValue::WeakODRLinkage,
                 "__cajeta_xpu_cpu_block." + symSuffix(method) + lvl, hostModule);
             // Tuned as generic x86-64 for codegen, ISA untouched: the host
             // machine's post-RA list scheduler is quadratic in the block the
@@ -1576,7 +1576,7 @@ void foldWaveVariants(llvm::Function& f) {
                             wrapper->eraseFromParent();
                             wrapper = llvm::Function::Create(
                                 llvm::FunctionType::get(voidTy, wtys, false),
-                                llvm::GlobalValue::ExternalLinkage,
+                                llvm::GlobalValue::WeakODRLinkage,
                                 "__cajeta_xpu_cpu_block." + symSuffix(method) + lvl,
                                 hostModule);
                             tuneKernelWrapper(*wrapper);
@@ -1936,10 +1936,12 @@ void foldWaveVariants(llvm::Function& f) {
             // --- Uniform launcher thunk → the per-block wrapper -------------
             // void __cajeta_xpu_cpu_launch.<name>(ptr argv, ptr coord), called ONCE PER
             // BLOCK: of coord's 12 i32s it takes ctaid[3..5], ntid[6..8], nctaid[9..11].
+            // Weak ODR, like the kernel and its block wrapper: a kernel instantiated in a
+            // library and again in a consumer that inlines it is one definition.
             llvm::FunctionType* thunkTy =
                 llvm::FunctionType::get(voidTy, {ptrTy, ptrTy}, false);
             llvm::Function* thunk = llvm::Function::Create(
-                thunkTy, llvm::GlobalValue::ExternalLinkage,
+                thunkTy, llvm::GlobalValue::WeakODRLinkage,
                 "__cajeta_xpu_cpu_launch." + symSuffix(method) + lvl, hostModule);
             stampLevel(thunk);
             thunk->getArg(0)->setName("argv");
