@@ -61,6 +61,7 @@ VENV="$HERE/python/.venv"
 REQS="$HERE/python/requirements.txt"
 LLVM_BIN="${CAJETA_LLVM_BIN:-$REPO/../cajeta-llvm/llvm-install/bin}"
 LLAMA="${CAJETA_LLAMA_CPP:-$REPO/../llama.cpp}"
+[[ -d "$LLAMA" ]] || LLAMA="$HOME/code/llama.cpp"   # proton keeps it beside code/cpp, not inside
 STEP_CAP="${CAJETA_SETUP_STEP_CAP:-1800}"
 
 # The existing pins (manifest.tsv + <name>.lock) live wherever vendor.sh lives:
@@ -231,8 +232,11 @@ install_pypkgs() {
 
 torch_flavor() {  # prints "<index-url> <label>"; reads files and compiler strings only
     if [[ -n "${CAJETA_SETUP_TORCH_INDEX:-}" ]]; then echo "$CAJETA_SETUP_TORCH_INDEX override"; return; fi
-    if command -v rocminfo >/dev/null 2>&1 || [[ -f /opt/rocm/.info/version ]]; then
+    if command -v rocminfo >/dev/null 2>&1 || command -v hipcc >/dev/null 2>&1 || [[ -f /opt/rocm/.info/version ]]; then
+        # /opt/rocm is the packaged layout; a user-level ROCm (proton: ~/.local/lib/rocm)
+        # has no .info, so the HIP version string names the wheel index instead.
         local r; r="$(cut -d. -f1-2 /opt/rocm/.info/version 2>/dev/null)"
+        [[ -n "$r" ]] || r="$(hipcc --version 2>/dev/null | sed -nE 's/.*HIP version: ([0-9]+\.[0-9]+).*/\1/p' | head -1)"
         echo "https://download.pytorch.org/whl/rocm${r:-6.4} rocm${r:-6.4}"; return
     fi
     local cuda=""
@@ -331,6 +335,9 @@ check_evcxr() {
 }
 install_evcxr() {
     [[ -x "$CARGO_HOME/bin/cargo" ]] || { echo "cargo missing"; return 1; }
+    # The lockfile's rust-analyzer crates want the current stable; a box whose channel
+    # lags (proton: 1.91 against 1.99) fails the build until the channel moves.
+    "$CARGO_HOME/bin/rustup" update "$RUST_CHANNEL" >/dev/null 2>&1 || true
     "$CARGO_HOME/bin/cargo" install evcxr_jupyter --version "$EVCXR_VERSION" --locked --root "$TP/evcxr"
 }
 
