@@ -462,6 +462,29 @@ namespace cajeta {
             }
             modeErasedMethodKeys[erased] = rawKey;
         }
+        // cajeta-ml-gpu 24.2.2 — a @Kernel is launched by its bare name (`k.launch(...)`),
+        // so a host method of the same name in the same class is ambiguous AT DECLARATION:
+        // on v0.53.0 the pair compiled and the call site bound whichever won, silently.
+        // Instantiations are skipped: a template's instantiation shares its name by design.
+        if (!method->isMethodTemplateInstantiation()) {
+            const bool isKernel = method->findAnnotation("Kernel") != nullptr;
+            for (auto& other : methodList) {
+                if (!other || other->getName() != method->getName()) continue;
+                if (other->isMethodTemplateInstantiation()) continue;
+                const bool otherKernel = other->findAnnotation("Kernel") != nullptr;
+                if (otherKernel != isKernel) {
+                    throw Exception(
+                        "`" + method->getName() + "` is declared in `"
+                            + (getQName() ? getQName()->toCanonical() : std::string("<anonymous>"))
+                            + "` both as a @Kernel and as a host method. A kernel is "
+                              "launched by its bare name (`" + method->getName()
+                            + ".launch(...)`), so a host method of that name is ambiguous "
+                              "and bound silently before. Fix: give the host entry a name "
+                              "of its own (`apply`, `run`, ...).",
+                        "CAJETA_ERROR_KERNEL_NAME_SHARED");
+                }
+            }
+        }
         methods[method->getMapKey()] = method;
 
         if (method->isConstructor()) {
