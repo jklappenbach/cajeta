@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **A host method of a `@Kernel`'s name is refused at declaration.** A kernel is launched by its bare name (`k.launch(...)`), so a class that declared `glu<E>(…, uint32 n, …)` as a kernel and `glu<E>(…, int64 n, …)` as its host entry compiled on v0.53.0 and bound whichever overload won: the launch happened for neither and the output kept its old values, with no diagnostic (cajeta-ml-gpu 24.2.2). The pair is now `CAJETA_ERROR_KERNEL_NAME_SHARED`, naming the method and the fix; a template's instantiations share its name by design and are exempt.
+- **A kernel's cpu symbols link as one definition.** The per-work-item kernel, its block wrapper and its launch thunk (`__cajeta_xpu_cpu.*`, `__cajeta_xpu_cpu_block.*`, `__cajeta_xpu_cpu_launch.*`) are weak ODR, so a kernel in a class template instantiated in a library and again in a consumer that inlines that library's code no longer trips `ld.lld` on a duplicate symbol (cajeta-ml-gpu 21.2.2; generic-method instantiations already deduplicated).
+- **`ShapeFilter` prunes a tile of no extent by name.** A `ShapeCandidate` with `tileM` or `tileN` 0 is pruned by the new rule R7 instead of trapping the process in `ceilDiv` when R5 or R6 divided by it (cajeta-ml-gpu 15.2.2).
+- **The cpu backend's barrier-fission constraint is documented** (CajetaXPU.md §3.7): a lane that keeps an accumulator across a `Barrier.workgroup()` inside its own position loop is refused at compile time; reduce within a wave instead (cajeta-ml-gpu 26.2.2).
+
 ## 0.53.1 (2026-11-07)
 
 - **`await` loads a Task kept in a field or a static.** `await this.t`, a bare field name and `await S.t` lowered the operand to the slot's address and used it as the Task, so the done flag, exception and value were read from the slot's own memory: the value came back as garbage, and a task that threw faulted the awaiter. Only a local's alloca was loaded through. A Task is kept behind a pointer everywhere, so `await` now loads through all three slot kinds. Found by cajeta-cabra's host awaiting the serve task it kept in a field; `AwaitFieldTests` pins the field read, the bare name, the static, a throw caught through a field, and a task kept by one method and awaited by another.

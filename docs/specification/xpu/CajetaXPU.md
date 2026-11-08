@@ -399,8 +399,12 @@ that the vectoriser substitutes, so a wave is a vector. Reductions become
 vector reductions, ballots become a mask, and shuffles become a gather. A divergent block
 takes the masked variant, so active-lane semantics hold. A workgroup barrier
 is honoured by fission of the loop into regions, with uniform loops
-scaffolded so the work-item loop stays innermost. Shared memory is a
-per-block array. Blocks fan out across pthread workers, one a physical core
+scaffolded so the work-item loop stays innermost. Fission cannot carry a
+per-work-item local across a barrier that sits inside a non-uniform loop, so
+a lane that keeps an accumulator across a `Barrier.workgroup()` in its own
+position loop is refused at compile time; reduce such a value within a wave
+(`Wave.reduceSumF32`) instead of through shared memory per position. Shared
+memory is a per-block array. Blocks fan out across pthread workers, one a physical core
 by default, capped by `CAJETA_XPU_CPU_WORKERS` or `Device.setCpuWorkerCap`,
 which may go up to the hardware threads. Workers above a lowered cap sleep
 until it is raised, instead of waking for every launch. A launch under 256 work-items runs
