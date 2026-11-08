@@ -774,6 +774,8 @@ namespace cajeta {
         // may each hold a `Clock`. Null when the name is qualified or the package
         // has no such type.
         CajetaClassPtr ownPackageParent(const QualifiedNamePtr& parent) const;
+        // The class a qualified supertype name denotes, by canonical name only; null for a bare name.
+        CajetaClassPtr qualifiedSupertype(const QualifiedNamePtr& parent) const;
 
         // Single-pass hierarchy walk filling `virtualMethodList` in slot order; an override
         // replaces its ancestor's slot. Sets Method::virtualTableIndex. Idempotent.

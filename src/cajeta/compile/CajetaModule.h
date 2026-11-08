@@ -527,6 +527,20 @@ namespace cajeta {
             return imports;
         }
 
+        // A bare type name as this unit sees it: its single-type import of that name,
+        // else the unit's own package. A qualified name is returned as is.
+        QualifiedNamePtr scopedBound(const QualifiedNamePtr& q) {
+            if (!q) return q;
+            const string& pkg = q->getPackageName();
+            if (!pkg.empty() && pkg != "code") return q;
+            auto imp = imports.find(q->getTypeName());
+            if (imp != imports.end() && imp->second.size() == 1) return imp->second.begin()->second;
+            if (qName && !qName->getPackageName().empty() && qName->getPackageName() != "code") {
+                return std::make_shared<QualifiedName>(q->getTypeName(), qName->getPackageName());
+            }
+            return q;
+        }
+
         // Push before walking a template body with concrete arguments; pop after.
         void pushTypeSubstitution(std::map<std::string, CajetaTypePtr> frame) {
             typeSubstitutionStack.push_back(std::move(frame));

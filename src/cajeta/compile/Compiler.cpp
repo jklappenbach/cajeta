@@ -282,8 +282,26 @@ namespace cajeta {
                     pkg += ids[i]->getText();
                 }
                 if (!pkg.empty()) notePrescannedImport(pkg);
+                if (!ctx->MUL() && !pkg.empty()) importedTypes[ids.back()->getText()] = pkg;
             }
             return defaultResult();
+        }
+
+        // A bare bound name means the type this file sees: a single-type import of that
+        // name, else the file's own package. Qualified here, the lookup cannot land on
+        // another package's type of the same short name.
+        cajeta::QualifiedNamePtr boundName(CajetaParser::ClassOrInterfaceTypeContext* coi) {
+            auto q = cajeta::QualifiedName::fromContext(coi);
+            // fromContext interns a lone identifier under "code".
+            if (!q->getPackageName().empty() && q->getPackageName() != "code") return q;
+            auto imp = importedTypes.find(q->getTypeName());
+            if (imp != importedTypes.end()) {
+                return std::make_shared<cajeta::QualifiedName>(q->getTypeName(), imp->second);
+            }
+            if (!package.empty()) {
+                return std::make_shared<cajeta::QualifiedName>(q->getTypeName(), package);
+            }
+            return q;
         }
 
         std::any visitClassDeclaration(
@@ -474,7 +492,7 @@ namespace cajeta {
                     if (auto* bound = tp->typeBound()) {
                         for (auto* tt : bound->typeType()) {
                             if (auto* coi = tt->classOrInterfaceType()) {
-                                param.bounds.push_back(cajeta::QualifiedName::fromContext(coi));
+                                param.bounds.push_back(boundName(coi));
                             }
                         }
                     }
@@ -500,6 +518,8 @@ namespace cajeta {
         }
 
         std::string lastCanonical;
+        // Single-type imports of this unit, short name to package.
+        std::map<std::string, std::string> importedTypes;
     };
 
     // ---- Two-stage parsing (SLL, then full LL on failure) ---------------

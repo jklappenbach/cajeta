@@ -3983,6 +3983,18 @@ namespace cajeta {
         return nullptr;
     }
 
+    // A QUALIFIED supertype name is the class of that canonical name wherever it is
+    // registered, or nothing: a short-name scan must never answer for `a.Shape`.
+    CajetaClassPtr CajetaClass::qualifiedSupertype(const QualifiedNamePtr& parent) const {
+        if (!parent) return nullptr;
+        const std::string& pkg = parent->getPackageName();
+        if (pkg.empty() || pkg == "code") return nullptr;
+        auto cit = canonicalMap.find(parent->toCanonical());
+        if (cit == canonicalMap.end()) return nullptr;
+        auto klass = std::dynamic_pointer_cast<CajetaClass>(cit->second);
+        return (klass && klass.get() != this) ? klass : nullptr;
+    }
+
     // Resolves `extends` names into superClasses: module structures by canonical,
     // then the declaring package's type for a bare name, then by short name, then
     // the process-global canonicalMap, which may yield a placeholder deliberately —
@@ -3999,6 +4011,10 @@ namespace cajeta {
             }
             if (auto own = ownPackageParent(qName)) {
                 superClasses.push_back(own);
+                continue;
+            }
+            if (auto named = qualifiedSupertype(qName)) {
+                superClasses.push_back(named);
                 continue;
             }
             bool found = false;
@@ -4106,6 +4122,8 @@ namespace cajeta {
                 found = it->second;
             } else if (auto own = ownPackageParent(qn)) {
                 found = own;
+            } else if (auto named = qualifiedSupertype(qn)) {
+                found = named;
             } else {
                 for (auto& entry : structures) {
                     if (entry.second->getQName()->getTypeName() == qn->getTypeName()) {

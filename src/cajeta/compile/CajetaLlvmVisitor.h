@@ -853,7 +853,7 @@ namespace cajeta {
                         if (auto* bound = tp->typeBound()) {
                             for (auto* tt : bound->typeType()) {
                                 if (auto* coi = tt->classOrInterfaceType()) {
-                                    param.bounds.push_back(QualifiedName::fromContext(coi));
+                                    param.bounds.push_back(pModule->scopedBound(QualifiedName::fromContext(coi)));
                                 }
                             }
                         }
@@ -1542,7 +1542,7 @@ namespace cajeta {
                         for (auto* tt : bound->typeType()) {
                             if (auto* coi = tt->classOrInterfaceType()) {
                                 param.bounds.push_back(
-                                    QualifiedName::fromContext(coi));
+                                    pModule->scopedBound(QualifiedName::fromContext(coi)));
                             }
                         }
                     }
@@ -2097,7 +2097,7 @@ namespace cajeta {
                     } else if (auto* bound = tp->typeBound()) {
                         for (auto* tt : bound->typeType()) {
                             if (auto* coi = tt->classOrInterfaceType()) {
-                                param.bounds.push_back(QualifiedName::fromContext(coi));
+                                param.bounds.push_back(pModule->scopedBound(QualifiedName::fromContext(coi)));
                             }
                         }
                     }
