@@ -62,7 +62,13 @@ typedef hip_bfloat16 gpu_bf16;
 #define gpublasDestroy hipblasDestroy
 #define gpublasDgemm hipblasDgemm
 #define gpublasSgemm hipblasSgemm
+// hipBLAS 3 (ROCm 7) made the hipDataType/hipblasComputeType_t form the plain name.
+#include <hipblas/hipblas-version.h>
+#if hipblasVersionMajor >= 3
+#define gpublasGemmEx hipblasGemmEx
+#else
 #define gpublasGemmEx hipblasGemmEx_v2
+#endif
 #define GPU_R_16F HIP_R_16F
 #define GPU_R_16BF HIP_R_16BF
 #define GPU_R_32F HIP_R_32F
