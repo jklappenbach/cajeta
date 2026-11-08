@@ -4,7 +4,7 @@
   xpu_check.py rows <csv> <expect>   expect: ok | held | norocm
       ok      every row of a page id is status ok, check_ok true, min_ns > 0,
               tagged smoke -- except the skips this unit justifies (the
-              showcase's other-backend variants, mesh-simplify 1e6-to-1e5);
+              showcase's variants for the other backends, mesh-simplify 1e6-to-1e5);
       held    every row is skipped with "GPU held by another session";
       norocm  every row is skipped with "no ROCm on this machine".
       Every id on the pages must have a row. Prints one line per row.
@@ -21,8 +21,7 @@ import sys
 
 PAGES = ["xpu/Device.md", "xpu/KernelBuffer.md", "xpu/KernelStream.md", "xpu/KernelTimer.md",
          "xpu/mesh/MeshSimplifier.md", "gfx/Texture2D.md"]
-JUSTIFIED = {("cross-backend-showcase", "cuda"), ("cross-backend-showcase", "hip"),
-             ("cross-backend-showcase", "vulkan"), ("mesh-simplify", "1e6-to-1e5")}
+JUSTIFIED = {("mesh-simplify", "1e6-to-1e5")}
 
 
 def page_ids(bench):
@@ -86,7 +85,10 @@ def main():
                 fail(f"{tag} not tagged smoke")
             host_row = r["benchmark"] == "mesh-simplify"   # MeshSimplifier is host code: cpu in every process
             if expect == "ok" or host_row:
-                if (r["benchmark"], v) in JUSTIFIED:
+                # The showcase variant of the leg's own backend runs here; the
+                # other backends' variants (cpu included) are the justified skips.
+                other_showcase = r["benchmark"] == "cross-backend-showcase" and v != leg
+                if other_showcase or (r["benchmark"], v) in JUSTIFIED:
                     if st != "skipped" or not notes:
                         fail(f"{tag} should be a skipped row with a reason, got {st}")
                 elif st != "ok" or ok != "true":
@@ -127,9 +129,8 @@ def main():
             if r["library"] == "meshoptimizer":
                 if st != "ok" or r["check_ok"] != "true" or int(r["min_ns"]) <= 0:
                     fail(f"meshoptimizer row {r['variant']} status={st} check={r['check_ok']}")
-            elif r["backend"] == "hip":
-                if st != "skipped" or "no ROCm on this machine" not in notes:
-                    fail(f"hip row {rid} {r['library']} not skipped 'no ROCm': {st} {notes}")
+            elif r["backend"] == "hip" and st == "skipped" and "no ROCm on this machine" in notes:
+                pass   # a hip competitor row on a box without ROCm
             elif expect == "build":
                 if st != "skipped" or not notes.startswith("build-only: ") or "failed" in notes:
                     fail(f"{rid} {r['language']} {r['library']}: {st} {notes} (want build-only: built)")

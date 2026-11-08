@@ -10,6 +10,7 @@
 #include <hipblas/hipblas.h>
 #define GPU_NAME "HIP"
 #define GPU_BACKEND "hip"
+#define GPU_LANG "hip-c++"
 namespace gpucub = hipcub;
 typedef hipError_t gpuError_t;
 typedef hipStream_t gpuStream_t;
@@ -81,6 +82,7 @@ typedef hip_bfloat16 gpu_bf16;
 #include <cub/cub.cuh>
 #include <cublas_v2.h>
 #define GPU_NAME "CUDA"
+#define GPU_LANG "cuda-c++"
 #define GPU_BACKEND "cuda"
 namespace gpucub = cub;
 typedef cudaError_t gpuError_t;

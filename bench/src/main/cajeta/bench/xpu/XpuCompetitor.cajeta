@@ -4,6 +4,7 @@ import cajeta.io.file.FileReader;
 import cajeta.io.file.FileWriter;
 import cajeta.process.Command;
 import cajeta.process.Process;
+import cajeta.process.ProcessResult;
 
 // The device competitor of an interleaved row: the reference server
 // competitors/cuda/xpu/devserver (CUDA C++, built by
@@ -56,6 +57,9 @@ public class XpuCompetitor {
         if (path == null || path.isEmpty()) {
             return #c;
         }
+        if (!XpuCompetitor.serves(path, bench)) {
+            return #c;
+        }
         String[] argv = heap String[2];
         argv[0] = "" + path;
         argv[1] = "--serve";
@@ -71,9 +75,34 @@ public class XpuCompetitor {
         return #c;
     }
 
+    /** Whether the server's `--list` names `bench` (as `xpu/<bench> ` or `gfx/<bench> `):
+     *  a row the server has no workload for is measured alone, with no competitor row. */
+    public static boolean serves(String path, String bench) {
+        String[] argv = heap String[2];
+        argv[0] = "" + path;
+        argv[1] = "--list";
+        Command cmd = heap Command(#argv);
+        cmd.captureStdout();
+        ProcessResult r #= cmd.run();
+        if (!r.launched() || r.code() != 0) {
+            return false;
+        }
+        int8[] raw = r.stdout();
+        int32 n = (int32) raw.count();
+        int8[] b = heap int8[n];
+        int32 i = 0;
+        while (i < n) {
+            b[i] = raw[i];
+            i = i + 1;
+        }
+        String text #= heap String(#b, n);
+        String key = "/" + bench + " ";
+        return text.indexOf(key) >= 0;
+    }
+
     // The harness decides to interleave before prepare(variant) runs, so this
-    // is "a server is running"; a variant the server refuses reads as a failed
-    // check on the competitor row.
+    // is "a server is running" for a workload it lists; a variant the server
+    // refuses reads as a failed check on the competitor row.
     public boolean present() {
         return this.started;
     }
