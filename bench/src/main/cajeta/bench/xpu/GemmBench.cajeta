@@ -12,8 +12,8 @@ import bench.xpu.XpuKernels;
 // accumulators). bf16 operands accumulate in float32. Inputs are small
 // integers (A in 0..3, B in 0..4), exact in bf16 and float32 and with every
 // product sum under 2^24, so the check is exact: 512 entries of C against the
-// host's dot product. On the cpu backend under CAJETA_BENCH_SMOKE=1 the size is
-// 256 (the software tile at 4096 takes minutes). Throughput: 2 n^3 flop/s.
+// host's dot product. On the cpu and vulkan backends under CAJETA_BENCH_SMOKE=1
+// the size is 256 (XpuEnv.reduced). Throughput: 2 n^3 flop/s.
 public class GemmBench extends XpuBench {
 
     public boolean bf16;
@@ -51,7 +51,7 @@ public class GemmBench extends XpuBench {
     public String competitorNote() {
         String sz = "4096";
         if (XpuEnv.reduced()) {
-            sz = "256 (smoke, cpu backend)";
+            sz = "256 (smoke)";
         }
         if (this.bf16) {
             return "n=" + sz + ", CooperativeMatrix<bfloat16> operands, float32 accumulator, one wave per 16x64 strip; competitors: cuBLAS cublasGemmEx bf16/f32-acc (devserver), rocBLAS, PyTorch matmul bf16";

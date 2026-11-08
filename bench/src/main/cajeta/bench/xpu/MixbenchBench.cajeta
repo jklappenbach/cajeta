@@ -14,7 +14,7 @@ import bench.xpu.XpuEnv;
 // threads, 8 elements per thread, fusion degree 4, `compute_iterations` of
 // t = t*t + seed per element, a multiply-add reduction of the eight, and the
 // never-taken store when the sum is -1, over mixbench's 32M-element buffer
-// (2^22 under CAJETA_BENCH_SMOKE=1 on the cpu backend). One variant per
+// (2^22 under CAJETA_BENCH_SMOKE=1 on the cpu and vulkan backends). One variant per
 // intensity: ci0 .. ci256 (mixbench sweeps 0..1024; these are its points up to
 // 256). Differences from the reference, stated in the notes: the iteration
 // count is a kernel argument, not a template constant, so the inner loop is not

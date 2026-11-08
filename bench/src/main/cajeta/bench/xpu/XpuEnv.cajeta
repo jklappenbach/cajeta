@@ -167,15 +167,17 @@ public final class XpuEnv {
     }
 
     // A size for this backend: the page's size, or the reduced smoke size on
-    // the cpu backend under CAJETA_BENCH_SMOKE=1.
+    // the cpu and vulkan backends under CAJETA_BENCH_SMOKE=1.
     public static int64 size(int64 page, int64 smokeCpu) {
-        if (XpuEnv.smoke() && XpuEnv.onCpu()) {
+        if (XpuEnv.reduced()) {
             return smokeCpu;
         }
         return page;
     }
 
+    /** Smoke sizes apply: the cpu software tile takes minutes at page size, and a
+     *  page-size software-tier GEMM on vulkan outlives the gfx ring's timeout. */
     public static boolean reduced() {
-        return XpuEnv.smoke() && XpuEnv.onCpu();
+        return XpuEnv.smoke() && (XpuEnv.onCpu() || XpuEnv.backend().equals("vulkan"));
     }
 }

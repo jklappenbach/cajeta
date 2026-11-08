@@ -8,7 +8,7 @@ import bench.xpu.XpuBench;
 import bench.xpu.XpuEnv;
 
 // xpu/mandelbrot-device: the Benchmarks Game mandelbrot at 16000 x 16000 on the
-// device (1600 x 1600 under CAJETA_BENCH_SMOKE=1 on the cpu backend): 50
+// device (1600 x 1600 under CAJETA_BENCH_SMOKE=1 on the cpu and vulkan backends): 50
 // iterations, escape at |z|^2 > 4, Cr = 2x/N - 1.5, Ci = 2y/N - 1, eight pixels
 // per output byte, most significant bit first. One thread per byte; each byte
 // is held in an int32 slot (byte stores are not portable to every backend).

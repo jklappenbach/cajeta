@@ -6,7 +6,7 @@ import bench.xpu.XpuBench;
 import bench.xpu.XpuEnv;
 
 // xpu/kernelbuffer-alloc-free: 1e4 allocate-and-free of a 64 MB KernelBuffer
-// (16M float32) per trial (1e2 under CAJETA_BENCH_SMOKE=1 on the cpu backend),
+// (16M float32) per trial (1e2 under CAJETA_BENCH_SMOKE=1 on the cpu and vulkan backends),
 // `heap KernelBuffer<float32>(n)` then an explicit free(). Nothing is written,
 // so this is the allocator's cost, not first-touch paging. Check: every
 // allocation reported the requested length, and the count matches the trials.

@@ -13,7 +13,7 @@ import bench.xpu.XpuEnv;
 
 // xpu/gemm-f64: the first suite's device matmul (it was listed as gemm-f32;
 // it has always been float64), now at the page's 4096 x 4096 (256 under
-// CAJETA_BENCH_SMOKE=1 on the cpu backend). C = A·B, flat row-major float64,
+// CAJETA_BENCH_SMOKE=1 on the cpu and vulkan backends). C = A·B, flat row-major float64,
 // one binary per backend build (gpu, gpu-nvptx, gpu-vulkan), the backend chosen
 // at run time via CAJETA_XPU_BACKEND. A is the identity, so C == B — an exact
 // check against the host's B (checksum of C == checksum of B) while doing the

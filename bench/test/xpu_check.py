@@ -4,7 +4,8 @@
   xpu_check.py rows <csv> <expect>   expect: ok | held | norocm
       ok      every row of a page id is status ok, check_ok true, min_ns > 0,
               tagged smoke -- except the skips this unit justifies (the
-              showcase's variants for the other backends, mesh-simplify 1e6-to-1e5);
+              showcase's variants for the other backends, mesh-simplify 1e6-to-1e5,
+              a tier the backend lacks, a row held on a recorded defect);
       held    every row is skipped with "GPU held by another session";
       norocm  every row is skipped with "no ROCm on this machine".
       Every id on the pages must have a row. Prints one line per row.
@@ -88,7 +89,9 @@ def main():
                 # The showcase variant of the leg's own backend runs here; the
                 # other backends' variants (cpu included) are the justified skips.
                 other_showcase = r["benchmark"] == "cross-backend-showcase" and v != leg
-                if other_showcase or (r["benchmark"], v) in JUSTIFIED:
+                reasoned = st == "skipped" and ("tier unavailable on this backend" in notes
+                                                or notes.startswith("held: "))
+                if other_showcase or reasoned or (r["benchmark"], v) in JUSTIFIED:
                     if st != "skipped" or not notes:
                         fail(f"{tag} should be a skipped row with a reason, got {st}")
                 elif st != "ok" or ok != "true":

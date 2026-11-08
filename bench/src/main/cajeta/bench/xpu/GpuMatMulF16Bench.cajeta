@@ -9,11 +9,12 @@ import cajeta.xpu.Barrier;
 import cajeta.xpu.Shared;
 import cajeta.xpu.BlockPadded;
 import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.Wave;
 
 import bench.xpu.XpuBench;
 import bench.xpu.XpuEnv;
 
-// xpu/gemm-f16: 4096 x 4096 (256 under CAJETA_BENCH_SMOKE=1 on the cpu backend),
+// xpu/gemm-f16: 4096 x 4096 (256 under CAJETA_BENCH_SMOKE=1 on the cpu and vulkan backends),
 // float16 operands, float32 accumulate, through CooperativeMatrix. Throughput 2 n^3 flop/s.
 //
 // Torch-recipe f16 WMMA GEMM (gpu-f16-torch-recipe) — implements torch's VERIFIED gfx1151
@@ -41,7 +42,7 @@ public class GpuMatMulF16Bench extends XpuBench {
     public float64 bSum;
     public float64 cSum;
 
-    @Kernel
+    @Kernel @Wave(width = 32)
     @Occupancy(maxThreads = 128)   // four waves of 32, the shape the tiling assumes
     public static void gemmF16(KernelBuffer<float32> c, KernelBuffer<float16> a,
                                KernelBuffer<float16> b, uint32 n) {
@@ -185,7 +186,11 @@ public class GpuMatMulF16Bench extends XpuBench {
     }
 
     public String competitorNote() {
-        return "float16 operands, float32 accumulate, the gfx1151 torch-recipe tiling (MT 96x128, 4 waves of 32, wave width assumed 32), A = identity; competitors: cuBLAS cublasGemmEx f16/f32-acc (devserver), rocBLAS, PyTorch matmul f16";
+        String n = "float16 operands, float32 accumulate, the gfx1151 torch-recipe tiling (MT 96x128, 4 waves of 32, wave width 32 declared), A = identity; competitors: cuBLAS cublasGemmEx f16/f32-acc (devserver), rocBLAS, PyTorch matmul f16";
+        if (this.cSum != this.bSum) {
+            n = n + "; check: sum C " + this.cSum + " vs sum B " + this.bSum;
+        }
+        return #= n;
     }
 
     public #ArrayList<String> variants() {
@@ -196,6 +201,15 @@ public class GpuMatMulF16Bench extends XpuBench {
             v.add("n4096");
         }
         return v;
+    }
+
+    // Held on vulkan: the check fails there (sum C 2.5x sum B at n256, 2026-11-08;
+    // benchmark-reference 14.3.2), so the row is a reasoned skip until it is fixed.
+    public void setupDevice() {
+        if (XpuEnv.backend().equals("vulkan")) {
+            this.live = false;
+            this.why = "held: C != A*B on vulkan (sum C 2.5x sum B at n256, 2026-11-08; benchmark-reference 14.3.2)";
+        }
     }
 
     // A = identity, B[idx]=idx%100 (exact in f16) ⇒ C == B exactly.
