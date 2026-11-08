@@ -52,6 +52,8 @@
 #include "../type/QualifiedName.h"
 #include "cajeta/error/CajetaExceptions.h"
 #include "cajeta/util/SelfPath.h"
+#include "cajeta/compile/LinkTools.h"
+#include "llvm/Config/llvm-config.h"
 #include "cajeta/error/Diagnostics.h"
 #include "cajeta/error/DiagnosticEngine.h"
 #include "CajetaParserBaseVisitor.h"
@@ -125,6 +127,72 @@ namespace cajeta {
         }
         cache[name] = ok;
         return ok;
+    }
+
+    /// Runs `exe --version` and returns the LLD major it names; 0 when it does not run.
+    static int lldMajorRunning(const std::string& exe) {
+        llvm::SmallString<128> out;
+        if (llvm::sys::fs::createTemporaryFile("cajeta-lld", "txt", out)) return 0;
+        llvm::StringRef argv[] = {exe, "--version"};
+        std::optional<llvm::StringRef> redirects[3] = {
+            llvm::StringRef(""), llvm::StringRef(out), llvm::StringRef("")};
+        bool failed = false;
+        int rc = llvm::sys::ExecuteAndWait(exe, argv, std::nullopt, redirects,
+                                           /*SecondsToWait=*/20, 0, nullptr, &failed);
+        std::string line;
+        {
+            std::ifstream in(out.str().str());
+            std::getline(in, line);
+        }
+        llvm::sys::fs::remove(out);
+        if (failed || rc != 0) return 0;
+        return lldMajorOf(line);
+    }
+
+    /// The directory of an ld.lld that runs and matches this compiler's LLVM major
+    /// (LLVM_VERSION_MAJOR), or "" when none does. Searched beside this executable,
+    /// then the configured LLVM tools bin, then PATH: a release ships beside no LLVM,
+    /// and PATH's lld may be another LLVM's (ROCm's), which cannot read our bitcode
+    /// summary. `looked` names every candidate and what it answered. Memoized.
+    static std::string versionMatchedLldDir(std::vector<std::string>& looked) {
+        static std::optional<std::string> memo;
+        static std::vector<std::string> memoLooked;
+        if (memo) {
+            looked = memoLooked;
+            return *memo;
+        }
+        std::vector<std::string> candidates;
+        auto addFromDir = [&](const std::string& dir) {
+            for (const char* name : {"/ld.lld", "/ld.lld.exe"}) {
+                std::error_code ec;
+                if (std::filesystem::exists(dir + name, ec)) {
+                    candidates.push_back(dir + name);
+                    return;
+                }
+            }
+            looked.push_back(dir + " (no ld.lld)");
+        };
+        std::string self = llvm::sys::fs::getMainExecutable(nullptr, nullptr);
+        if (!self.empty()) addFromDir(llvm::sys::path::parent_path(self).str());
+#ifdef CAJETA_LLVM_TOOLS_BIN
+        addFromDir(CAJETA_LLVM_TOOLS_BIN);
+#endif
+        if (auto onPath = llvm::sys::findProgramByName("ld.lld")) candidates.push_back(*onPath);
+#if defined(_WIN32)
+        if (auto onPath = llvm::sys::findProgramByName("lld-link")) candidates.push_back(*onPath);
+#endif
+        std::string found;
+        for (auto& c : candidates) {
+            int major = lldMajorRunning(c);
+            looked.push_back(c + (major ? " (LLD " + std::to_string(major) + ")" : " (did not run)"));
+            if (major == LLVM_VERSION_MAJOR) {
+                found = llvm::sys::path::parent_path(c).str();
+                break;
+            }
+        }
+        memo = found;
+        memoLooked = looked;
+        return found;
     }
 
     // --diag-format=json: re-emits ANTLR lexer/parser syntax errors as NDJSON
@@ -2031,22 +2099,21 @@ namespace cajeta {
         this->entryMethod = entryMethod;
 
         // ThinLTO changes what codegen WRITES: bitcode plus a summary instead of
-        // native objects, for a link-time backend only lld can run. Decide here,
-        // before emit, because GNU ld cannot read that bitcode at all — with no
-        // usable lld the link dies on an unreadable input rather than falling
-        // back. Loud, since it changes how the shipped binary is optimized.
-        if (flags.lto == LtoMode::Thin && emitMode == EmitMode::Exe
-                && !linkToolRuns("ld.lld") && !linkToolRuns("lld")
-#if defined(_WIN32)
-                && !linkToolRuns("lld-link")
-#endif
-        ) {
-            cerr << "cajeta: --lto=thin needs lld, and no lld on this host can "
-                    "run (present but failing to start counts as absent). "
-                    "Building without LTO so the link can use the system "
-                    "linker; the binary is correct but less optimized."
-                 << std::endl;
-            flags.lto = LtoMode::Off;
+        // native objects, for a link-time backend only an lld of THIS LLVM can run.
+        // Decide here, before emit: another LLVM's lld (ROCm's on PATH) rejects the
+        // summary version and the link dies on an unreadable input rather than
+        // falling back. Loud, since it changes how the shipped binary is optimized.
+        if (flags.lto == LtoMode::Thin && emitMode == EmitMode::Exe) {
+            std::vector<std::string> looked;
+            if (versionMatchedLldDir(looked).empty()) {
+                cerr << "cajeta: --lto=thin needs lld of LLVM " << LLVM_VERSION_MAJOR
+                     << " and none was found. Looked at:";
+                for (auto& l : looked) cerr << "\n  " << l;
+                cerr << "\nBuilding without LTO so the link can use the system "
+                        "linker; the binary is correct but less optimized."
+                     << std::endl;
+                flags.lto = LtoMode::Off;
+            }
         }
 
         xref::resetCapture();
@@ -3167,34 +3234,19 @@ namespace cajeta {
             nativeArchives = std::move(*resolved);
         }
 
-        // ThinLTO link: drive the C compiler for CRT/libc but force the FORK's
-        // version-matched ld.lld, which can read this compiler's bitcode summary.
+        // ThinLTO link: drive the C compiler for CRT/libc but force the version-matched
+        // ld.lld compile() found, which can read this compiler's bitcode summary.
         // `-B<dir>` because gcc rejects an absolute `-fuse-ld=` path; clang honors both.
         std::vector<std::string> thinLtoLinkArgs;  // empty unless lto=thin
         if (flags.lto == LtoMode::Thin) {
-#ifdef CAJETA_LLVM_TOOLS_BIN
-            // The fork ships ld.lld.exe on Windows, so a bare-name probe never
-            // matched there. It must also RUN: handing the driver a -B at an
-            // lld that cannot start turns a good link into "ld returned 53".
-            std::string forkBin = CAJETA_LLVM_TOOLS_BIN;
-            if ((std::filesystem::exists(forkBin + "/ld.lld")
-                        || std::filesystem::exists(forkBin + "/ld.lld.exe"))
-                    && linkToolRuns(forkBin + "/ld.lld")) {
-                thinLtoLinkArgs.push_back("-B" + forkBin);
+            std::vector<std::string> looked;
+            std::string lldDir = versionMatchedLldDir(looked);
+            if (!lldDir.empty()) {
+                thinLtoLinkArgs.push_back("-B" + lldDir);
                 thinLtoLinkArgs.push_back("-fuse-ld=lld");
-            }
-#endif
-            if (thinLtoLinkArgs.empty()) {
-                cerr << "cajeta: --lto=thin: version-matched fork ld.lld not found; "
-                        "falling back to PATH lld (may reject the bitcode if its "
-                        "LLVM version differs)."
-                     << std::endl;
-                if (haveLld) thinLtoLinkArgs.push_back("-fuse-ld=lld");
-            }
-            // Drive the ThinLTO backend at O3 to match the non-LTO O3 pipeline: lld
-            // defaults to O2, which vectorizes the SIMD hot loops far less
-            // aggressively. Only the backend opt level needed lifting.
-            if (!thinLtoLinkArgs.empty()) {
+                // Drive the ThinLTO backend at O3 to match the non-LTO O3 pipeline: lld
+                // defaults to O2, which vectorizes the SIMD hot loops far less
+                // aggressively. Only the backend opt level needed lifting.
                 thinLtoLinkArgs.push_back("-Wl,--lto-O3");
             }
         }

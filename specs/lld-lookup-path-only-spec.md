@@ -1,7 +1,11 @@
 # lld-lookup-path-only — the compiler looks for `ld.lld` only on PATH and silently drops LTO (defect spec)
 
-> Status: **draft**, filed 2026-10-25 by benchmark-reference units 5, 9 and 15
-> on v0.46.3.
+> Status: **fixed on cajeta main 2026-11-08**, unreleased (test/cli/LldLookupTests.cpp);
+> filed 2026-10-25 by benchmark-reference units 5, 9 and 15 on v0.46.3. On proton the
+> defect was sharper than §1: PATH's `ld.lld` was ROCm's (LLVM 22) and the link failed
+> on "Invalid summary version 13" instead of dropping LTO. Use case 2.2's fail-by-name
+> for an explicit `--lto=thin` is not done: the flag does not record whether the
+> release flavor or the developer set it, so both fall back with the paths looked in.
 
 ## 1. Definition
 The release flavor defaults to `--lto=thin`. When `ld.lld` is not on PATH the
