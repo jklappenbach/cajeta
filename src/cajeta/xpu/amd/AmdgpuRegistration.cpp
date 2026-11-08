@@ -177,8 +177,7 @@ namespace amd {
             for (const ArchHsaco& ah : perArch) {
                 DeviceModel model;
                 if (!lookupArch(ah.arch, model)) model = defaultDeviceModel();
-                unsigned limit = model.ldsBytesPerBlock ? model.ldsBytesPerBlock
-                                                        : model.ldsBytesPerMP;
+                unsigned limit = ldsCeilingPerBlock(model);
                 for (const AmdCodeObjectFootprint& fp : readCodeObjectFootprint(ah.hsaco)) {
                     if (fp.name != entryName) continue;
                     if (fp.groupSegmentBytes > limit) {

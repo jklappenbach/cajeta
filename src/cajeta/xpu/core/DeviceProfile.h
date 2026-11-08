@@ -48,6 +48,7 @@ namespace xpu {
         unsigned regsPerMP          = 196608; // 32-bit VGPRs per multiprocessor
         unsigned maxWavesPerMP      = 64;     // wave residency cap per MP
         unsigned ldsBytesPerMP      = 65536;  // LDS per MP
+        unsigned ldsBytesPerBlockArch = 0;    // one workgroup's LDS cap, from the arch table
         unsigned ldsBankCount       = 32;     // arch-only (swizzle/diagnostics)
         unsigned ldsBankWidth       = 4;      // arch-only
         unsigned cuPerMultiprocessor = 2;     // RDNA WGP = 2 CUs; for CU reporting

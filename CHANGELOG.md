@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **A known AMD arch's LDS per multiprocessor is the WGP's, not one workgroup's cap.** ROCm 7.x reports `hipDeviceAttributeMaxSharedMemoryPerMultiprocessor` as 65536 on gfx1151 and gfx1100, which is the per-workgroup limit, while ROCm 10.1 reports the WGP's 131072; the device model took the live value as it came, so the occupancy model under ROCm 7 saw half the LDS the hardware has. The arch table now carries both numbers (`ldsBytesPerMP` 131072, `ldsBytesPerBlockArch` 65536) and a live per-multiprocessor figure below the table's is ignored for a known arch; the per-workgroup cap stays the live value, with the table's as the fallback where the runtime reports none. `XpuDeviceProfileTests.knownArchLdsPerMpOnlyGrowsFromLive` pins it; the amd device tests pass on both runtimes.
+
 ## 0.53.2 (2026-11-08)
 
 - **Thin LTO links through an lld of this compiler's LLVM, found beside the compiler first.** The release flavor's `--lto=thin` took whichever `ld.lld` PATH offered; on a ROCm box that is ROCm's LLVM 22 lld, which rejects the fork's bitcode summary ("Invalid summary version 13") and failed every release build that did not put the fork's bin first (lld-lookup-path-only). The linker is now searched beside the running `cajeta`, then in the configured LLVM tools bin, then on PATH, and only an lld whose `--version` names this LLVM's major is used; with none, the build says where it looked and links without LTO, as before. A release that ships `ld.lld` next to `cajeta` therefore links with LTO on any box.

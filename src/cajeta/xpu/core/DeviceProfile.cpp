@@ -22,15 +22,16 @@ namespace {
         unsigned    maxThreadsPerBlock;
         unsigned    regsPerMP;
         unsigned    maxWavesPerMP;
-        unsigned    ldsBytesPerMP;
+        unsigned    ldsBytesPerMP;         // LDS per WGP (ROCm 7 reported the per-workgroup cap)
+        unsigned    ldsBytesPerBlock;      // one workgroup's LDS cap
         unsigned    ldsBankCount;
         unsigned    ldsBankWidth;
         unsigned    cuPerMultiprocessor;   // physical CUs per driver multiprocessor
     };
 
     constexpr std::array<ArchRow, 2> kArchTable = {{
-        {"gfx1151", 32, 1024, 196608, 64, 65536, 32, 4, 2},
-        {"gfx1100", 32, 1024, 196608, 64, 65536, 32, 4, 2},
+        {"gfx1151", 32, 1024, 196608, 64, 131072, 65536, 32, 4, 2},
+        {"gfx1100", 32, 1024, 196608, 64, 131072, 65536, 32, 4, 2},
     }};
 
     // The leading arch token, dropping any ":feature" suffix the driver appends.
@@ -51,6 +52,7 @@ bool lookupArch(const std::string& archName, DeviceModel& out) {
             out.regsPerMP           = row.regsPerMP;
             out.maxWavesPerMP       = row.maxWavesPerMP;
             out.ldsBytesPerMP       = row.ldsBytesPerMP;
+            out.ldsBytesPerBlockArch = row.ldsBytesPerBlock;
             out.ldsBankCount        = row.ldsBankCount;
             out.ldsBankWidth        = row.ldsBankWidth;
             out.cuPerMultiprocessor = row.cuPerMultiprocessor;
@@ -80,7 +82,10 @@ DeviceModel buildDeviceModel(const RawDeviceProps& props) {
         if (props.regsPerMP)          m.regsPerMP = props.regsPerMP;
         if (props.threadsPerMP && m.waveSize)
             m.maxWavesPerMP = props.threadsPerMP / m.waveSize;
-        if (props.ldsBytesPerMP)      m.ldsBytesPerMP = props.ldsBytesPerMP;
+        // A known row's LDS per WGP is the hardware figure; a runtime reporting
+        // less (ROCm 7 answered the per-workgroup cap) does not shrink it.
+        if (props.ldsBytesPerMP && !(archKnown && props.ldsBytesPerMP < m.ldsBytesPerMP))
+            m.ldsBytesPerMP = props.ldsBytesPerMP;
         liveOccupancy = props.regsPerMP && props.threadsPerMP;
         if (props.multiprocessorCount) {
             m.mpCount = props.multiprocessorCount;
@@ -142,10 +147,11 @@ DeviceModel buildDeviceModel(const RawDeviceProps& props) {
     return m;
 }
 
-// An unreported per-block ceiling falls back to the per-MP budget, which is what
-// AMD effectively uses; NVIDIA reports both and they differ by roughly half.
+// An unreported per-block ceiling falls back to the arch table's workgroup cap,
+// else to the per-MP budget; NVIDIA reports both and they differ by roughly half.
 unsigned ldsCeilingPerBlock(const DeviceModel& m) {
-    return m.ldsBytesPerBlock ? m.ldsBytesPerBlock : m.ldsBytesPerMP;
+    if (m.ldsBytesPerBlock) return m.ldsBytesPerBlock;
+    return m.ldsBytesPerBlockArch ? m.ldsBytesPerBlockArch : m.ldsBytesPerMP;
 }
 
 // Every SIMD on the part divided by the waves one block puts on one SIMD.

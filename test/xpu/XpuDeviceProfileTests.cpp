@@ -102,10 +102,24 @@ TEST(XpuDeviceProfileTests, archTableKnownGfx1151) {
     EXPECT_EQ(m.waveSize, 32u);
     EXPECT_EQ(m.regsPerMP, 196608u);
     EXPECT_EQ(m.maxWavesPerMP, 64u);
-    EXPECT_EQ(m.ldsBytesPerMP, 65536u);
+    EXPECT_EQ(m.ldsBytesPerMP, 131072u);   // the WGP's LDS
+    EXPECT_EQ(m.ldsBytesPerBlockArch, 65536u); // one workgroup's cap
     EXPECT_EQ(m.ldsBankCount, 32u);
     EXPECT_EQ(m.ldsBankWidth, 4u);
     EXPECT_EQ(m.cuPerMultiprocessor, 2u);
+}
+
+// 1.1c — a runtime that reports the per-workgroup cap as the per-MP figure
+// (ROCm 7 on gfx1151) does not shrink a known row; a larger live value wins.
+TEST(XpuDeviceProfileTests, knownArchLdsPerMpOnlyGrowsFromLive) {
+    RawDeviceProps low = gfx1151Props();          // ldsBytesPerMP 65536
+    EXPECT_EQ(buildDeviceModel(low).ldsBytesPerMP, 131072u);
+    EXPECT_EQ(buildDeviceModel(low).ldsBytesPerBlock, 0u);   // live-only: unreported stays 0
+    EXPECT_EQ(ldsCeilingPerBlock(buildDeviceModel(low)), 65536u);   // the row's workgroup cap
+    RawDeviceProps high = gfx1151Props();
+    high.ldsBytesPerMP = 262144;
+    high.ldsBytesPerBlock = 65536;
+    EXPECT_EQ(buildDeviceModel(high).ldsBytesPerMP, 262144u);
 }
 
 // 1.1b — a trailing feature suffix on the arch token still resolves.
@@ -410,7 +424,7 @@ TEST(XpuDeviceProfileTests, nvidiaTierBFactsReachTheModel) {
 TEST(XpuDeviceProfileTests, amdWithoutTierBFallsBackAndInheritsNothing) {
     DeviceModel m = buildDeviceModel(gfx1151Props());
     EXPECT_EQ(m.ldsBytesPerBlock, 0u) << "not reported, so not invented";
-    EXPECT_EQ(ldsCeilingPerBlock(m), 65536u) << "falls back to the per-MP budget";
+    EXPECT_EQ(ldsCeilingPerBlock(m), 65536u) << "falls back to the arch's workgroup cap";
     EXPECT_EQ(m.l2CacheBytes, 0u);
     EXPECT_EQ(m.totalGlobalMemBytes, 0ull);
 }

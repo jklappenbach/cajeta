@@ -45,7 +45,8 @@ TEST(XpuDeviceProfileAmdDeviceTests, gfx1151KnownConstants) {
     EXPECT_EQ(m.waveSize, 32u);
     EXPECT_EQ(m.regsPerMP, 196608u);     // live MaxRegistersPerMultiprocessor
     EXPECT_EQ(m.maxWavesPerMP, 64u);     // 2048 threads / 32 wave
-    EXPECT_EQ(m.ldsBytesPerMP, 65536u);
+    EXPECT_EQ(m.ldsBytesPerMP, 131072u);   // the WGP's LDS; ROCm 7 reported 65536, ROCm 10 reports it
+    EXPECT_EQ(m.ldsBytesPerBlock, 65536u); // one workgroup's cap, both runtimes
     EXPECT_EQ(m.ldsBankCount, 32u);
     EXPECT_EQ(m.cuCount, 40u);   // Strix Halo: 20 WGPs reported * 2 = 40 CUs
 }
