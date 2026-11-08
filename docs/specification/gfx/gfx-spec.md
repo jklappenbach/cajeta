@@ -198,8 +198,9 @@ The papers are now local under `research/sigraph/papers` and `plans/gpu/gfx/rese
 - **Why.** Inline ray query in the GPU foundation covers shadows/AO/picks inside fragment/compute, and
   the pipeline covers full path tracing and the SBT programming model. The seam is explicit.
   GPU owns inline ray query, and GFX owns the RT pipeline.
-- **Grounding.** Vulkan KHR ray-tracing-pipeline / DXR / OptiX, with CLAS/RTX Mega Geometry as a
-  future cluster-AS path. There is an LLVM dependency. These execution models are Tier-3-absent in
+- **Grounding.** Vulkan KHR ray-tracing-pipeline / DXR / OptiX. Clustered geometry and the
+  partitioned TLAS (CLAS, PTLAS, RTX Mega Geometry) are their own module, 4.11, because inline ray
+  query traces them too. There is an LLVM dependency. These execution models are Tier-3-absent in
   upstream LLVM, so they ride the downstream-fork pipeline, and this module is sequenced behind
   4.2 and behind inline ray query, exactly as the old plan noted.
 
@@ -309,6 +310,51 @@ The papers are now local under `research/sigraph/papers` and `plans/gpu/gfx/rese
 - **Grounding.** Laine–Karras 2010 (SVO/SDF lineage). The cloud/fluid/GI papers in
   `research/sigraph` are grounding for downstream consumers rather than for the primitives here.
 
+### 4.11 Clustered geometry & partitioned top-level structures
+- **Capability.** Two acceleration-structure forms beyond one BLAS per mesh and one TLAS over
+  instances. A **cluster acceleration structure (CLAS)** is a small hierarchy over one triangle
+  cluster, built in bulk from cluster descriptions, and a BLAS is assembled from a list of CLAS
+  references rather than from raw triangles. A **cluster template** is a CLAS built once from a
+  cluster's topology and instantiated many times with new vertex positions, which is how animated or
+  displaced clusters are rebuilt cheaply. A **partitioned TLAS (PTLAS)** divides the top level into
+  partitions of instances, so a frame rewrites only the instances and partitions that changed, plus
+  a global partition for instances that span the scene. Builds take their arguments from device
+  memory, so a GPU pass can decide each frame which clusters and instances to build without a host
+  round trip. The per-cluster limits (triangles, vertices) are queried from the device, never
+  assumed.
+- **Why.** The cluster DAG of 4.4 and the streaming geometry of `xpu-gfx-streaming-geometry` change
+  the geometry every frame: an LOD cut swaps clusters, and streaming adds and drops instances. Tracing
+  rays against that geometry with whole-BLAS rebuilds costs a full build of every changed mesh, and
+  a whole-TLAS rebuild costs every instance, however few moved. Clusters make the rebuild
+  proportional to the clusters that changed, and partitions make the top level proportional to the
+  instances that changed. Without both, ray-traced shadows, reflections and GI cannot follow a
+  virtualized-geometry scene, and the rasterized and traced views of one frame disagree.
+- **Ownership.** By the §8.7 rule (shared ⇒ foundation), building and refitting a CLAS, a cluster
+  template, a cluster BLAS and a PTLAS belongs to `cajeta.xpu`, as new forms of the
+  `AccelerationStructure` noun. Inline ray query traces them as it traces any BLAS or TLAS, so a
+  compute consumer gets them too. gfx owns the composition: turning a cluster-DAG LOD cut into CLAS
+  builds, assigning streamed instances to partitions, and keeping the traced cut equal to the
+  rasterized one.
+- **Portability.** The hardware path is NVIDIA's (RTX Mega Geometry: `VK_NV_cluster_acceleration_structure`,
+  `VK_NV_partitioned_acceleration_structure`, and the OptiX 9 cluster API). Other vendors have no
+  equivalent today. There the same noun builds one BLAS per cluster group, or falls back to the
+  software BVH of 4.5. The capability query names which path a device took, and the traced result is
+  the same either way; only the build cost differs.
+- **Grounding.** NVIDIA RTX Mega Geometry (2025) and the two Vulkan extensions above; the OptiX 9
+  programming guide's cluster acceleration structures; Karis 2021 (Nanite) for the cluster-DAG
+  consumer.
+- **Use cases.**
+  1. A virtualized-geometry renderer traces shadow rays against the same LOD cut it rasterized this
+     frame, rebuilding only the clusters the cut changed.
+  2. A skinned or displaced mesh rebuilds its clusters each frame from one cluster template per
+     cluster, with new vertex positions and no topology rebuild.
+  3. An open-world scene streams instances in and out each frame and updates only the partitions
+     they belong to, while the rest of the TLAS stays built.
+  4. A compute consumer (a visibility or sensor simulation) traces inline ray queries against
+     clustered geometry with no gfx dependency.
+  5. The same scene runs on a device without the cluster extensions, through the per-group BLAS or
+     software path, and the capability query reports that it did.
+
 ---
 
 ## 5. Use cases (who composes these, and how)
@@ -387,7 +433,9 @@ consumer that validates the gfx primitive set (§5's acceptance bar). *The repo 
    pure-function and data-structure toolbox. They are parallelizable, and each is independently testable.
 3. **4.4 geometry processing** promotes QEM/MC/TSDF/meshlet here, which unblocks canela.
 4. **4.9 splats/points** and **4.10 SDF/noise** are composable additions.
-5. **4.3 RT pipeline** comes last and is forked-LLVM-gated, behind inline ray query.
+5. **4.11 clustered geometry and the partitioned TLAS** come after 4.4's cluster DAG and the
+   foundation's instance TLAS. They need neither 4.2 nor 4.3, since inline ray query traces them.
+6. **4.3 RT pipeline** comes last and is forked-LLVM-gated, behind inline ray query.
 
 One rule is cross-cutting. gfx never imports `cajeta.xpu.xpu`, so there is no cooperative-matrix/compute-execution
 dependency, and where gfx wants a compute pass it uses `cajeta.xpu` device/dispatch directly.
@@ -430,6 +478,8 @@ Resolved on review (cont.):
    | 4.4 QEM / marching-cubes / TSDF-voxel-grid | compute + physics + graphics | **foundation** (`cajeta.xpu`) — *flag* |
    | 4.5 software BVH build/traverse | compute + graphics (shared w/ ray query) | **foundation** — *flag* |
    | 4.5 visibility-buffer software rasterizer | graphics only | **gfx** |
+   | 4.11 CLAS / cluster template / cluster BLAS / PTLAS build | compute + graphics (shared w/ ray query) | **foundation** (`cajeta.xpu`, the `AccelerationStructure` noun) |
+   | 4.11 cluster-DAG → CLAS, instance → partition composition | graphics only | **gfx** |
    | 4.6 `PageCache<K,V>` generic residency | geometry + texture streaming (shared) | **foundation** — *flag* |
    | 4.6 virtual-texture / mip-gen / anisotropic | graphics only | **gfx** |
    | 4.7 BRDF/BSDF lobes, color, SH, octahedral | graphics only | **gfx** |
