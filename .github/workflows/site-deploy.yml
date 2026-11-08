@@ -1,8 +1,16 @@
 # Deploys cajeta.dev from main's site/ tree, the same steps release.yml runs
-# after publishing. For when a release shipped but its deploy step did not run.
+# after publishing: on every docs, bench-page or site change pushed to main,
+# and by hand for when a release shipped but its deploy step did not run.
 name: site-deploy
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'bench/**/*.md'
+      - 'site/**'
+      - '.github/workflows/site-deploy.yml'
   workflow_dispatch:
 
 permissions:
