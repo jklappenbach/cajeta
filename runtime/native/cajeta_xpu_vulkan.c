@@ -160,7 +160,8 @@ struct cajeta_vk {
     int atomicInt64;             // 1 if shaderBufferInt64Atomics is enabled
     uint32_t caps;               // CAJ_VK_CAP_* bits enabled at vkCreateDevice
     int validationErrors;        // errors the validation layer reported so far
-    char validationMsg[600];     // the last one, for the refusal line
+    int validationFatal;         // of those, the spirv-val ones (RADV crashes compiling such a module)
+    char validationMsg[600];     // the last fatal one, for the refusal line
     PFN_vkGetBufferDeviceAddress vkGetBufferDeviceAddress;
     PFN_vkGetAccelerationStructureBuildSizesKHR vkGetAccelerationStructureBuildSizesKHR;
     PFN_vkCreateAccelerationStructureKHR vkCreateAccelerationStructureKHR;
@@ -266,8 +267,15 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL caj_vk_debug_cb(
     (void) types; (void) user;
     if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) && data && data->pMessage) {
         g_xpu_vk.validationErrors++;
-        strncpy(g_xpu_vk.validationMsg, data->pMessage, sizeof(g_xpu_vk.validationMsg) - 1);
-        g_xpu_vk.validationMsg[sizeof(g_xpu_vk.validationMsg) - 1] = 0;
+        // A module spirv-val rejects is the kind RADV segfaults on; a feature or
+        // extension the module declares and the device did not enable runs on
+        // RADV (bf16 on gfx1151 is one), so it is reported, not refused, unless
+        // CAJETA_XPU_VK_STRICT=1 asks for every validation error to refuse.
+        if (strstr(data->pMessage, "spirv-val") || getenv("CAJETA_XPU_VK_STRICT")) {
+            g_xpu_vk.validationFatal++;
+            strncpy(g_xpu_vk.validationMsg, data->pMessage, sizeof(g_xpu_vk.validationMsg) - 1);
+            g_xpu_vk.validationMsg[sizeof(g_xpu_vk.validationMsg) - 1] = 0;
+        }
     }
     return VK_FALSE;
 }
@@ -321,6 +329,7 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         g_xpu_vk.getInstanceProcAddr(VK_NULL_HANDLE, "vkCreateInstance");
     if (!g_xpu_vk.vkCreateInstance) return 0;
     g_xpu_vk.validationErrors = 0;
+    g_xpu_vk.validationFatal = 0;
     g_xpu_vk.validationMsg[0] = 0;
 
     VkApplicationInfo app;
@@ -497,6 +506,27 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     // them). Enabling an unsupported extension fails vkCreateDevice outright.
     int wantRayQuery = 0, wantAtomicFloat = 0, wantAtomicFloat2 = 0, wantCoopMat = 0;
     int wantAtomicInt64 = 0;
+    int hasMaxReconv = 0, hasBf16 = 0, hasClock = 0, hasQuadCtl = 0, hasSgRotate = 0;
+    int wantMaxReconv = 0, wantBf16 = 0, wantClock = 0, wantQuadCtl = 0, wantSgRotate = 0, wantDot = 0;
+    (void) hasMaxReconv; (void) hasBf16; (void) hasClock; (void) hasQuadCtl; (void) hasSgRotate;
+#if defined(VK_KHR_shader_maximal_reconvergence)
+    VkPhysicalDeviceShaderMaximalReconvergenceFeaturesKHR qMaxReconv;
+#endif
+#if defined(VK_KHR_shader_bfloat16)
+    VkPhysicalDeviceShaderBfloat16FeaturesKHR qBf16;
+#endif
+#if defined(VK_KHR_shader_clock)
+    VkPhysicalDeviceShaderClockFeaturesKHR qClock;
+#endif
+#if defined(VK_KHR_shader_quad_control)
+    VkPhysicalDeviceShaderQuadControlFeaturesKHR qQuadCtl;
+#endif
+#if defined(VK_KHR_shader_subgroup_rotate)
+    VkPhysicalDeviceShaderSubgroupRotateFeaturesKHR qSgRotate;
+#endif
+#if defined(VK_VERSION_1_3)
+    VkPhysicalDeviceShaderIntegerDotProductFeatures qDot;
+#endif
     if (enumDevExt && getFeatures2) {
         uint32_t extCount = 0;
         enumDevExt(g_xpu_vk.phys, NULL, &extCount, NULL);
@@ -519,8 +549,88 @@ static int cajeta_xpu_vulkan_init_locked(void) {
 #if defined(VK_KHR_cooperative_matrix)
                     else if (!strcmp(en, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME)) hasCoopMat = 1;
 #endif
+                    // The SPIR-V the compiler emits declares these extensions where it
+                    // uses them; a module naming one the device did not enable is
+                    // invalid (the validation layer rejects it, 14.3.7).
+#if defined(VK_KHR_shader_maximal_reconvergence)
+                    else if (!strcmp(en, VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME)) hasMaxReconv = 1;
+#endif
+#if defined(VK_KHR_shader_bfloat16)
+                    else if (!strcmp(en, VK_KHR_SHADER_BFLOAT16_EXTENSION_NAME)) hasBf16 = 1;
+#endif
+#if defined(VK_KHR_shader_clock)
+                    else if (!strcmp(en, VK_KHR_SHADER_CLOCK_EXTENSION_NAME)) hasClock = 1;
+#endif
+#if defined(VK_KHR_shader_quad_control)
+                    else if (!strcmp(en, VK_KHR_SHADER_QUAD_CONTROL_EXTENSION_NAME)) hasQuadCtl = 1;
+#endif
+#if defined(VK_KHR_shader_subgroup_rotate)
+                    else if (!strcmp(en, VK_KHR_SHADER_SUBGROUP_ROTATE_EXTENSION_NAME)) hasSgRotate = 1;
+#endif
                 }
                 free(exts);
+
+                // Each SPIR-V extension's feature, as the device reports it.
+#if defined(VK_KHR_shader_maximal_reconvergence)
+                if (hasMaxReconv) {
+                    memset(&qMaxReconv, 0, sizeof(qMaxReconv));
+                    qMaxReconv.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MAXIMAL_RECONVERGENCE_FEATURES_KHR;
+                    VkPhysicalDeviceFeatures2 f2; memset(&f2, 0, sizeof(f2));
+                    f2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2; f2.pNext = &qMaxReconv;
+                    getFeatures2(g_xpu_vk.phys, &f2);
+                    wantMaxReconv = qMaxReconv.shaderMaximalReconvergence ? 1 : 0;
+                }
+#endif
+#if defined(VK_KHR_shader_bfloat16)
+                if (hasBf16) {
+                    memset(&qBf16, 0, sizeof(qBf16));
+                    qBf16.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_BFLOAT16_FEATURES_KHR;
+                    VkPhysicalDeviceFeatures2 f2; memset(&f2, 0, sizeof(f2));
+                    f2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2; f2.pNext = &qBf16;
+                    getFeatures2(g_xpu_vk.phys, &f2);
+                    wantBf16 = qBf16.shaderBFloat16Type ? 1 : 0;
+                }
+#endif
+#if defined(VK_KHR_shader_clock)
+                if (hasClock) {
+                    memset(&qClock, 0, sizeof(qClock));
+                    qClock.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR;
+                    VkPhysicalDeviceFeatures2 f2; memset(&f2, 0, sizeof(f2));
+                    f2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2; f2.pNext = &qClock;
+                    getFeatures2(g_xpu_vk.phys, &f2);
+                    wantClock = (qClock.shaderSubgroupClock || qClock.shaderDeviceClock) ? 1 : 0;
+                }
+#endif
+#if defined(VK_KHR_shader_quad_control)
+                if (hasQuadCtl) {
+                    memset(&qQuadCtl, 0, sizeof(qQuadCtl));
+                    qQuadCtl.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_QUAD_CONTROL_FEATURES_KHR;
+                    VkPhysicalDeviceFeatures2 f2; memset(&f2, 0, sizeof(f2));
+                    f2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2; f2.pNext = &qQuadCtl;
+                    getFeatures2(g_xpu_vk.phys, &f2);
+                    wantQuadCtl = qQuadCtl.shaderQuadControl ? 1 : 0;
+                }
+#endif
+#if defined(VK_KHR_shader_subgroup_rotate)
+                if (hasSgRotate) {
+                    memset(&qSgRotate, 0, sizeof(qSgRotate));
+                    qSgRotate.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SUBGROUP_ROTATE_FEATURES_KHR;
+                    VkPhysicalDeviceFeatures2 f2; memset(&f2, 0, sizeof(f2));
+                    f2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2; f2.pNext = &qSgRotate;
+                    getFeatures2(g_xpu_vk.phys, &f2);
+                    wantSgRotate = qSgRotate.shaderSubgroupRotate ? 1 : 0;
+                }
+#endif
+#if defined(VK_VERSION_1_3)
+                {
+                    memset(&qDot, 0, sizeof(qDot));
+                    qDot.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_FEATURES;
+                    VkPhysicalDeviceFeatures2 f2; memset(&f2, 0, sizeof(f2));
+                    f2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2; f2.pNext = &qDot;
+                    getFeatures2(g_xpu_vk.phys, &f2);
+                    wantDot = qDot.shaderIntegerDotProduct ? 1 : 0;
+                }
+#endif
 
 #if defined(VK_KHR_cooperative_matrix)
                 // Shaders that declare CooperativeMatrixKHR need the extension and its feature.
@@ -670,7 +780,7 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         qs16.pNext = NULL;
     }
 
-    int wantHostQueryReset = 0, wantSync2 = 0, wantCalTs = 0, wantVmm = 0;
+    int wantHostQueryReset = 0, wantSync2 = 0, wantCalTs = 0, wantVmm = 0, wantVmmDeviceScope = 0;
     uint32_t devApi = VK_API_VERSION_1_0;
     {
         PFN_vkGetPhysicalDeviceProperties gp =
@@ -705,6 +815,7 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         getFeatures2(g_xpu_vk.phys, &qf2b);
         wantHostQueryReset = qhr.hostQueryReset ? 1 : 0;
         wantVmm = qvmm.vulkanMemoryModel ? 1 : 0;
+        wantVmmDeviceScope = qvmm.vulkanMemoryModelDeviceScope ? 1 : 0;
 #if defined(VK_VERSION_1_3)
         wantSync2 = (devApi >= VK_API_VERSION_1_3 && qs2.synchronization2) ? 1 : 0;
 #endif
@@ -748,7 +859,7 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     dci.pQueueCreateInfos = &qci;
 
     // Each optional path is gated on its probe: an unsupported extension fails.
-    const char* devExts[12];
+    const char* devExts[20];
     uint32_t nDevExts = 0;
     VkPhysicalDeviceRayQueryFeaturesKHR enRqf;
     VkPhysicalDeviceAccelerationStructureFeaturesKHR enAsf;
@@ -891,6 +1002,7 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         memset(&enVmm, 0, sizeof(enVmm));
         enVmm.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES;
         enVmm.vulkanMemoryModel = VK_TRUE;
+        enVmm.vulkanMemoryModelDeviceScope = wantVmmDeviceScope ? VK_TRUE : VK_FALSE;
         enVmm.pNext = (void*) dci.pNext;
         dci.pNext = &enVmm;
     }
@@ -901,6 +1013,41 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     }
 #endif
 
+#if defined(VK_KHR_shader_maximal_reconvergence)
+    if (wantMaxReconv) {
+        devExts[nDevExts++] = VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME;
+        qMaxReconv.pNext = (void*) dci.pNext; dci.pNext = &qMaxReconv;
+    }
+#endif
+#if defined(VK_KHR_shader_bfloat16)
+    if (wantBf16) {
+        devExts[nDevExts++] = VK_KHR_SHADER_BFLOAT16_EXTENSION_NAME;
+        qBf16.pNext = (void*) dci.pNext; dci.pNext = &qBf16;
+    }
+#endif
+#if defined(VK_KHR_shader_clock)
+    if (wantClock) {
+        devExts[nDevExts++] = VK_KHR_SHADER_CLOCK_EXTENSION_NAME;
+        qClock.pNext = (void*) dci.pNext; dci.pNext = &qClock;
+    }
+#endif
+#if defined(VK_KHR_shader_quad_control)
+    if (wantQuadCtl) {
+        devExts[nDevExts++] = VK_KHR_SHADER_QUAD_CONTROL_EXTENSION_NAME;
+        qQuadCtl.pNext = (void*) dci.pNext; dci.pNext = &qQuadCtl;
+    }
+#endif
+#if defined(VK_KHR_shader_subgroup_rotate)
+    if (wantSgRotate) {
+        devExts[nDevExts++] = VK_KHR_SHADER_SUBGROUP_ROTATE_EXTENSION_NAME;
+        qSgRotate.pNext = (void*) dci.pNext; dci.pNext = &qSgRotate;
+    }
+#endif
+#if defined(VK_VERSION_1_3)
+    if (wantDot) {
+        qDot.pNext = (void*) dci.pNext; dci.pNext = &qDot;
+    }
+#endif
     dci.enabledExtensionCount = nDevExts;
     dci.ppEnabledExtensionNames = nDevExts ? devExts : NULL;
 
@@ -3097,11 +3244,11 @@ static struct caj_vk_pipe* caj_vk_pipe_get(
     smci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     smci.codeSize = (size_t) len;
     smci.pCode = (const uint32_t*) spirv;
-    valBefore = g_xpu_vk.validationErrors;
+    valBefore = g_xpu_vk.validationFatal;
     if (g_xpu_vk.vkCreateShaderModule(g_xpu_vk.device, &smci, NULL,
                                       &P->module) != VK_SUCCESS)
         goto fail;
-    if (g_xpu_vk.validationErrors != valBefore) {
+    if (g_xpu_vk.validationFatal != valBefore) {
         fprintf(stderr, "cajeta.xpu.vulkan: kernel '%s': the validation layer rejected "
                 "the module; refusing it: %s\n", entry ? entry : "?", g_xpu_vk.validationMsg);
         goto fail;
