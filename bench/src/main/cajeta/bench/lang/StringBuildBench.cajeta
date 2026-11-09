@@ -43,6 +43,7 @@ public class StringBuildBench extends Benchmark {
         // mismatch the competitors' byte-count column.
         return (int64) (this.n * 8);
     }
+    public String unit() { return "MB/s"; }
 
     public void run(int32 iterations) {
         StringBuilder sb = heap StringBuilder();

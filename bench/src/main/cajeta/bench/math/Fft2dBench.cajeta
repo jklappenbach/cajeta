@@ -21,6 +21,7 @@ public class Fft2dBench extends Benchmark {
     public int32 warmupIters() { return 1; }
     public int32 measuredIters() { return 5; }
     public int64 inputSize() { return this.side * this.side; }
+    public String unit() { return "elements/s"; }
 
     public String competitorNote() {
         String s = "Fft.fft2 float32 interleaved (complex64); check: round trip max abs err <= 1e-4";

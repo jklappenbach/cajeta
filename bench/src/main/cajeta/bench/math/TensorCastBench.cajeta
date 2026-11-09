@@ -24,6 +24,7 @@ public class TensorCastBench extends Benchmark {
     public int32 warmupIters() { return 3; }
     public int32 measuredIters() { return 20; }
     public int64 inputSize() { return this.n; }
+    public String unit() { return "elements/s"; }
 
     public String competitorNote() {
         String s = "Tensor has no astype: host-buffer element loop into Tensor.empty<float64> and Tensor.empty<int32>; check: exact int64 checksum";

@@ -52,6 +52,7 @@ public class HashMapStringBench extends Benchmark {
     public int64 inputSize() {
         return (int64) this.n;
     }
+    public String unit() { return "Mop/s"; }
 
     public String competitorNote() {
         String s #= CollGen.sizeNote(1000000);

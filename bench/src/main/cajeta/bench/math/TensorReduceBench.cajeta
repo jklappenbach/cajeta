@@ -28,6 +28,7 @@ public class TensorReduceBench extends Benchmark {
     public int32 warmupIters() { return 3; }
     public int32 measuredIters() { return 20; }
     public int64 inputSize() { return this.rows * this.cols; }
+    public String unit() { return "elements/s"; }
 
     public String competitorNote() {
         if (MathData.smoke()) {

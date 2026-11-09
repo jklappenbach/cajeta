@@ -48,7 +48,7 @@ public class FileReadSequentialBench extends Benchmark {
     }
 
     public int64 inputSize() {
-        return IoData.seqBytes() / IoData.MiB();
+        return IoData.seqBytes();
     }
 
     public String unit() {

@@ -50,6 +50,7 @@ public class RayBench extends Benchmark {
     public int32 warmupIters() { return 1; }
     public int32 measuredIters() { return 5; }
     public int64 inputSize() { return this.nr * this.ns; }
+    public String unit() { return "elements/s"; }
 
     public String competitorNote() {
         String s = "Sphere.intersectsRay (Ray has no intersect methods); check: |hits-ref| <= 1e-5*tests";

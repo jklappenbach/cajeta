@@ -41,6 +41,7 @@ public class StreamParallelReduceBench extends Benchmark {
     public int64 inputSize() {
         return (int64) this.n;
     }
+    public String unit() { return "Mop/s"; }
 
     public void run(int32 iterations) {
         this.parResult = this.xs.stream().parallel().reduce(0, (a, b) -> a + b);

@@ -112,6 +112,7 @@ public class SortInt64Bench extends Benchmark {
     public int64 inputSize() {
         return (int64) this.n;
     }
+    public String unit() { return "Mop/s"; }
 
     public void runVariant(String variant, int32 iterations) {
         int64[] w = heap int64[this.n];

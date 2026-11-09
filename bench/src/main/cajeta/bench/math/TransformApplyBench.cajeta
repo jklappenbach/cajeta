@@ -32,6 +32,7 @@ public class TransformApplyBench extends Benchmark {
     public int32 warmupIters() { return 1; }
     public int32 measuredIters() { return 5; }
     public int64 inputSize() { return this.m * (int64) this.passes; }
+    public String unit() { return "elements/s"; }
 
     public String competitorNote() {
         String s = "Transform.transformPoint (TRS; not a 4x4 matrix); 1e8 point applications as 100 passes over 1e6 points; check: |cs-ref| <= 2e-5*m";

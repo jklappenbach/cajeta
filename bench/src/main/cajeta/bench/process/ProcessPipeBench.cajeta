@@ -33,7 +33,7 @@ public class ProcessPipeBench extends Benchmark {
     public String area() { return "process"; }
     public int32 warmupIters() { return 1; }
     public int32 measuredIters() { return 5; }
-    public int64 inputSize() { return this.size / (int64) 1048576; }
+    public int64 inputSize() { return this.size; }
     public String unit() { return "MB/s"; }
 
     public String competitorNote() {

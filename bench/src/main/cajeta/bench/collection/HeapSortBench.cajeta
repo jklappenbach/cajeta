@@ -44,6 +44,7 @@ public class HeapSortBench extends Benchmark {
     public int64 inputSize() {
         return (int64) this.n;
     }
+    public String unit() { return "Mop/s"; }
 
     public String competitorNote() {
         return CollGen.sizeNote(1000000);

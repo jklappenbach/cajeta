@@ -36,6 +36,7 @@ public class LocalDateTimeArithmeticBench extends Benchmark {
     public int64 inputSize() {
         return (int64) this.n;
     }
+    public String unit() { return "Mop/s"; }
 
     public String competitorNote() {
         return "a fresh value per step: a loop-carried x = x.plusHours(1) is wrong for LocalDateTime on v0.46.3 (measured 2026-10-25; the specs/localdate-loop-reassign-spec.md defect)";

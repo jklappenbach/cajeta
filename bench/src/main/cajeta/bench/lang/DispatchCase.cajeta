@@ -72,6 +72,7 @@ public class DispatchCase {
     public int64 inputSize() {
         return this.n;
     }
+    public String unit() { return "Mop/s"; }
 
     @NoInline
     public static int64 direct(int64 x) {

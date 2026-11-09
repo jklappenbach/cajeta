@@ -87,7 +87,7 @@ public class ChannelBench extends Benchmark {
     }
 
     public String unit() {
-        return "Mmsg/s";
+        return "Mop/s";
     }
 
     public String competitorNote() {

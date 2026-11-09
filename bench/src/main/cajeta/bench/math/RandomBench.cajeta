@@ -34,6 +34,7 @@ public class RandomBench extends Benchmark {
     public int32 warmupIters() { return 1; }
     public int32 measuredIters() { return 5; }
     public int64 inputSize() { return this.n; }
+    public String unit() { return "elements/s"; }
 
     public String competitorNote() {
         String s = "Generator(42).uniform (Philox; float32 draws: the API has no float64); check: |mean-0.5| <= 1e-3 and |var-1/12| <= 1e-3";

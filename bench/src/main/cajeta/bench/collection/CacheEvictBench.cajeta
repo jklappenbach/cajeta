@@ -31,6 +31,7 @@ public class CacheEvictBench extends Benchmark {
     public int64 inputSize() {
         return (int64) 10000000;
     }
+    public String unit() { return "Mop/s"; }
 
     public void setup() {
         int64[] k #= CollGen.keys(10000000);

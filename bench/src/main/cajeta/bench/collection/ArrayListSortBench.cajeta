@@ -32,6 +32,7 @@ public class ArrayListSortBench extends Benchmark {
     public int64 inputSize() {
         return (int64) 1000000;
     }
+    public String unit() { return "Mop/s"; }
 
 
     public String competitorNote() {

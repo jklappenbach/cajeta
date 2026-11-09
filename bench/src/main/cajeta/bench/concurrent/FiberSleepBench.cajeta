@@ -79,6 +79,7 @@ public class FiberSleepBench extends Benchmark {
     public int64 inputSize() {
         return (int64) 1;
     }
+    public String unit() { return "Mop/s"; }
 
     public String competitorNote() {
         return "row = overshoot past 1 ms per sleep (median and p95 over the trials); baseline subtracts 1 ms + "

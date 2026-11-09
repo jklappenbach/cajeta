@@ -33,6 +33,7 @@ public class HashSetContainsBench extends Benchmark {
     public int64 inputSize() {
         return (int64) 10000000;
     }
+    public String unit() { return "Mop/s"; }
 
     public void setup() {
         HashSet<int64> s = heap HashSet<int64>();

@@ -25,6 +25,7 @@ public class NpySaveBench extends Benchmark {
     public int32 warmupIters() { return 2; }
     public int32 measuredIters() { return 10; }
     public int64 inputSize() { return this.ref.count(); }
+    public String unit() { return "MB/s"; }
 
     public String competitorNote() {
         return "Npy.encodeI32 to memory; check: byte equality with the np.save image (128-byte header + payload)";

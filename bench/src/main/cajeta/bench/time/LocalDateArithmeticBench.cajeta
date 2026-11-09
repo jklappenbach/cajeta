@@ -38,6 +38,7 @@ public class LocalDateArithmeticBench extends Benchmark {
     public int64 inputSize() {
         return (int64) this.n;
     }
+    public String unit() { return "Mop/s"; }
 
     public String competitorNote() {
         return "a fresh value per step: a loop-carried d = d.plusDays(1) 366 times from 2000-01-01 ends at 1970-01-02 on v0.46.3 (specs/localdate-loop-reassign-spec.md)";

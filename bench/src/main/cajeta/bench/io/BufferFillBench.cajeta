@@ -52,7 +52,7 @@ public class BufferFillBench extends Benchmark {
     }
 
     public int64 inputSize() {
-        return BufferFillBench.n() * this.passes / (int64) 1048576;
+        return BufferFillBench.n() * this.passes;
     }
 
     public String unit() {

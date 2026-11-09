@@ -37,6 +37,7 @@ public class CollectorsGroupByBench extends Benchmark {
     public int64 inputSize() {
         return (int64) 10000000;
     }
+    public String unit() { return "Mop/s"; }
 
     public String competitorNote() {
         return "hand-built Collector: Collectors has no groupingBy";

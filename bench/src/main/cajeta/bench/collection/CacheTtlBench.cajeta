@@ -37,6 +37,7 @@ public class CacheTtlBench extends Benchmark {
     public int64 inputSize() {
         return (int64) 1000000;
     }
+    public String unit() { return "Mop/s"; }
 
     public String competitorNote() {
         return "includes a 2 ms sleep between the inserts and the read-back";

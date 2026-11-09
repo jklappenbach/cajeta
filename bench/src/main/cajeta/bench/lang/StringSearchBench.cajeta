@@ -40,6 +40,7 @@ public class StringSearchBench extends Benchmark {
     public int64 inputSize() {
         return this.textLen;
     }
+    public String unit() { return "MB/s"; }
 
     public void run(int32 iterations) {
         this.lastIdx = this.text.indexOf("zzzzqx-not-present");

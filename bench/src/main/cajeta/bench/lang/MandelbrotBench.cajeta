@@ -42,6 +42,7 @@ public class MandelbrotBench extends Benchmark {
     public int64 inputSize() {
         return (int64) (this.w * this.w);
     }
+    public String unit() { return "pixels/s"; }
 
     public void run(int32 iterations) {
         int32 n = this.w;

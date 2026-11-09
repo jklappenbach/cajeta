@@ -42,6 +42,7 @@ public class ZonedDateTimeRegionBench extends Benchmark {
     public int64 inputSize() {
         return (int64) this.n;
     }
+    public String unit() { return "Mop/s"; }
 
     public String competitorNote() {
         return "ZoneId.offsetAt opens and parses /usr/share/zoneinfo/<id> on every call (no cached rules) and scans the transitions linearly";

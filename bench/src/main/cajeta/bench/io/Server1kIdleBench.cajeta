@@ -41,6 +41,7 @@ public class Server1kIdleBench extends Benchmark {
     public int64 inputSize() {
         return (int64) this.conns;
     }
+    public String unit() { return "connections/s"; }
 
     // The trial body on its own fiber (spawn takes a bare class-method call).
     public static async int64 trial(int32 port, int32 n, int64 holdNanos, int64[] out) {

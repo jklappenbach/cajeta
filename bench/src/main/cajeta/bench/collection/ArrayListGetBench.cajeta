@@ -34,6 +34,7 @@ public class ArrayListGetBench extends Benchmark {
     public int64 inputSize() {
         return (int64) 100000000;
     }
+    public String unit() { return "Mop/s"; }
 
 
     public void setup() {

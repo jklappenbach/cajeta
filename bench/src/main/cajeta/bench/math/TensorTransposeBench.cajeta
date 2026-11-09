@@ -19,6 +19,7 @@ public class TensorTransposeBench extends Benchmark {
     public int32 warmupIters() { return 2; }
     public int32 measuredIters() { return 10; }
     public int64 inputSize() { return this.nDim * this.nDim; }
+    public String unit() { return "elements/s"; }
 
     public String competitorNote() {
         if (MathData.smoke()) {

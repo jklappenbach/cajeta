@@ -40,6 +40,7 @@ public class InstantArithmeticBench extends Benchmark {
     public int64 inputSize() {
         return (int64) this.n;
     }
+    public String unit() { return "Mop/s"; }
 
     public String competitorNote() {
         return "a fresh value per step like the other time rows (a loop-carried t = t.plusSeconds(7) is correct for Instant on v0.46.3; LocalDate Duration and LocalDateTime are not: specs/localdate-loop-reassign-spec.md)";

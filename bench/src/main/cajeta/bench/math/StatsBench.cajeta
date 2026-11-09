@@ -39,6 +39,7 @@ public class StatsBench extends Benchmark {
     public int32 warmupIters() { return 1; }
     public int32 measuredIters() { return 5; }
     public int64 inputSize() { return this.n; }
+    public String unit() { return "elements/s"; }
 
     public String competitorNote() {
         String s = "Tensor.mean + Tensor.variance; Stats/Tensor have no skew or kurtosis: one host-buffer pass (biased); check: each moment within 1e-3";

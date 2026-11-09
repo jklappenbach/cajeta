@@ -24,6 +24,7 @@ public class PolyEvalBench extends Benchmark {
     public int32 warmupIters() { return 1; }
     public int32 measuredIters() { return 5; }
     public int64 inputSize() { return this.n; }
+    public String unit() { return "elements/s"; }
 
     public String competitorNote() {
         String s = "Poly.polyval (scalar Horner per point); check: rel err <= 1e-7 vs Euler-Maclaurin reference";

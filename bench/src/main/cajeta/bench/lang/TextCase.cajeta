@@ -112,6 +112,7 @@ public class TextCase {
         if (this.kind == 6) { return 100L; }
         return 1000000L;
     }
+    public String unit() { return "Mop/s"; }
 
     public void runVariant(String variant, int32 iterations) {
         this.run(iterations);

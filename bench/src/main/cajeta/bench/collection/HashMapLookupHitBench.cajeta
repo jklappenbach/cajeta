@@ -33,6 +33,7 @@ public class HashMapLookupHitBench extends Benchmark {
     public int64 inputSize() {
         return (int64) 10000000;
     }
+    public String unit() { return "Mop/s"; }
 
     public void setup() {
         HashMap<int64, int64> m = heap HashMap<int64, int64>();

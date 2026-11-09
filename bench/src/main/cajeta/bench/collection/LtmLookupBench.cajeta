@@ -39,6 +39,7 @@ public class LtmLookupBench extends Benchmark {
     public int64 inputSize() {
         return this.env.lookups;
     }
+    public String unit() { return "Mop/s"; }
 
     public String competitorNote() {
         return this.env.note();

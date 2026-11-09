@@ -40,6 +40,7 @@ public class ElementAccessBench extends Benchmark {
     public int64 inputSize() {
         return this.n;
     }
+    public String unit() { return "elements/s"; }
 
     public #ArrayList<String> variants() {
         ArrayList<String> v = heap ArrayList<String>();

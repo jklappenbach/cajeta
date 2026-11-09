@@ -24,6 +24,7 @@ public class Fft1dBench extends Benchmark {
     public int32 warmupIters() { return 2; }
     public int32 measuredIters() { return 10; }
     public int64 inputSize() { return this.n; }
+    public String unit() { return "elements/s"; }
 
     public #ArrayList<String> variants() {
         ArrayList<String> v = heap ArrayList<String>();

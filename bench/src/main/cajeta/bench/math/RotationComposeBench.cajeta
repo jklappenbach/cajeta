@@ -27,6 +27,7 @@ public class RotationComposeBench extends Benchmark {
     public int32 warmupIters() { return 1; }
     public int32 measuredIters() { return 5; }
     public int64 inputSize() { return this.n; }
+    public String unit() { return "elements/s"; }
 
     public String competitorNote() {
         String s = "builtin Quaternion<float32> a*b then q*v; check: |sum-ref| <= 1e-6*n";

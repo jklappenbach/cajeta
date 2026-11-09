@@ -116,6 +116,7 @@ public class AllocCase {
     public int64 inputSize() {
         return this.n;
     }
+    public String unit() { return "Mop/s"; }
 
     @NoInline
     public static int64 passOn(#LangObj32 o, int32 depth) {

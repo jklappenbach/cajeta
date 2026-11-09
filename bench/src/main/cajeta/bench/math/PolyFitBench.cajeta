@@ -25,6 +25,7 @@ public class PolyFitBench extends Benchmark {
     public int32 warmupIters() { return 1; }
     public int32 measuredIters() { return 3; }
     public int64 inputSize() { return this.m * (int64) this.fits; }
+    public String unit() { return "elements/s"; }
 
     public String competitorNote() {
         String s = "Poly has no polyfit: Vandermonde tensor + LinAlg.lstsq (Householder QR) per fit; check: max|coef-c| <= 1e-6";

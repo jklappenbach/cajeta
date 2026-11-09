@@ -32,6 +32,7 @@ public class CollectorsToListBench extends Benchmark {
     public int64 inputSize() {
         return (int64) 10000000;
     }
+    public String unit() { return "Mop/s"; }
 
     public void setup() {
         ArrayList<int32> l = heap ArrayList<int32>();

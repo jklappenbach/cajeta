@@ -39,6 +39,7 @@ public class StringUpperBench extends Benchmark {
     public int64 inputSize() {
         return this.textLen;
     }
+    public String unit() { return "MB/s"; }
 
     public void run(int32 iterations) {
         String out #= this.text.toUpperCase();

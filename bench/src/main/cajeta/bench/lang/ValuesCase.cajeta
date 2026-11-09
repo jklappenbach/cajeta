@@ -71,6 +71,7 @@ public class ValuesCase {
     public int64 inputSize() {
         return this.n;
     }
+    public String unit() { return "Mop/s"; }
 
     public void runVariant(String variant, int32 iterations) {
         this.run(iterations);

@@ -139,6 +139,7 @@ public class MatMulBench extends Benchmark {
     public int64 inputSize() {
         return (int64) (this.nDim * this.nDim);
     }
+    public String unit() { return "elements/s"; }
 
     // Measured region: dispatch the grid across the kernel pool and wait. Buffers
     // are uploaded once in setup; A=identity makes each launch recompute the same

@@ -32,6 +32,7 @@ public class BPlusTreeInsertBench extends Benchmark {
     public int64 inputSize() {
         return (int64) 1000000;
     }
+    public String unit() { return "Mop/s"; }
 
     public void setup() {
         int64[] k #= CollGen.keys(1000000);

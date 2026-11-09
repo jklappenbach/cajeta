@@ -35,6 +35,7 @@ public class ImmutableMapLookupBench extends Benchmark {
     public int64 inputSize() {
         return (int64) 10000000;
     }
+    public String unit() { return "Mop/s"; }
 
     public void setup() {
         ArrayList<Pair<int64, int64>> ps = heap ArrayList<Pair<int64, int64>>();

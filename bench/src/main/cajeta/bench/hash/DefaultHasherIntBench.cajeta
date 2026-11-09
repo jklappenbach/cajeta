@@ -38,6 +38,7 @@ public class DefaultHasherIntBench extends Benchmark {
     public int64 inputSize() {
         return this.n;
     }
+    public String unit() { return "Mop/s"; }
 
     public String competitorNote() {
         return "int64.hash() intrinsic (the HashMap path); not DefaultHasher.writeInt64";

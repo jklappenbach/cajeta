@@ -35,7 +35,10 @@
         // dev.cajeta.codec: the pure-cajeta DEFLATE stream that wire/
         // compressstream-roundtrip measures cajeta.wire.CompressStream through
         // (the stdlib ships the interface only).
-        "dependencies": { "dev.cajeta.bench": "0.1.5", "dev.cajeta.codec": "0.9.1" },
+        "dependencies": { "dev.cajeta.bench": "0.1.8", "dev.cajeta.codec": "0.9.1" },
+        "repositories": [
+            { "name": "central", "url": "https://olla.cajeta.dev", "priority": 0 }
+        ],
 
         "build": {
             "source-root":  "src/main/cajeta",

@@ -68,6 +68,7 @@ public class ExceptionsCase {
     public int64 inputSize() {
         return this.n;
     }
+    public String unit() { return "Mop/s"; }
 
     @NoInline
     public static int64 maybe(int64 i, int64 mask) throws RecoverableException {
