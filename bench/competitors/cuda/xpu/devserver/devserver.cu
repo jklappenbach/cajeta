@@ -349,7 +349,7 @@ struct Mandel : Workload {
 
 struct Mix : Workload {
     unsigned n = 32u * 1024 * 1024, ci = 0; float *d = 0, *o = 0;
-    Mix() { id = "mixbench-sweep"; library = "mixbench benchmark_func (float, 256, 8, 4)"; unit = "flop/s"; }
+    Mix() { id = "mixbench-sweep"; library = "mixbench benchmark_func float 256x8x4"; unit = "flop/s"; }
     std::vector<std::string> variants() override { return {"ci0", "ci1", "ci2", "ci4", "ci8", "ci16", "ci32", "ci64", "ci128", "ci256"}; }
     bool prepare(const std::string& v) override {
         if (!d) {
