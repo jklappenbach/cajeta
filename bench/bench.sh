@@ -4,9 +4,14 @@
 #   0. (a non-smoke run) the quiet-box check of spec §9.1
 #   1. fetch + checksum the reference datasets, and generate the ones that are
 #      generated (dbbench tables, the codec CSV, the io files, the wire sources)
-#   2. build the harness --release (benchmarks are native AOT)
-#   3. run the benchmarks -> <out>/results.csv
-#   3b. (--competitors) run the cross-language competitor runners, appending rows
+#   2. build the harness --release (benchmarks are native AOT), and one gpu-*
+#      build per device backend of this box
+#   3. run the benchmarks -> <out>/results.csv (the cpu backend)
+#   3a. the device legs: the xpu/ and gfx/ catalog once per device backend
+#      (hip on build/bench-amdgpu, cuda on build/bench-nvptx, vulkan on
+#      build/bench-vulkan), rows appended to results.csv
+#   3b. (--competitors) run the cross-language competitor runners, one package
+#      at a time, each package's rows appended whole
 #   4. capture the host env block and the quiet-box evidence -> <out>/env.csv
 # The site renders committed results (bench/results/<machine>/<run-id>/); this
 # script no longer generates a report.
@@ -21,9 +26,15 @@
 #                                      # release-live-set-off build names (lang/alloc-live-set-off)
 #   ./bench.sh --competitors           # also run other-language competitors
 #   CAJETA_BENCH_RUN_ID=<id> ./bench.sh --resume-competitors
-#                                      # stages 3b and 4 only, onto an existing run
+#                                      # stages 3b and 4 only, onto an existing run; a
+#                                      # package that already has rows is skipped, and a
+#                                      # cut pass's partial last row is dropped first
+#   ./bench.sh --device-backends hip,vulkan   # the device legs to run (default auto: hip
+#                                      # with ROCm installed, cuda with nvidia-smi, vulkan
+#                                      # with vulkaninfo; `none` for no leg)
 #   ./bench.sh --machine phoenix ...   # record the machine (default: the hostname, lowercased)
-#   ./bench.sh --no-gpu ...            # CAJETA_BENCH_NO_GPU=1: no driver probe, no GPU check
+#   ./bench.sh --no-gpu ...            # CAJETA_BENCH_NO_GPU=1: no driver probe, no GPU
+#                                      # check, no device leg
 #   ./bench.sh --force ...             # run on a box that fails the quiet-box check (recorded)
 #   ./bench.sh --dry-run ...           # print the plan (plan: key=value) and the
 #                                      # quiet-box evidence; build and run nothing
@@ -32,19 +43,30 @@
 #
 # Quiet box (spec §9.1). A run that is not a smoke refuses to start (exit 3)
 # unless the 1-minute load average is under 1, no CI runner job
-# (Runner.Worker) is running, and the GPU shows 0 % utilization and no compute
-# process (nvidia-smi, else rocm-smi; neither present reads "none"). The check
-# runs before anything else and again after the build, which loads the box:
-# the second one waits up to BENCH_QUIET_WAIT seconds (default 300) for the
-# load to settle. The evidence at measurement start goes to env.csv as
-# quiet_* lines. --no-gpu probes no GPU (quiet_gpu_* read "not probed").
+# (Runner.Worker) is running, and the GPU shows no compute process and an
+# idle utilization (nvidia-smi, else rocm-smi; neither present reads "none").
+# Idle is 0 % on a GPU that drives no display; a GPU with a connected DRM
+# connector carries the compositor, so under 5 % is idle there (benchmark-
+# reference 22.2.5; proton's iGPU sits at 2-3 %). The check runs before
+# anything else and again after the build, which loads the box: the second
+# one waits up to BENCH_QUIET_WAIT seconds (default 300) for the load to
+# settle. The evidence at measurement start goes to env.csv as quiet_* lines
+# as soon as the harness pass ends, so a cut run keeps it; a resume records
+# its own state as quiet_resume. --no-gpu probes no GPU (quiet_gpu_* read
+# "not probed").
+#
+# A signal (the caller's `timeout`, Ctrl-C) kills the running stage's whole
+# process tree before exiting, a driver's own `timeout` child included.
+# Stage durations go to <out>/durations.csv (stage,seconds) and the log.
 #
 # Env: CAJETA= (compiler, default <repo>/build/src/cajeta), PROFILE_DATA_DIR=
 # (dataset cache), PROFILE_OUT= (output dir, default build/results/<run-id>),
 # CAJETA_BENCH_RUN_ID= (default <ISO-8601-basic-UTC>-<cajeta-version>),
 # CAJETA_BENCH_SMOKE=1 (warmup 1, trials 3, rows tagged `smoke`, never published),
-# CAJETA_BENCH_MACHINE= (same as --machine), CAJETA_BENCH_IO_DIR= (io files,
-# default build/io-data), BENCH_LOADAVG_FILE= (default /proc/loadavg; tests).
+# CAJETA_BENCH_MACHINE= (same as --machine), CAJETA_BENCH_DEVICE_BACKENDS= (same
+# as --device-backends), CAJETA_BENCH_IO_DIR= (io files, default build/io-data),
+# BENCH_LOADAVG_FILE= (default /proc/loadavg; tests), BENCH_DRM_DIR= (default
+# /sys/class/drm; tests).
 set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
@@ -73,7 +95,8 @@ competitor_packages() {
     if [[ -z "$1" ]]; then echo "$PACKAGES"; else echo "$1"; fi
 }
 
-# Split our own flags from harness passthrough args; capture --area.
+# Split our own flags from harness passthrough args; capture --area. The device
+# legs take the passthrough args without the --area pair (they name their own).
 RUN_COMPETITORS=0
 RESUME=0
 AREA_FILTER=""
@@ -83,7 +106,9 @@ DRY=0
 FORCE=0
 NO_GPU="${CAJETA_BENCH_NO_GPU:-}"
 MACHINE="${CAJETA_BENCH_MACHINE:-}"
+DEVICE_BACKENDS="${CAJETA_BENCH_DEVICE_BACKENDS:-auto}"
 HARNESS_ARGS=()
+DEVICE_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --list) LIST=1; shift ;;
@@ -94,9 +119,10 @@ while [[ $# -gt 0 ]]; do
         --competitors) RUN_COMPETITORS=1; shift ;;
         --resume-competitors) RUN_COMPETITORS=1; RESUME=1; shift ;;
         --machine) MACHINE="${2:-}"; [[ -n "$MACHINE" ]] || { echo "error: --machine needs a name" >&2; exit 1; }; shift 2 ;;
+        --device-backends) DEVICE_BACKENDS="${2:-}"; [[ -n "$DEVICE_BACKENDS" ]] || { echo "error: --device-backends needs a list (hip,cuda,vulkan, auto or none)" >&2; exit 1; }; shift 2 ;;
         --area) AREA_FILTER="${2:-}"; FILTERED=1; HARNESS_ARGS+=("$1" "${2:-}"); shift 2 ;;
-        --bench|--variant) FILTERED=1; HARNESS_ARGS+=("$1" "${2:-}"); shift 2 ;;
-        --*) HARNESS_ARGS+=("$1"); shift ;;
+        --bench|--variant) FILTERED=1; HARNESS_ARGS+=("$1" "${2:-}"); DEVICE_ARGS+=("$1" "${2:-}"); shift 2 ;;
+        --*) HARNESS_ARGS+=("$1"); DEVICE_ARGS+=("$1"); shift ;;
         *) echo "error: unknown argument '$1' (bench.sh --help is the header of bench.sh)" >&2; exit 1 ;;
     esac
 done
@@ -106,9 +132,51 @@ export CAJETA_BENCH_MACHINE="$MACHINE"
 case "$NO_GPU" in 1|true|yes) NO_GPU=1; export CAJETA_BENCH_NO_GPU=1 ;; *) NO_GPU=0 ;; esac
 SMOKE=0; case "${CAJETA_BENCH_SMOKE:-}" in 1|true|yes) SMOKE=1 ;; esac
 
+# ---------------------------------------------------------------- signals
+# kill_tree <pid>: the descendants first, then the process, so a driver's own
+# `timeout` child (its own process group) does not outlive the run.
+kill_tree() {
+    local c
+    for c in $(pgrep -P "$1" 2>/dev/null || true); do kill_tree "$c"; done
+    kill -TERM "$1" 2>/dev/null || true
+}
+CHILD_PID=""
+on_signal() {
+    echo "[bench] signal: stopping stage$( [[ -n "$CHILD_PID" ]] && echo " (pid $CHILD_PID and its tree)" )" >&2
+    [[ -n "$CHILD_PID" ]] && kill_tree "$CHILD_PID"
+    exit 143
+}
+trap on_signal TERM INT HUP
+# run_child <cmd...>: run it as a tracked child; the exit status is the child's.
+run_child() {
+    local rc=0
+    "$@" & CHILD_PID=$!
+    wait "$CHILD_PID" || rc=$?
+    CHILD_PID=""
+    return "$rc"
+}
+
+# ---------------------------------------------------------------- durations
+DURATIONS=""
+note_duration() {   # <stage> <seconds>
+    DURATIONS="${DURATIONS}$1,$2"$'\n'
+    echo "  [duration] $1: $2 s"
+}
+
 # ---------------------------------------------------------------- quiet box
-# quiet_probe: sets Q_LOAD, Q_CI, Q_GPU_UTIL, Q_GPU_PROCS and Q_WHY (the
-# failed conditions, "; "-joined, empty when quiet).
+# quiet_probe: sets Q_LOAD, Q_CI, Q_GPU_UTIL, Q_GPU_PROCS, Q_GPU_DISPLAY and
+# Q_WHY (the failed conditions, "; "-joined, empty when quiet).
+gpu_display_connectors() {
+    local n=0 f
+    for f in "${BENCH_DRM_DIR:-/sys/class/drm}"/card*-*/status; do
+        [[ -f "$f" ]] && [[ "$(cat "$f" 2>/dev/null)" == "connected" ]] && n=$((n + 1))
+    done
+    echo "$n"
+}
+# gpu_util_ok <util-list a/b/...> <limit>: every device under the limit.
+gpu_util_ok() {
+    printf '%s' "$1" | tr '/' '\n' | awk -v lim="$2" '!($0 ~ /^[0-9]+$/ && $0 + 0 <= lim) {bad=1} END {exit bad}'
+}
 quiet_probe() {
     Q_WHY=""
     Q_LOAD="$(awk '{print $1; exit}' "${BENCH_LOADAVG_FILE:-/proc/loadavg}" 2>/dev/null || echo unknown)"
@@ -117,35 +185,41 @@ quiet_probe() {
     fi
     Q_CI="$(ps -eo comm= 2>/dev/null | grep -cx 'Runner.Worker' || true)"
     [[ "${Q_CI:-0}" == "0" ]] || Q_WHY="${Q_WHY:+$Q_WHY; }$Q_CI CI runner job(s) active (Runner.Worker)"
+    local conn; conn="$(gpu_display_connectors)"
+    local limit=0 rule="no display: utilization must be 0 %"
+    if [[ "$conn" -gt 0 ]]; then limit=4; rule="$conn connector(s) connected: utilization under 5 % is idle"; fi
+    Q_GPU_DISPLAY="$rule"
     if [[ "$NO_GPU" == "1" ]]; then
-        Q_GPU_UTIL="not probed (--no-gpu)"; Q_GPU_PROCS="not probed (--no-gpu)"
+        Q_GPU_UTIL="not probed (--no-gpu)"; Q_GPU_PROCS="not probed (--no-gpu)"; Q_GPU_DISPLAY="not probed (--no-gpu)"
+        return 0
     elif command -v nvidia-smi >/dev/null 2>&1; then
         Q_GPU_UTIL="$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | tr -d ' ' | paste -sd/ -)"
         Q_GPU_PROCS="$(nvidia-smi --query-compute-apps=pid,process_name --format=csv,noheader 2>/dev/null | grep -c . || true)"
-        [[ -n "$Q_GPU_UTIL" ]] || Q_GPU_UTIL="unknown"
-        if ! printf '%s' "$Q_GPU_UTIL" | tr '/' '\n' | awk '!/^0$/ {bad=1} END {exit bad}'; then
-            Q_WHY="${Q_WHY:+$Q_WHY; }GPU utilization $Q_GPU_UTIL % is not 0"
-        fi
-        [[ "${Q_GPU_PROCS:-0}" == "0" ]] || Q_WHY="${Q_WHY:+$Q_WHY; }$Q_GPU_PROCS GPU compute process(es) running"
     elif command -v rocm-smi >/dev/null 2>&1; then
         Q_GPU_UTIL="$(rocm-smi --showuse --csv 2>/dev/null | awk -F, 'NR>1 && $2 ~ /^[0-9]+$/ {print $2}' | paste -sd/ -)"
         Q_GPU_PROCS="$(rocm-smi --showpids --csv 2>/dev/null | awk -F, 'NR>1 && $1 ~ /^[0-9]+$/' | grep -c . || true)"
-        [[ -n "$Q_GPU_UTIL" ]] || Q_GPU_UTIL="unknown"
-        if ! printf '%s' "$Q_GPU_UTIL" | tr '/' '\n' | awk '!/^0$/ {bad=1} END {exit bad}'; then
-            Q_WHY="${Q_WHY:+$Q_WHY; }GPU utilization $Q_GPU_UTIL % is not 0"
-        fi
-        [[ "${Q_GPU_PROCS:-0}" == "0" ]] || Q_WHY="${Q_WHY:+$Q_WHY; }$Q_GPU_PROCS GPU compute process(es) running"
     else
-        Q_GPU_UTIL="none (no nvidia-smi or rocm-smi)"; Q_GPU_PROCS="none"
+        Q_GPU_UTIL="none (no nvidia-smi or rocm-smi)"; Q_GPU_PROCS="none"; Q_GPU_DISPLAY="none"
+        return 0
     fi
+    [[ -n "$Q_GPU_UTIL" ]] || Q_GPU_UTIL="unknown"
+    if ! gpu_util_ok "$Q_GPU_UTIL" "$limit"; then
+        Q_WHY="${Q_WHY:+$Q_WHY; }GPU utilization $Q_GPU_UTIL % is not idle ($rule)"
+    fi
+    [[ "${Q_GPU_PROCS:-0}" == "0" ]] || Q_WHY="${Q_WHY:+$Q_WHY; }$Q_GPU_PROCS GPU compute process(es) running"
 }
 # quiet_evidence: the env.csv lines (values carry no comma: the load is a
-# number, the reasons are "; "-joined).
+# number, the reasons are "; "-joined). A resume adds one line of its own
+# state and leaves the harness pass's quiet_* lines as the run's evidence.
 quiet_evidence() {
+    if [[ "$RESUME" == "1" ]]; then
+        printf 'quiet_resume,%s (load %s; GPU %s %%; %s compute process(es))\n' "$Q_STATE" "$Q_LOAD" "$Q_GPU_UTIL" "$Q_GPU_PROCS"
+    fi
     printf 'quiet_load_avg,%s\n' "$Q_LOAD"
     printf 'quiet_ci_jobs,%s\n' "$Q_CI"
     printf 'quiet_gpu_util,%s\n' "$Q_GPU_UTIL"
     printf 'quiet_gpu_procs,%s\n' "$Q_GPU_PROCS"
+    printf 'quiet_gpu_display,%s\n' "$Q_GPU_DISPLAY"
     printf 'quiet_check,%s\n' "$Q_STATE"
 }
 # quiet_gate <phase>: decide; exit 3 on a noisy box unless --force.
@@ -164,7 +238,7 @@ quiet_gate() {
     quiet_evidence >&2
     exit 3
 }
-Q_STATE="skipped (smoke)"; Q_LOAD=""; Q_CI=""; Q_GPU_UTIL=""; Q_GPU_PROCS=""
+Q_STATE="skipped (smoke)"; Q_LOAD=""; Q_CI=""; Q_GPU_UTIL=""; Q_GPU_PROCS=""; Q_GPU_DISPLAY=""
 [[ "$LIST" != "0" ]] || quiet_gate "start"
 
 # ---------------------------------------------------------------- datasets
@@ -185,6 +259,30 @@ needs wire && DATASETS="$DATASETS gen_wire"
 GATE_ARGS=()
 [[ "$FILTERED" == "0" ]] && GATE_ARGS+=(--require-suite)
 
+# ---------------------------------------------------------------- device legs
+# The backends this box can run (spec §9.3's device areas), each on its gpu-*
+# harness build: hip -> gpu-amdgpu, cuda -> gpu-nvptx, vulkan -> gpu-vulkan.
+detect_device_backends() {
+    local out=""
+    [[ -e "${ROCM_PATH:-/opt/rocm}/.info/version" ]] && out="hip"
+    command -v nvidia-smi >/dev/null 2>&1 && out="${out:+$out,}cuda"
+    command -v vulkaninfo >/dev/null 2>&1 && out="${out:+$out,}vulkan"
+    echo "${out:-none}"
+}
+leg_task() { case "$1" in hip) echo gpu-amdgpu ;; cuda) echo gpu-nvptx ;; vulkan) echo gpu-vulkan ;; *) echo "error: unknown device backend '$1' (hip, cuda or vulkan)" >&2; exit 1 ;; esac; }
+leg_bin() { case "$1" in hip) echo build/bench-amdgpu ;; cuda) echo build/bench-nvptx ;; vulkan) echo build/bench-vulkan ;; esac; }
+[[ "$DEVICE_BACKENDS" == "auto" ]] && DEVICE_BACKENDS="$(detect_device_backends)"
+[[ "$NO_GPU" == "1" ]] && DEVICE_BACKENDS="none"
+LEG_AREAS=""
+if [[ "$RESUME" == "0" && "$DEVICE_BACKENDS" != "none" ]]; then
+    if [[ -z "$PKG" ]]; then LEG_AREAS="xpu gfx"
+    elif [[ "$PKG" == "xpu" || "$PKG" == "gfx" ]]; then LEG_AREAS="$AREA_FILTER"; fi
+fi
+LEGS=""
+if [[ -n "$LEG_AREAS" ]]; then
+    for be in $(printf '%s' "$DEVICE_BACKENDS" | tr ',' ' '); do leg_task "$be" >/dev/null; LEGS="${LEGS:+$LEGS }$be"; done
+fi
+
 if [[ "$DRY" == "1" ]]; then
     echo "plan: machine=$MACHINE"
     echo "plan: path_head=${PATH%%:*}"
@@ -196,6 +294,15 @@ if [[ "$DRY" == "1" ]]; then
     echo "plan: datasets=$DATASETS"
     echo "plan: quiet=$Q_STATE"
     echo "plan: harness_args=${HARNESS_ARGS[*]:-}"
+    echo "plan: device_backends=$DEVICE_BACKENDS"
+    echo "plan: device_legs=${LEGS:-none}${LEGS:+ (${LEG_AREAS// /, })}"
+    if [[ "$RESUME" == "1" ]]; then
+        R_OUT="${PROFILE_OUT:-${CAJETA_BENCH_RUN_ID:+build/results/$CAJETA_BENCH_RUN_ID}}"
+        if [[ -n "$R_OUT" && -s "$R_OUT/results.csv" ]]; then
+            echo "plan: resume_done_packages=$(python3 scripts/rows.py packages "$R_OUT/results.csv" | paste -sd' ' -)"
+            echo "plan: resume_partial_rows=$(python3 scripts/rows.py partial "$R_OUT/results.csv")"
+        fi
+    fi
     [[ "$SMOKE" == "1" ]] || quiet_evidence
     exit 0
 fi
@@ -221,16 +328,22 @@ fi
 # The run id is spec §4.1's <ISO-8601-basic-UTC>-<cajeta-version>, so
 # `bench.sh publish <machine> <run-id>` finds the run at build/results/<run-id>.
 CAJETA_VER="$("$CAJETA" --version 2>/dev/null | head -1 || true)"
-TS="${CAJETA_BENCH_RUN_ID:-$(date -u +%Y%m%dT%H%MZ)-$(printf '%s' "$CAJETA_VER" | awk '{print $2}')}"
+CAJETA_VER_SHORT="$(printf '%s' "$CAJETA_VER" | awk '{print $2}')"
+TS="${CAJETA_BENCH_RUN_ID:-$(date -u +%Y%m%dT%H%MZ)-$CAJETA_VER_SHORT}"
 OUT="${PROFILE_OUT:-build/results/$TS}"
 DATA="${PROFILE_DATA_DIR:-${SCRIPT_DIR}/datasets/cache}"
 export CAJETA_BENCH_IO_DIR="${CAJETA_BENCH_IO_DIR:-${SCRIPT_DIR}/build/io-data}"
 RUN_TS="$(date +%s)"
-# A resume keeps the harness rows and the run's own timestamp, and appends the
-# competitor rows and the host block the first pass did not get to.
+# A resume keeps the harness rows and the run's own timestamp, drops the partial
+# last row a cut pass left, and appends the competitor rows and the host block
+# the first pass did not get to.
+DONE_PKGS=""
 if [[ "$RESUME" == "1" ]]; then
     [[ -s "$OUT/results.csv" ]] || { echo "error: --resume-competitors needs an existing run at $OUT/results.csv (CAJETA_BENCH_RUN_ID or PROFILE_OUT)" >&2; exit 1; }
     RUN_TS="$(awk -F, '$1=="timestamp_unix" {print $2; exit}' "$OUT/env.csv" 2>/dev/null || true)"; RUN_TS="${RUN_TS:-$(date +%s)}"
+    dropped="$(python3 scripts/rows.py strip-partial "$OUT/results.csv")"
+    [[ "$dropped" == "0" ]] || echo "[bench] resume: dropped $dropped partial row(s) from $OUT/results.csv"
+    DONE_PKGS=" $(python3 scripts/rows.py packages "$OUT/results.csv" | paste -sd' ' -) "
 fi
 mkdir -p "$OUT" "$DATA" "$CAJETA_BENCH_IO_DIR"
 VENV_PY="${SCRIPT_DIR}/competitors/python/.venv/bin/python"
@@ -268,11 +381,18 @@ for d in $DATASETS; do
 done
 
 RC=0
+ENV_EXTRA=""
 if [[ "$RESUME" == "1" ]]; then
-    echo "[bench] (2/4, 3/4) skipped: resuming $OUT ($(awk 'END {print NR - 1}' "$OUT/results.csv") rows)"
+    echo "[bench] (2/4, 3/4) skipped: resuming $OUT ($(python3 scripts/rows.py count "$OUT/results.csv") rows; competitor packages done:${DONE_PKGS:- none})"
 else
-echo "[bench] (2/4) build --release"
+echo "[bench] (2/4) build --release${LEGS:+ and the device builds ($LEGS)}"
+t0=$SECONDS
 "$CAJETA" release >/dev/null
+for be in $LEGS; do
+    task="$(leg_task "$be")"
+    "$CAJETA" "$task" >"$OUT/build-$task.log" 2>&1 || { grep -v mma-tiering "$OUT/build-$task.log" | tail -20 >&2; echo "error: cajeta $task failed (the $be leg); log at $OUT/build-$task.log" >&2; exit 1; }
+done
+note_duration build $((SECONDS - t0))
 
 # The build loaded the box: let it settle before measuring, and record the
 # evidence as it stands when measurement starts.
@@ -289,9 +409,32 @@ fi
 echo "[bench] (3/4) run benchmarks -> $OUT/results.csv (run id $TS)"
 # dev.cajeta.bench writes results.csv and env.csv; it exits 1 when a row failed
 # or was invalid (the run itself continues), so record that and carry on.
+t0=$SECONDS
 PROFILE_DATA_DIR="$DATA" CAJETA_BENCH_RUN_ID="$TS" CAJETA_BENCH_RUN_TS="$RUN_TS" \
-    CAJETA_BENCH_CAJETA_VERSION="$(printf '%s' "$CAJETA_VER" | awk '{print $2}')" \
-    ./build/bench --run --out "$OUT/results.csv" ${HARNESS_ARGS[@]+"${HARNESS_ARGS[@]}"} || RC=$?
+    CAJETA_BENCH_CAJETA_VERSION="$CAJETA_VER_SHORT" \
+    run_child ./build/bench --run --out "$OUT/results.csv" ${HARNESS_ARGS[@]+"${HARNESS_ARGS[@]}"} || RC=$?
+note_duration harness $((SECONDS - t0))
+# The quiet evidence of measurement start, kept even when a later stage is cut.
+touch "$OUT/env.csv"
+quiet_evidence | awk -F, 'NR==FNR {seen[$1]=1; next} !($1 in seen)' "$OUT/env.csv" - >> "$OUT/env.csv"
+
+# 3a. The device legs: the same catalog areas on each device backend's build.
+for be in $LEGS; do
+    bin="$(leg_bin "$be")"; task="$(leg_task "$be")"
+    for area in $LEG_AREAS; do
+        echo "[bench] (3a) device leg $be: $bin --area $area"
+        d="$OUT/legs/$be"; mkdir -p "$d"; leg="$d/${area//\//-}.csv"
+        t0=$SECONDS; lrc=0
+        PROFILE_DATA_DIR="$DATA" CAJETA_BENCH_RUN_ID="$TS" CAJETA_BENCH_RUN_TS="$RUN_TS" \
+            CAJETA_BENCH_CAJETA_VERSION="$CAJETA_VER_SHORT" CAJETA_XPU_BACKEND="$be" \
+            run_child "$bin" --run --area "$area" --out "$leg" ${DEVICE_ARGS[@]+"${DEVICE_ARGS[@]}"} || lrc=$?
+        [[ "$lrc" == "0" ]] || RC=1
+        n=0
+        if [[ -s "$leg" ]]; then n="$(python3 scripts/rows.py count "$leg")"; tail -n +2 "$leg" >> "$OUT/results.csv"; fi
+        note_duration "leg-$be-${area//\//-}" $((SECONDS - t0))
+        ENV_EXTRA="${ENV_EXTRA}device_leg_${be}_${area//\//-},$task ($bin) rows $n exit $lrc"$'\n'
+    done
+done
 fi
 
 if [[ "$RUN_COMPETITORS" == "1" ]]; then
@@ -299,19 +442,27 @@ if [[ "$RUN_COMPETITORS" == "1" ]]; then
     for pkg in $(competitor_packages "${AREA_FILTER%%/*}"); do
         runner="competitors/$pkg.sh"
         [[ -f "$runner" ]] || continue
+        if [[ "$DONE_PKGS" == *" $pkg "* ]]; then
+            echo "  [competitors] $pkg: rows already in results.csv, skipped (resume)"
+            continue
+        fi
         echo "  [competitors] $pkg"
+        part="$OUT/competitors-$pkg.csv.part"; t0=$SECONDS
         PROFILE_DATA_DIR="$DATA" PROFILE_RUN_ID="$TS" PROFILE_RUN_TS="$RUN_TS" \
-            bash "$runner" >> "$OUT/results.csv" || echo "    note: $pkg competitors failed (recorded as skips)"
+            run_child bash "$runner" > "$part" || echo "    note: $pkg competitors failed (recorded as skips)"
+        cat "$part" >> "$OUT/results.csv"; rm -f "$part"
+        note_duration "competitors-$pkg" $((SECONDS - t0))
     done
 fi
 
 echo "[bench] (4/4) env -> $OUT/env.csv"
 # The harness wrote the run block (machine, os, kernel, cpu, cajeta_version,
-# smoke); append the host block it cannot reach and the quiet-box evidence,
-# without repeating a key.
+# smoke); append the host block it cannot reach, the device legs and the
+# quiet-box evidence, without repeating a key.
 touch "$OUT/env.csv"
-{ bash scripts/env-capture.sh; quiet_evidence; } | awk -F, 'NR==FNR {seen[$1]=1; next} !($1 in seen)' "$OUT/env.csv" - >> "$OUT/env.csv"
+{ bash scripts/env-capture.sh; printf '%s' "$ENV_EXTRA"; quiet_evidence; } | awk -F, 'NR==FNR {seen[$1]=1; next} !($1 in seen)' "$OUT/env.csv" - >> "$OUT/env.csv"
 [[ -n "$CAJETA_VER" ]] && ! grep -q '^cajeta_build,' "$OUT/env.csv" && echo "cajeta_build,${CAJETA_VER//,/ }" >> "$OUT/env.csv"
+{ [[ -s "$OUT/durations.csv" ]] || echo "stage,seconds"; printf '%s' "$DURATIONS"; } >> "$OUT/durations.csv"
 
 # Fidelity gate (spec §1.5.3). A full-catalog run must hold every benchmark the
 # gate knows (--require-suite); a filtered run checks what it holds. Smoke rows

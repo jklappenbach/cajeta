@@ -17,7 +17,15 @@
 #  (6) a non-smoke run refuses (exit 3) on load >= 1, a CI runner job, GPU
 #      utilization > 0 or a GPU compute process, naming the reason; --force
 #      proceeds and says it was forced; a smoke run is never checked;
-#  (7) the evidence is what env.csv will record (quiet_* lines).
+#  (7) the evidence is what env.csv will record (quiet_* lines);
+#  (8) the device legs (22.2.6): --device-backends names them, --no-gpu and a
+#      non-device --area drop them, a device --area narrows them, auto detects
+#      cuda from nvidia-smi;
+#  (9) the display-GPU rule (22.2.5): with a connected DRM connector (stubbed
+#      through BENCH_DRM_DIR) utilization under 5 % passes and is recorded,
+#      5 % or more refuses; with no connector 3 % refuses;
+# (10) a resume (22.2.9) reports the packages that already have rows and the
+#      partial rows a cut pass left, and rows.py strips them.
 set -uo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
@@ -49,7 +57,8 @@ EOF
     chmod +x "$STUB/nvidia-smi" "$STUB/ps"
 }
 # run bench.sh --dry-run with the stubs; extra env via `env` words first
-dry() { env PATH="$STUB:$PATH" BENCH_LOADAVG_FILE="$T/loadavg" bash "$PROJ/bench.sh" --dry-run "$@" 2>&1; }
+DRM="$T/drm"; mkdir -p "$DRM"
+dry() { env PATH="$STUB:$PATH" BENCH_LOADAVG_FILE="$T/loadavg" BENCH_DRM_DIR="$DRM" bash "$PROJ/bench.sh" --dry-run "$@" 2>&1; }
 plan() { printf '%s\n' "$1" | sed -n "s/^plan: $2=//p" | head -1; }
 
 # A quiet box.
@@ -67,7 +76,7 @@ OUT="$(dry)"; RC=$?
 # (2) machine
 want="$(cat /proc/sys/kernel/hostname 2>/dev/null || hostname)"; want="$(printf '%s' "$want" | tr 'A-Z' 'a-z')"
 [[ "$(plan "$OUT" machine)" == "$want" ]] || fail "default machine '$(plan "$OUT" machine)', want '$want'"
-OUT2="$(env -u CAJETA_BENCH_MACHINE PATH="$STUB:$PATH" BENCH_LOADAVG_FILE="$T/loadavg" bash "$PROJ/bench.sh" --dry-run --machine Proton 2>&1)"
+OUT2="$(env -u CAJETA_BENCH_MACHINE PATH="$STUB:$PATH" BENCH_LOADAVG_FILE="$T/loadavg" BENCH_DRM_DIR="$DRM" bash "$PROJ/bench.sh" --dry-run --machine Proton 2>&1)"
 [[ "$(plan "$OUT2" machine)" == "proton" ]] || fail "--machine Proton gave '$(plan "$OUT2" machine)'"
 
 # (3) --no-gpu
@@ -119,6 +128,46 @@ for k in quiet_load_avg quiet_ci_jobs quiet_gpu_util quiet_gpu_procs quiet_check
 done
 printf '%s\n' "$OUT" | grep -qx 'quiet_load_avg,0.12' || fail "load evidence wrong"
 printf '%s\n' "$OUT" | grep -qx 'quiet_check,pass' || fail "check evidence wrong"
+
+# (8) device legs
+OUT8="$(dry --device-backends hip,vulkan)"
+[[ "$(plan "$OUT8" device_backends)" == "hip,vulkan" ]] || fail "device_backends '$(plan "$OUT8" device_backends)'"
+[[ "$(plan "$OUT8" device_legs)" == "hip vulkan (xpu, gfx)" ]] || fail "device_legs '$(plan "$OUT8" device_legs)'"
+OUT8b="$(dry --device-backends hip --no-gpu)"
+[[ "$(plan "$OUT8b" device_backends)" == "none" && "$(plan "$OUT8b" device_legs)" == "none" ]] || fail "--no-gpu kept device legs: $(plan "$OUT8b" device_legs)"
+[[ "$(plan "$(dry --device-backends hip --area collection)" device_legs)" == "none" ]] || fail "a collection run planned a device leg"
+[[ "$(plan "$(dry --device-backends hip --area xpu/gemm-f16)" device_legs)" == "hip (xpu/gemm-f16)" ]] || fail "xpu/gemm-f16 leg '$(plan "$(dry --device-backends hip --area xpu/gemm-f16)" device_legs)'"
+case ",$(plan "$OUT" device_backends)," in *,cuda,*) ;; *) fail "auto did not detect cuda from the stub nvidia-smi: '$(plan "$OUT" device_backends)'" ;; esac
+OUT8c="$(dry --device-backends opencl)"; RC=$?
+[[ "$RC" != "0" ]] || fail "--device-backends opencl was accepted"
+
+# (9) display-GPU rule
+mkdir -p "$DRM/card1-DP-1"; echo connected > "$DRM/card1-DP-1/status"
+stub_box 0.10 3 0 0; OUT9="$(dry)"; RC=$?
+[[ "$RC" == "0" && "$(plan "$OUT9" quiet)" == "pass" ]] || fail "display GPU at 3 %: exit $RC, quiet '$(plan "$OUT9" quiet)'"
+printf '%s\n' "$OUT9" | grep -q '^quiet_gpu_display,1 connector(s) connected: utilization under 5 % is idle' || fail "no display evidence: $OUT9"
+stub_box 0.10 5 0 0; check_refuse "display GPU at 5 %" "under 5 % is idle"
+stub_box 0.10 3 1 0; check_refuse "display GPU with a compute process" "compute process"
+rm -r "$DRM/card1-DP-1"
+stub_box 0.10 3 0 0; check_refuse "no display at 3 %" "utilization must be 0"
+stub_box 0.12 0 0 0
+
+# (10) resume bookkeeping
+R="$T/run"; mkdir -p "$R"
+H='schema_version,run_id,timestamp_unix,benchmark,area,dataset_name,dataset_bytes,dataset_sha256,input_size,language,language_version,library,library_version,flags,warmup,trials,min_ns,median_ns,mean_ns,p95_ns,throughput,throughput_unit,peak_rss_kb,cgroup_peak_kb,alloc_bytes,alloc_count,working_set_kb,status,check_ok,notes,variant,backend,machine,os,driver,model,platform'
+{
+    echo "$H"
+    echo '2,r,1,loop,lang,,,,1,cajeta,0.53.2,,,,3,5,1,1,1,1,,,0,0,0,0,0,ok,true,"a, note",,cpu,proton,linux,,,cajeta'
+    echo '2,r,1,arraylist-append,collection,,,,1,cpp,17,,,,3,5,1,1,1,1,,,0,0,0,0,0,ok,true,,,cpu,proton,linux,,,g++'
+    echo '2,r,1,file-read,io,,,,1,go,1.25,,,,3,5,1,1,1,1,,'
+} > "$R/results.csv"
+echo "timestamp_unix,1" > "$R/env.csv"
+OUT10="$(PROFILE_OUT="$R" dry --resume-competitors)"
+[[ "$(plan "$OUT10" resume_done_packages)" == "collection" ]] || fail "resume_done_packages '$(plan "$OUT10" resume_done_packages)'"
+[[ "$(plan "$OUT10" resume_partial_rows)" == "1" ]] || fail "resume_partial_rows '$(plan "$OUT10" resume_partial_rows)'"
+[[ "$(python3 "$PROJ/scripts/rows.py" strip-partial "$R/results.csv")" == "1" ]] || fail "strip-partial did not drop the cut row"
+[[ "$(python3 "$PROJ/scripts/rows.py" count "$R/results.csv")" == "2" ]] || fail "count after strip is $(python3 "$PROJ/scripts/rows.py" count "$R/results.csv")"
+grep -q '"a, note"' "$R/results.csv" || fail "strip-partial lost the quoted note"
 
 if [[ "$FAILS" -gt 0 ]]; then echo "BENCH.SH FAILED ($FAILS)"; exit 1; fi
 echo "BENCH.SH OK"
