@@ -1095,6 +1095,14 @@ namespace cajeta {
                         prov.scope = method->findAnnotation("Transient")
                             ? CajetaModule::AllocateMode::Transient
                             : CajetaModule::AllocateMode::Singleton;
+                        // component-scopes §11: a product in a published scope.
+                        if (auto comp = method->findAnnotation("Component")) {
+                            prov.scopeName = comp->getString("scope", "Singleton");
+                            prov.scopeDeclared = true;
+                            if (prov.scopeName == "Transient") {
+                                prov.scope = CajetaModule::AllocateMode::Transient;
+                            }
+                        }
                         // Classify each param: @Inject is an edge, unmarked is
                         // assisted (any assisted means factory-injection).
                         for (auto& p : method->getParameterList()) {

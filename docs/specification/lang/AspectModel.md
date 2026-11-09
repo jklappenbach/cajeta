@@ -121,8 +121,10 @@ it sound:
   graph-resolved, and unmarked params are assisted (caller-supplied). Any assisted
   param ⇒ consumers inject the factory and call it. All-injected ⇒ it is a
   provider and consumers inject the product.
-- **R4. Scope on the method** (`@Singleton` / `@Transient` …), in one legible
-  place.
+- **R4. Scope on the method** (`@Singleton` / `@Transient`, or
+  `@Component(scope = "Name")` for a published scope), in one legible place. A
+  product in a published scope is built and dropped like a scoped component
+  (`specs/component-scopes-spec.md` §11).
 
 ```cajeta
 @Factory class ConnectionFactory {

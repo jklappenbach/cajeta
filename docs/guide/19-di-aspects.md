@@ -269,6 +269,28 @@ Provider methods return a fresh owned `#T`, and the framework owns the
 caching. `@Singleton` (the default) memoizes, and `@Transient` builds a fresh
 product per call. The tour's FactoryDemo shows the consumer side of both paths.
 
+A product can also live in a published scope. Write `@Component(scope = "Name")`
+on the provider method, and the product behaves like a scoped component: the
+first injection inside an activation of the scope calls the factory, later
+injections in that activation share the result, and the scope drops it when it
+ends. This is how a library type you cannot annotate gets a declared lifetime.
+
+```cajeta
+@Factory
+public class Parts {
+    @Component(scope = "Cabra") #LlmEngine engine(@Inject CabraConfig c) {
+        return Main.loadEngine(c.model, c.ctx);
+    }
+}
+```
+
+A product built from another product is built after it and dropped before it.
+A factory that returns null leaves the product absent for that activation: an
+`@Inject(optional = true)` site gets null, and any other site throws
+`NotProvidedException`. The provider's `@Inject` parameters follow the same
+lifetime rules as fields, so a product cannot take an input from a narrower
+scope.
+
 ## Profiles
 
 A component annotated `@Profile("test")` joins the graph only when the

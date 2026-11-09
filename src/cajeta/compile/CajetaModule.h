@@ -142,6 +142,12 @@ namespace cajeta {
             vector<Param> params;
             bool hasAssisted = false;           // any assisted param => factory-injection
             AllocateMode scope = AllocateMode::Singleton;   // R4
+            // `@Component(scope = "Name")` on the method (component-scopes §11):
+            // the name as written, and the publication it resolved to. With a
+            // published scope, `scope` is Scoped.
+            string scopeName;
+            bool scopeDeclared = false;
+            ScopePublicationPtr scopePub;
             // The synthesized static accessor that builds the product; null until
             // it is synthesized.
             MethodPtr accessor;

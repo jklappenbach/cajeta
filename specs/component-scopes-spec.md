@@ -218,7 +218,7 @@ annotation Inject {
 - **8.3** When `allocate` appears, compilation fails with a message giving the
   `scope` spelling. Its only users are the compiler's own tests.
 - **8.4** When `@Singleton` or `@Transient` marks a factory method, it means
-  `scope = "Singleton"` or `"Transient"`.
+  `scope = "Singleton"` or `"Transient"`. A published scope is §11.
 
 ## 9. Cost
 
@@ -242,3 +242,67 @@ annotation Inject {
   one per connection, so it is not the `Request` anchor. The docs state the
   rule: anchor on the method that runs once per unit of work.
 
+
+## 11. Factory products in a published scope (Julian, 2026-11-08)
+
+A `@Factory` product lives in a published scope the same way a scoped
+`@Component` does. A factory exists for types that cannot carry `@Component`
+(a library's, a third party's) and for construction a constructor cannot
+express. Before this section such a product could only be a process
+singleton or transient, so an application could not give a library type a
+declared lifecycle: cabra's engine and chat template, which are
+`dev.cajeta.llm` types loaded from a model path, either lived for the whole
+process or were assembled by hand outside the graph.
+
+```cajeta
+@Component(scope = "Cabra") public class CabraConfig { public String model; ... }
+
+@Factory public class CabraParts {
+    @Component(scope = "Cabra") #LlmEngine engine(@Inject CabraConfig c) {
+        return Main.loadEngine(c.model, c.ctx);
+    }
+    @Component(scope = "Cabra") #ChatTemplate template(@Inject CabraConfig c,
+            @Inject LlmEngine e) {
+        return ChatOp.forModel(c.model, e.tokenizer());
+    }
+}
+
+@Scope("Cabra")
+public final class Cabra {
+    public Cabra(#CabraConfig cfg) { Components.provide(#cfg); return; }
+}
+```
+
+- **11.1** When a factory method carries `@Component(scope = "Name")`, its
+  product is a component of that scope. `@Scope` on a method still publishes
+  a scope, so it cannot be the spelling. `@Singleton` and `@Transient` stay
+  the shorthands of 8.4.
+- **11.2** When the product is injected inside an active `Name`, the first
+  injection calls the factory method and the scope's table adopts the result;
+  later injections in that scope get the same instance (3.1). Two activations
+  of the scope build two products.
+- **11.3** When the product is injected with no `Name` active, the injection
+  throws `ScopeNotActiveException`, as for a scoped component. A field
+  injection cannot reach this (§6 puts every holder within its product's
+  scope); a `Scoped<T>` handle over a product could, and is not supported
+  yet, because `get()` resolves through `T.__cajeta_inject()` and a product
+  type has none.
+- **11.4** When the scope ends, its table drops the product, after every
+  component built later in the same activation. A product injected by
+  another product is built first and dropped last.
+- **11.5** When the factory method's `@Inject` parameters name components,
+  the lifetime rules of §6 apply to them as to fields: the same scope, a
+  scope it is provably within, or a singleton. A narrower or unrelated scope
+  is a compile error.
+- **11.6** When the factory method returns null, the product is absent in that
+  activation. An injection site with `optional = true` gets null; any other
+  site throws `NotProvidedException` naming the type and the scope. The
+  factory is not called again in that activation.
+- **11.7** When `Components.provide(#v)` is called with a value of a scoped
+  product's type, the value lands in the scope and the factory method is not
+  called for it. A second provide, or a provide after the product was built,
+  throws (7.3). Not supported yet, with 11.3's `Scoped<T>`: both need a
+  generated member on the product type. Until then a test provides the
+  factory's input (a config component) rather than the product.
+- **11.8** When a product type is also a `@Component`, or two factory methods
+  provide it unqualified, compilation fails as an ambiguity, as today.

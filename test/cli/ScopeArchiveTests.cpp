@@ -227,3 +227,86 @@ TEST(ScopeArchive, multibindingCollectsComponentsFromADependency) {
     ASSERT_EQ(w.sh("./appout/prog", run, "run"), 0) << run;
     EXPECT_NE(run.find("count=2 sum=3 gzip=true"), std::string::npos) << run;
 }
+
+// component-scopes plan 10.1.10: a library type from a dependency .cja is a
+// scoped factory product in the consumer (cabra's engine): built per anchor,
+// shared within it, and dropped at the anchor's end, on both sides of the
+// archive boundary.
+TEST(ScopeArchive, aLibraryTypeIsAScopedFactoryProductInTheConsumer) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    World w;
+    w.write("libsrc/lib/Engine.cajeta",
+        "package lib;\n"
+        "import cajeta.lang.System;\n"
+        "public final class Engine {\n"
+        "    public int32 ctx;\n"
+        "    public Engine(int32 ctx) { this.ctx = ctx; return; }\n"
+        "    public ~Engine() { System.stdout.println(\"dropped \" + this.ctx); }\n"
+        "}\n");
+    w.write("libsrc/lib/Lib.cajeta",
+        "package lib;\npublic final class Lib { public static void main(String[] args) { } }\n");
+    w.write("appsrc/app/Main.cajeta",
+        "package app;\n"
+        "import cajeta.aot.Components;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.lang.System;\n"
+        "import lib.Engine;\n"
+        "@Component(scope = \"Cabra\") public class Cfg {\n"
+        "    public int32 ctx;\n"
+        "    public Cfg(int32 ctx) { this.ctx = ctx; return; }\n"
+        "}\n"
+        "@Factory public class Parts {\n"
+        "    @Component(scope = \"Cabra\") #Engine engine(@Inject Cfg c) {\n"
+        "        Engine e = heap Engine(c.ctx);\n"
+        "        return e;\n"
+        "    }\n"
+        "}\n"
+        "@Component(scope = \"Cabra\") public class Use {\n"
+        "    @Inject Engine e;\n"
+        "    public Use() { return; }\n"
+        "}\n"
+        "@Scope(\"Cabra\") public class Cabra {\n"
+        "    public Cabra(int32 ctx) { return; }\n"
+        "    public void configure(int32 ctx) {\n"
+        "        Cfg c = heap Cfg(ctx);\n"
+        "        Components.provide(#c);\n"
+        "        return;\n"
+        "    }\n"
+        "    public int32 ctx() {\n"
+        "        Use a = Use.__cajeta_inject();\n"
+        "        Use b = Use.__cajeta_inject();\n"
+        "        return a.e == b.e ? a.e.ctx : -1;\n"
+        "    }\n"
+        "}\n"
+        "public class Main {\n"
+        "    public static int32 main(String[] args) {\n"
+        "        {\n"
+        "            Cabra one = heap Cabra(0);\n"
+        "            one.configure(2048);\n"
+        "            Cabra two = heap Cabra(0);\n"
+        "            two.configure(4096);\n"
+        "            System.stdout.println(\"one=\" + one.ctx() + \" two=\" + two.ctx());\n"
+        "        }\n"
+        "        System.stdout.println(\"after\");\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n");
+    fs::create_directories(w.root / "libout");
+    fs::create_directories(w.root / "appout");
+    std::string log;
+    ASSERT_EQ(w.sh("\"" + compilerBinary() + "\" --emit=cja -o libout/lib.cja "
+                   "lib.Lib.main libsrc libout", log, "build-cja"), 0) << log;
+    ASSERT_EQ(w.sh("\"" + compilerBinary() + "\" --emit=exe --classpath=libout/lib.cja "
+                   "-o appout/prog app.Main.main appsrc appout", log, "build-exe"), 0) << log;
+    std::string run;
+    ASSERT_EQ(w.sh("./appout/prog", run, "run"), 0) << run;
+    EXPECT_NE(run.find("one=2048 two=4096"), std::string::npos) << run;
+    size_t d1 = run.find("dropped 2048");
+    size_t d2 = run.find("dropped 4096");
+    size_t after = run.find("after");
+    EXPECT_NE(d1, std::string::npos) << run;
+    EXPECT_NE(d2, std::string::npos) << run;
+    EXPECT_NE(after, std::string::npos) << run;
+    EXPECT_LT(d1, after) << run;
+    EXPECT_LT(d2, after) << run;
+}

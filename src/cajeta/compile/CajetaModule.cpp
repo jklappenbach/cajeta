@@ -1038,6 +1038,28 @@ namespace cajeta {
             }
             c->scope = resolveScopeName(c->scopeName, use);
         }
+        // component-scopes §11: a factory method's `@Component(scope = ...)` names
+        // its product's scope, resolved against the same publications.
+        for (auto& f : factoryClasses) {
+            if (!f || !f->klass) continue;
+            for (auto& p : f->providers) {
+                p.scopePub.reset();
+                if (!p.scopeDeclared) continue;
+                const string use = "@Component on factory method "
+                    + f->klass->getQName()->toCanonical() + "."
+                    + (p.method ? p.method->getName() : string("?"));
+                if (p.scopeName == "Owner" || p.scopeName == "Call") {
+                    throw Exception(use + " declares scope \"" + p.scopeName
+                                        + "\", which is relative to an injection site. "
+                                          "Write it on @Inject instead",
+                                    "CAJETA_ERROR_SCOPE_SITE_ONLY");
+                }
+                p.scopePub = resolveScopeName(p.scopeName, use);
+                if (p.scopePub && p.scopePub->kind != ScopePublication::Kind::Builtin) {
+                    p.scope = AllocateMode::Scoped;
+                }
+            }
+        }
 
         // Keyed by canonical AND short name, so a consumer can write
         // `@Inject Database db;` without the package.
@@ -1196,22 +1218,27 @@ namespace cajeta {
                 return any;
             };
         // A field is filled once, so it may hold only what outlives its holder.
-        auto refuseWidening = [&](const string& site, const ComponentDescriptorPtr& holder,
-                                  const ComponentDescriptorPtr& target) {
-            const auto& ts = target->scope;
+        auto refuseWideningScopes = [&](const string& site, const string& holderName,
+                                        const ScopePublicationPtr& hs,
+                                        const string& targetName, const string& targetShort,
+                                        const ScopePublicationPtr& ts) {
             if (!ts || ts->kind == ScopePublication::Kind::Builtin) return;
-            const auto& hs = holder->scope;
             const bool hPublished = hs && hs->kind != ScopePublication::Kind::Builtin;
             if (hPublished && within(hs, ts, 0)) return;
-            const string holderName = holder->klass->getQName()->toCanonical();
             throw Exception(
-                site + " holds " + target->klass->getQName()->toCanonical() + " (scope \""
+                site + " holds " + targetName + " (scope \""
                     + ts->qualified() + "\"), but " + holderName
                     + (hPublished ? " has scope \"" + hs->qualified() + "\", which is not within it"
                                   : string(" can outlive that scope"))
-                    + ". Inject Scoped<" + target->klass->getQName()->getTypeName()
+                    + ". Inject Scoped<" + targetShort
                     + "> and call get() where it is needed",
                 "CAJETA_ERROR_SCOPE_WIDENING");
+        };
+        auto refuseWidening = [&](const string& site, const ComponentDescriptorPtr& holder,
+                                  const ComponentDescriptorPtr& target) {
+            refuseWideningScopes(site, holder->klass->getQName()->toCanonical(), holder->scope,
+                                 target->klass->getQName()->toCanonical(),
+                                 target->klass->getQName()->getTypeName(), target->scope);
         };
         // Resolved (field -> target) pairs are written back to resolvedFields, so
         // codegen needs no second lookup.
@@ -1434,6 +1461,13 @@ namespace cajeta {
                     rd.factory = res.factory;
                     rd.providerIdx = res.providerIdx;
                     edges[c].push_back(res.factory->selfComponent);
+                    auto& prov = res.factory->providers[res.providerIdx];
+                    if (prov.scope == AllocateMode::Scoped && prov.providedType
+                            && prov.providedType->getQName()) {
+                        refuseWideningScopes(site, c->klass->getQName()->toCanonical(),
+                            c->scope, prov.providedType->getQName()->toCanonical(),
+                            prov.providedType->getQName()->getTypeName(), prov.scopePub);
+                    }
                 } else {
                     rd.target = res.component;
                     edges[c].push_back(res.component);
@@ -1480,13 +1514,33 @@ namespace cajeta {
                                 + ", but no @Component/@Factory provides it",
                             "CAJETA_ERROR_MISSING_COMPONENT");
                     }
+                    // A scoped product holds its inputs for the activation, so they
+                    // must outlive it, as a field must outlive its holder (§11.5).
+                    const string paramSite = "@Inject param '" + fp.param->getName() + "' of "
+                        + f->klass->getQName()->toCanonical() + "."
+                        + (p.method ? p.method->getName() : string("?"));
+                    const string productName = (p.providedType && p.providedType->getQName())
+                        ? p.providedType->getQName()->toCanonical() : string("?");
                     if (pr.factory) {
                         fp.resolvedFactory = pr.factory;
                         fp.resolvedProviderIdx = pr.providerIdx;
                         edges[f->selfComponent].push_back(pr.factory->selfComponent);
+                        auto& dep = pr.factory->providers[pr.providerIdx];
+                        if (p.scope == AllocateMode::Scoped && dep.scope == AllocateMode::Scoped
+                                && dep.providedType && dep.providedType->getQName()) {
+                            refuseWideningScopes(paramSite, productName, p.scopePub,
+                                dep.providedType->getQName()->toCanonical(),
+                                dep.providedType->getQName()->getTypeName(), dep.scopePub);
+                        }
                     } else {
                         fp.resolvedTarget = pr.component;
                         edges[f->selfComponent].push_back(pr.component);
+                        if (p.scope == AllocateMode::Scoped && pr.component && pr.component->klass) {
+                            refuseWideningScopes(paramSite, productName, p.scopePub,
+                                pr.component->klass->getQName()->toCanonical(),
+                                pr.component->klass->getQName()->getTypeName(),
+                                pr.component->scope);
+                        }
                     }
                 }
             }

@@ -239,6 +239,27 @@ namespace cajeta {
                     depPtr = builder->CreateCall(
                         prov.accessor->getLlvmFunctionType(), accFn, {},
                         rd.field->getName() + "_dep");
+                    // component-scopes §11.6: a scoped product the factory left
+                    // absent (null) reaches only an optional site.
+                    if (prov.scope == CajetaModule::AllocateMode::Scoped && !rd.optional
+                            && prov.scopePub) {
+                        const std::string product = (prov.providedType
+                                && prov.providedType->getQName())
+                            ? prov.providedType->getQName()->toCanonical() : std::string("?");
+                        llvm::BasicBlock* missing = llvm::BasicBlock::Create(
+                            ctx, rd.field->getName() + "_absent", llvmFunction);
+                        llvm::BasicBlock* present = llvm::BasicBlock::Create(
+                            ctx, rd.field->getName() + "_present", llvmFunction);
+                        builder->CreateCondBr(builder->CreateICmpEQ(depPtr, nullPtr),
+                                              missing, present);
+                        builder->SetInsertPoint(missing);
+                        emitThrowStdlibException(module, "cajeta.error.NotProvidedException",
+                            "product " + product + " in scope \"" + prov.scopePub->qualified()
+                                + "\" is absent: its factory returned null, and "
+                                + canonical + "." + rd.field->getName()
+                                + " is not optional");
+                        builder->SetInsertPoint(present);
+                    }
                 } else {
                     depPtr = llvm::ConstantPointerNull::get(
                         llvm::cast<llvm::PointerType>(ptrTy));

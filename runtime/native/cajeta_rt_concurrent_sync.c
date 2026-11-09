@@ -1120,6 +1120,18 @@ static void __cajeta_anchor_publish_in(struct cajeta_anchor_claim* claim, void* 
                                        void (*drop_fn)(void*), void (*pre_destroy)(void*)) {
     struct cajeta_anchor_table* t = claim->table;
     pthread_mutex_lock(&t->lock);
+    // A slot is created when its build starts, but the scope ends newest
+    // first, so it moves to the head when the build completes: whatever it
+    // injected finished first and ends after it.
+    if (t->head != claim->slot) {
+        struct cajeta_anchor_slot** link = &t->head;
+        while (*link && *link != claim->slot) link = &(*link)->next;
+        if (*link) {
+            *link = claim->slot->next;
+            claim->slot->next = t->head;
+            t->head = claim->slot;
+        }
+    }
     claim->slot->instance = instance;
     claim->slot->drop_fn = drop_fn;
     claim->slot->pre_destroy = pre_destroy;
