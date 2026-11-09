@@ -153,6 +153,12 @@ namespace xpu {
         virtual llvm::Value* blockPadAddr(llvm::IRBuilderBase& b, llvm::Value* idx,
                                           uint32_t period, uint32_t pad);
 
+        // True when blockPadAddr is not the identity. Only then does a
+        // cooperative-matrix load or store receive the bare tile base and the
+        // fragment offset in LdsBlockPad; a target that lays the tile out
+        // linearly gets the offset applied to the pointer, as for a plain tile.
+        virtual bool padsBlockPaddedTiles() const { return false; }
+
         // Device printf: `fmt` is an i8* constant format string, `args` the already
         // lowered scalars (no C varargs in the language). The default REJECTS.
         virtual void devicePrintf(llvm::IRBuilderBase& b, llvm::Module& m,

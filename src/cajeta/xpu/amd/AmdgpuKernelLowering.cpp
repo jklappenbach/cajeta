@@ -333,6 +333,8 @@ public:
 
     // Block-padded LDS tile: physical = idx + (idx / period) * pad. The byte period is
     // independent of the stride, so it de-conflicts the store and the transposed read.
+    bool padsBlockPaddedTiles() const override { return true; }
+
     llvm::Value* blockPadAddr(llvm::IRBuilderBase& b, llvm::Value* idx,
                               uint32_t period, uint32_t pad) override {
         if (period == 0 || pad == 0) return idx;

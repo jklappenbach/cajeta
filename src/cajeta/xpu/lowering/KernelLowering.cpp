@@ -5607,7 +5607,11 @@ private:
             auto bp = blockPadOfArg(args[0].expression, &tileBase);
             LdsBlockPad blk;
             llvm::Value* ptr;
-            if (bp.first) {
+            // A target that does not pad lays the tile out linearly, and its
+            // whole-tile loads ignore LdsBlockPad, so the offset goes on the
+            // pointer (cajeta-ml-gpu 23.2.3: nvptx and spir-v read every
+            // fragment of a padded tile at its base).
+            if (bp.first && target.padsBlockPaddedTiles()) {
                 ptr = tileBase;
                 blk.period = bp.first;
                 blk.pad = bp.second;
