@@ -17,6 +17,62 @@
 // MUST equal the SPIR-V handlefrombinding `range` and the launch marshalling cap.
 #define CAJ_VK_BINDLESS_MAX 16
 
+// SPIR-V capabilities the device creation enables, as bits of cajeta_vk.caps;
+// a module declaring one the device lacks is refused by name before the
+// driver compiles it (RADV segfaults on such a module; benchmark-reference 14.3.7).
+#define CAJ_VK_CAP_FLOAT16       (1u << 0)
+#define CAJ_VK_CAP_INT8          (1u << 1)
+#define CAJ_VK_CAP_INT16         (1u << 2)
+#define CAJ_VK_CAP_INT64         (1u << 3)
+#define CAJ_VK_CAP_STORAGE8      (1u << 4)
+#define CAJ_VK_CAP_STORAGE16     (1u << 5)
+#define CAJ_VK_CAP_COOPMAT       (1u << 6)
+#define CAJ_VK_CAP_INT64_ATOMICS (1u << 7)
+#define CAJ_VK_CAP_RAYQUERY      (1u << 8)
+#define CAJ_VK_CAP_VMM           (1u << 9)
+
+// The first OpCapability in the module prologue of `w` that `have` lacks, or
+// 0; *name gets the capability's name. Capabilities the runtime does not
+// track pass, as does anything that is not a SPIR-V module.
+uint32_t __cajeta_xpu_vk_spv_missing_capability(const uint32_t* w, size_t nwords,
+                                                uint32_t have, const char** name) {
+    static const struct { uint32_t cap; uint32_t bit; const char* name; } known[] = {
+        { 9,    CAJ_VK_CAP_FLOAT16,       "Float16" },
+        { 39,   CAJ_VK_CAP_INT8,          "Int8" },
+        { 22,   CAJ_VK_CAP_INT16,         "Int16" },
+        { 11,   CAJ_VK_CAP_INT64,         "Int64" },
+        { 4448, CAJ_VK_CAP_STORAGE8,      "StorageBuffer8BitAccess" },
+        { 4449, CAJ_VK_CAP_STORAGE8,      "UniformAndStorageBuffer8BitAccess" },
+        { 4433, CAJ_VK_CAP_STORAGE16,     "StorageBuffer16BitAccess" },
+        { 4434, CAJ_VK_CAP_STORAGE16,     "UniformAndStorageBuffer16BitAccess" },
+        { 6022, CAJ_VK_CAP_COOPMAT,       "CooperativeMatrixKHR" },
+        { 6,    CAJ_VK_CAP_INT64_ATOMICS, "Int64Atomics" },
+        { 4472, CAJ_VK_CAP_RAYQUERY,      "RayQueryKHR" },
+        { 5345, CAJ_VK_CAP_VMM,           "VulkanMemoryModel" },
+    };
+    if (name) *name = NULL;
+    if (!w || nwords < 6 || w[0] != 0x07230203u) return 0;
+    size_t i = 5;
+    while (i < nwords) {
+        uint32_t op = w[i] & 0xFFFFu;
+        uint32_t wc = w[i] >> 16;
+        if (wc == 0 || i + wc > nwords) return 0;
+        if (op == 17 && wc == 2) {
+            uint32_t cap = w[i + 1];
+            for (size_t k = 0; k < sizeof(known) / sizeof(known[0]); ++k) {
+                if (known[k].cap == cap && !(have & known[k].bit)) {
+                    if (name) *name = known[k].name;
+                    return cap;
+                }
+            }
+        } else if (op != 10 && op != 11) {
+            return 0;    // past OpCapability / OpExtension / OpExtInstImport: the prologue is over
+        }
+        i += wc;
+    }
+    return 0;
+}
+
 #if defined(CAJETA_RT_HAS_VULKAN)
 #include <vulkan/vulkan.h>
 
@@ -102,6 +158,9 @@ struct cajeta_vk {
     // Ray query: extensions resolved and enabled only where supported, else 0.
     int rayQuery;                // 1 if AS/ray-query is usable on this device
     int atomicInt64;             // 1 if shaderBufferInt64Atomics is enabled
+    uint32_t caps;               // CAJ_VK_CAP_* bits enabled at vkCreateDevice
+    int validationErrors;        // errors the validation layer reported so far
+    char validationMsg[600];     // the last one, for the refusal line
     PFN_vkGetBufferDeviceAddress vkGetBufferDeviceAddress;
     PFN_vkGetAccelerationStructureBuildSizesKHR vkGetAccelerationStructureBuildSizesKHR;
     PFN_vkCreateAccelerationStructureKHR vkCreateAccelerationStructureKHR;
@@ -198,6 +257,22 @@ static int cajeta_xpu_vk_find_memory_type(uint32_t typeBits,
 }
 
 // Caller holds g_xpu_cuda_lock. Bring up instance/device/queue/cmdpool.
+#if defined(VK_EXT_debug_utils)
+// Records a validation-layer error (count and text) for the pipeline build to read.
+static VKAPI_ATTR VkBool32 VKAPI_CALL caj_vk_debug_cb(
+        VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+        VkDebugUtilsMessageTypeFlagsEXT types,
+        const VkDebugUtilsMessengerCallbackDataEXT* data, void* user) {
+    (void) types; (void) user;
+    if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) && data && data->pMessage) {
+        g_xpu_vk.validationErrors++;
+        strncpy(g_xpu_vk.validationMsg, data->pMessage, sizeof(g_xpu_vk.validationMsg) - 1);
+        g_xpu_vk.validationMsg[sizeof(g_xpu_vk.validationMsg) - 1] = 0;
+    }
+    return VK_FALSE;
+}
+#endif
+
 static int cajeta_xpu_vulkan_init_locked(void) {
     if (g_xpu_vk.loaded == 1) return 1;
     if (g_xpu_vk.loaded == -1) return 0;
@@ -245,6 +320,8 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     g_xpu_vk.vkCreateInstance = (PFN_vkCreateInstance)
         g_xpu_vk.getInstanceProcAddr(VK_NULL_HANDLE, "vkCreateInstance");
     if (!g_xpu_vk.vkCreateInstance) return 0;
+    g_xpu_vk.validationErrors = 0;
+    g_xpu_vk.validationMsg[0] = 0;
 
     VkApplicationInfo app;
     memset(&app, 0, sizeof(app));
@@ -255,8 +332,9 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     memset(&ici, 0, sizeof(ici));
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo = &app;
-#if defined(VK_KHR_portability_enumeration)
-    const char* instExts[1];
+    const char* instExts[2];
+    uint32_t nInstExts = 0;
+    int haveDebugUtils = 0;
     PFN_vkEnumerateInstanceExtensionProperties enumInstExt =
         (PFN_vkEnumerateInstanceExtensionProperties)
         g_xpu_vk.getInstanceProcAddr(VK_NULL_HANDLE,
@@ -269,21 +347,47 @@ static int cajeta_xpu_vulkan_init_locked(void) {
                 malloc(n * sizeof(VkExtensionProperties));
             if (e) {
                 enumInstExt(NULL, &n, e);
-                for (uint32_t i = 0; i < n; ++i)
+                for (uint32_t i = 0; i < n; ++i) {
+#if defined(VK_KHR_portability_enumeration)
                     if (strcmp(e[i].extensionName,
                                VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) == 0) {
-                        instExts[0] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
-                        ici.enabledExtensionCount = 1;
-                        ici.ppEnabledExtensionNames = instExts;
+                        instExts[nInstExts++] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
                         ici.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
                     }
+#endif
+#if defined(VK_EXT_debug_utils)
+                    // The validation layer's errors reach caj_vk_debug_cb, so an
+                    // invalid module is refused with its VUID instead of compiled.
+                    if (strcmp(e[i].extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0) {
+                        instExts[nInstExts++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+                        haveDebugUtils = 1;
+                    }
+#endif
+                }
                 free(e);
             }
         }
     }
-#endif
+    ici.enabledExtensionCount = nInstExts;
+    ici.ppEnabledExtensionNames = nInstExts ? instExts : NULL;
     if (g_xpu_vk.vkCreateInstance(&ici, NULL, &g_xpu_vk.instance) != VK_SUCCESS)
         return 0;
+#if defined(VK_EXT_debug_utils)
+    if (haveDebugUtils) {
+        PFN_vkCreateDebugUtilsMessengerEXT mk = (PFN_vkCreateDebugUtilsMessengerEXT)
+            g_xpu_vk.getInstanceProcAddr(g_xpu_vk.instance, "vkCreateDebugUtilsMessengerEXT");
+        if (mk) {
+            VkDebugUtilsMessengerCreateInfoEXT mci;
+            memset(&mci, 0, sizeof(mci));
+            mci.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+            mci.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+            mci.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT;
+            mci.pfnUserCallback = caj_vk_debug_cb;
+            VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
+            mk(g_xpu_vk.instance, &mci, NULL, &messenger);
+        }
+    }
+#endif
 
     #define CAJ_VKI(nm) g_xpu_vk.nm = (PFN_##nm)                               \
         g_xpu_vk.getInstanceProcAddr(g_xpu_vk.instance, #nm)
@@ -502,7 +606,7 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     }
 
     // Emitted SPIR-V can declare the Int8/Int64 capabilities, which these back.
-    int wantInt8 = 0, wantInt64 = 0, wantInt16 = 0;
+    int wantInt8 = 0, wantInt64 = 0, wantInt16 = 0, wantFloat16 = 0;
     // Kernels loading bytes or halves straight from a StorageBuffer declare
     // StorageBuffer8BitAccess; RADV does not reject a module missing the feature —
     // it CRASHES compiling it. Probe and enable per bit.
@@ -524,6 +628,7 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         qf2.pNext = &qi8;
         getFeatures2(g_xpu_vk.phys, &qf2);
         wantInt8 = qi8.shaderInt8 ? 1 : 0;
+        wantFloat16 = qi8.shaderFloat16 ? 1 : 0;
         wantInt64 = qf2.features.shaderInt64 ? 1 : 0;
         wantInt16 = qf2.features.shaderInt16 ? 1 : 0;
 #if defined(VK_VERSION_1_3)
@@ -699,10 +804,11 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     }
 
     VkPhysicalDeviceShaderFloat16Int8Features enInt8;
-    if (wantInt8) {
+    if (wantInt8 || wantFloat16) {
         memset(&enInt8, 0, sizeof(enInt8));
         enInt8.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
-        enInt8.shaderInt8 = VK_TRUE;
+        enInt8.shaderInt8 = wantInt8 ? VK_TRUE : VK_FALSE;
+        enInt8.shaderFloat16 = wantFloat16 ? VK_TRUE : VK_FALSE;
         enInt8.pNext = (void*) dci.pNext;
         dci.pNext = &enInt8;
     }
@@ -804,6 +910,19 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     g_xpu_vk.hasHostQueryReset = wantHostQueryReset;
     g_xpu_vk.hasSync2 = wantSync2;
     g_xpu_vk.hasCalibratedTs = wantCalTs;
+    g_xpu_vk.caps = 0;
+    if (wantFloat16) g_xpu_vk.caps |= CAJ_VK_CAP_FLOAT16;
+    if (wantInt8) g_xpu_vk.caps |= CAJ_VK_CAP_INT8;
+    if (wantInt16) g_xpu_vk.caps |= CAJ_VK_CAP_INT16;
+    if (wantInt64) g_xpu_vk.caps |= CAJ_VK_CAP_INT64;
+    if (qs8.storageBuffer8BitAccess || qs8.uniformAndStorageBuffer8BitAccess)
+        g_xpu_vk.caps |= CAJ_VK_CAP_STORAGE8;
+    if (qs16.storageBuffer16BitAccess || qs16.uniformAndStorageBuffer16BitAccess)
+        g_xpu_vk.caps |= CAJ_VK_CAP_STORAGE16;
+    if (wantCoopMat) g_xpu_vk.caps |= CAJ_VK_CAP_COOPMAT;
+    if (g_xpu_vk.atomicInt64) g_xpu_vk.caps |= CAJ_VK_CAP_INT64_ATOMICS;
+    if (wantRayQuery) g_xpu_vk.caps |= CAJ_VK_CAP_RAYQUERY;
+    if (wantVmm) g_xpu_vk.caps |= CAJ_VK_CAP_VMM;
 
     #define CAJ_VKD(nm) g_xpu_vk.nm = (PFN_##nm)                               \
         g_xpu_vk.getDeviceProcAddr(g_xpu_vk.device, #nm)
@@ -2930,6 +3049,9 @@ static struct caj_vk_pipe* caj_vk_pipe_get(
         unsigned bx, unsigned by, unsigned bz, unsigned sharedBytes,
         int userSpecCount, const int32_t* userSpecValues) {
     int nUser = userSpecCount;
+    int valBefore = 0;
+    const char* capName = NULL;
+    uint32_t capMissing = 0;
     if (nUser < 0) nUser = 0;
     if (nUser > 60) nUser = 60;
     for (int i = 0; i < g_vk_pipe_count; ++i) {
@@ -2962,14 +3084,28 @@ static struct caj_vk_pipe* caj_vk_pipe_get(
     P->writesMask = caj_vk_spv_written_mask((const uint32_t*) spirv,
                                             (size_t) (len / 4));
 
+    capMissing = __cajeta_xpu_vk_spv_missing_capability(
+        (const uint32_t*) spirv, (size_t) (len / 4), g_xpu_vk.caps, &capName);
+    if (capMissing) {
+        fprintf(stderr, "cajeta.xpu.vulkan: kernel '%s' declares SPIR-V capability "
+                "%s (%u), which this device has not enabled; refusing the module\n",
+                entry ? entry : "?", capName ? capName : "?", (unsigned) capMissing);
+        goto fail;
+    }
     VkShaderModuleCreateInfo smci;
     memset(&smci, 0, sizeof(smci));
     smci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     smci.codeSize = (size_t) len;
     smci.pCode = (const uint32_t*) spirv;
+    valBefore = g_xpu_vk.validationErrors;
     if (g_xpu_vk.vkCreateShaderModule(g_xpu_vk.device, &smci, NULL,
                                       &P->module) != VK_SUCCESS)
         goto fail;
+    if (g_xpu_vk.validationErrors != valBefore) {
+        fprintf(stderr, "cajeta.xpu.vulkan: kernel '%s': the validation layer rejected "
+                "the module; refusing it: %s\n", entry ? entry : "?", g_xpu_vk.validationMsg);
+        goto fail;
+    }
 
     {
         VkDescriptorSetLayoutBinding binds[64];

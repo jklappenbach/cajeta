@@ -64,8 +64,15 @@ for tool in nvidia-smi vulkaninfo hipconfig rocminfo rocm-smi; do
 done
 DIG="$OUTD/xpu-showcase"; rm -rf "$DIG"; mkdir -p "$DIG"
 
+# The vulkan leg runs under the Khronos validation layer when it is installed:
+# RADV segfaults on an invalid SPIR-V module, the layer names the instruction
+# first and the runtime refuses the module (benchmark-reference 14.3.7).
+VK_VALIDATION=""
+[[ -f /usr/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json ]] && VK_VALIDATION=VK_LAYER_KHRONOS_validation
+
 run_leg() {   # run_leg <binary> <backend> <tag> -> CSV path in $LEG_CSV
     local b="$1" be="$2" tag="$3" csv="$OUTD/xpu-$3.csv" log="$OUTD/xpu-$3.log" t0=$SECONDS rc=0
+    local layers=""; [[ "$be" == vulkan ]] && layers="$VK_VALIDATION"
     rm -f "$csv" "$OUTD"/xpu-lddebug-"$tag".*
     if [[ "$HELD" == 1 ]]; then
         env CAJETA_BENCH_NO_GPU=1 CAJETA_XPU_BACKEND="$be" CAJETA_BENCH_SMOKE=1 PROFILE_RUN_ID="xpu-$tag" \
@@ -80,9 +87,9 @@ run_leg() {   # run_leg <binary> <backend> <tag> -> CSV path in $LEG_CSV
         rm -f "$OUTD"/xpu-lddebug-"$tag".*
     else
         env CAJETA_XPU_BACKEND="$be" CAJETA_BENCH_SMOKE=1 PROFILE_RUN_ID="xpu-$tag" CAJETA_XPU_SHOWCASE_DIR="$DIG" \
-            "$b" --run --area xpu --out "$csv.xpu" >"$log" 2>&1 || rc=$?
+            ${layers:+VK_INSTANCE_LAYERS="$layers"} "$b" --run --area xpu --out "$csv.xpu" >"$log" 2>&1 || rc=$?
         env CAJETA_XPU_BACKEND="$be" CAJETA_BENCH_SMOKE=1 PROFILE_RUN_ID="xpu-$tag" CAJETA_XPU_SHOWCASE_DIR="$DIG" \
-            "$b" --run --area gfx --out "$csv.gfx" >>"$log" 2>&1 || rc=$?
+            ${layers:+VK_INSTANCE_LAYERS="$layers"} "$b" --run --area gfx --out "$csv.gfx" >>"$log" 2>&1 || rc=$?
     fi
     { cat "$csv.xpu"; tail -n +2 "$csv.gfx"; } > "$csv"
     echo "[xpu] leg $tag (backend $be) $((SECONDS - t0)) s, harness exit $rc"

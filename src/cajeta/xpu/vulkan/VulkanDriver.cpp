@@ -294,8 +294,9 @@ bool VulkanDriver::Impl::bringUp(Impl& d) {
         qf2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
         qf2.pNext = &q8;
         getF2(d.phys, &qf2);
-        if (q8.shaderInt8) {
-            int8f.shaderInt8 = VK_TRUE;
+        if (q8.shaderInt8 || q8.shaderFloat16) {
+            int8f.shaderInt8 = q8.shaderInt8;
+            int8f.shaderFloat16 = q8.shaderFloat16;
             int8f.pNext = const_cast<void*>(dci.pNext);
             dci.pNext = &int8f;
         }
