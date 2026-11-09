@@ -20,6 +20,8 @@
 #                                      # --list of the release build, plus the ids only the
 #                                      # release-live-set-off build names (lang/alloc-live-set-off)
 #   ./bench.sh --competitors           # also run other-language competitors
+#   CAJETA_BENCH_RUN_ID=<id> ./bench.sh --resume-competitors
+#                                      # stages 3b and 4 only, onto an existing run
 #   ./bench.sh --machine phoenix ...   # record the machine (default: the hostname, lowercased)
 #   ./bench.sh --no-gpu ...            # CAJETA_BENCH_NO_GPU=1: no driver probe, no GPU check
 #   ./bench.sh --force ...             # run on a box that fails the quiet-box check (recorded)
@@ -73,6 +75,7 @@ competitor_packages() {
 
 # Split our own flags from harness passthrough args; capture --area.
 RUN_COMPETITORS=0
+RESUME=0
 AREA_FILTER=""
 FILTERED=0
 LIST=0
@@ -89,6 +92,7 @@ while [[ $# -gt 0 ]]; do
         --force) FORCE=1; shift ;;
         --no-gpu) NO_GPU=1; shift ;;
         --competitors) RUN_COMPETITORS=1; shift ;;
+        --resume-competitors) RUN_COMPETITORS=1; RESUME=1; shift ;;
         --machine) MACHINE="${2:-}"; [[ -n "$MACHINE" ]] || { echo "error: --machine needs a name" >&2; exit 1; }; shift 2 ;;
         --area) AREA_FILTER="${2:-}"; FILTERED=1; HARNESS_ARGS+=("$1" "${2:-}"); shift 2 ;;
         --bench|--variant) FILTERED=1; HARNESS_ARGS+=("$1" "${2:-}"); shift 2 ;;
@@ -222,6 +226,12 @@ OUT="${PROFILE_OUT:-build/results/$TS}"
 DATA="${PROFILE_DATA_DIR:-${SCRIPT_DIR}/datasets/cache}"
 export CAJETA_BENCH_IO_DIR="${CAJETA_BENCH_IO_DIR:-${SCRIPT_DIR}/build/io-data}"
 RUN_TS="$(date +%s)"
+# A resume keeps the harness rows and the run's own timestamp, and appends the
+# competitor rows and the host block the first pass did not get to.
+if [[ "$RESUME" == "1" ]]; then
+    [[ -s "$OUT/results.csv" ]] || { echo "error: --resume-competitors needs an existing run at $OUT/results.csv (CAJETA_BENCH_RUN_ID or PROFILE_OUT)" >&2; exit 1; }
+    RUN_TS="$(awk -F, '$1=="timestamp_unix" {print $2; exit}' "$OUT/env.csv" 2>/dev/null || true)"; RUN_TS="${RUN_TS:-$(date +%s)}"
+fi
 mkdir -p "$OUT" "$DATA" "$CAJETA_BENCH_IO_DIR"
 VENV_PY="${SCRIPT_DIR}/competitors/python/.venv/bin/python"
 [[ -x "$VENV_PY" ]] || VENV_PY="python3"
@@ -257,6 +267,10 @@ for d in $DATASETS; do
     esac
 done
 
+RC=0
+if [[ "$RESUME" == "1" ]]; then
+    echo "[bench] (2/4, 3/4) skipped: resuming $OUT ($(awk 'END {print NR - 1}' "$OUT/results.csv") rows)"
+else
 echo "[bench] (2/4) build --release"
 "$CAJETA" release >/dev/null
 
@@ -275,10 +289,10 @@ fi
 echo "[bench] (3/4) run benchmarks -> $OUT/results.csv (run id $TS)"
 # dev.cajeta.bench writes results.csv and env.csv; it exits 1 when a row failed
 # or was invalid (the run itself continues), so record that and carry on.
-RC=0
 PROFILE_DATA_DIR="$DATA" CAJETA_BENCH_RUN_ID="$TS" CAJETA_BENCH_RUN_TS="$RUN_TS" \
     CAJETA_BENCH_CAJETA_VERSION="$(printf '%s' "$CAJETA_VER" | awk '{print $2}')" \
     ./build/bench --run --out "$OUT/results.csv" ${HARNESS_ARGS[@]+"${HARNESS_ARGS[@]}"} || RC=$?
+fi
 
 if [[ "$RUN_COMPETITORS" == "1" ]]; then
     echo "[bench] (3b) competitors (cross-language; builds cargo/cmake/go on first run)"
