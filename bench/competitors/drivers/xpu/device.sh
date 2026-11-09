@@ -45,6 +45,10 @@ for be in cuda hip; do
         [[ "$a" == "$AREA" ]] && want+=("$id")
     done <<< "$ids"
     mapfile -t uniq < <(printf '%s\n' "${want[@]}" | awk '!seen[$0]++')
-    PROFILE_WARMUP="${PROFILE_WARMUP:-3}" PROFILE_TRIALS="${PROFILE_TRIALS:-20}" "$bin" --rows "${uniq[@]}" \
-        || echo "device.sh: devserver-$be exited non-zero" >&2
+    # One process per id, so every row sees the context state it has when run
+    # alone (a cuBLAS bf16 row after the others in one context ran 2.5x slower).
+    for id in "${uniq[@]}"; do
+        PROFILE_WARMUP="${PROFILE_WARMUP:-3}" PROFILE_TRIALS="${PROFILE_TRIALS:-20}" "$bin" --rows "$id" \
+            || echo "device.sh: devserver-$be exited non-zero on $id" >&2
+    done
 done
