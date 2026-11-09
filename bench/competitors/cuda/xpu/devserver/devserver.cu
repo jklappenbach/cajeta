@@ -480,7 +480,7 @@ struct Timer : Workload {
 
 struct Texture : Workload {
     unsigned threads = 1u << 20, per = 256; gpuArray_t arr = 0; gpuTextureObject_t tex = 0; float* out = 0; double want = 0; std::vector<float> h;
-    Texture() { id = "texture-sample-rate"; lang = GPU_LANG; library = "CUDA texture objects (RGBA8 normalized, linear)"; unit = "samples/s"; input = (int64_t) threads * per; }
+    Texture() { id = "texture-sample-rate"; lang = GPU_LANG; library = "CUDA texture objects (RGBA8 normalized linear)"; unit = "samples/s"; input = (int64_t) threads * per; }
     static int texel(int x, int y, int ch) { return (x * 3 + y * 5 + ch * 7) % 256; }
     bool prepare(const std::string&) override {
         if (arr) return true;
