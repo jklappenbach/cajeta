@@ -203,14 +203,6 @@ public class GpuMatMulF16Bench extends XpuBench {
         return v;
     }
 
-    // Held on vulkan: the check fails there (sum C 2.5x sum B at n256, 2026-11-08;
-    // benchmark-reference 14.3.2), so the row is a reasoned skip until it is fixed.
-    public void setupDevice() {
-        if (XpuEnv.backend().equals("vulkan")) {
-            this.live = false;
-            this.why = "held: C != A*B on vulkan (sum C 2.5x sum B at n256, 2026-11-08; benchmark-reference 14.3.2)";
-        }
-    }
 
     // A = identity, B[idx]=idx%100 (exact in f16) ⇒ C == B exactly.
     public void prepare(String variant) {
