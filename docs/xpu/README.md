@@ -1,13 +1,11 @@
 # One kernel, any device
 
-A kernel in Cajeta is written once, in the language of the program that
-launches it. The compiler lowers one source to all major GPUs and CPUs by
-directly supporting native drivers, Vulkan, and CPU virtualization.
+The goal is to allow developers to write a kernel in Cajeta once, and have
+it run everywhere. The compiler lowers one source to all major GPUs and CPUs
+by directly supporting native drivers, Vulkan, and CPU virtualization.
 Furthermore, Cajeta features a variety of run-time profiling and
 optimization heuristics that can help your code run optimally on untested
 architectures.
-
-The goal is to truly write once, run everywhere.
 
 ## The stack
 
