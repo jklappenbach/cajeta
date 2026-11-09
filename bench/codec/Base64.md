@@ -23,6 +23,10 @@ id: codec/base64-decode
 metric: throughput
 ```
 
+## Standing
+
+The weakest rows of the package. Encoding is 330x and decoding 60x behind simdutf, which is SIMD throughout, and 10x to 25x behind the scalar libraries (Rust base64, Go, Java, Python). simdutf is SIMD end to end; a SIMD codec is the fix and is not yet scheduled.
+
 ## Reproduce
 
 ```sh

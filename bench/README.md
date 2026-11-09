@@ -8,10 +8,11 @@ says what is measured, against what, and how it is checked, and it shows the
 chart of the last published run for the machine selected at the top of the
 page.
 
-The catalog, the harness and the competitor programs are in place, and the
-first published run waits for a quiet box. Until then every
-chart says "not yet measured" and no page carries a standing. The numbers
-will arrive as one commit of CSV files per machine.
+The first published run is proton's, 2026-11-09, on cajeta 0.53.2: the
+compiler catalog against Rust, C++, Go, Java and Python, the HIP C++ and
+PyTorch device competitors, dev.cajeta.ml against scikit-learn and PyTorch,
+and XGBoost. The llm, http and primavera libraries and the Phoenix (CUDA)
+rows are not in it yet. Every page below carries its standing from that run.
 
 ## How to read a page
 
@@ -31,7 +32,19 @@ and why.
 
 Each package shows the geometric mean of Cajeta's time against the best
 competitor over the package's benchmarks, with wins, losses and skips
-counted. It is written up after the first run.
+counted. Parity is 1; above it Cajeta is slower.
+
+On proton, Cajeta is at or ahead of parity where the work is a loop, a
+syscall or a GPU kernel: counted loops, direct calls, arrays, value structs,
+the Benchmarks Game programs, file and socket throughput, process pipes, the
+schema encoder, atomics, and the xpu package on the Radeon 8060S (1.2x, with
+f64 and f16 GEMM ahead of rocBLAS). It is behind on small heap objects (13x to
+21x), locks and channels (8x to 29x), strings and streams (13x to 171x), and
+the cpu tensor paths that math, nucleo and the ml cpu rows run on (35x, 142x
+and 19x), where every element is read through an out-of-line call
+(benchmark-reference 22.2.8). The toolchain's cold paths fill an empty cache
+(31x). Each package page names its rows, and the cause where one is
+known.
 
 ## The language and the stdlib
 

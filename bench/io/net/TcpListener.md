@@ -17,6 +17,10 @@ id: io/tcp-accept-rate
 metric: time
 ```
 
+## Standing
+
+Accept rate is 2.3x behind Rust's std listener and 1.2x behind Go, with tokio and Java at 0.5x of Cajeta's time. Not yet investigated.
+
 ## Reproduce
 
 ```sh

@@ -23,6 +23,10 @@ id: math/ray-aabb
 metric: throughput
 ```
 
+## Standing
+
+Ray against AABB is 9x behind glam and 3x behind C++; ray against sphere 13x behind C++ and 10x behind glam and joml. Not yet investigated.
+
 ## Reproduce
 
 ```sh

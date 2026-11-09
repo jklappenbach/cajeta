@@ -17,6 +17,10 @@ id: io/bufferpool-acquire-release
 metric: time
 ```
 
+## Standing
+
+Acquire and release is 2.3x behind Rust's BytesMut reuse and 5x behind Go's sync.Pool; Netty's pooled allocator is 5x slower than Cajeta. Not yet investigated.
+
 ## Reproduce
 
 ```sh

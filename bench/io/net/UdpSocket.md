@@ -17,6 +17,10 @@ id: io/udp-send-rate
 metric: throughput
 ```
 
+## Standing
+
+Send rate is 1.2x of Rust's std socket and within 10% of Go and Java: parity.
+
 ## Reproduce
 
 ```sh

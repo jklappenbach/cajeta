@@ -61,6 +61,10 @@ id: lang/loop-early-exit
 metric: time
 ```
 
+## Standing
+
+Counted loops, nested loops, ranges, reductions and both foreach forms are at parity with Rust and C++ (0.96x to 1.21x), with Go and Java 3x to 9x slower than Cajeta on the counted forms. Without bounds checks the indexed loop is 1.02x of Rust's get_unchecked; the bounds-on variant has no competitor pair. Early exit is 5.9x behind C++ and Rust and 2.4x behind Java. Not yet investigated.
+
 ## Reproduce
 
 ```sh

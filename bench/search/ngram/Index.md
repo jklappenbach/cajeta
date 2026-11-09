@@ -23,6 +23,10 @@ id: search/ngram-query
 metric: time
 ```
 
+## Standing
+
+Building the index is 5x and querying 3x behind a Rust HashMap of n-grams; Python's dict is at parity with Cajeta on build and 1.5x slower on query, Lucene 2.9x slower on query. Not yet investigated.
+
 ## Reproduce
 
 ```sh

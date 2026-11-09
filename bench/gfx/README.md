@@ -8,4 +8,4 @@ This section measures texture sampling from a kernel.
 
 ## Standing
 
-Written after the first published run.
+Texture sampling at 1.05x of HIP C++ on the one benchmark: parity.

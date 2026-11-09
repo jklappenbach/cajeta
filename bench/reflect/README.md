@@ -8,4 +8,4 @@ This section measures runtime type information.
 
 ## Standing
 
-Written after the first published run.
+Geometric mean 180x behind over 2 benchmarks. Class lookup by name is 2366x behind Go's reflect and field enumeration 14x behind Java; not yet investigated.

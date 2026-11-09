@@ -17,6 +17,10 @@ id: concurrent/semaphore-acquire-release
 metric: time
 ```
 
+## Standing
+
+Acquire and release is 10.9x behind java.util.concurrent, 2x behind tokio's semaphore and 5x behind a POSIX sem_t. The uncontended path is [Lock](Lock.md)'s; not yet investigated.
+
 ## Reproduce
 
 ```sh

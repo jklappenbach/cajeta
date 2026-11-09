@@ -17,6 +17,10 @@ id: concurrent/fiberlocal-get-set
 metric: time
 ```
 
+## Standing
+
+Get and set is 1357x behind a Rust thread_local Cell and 7x behind Go's context.WithValue; C++ thread_local is a register read. The row is the deepest loss in the package and is not yet investigated.
+
 ## Reproduce
 
 ```sh

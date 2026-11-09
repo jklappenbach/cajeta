@@ -17,6 +17,10 @@ id: gfx/texture-sample-rate
 metric: throughput
 ```
 
+## Standing
+
+Bilinear sampling on the Radeon 8060S runs at 1.05x of the HIP C++ texture-object kernel: parity, within noise.
+
 ## Reproduce
 
 ```sh

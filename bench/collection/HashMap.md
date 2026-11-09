@@ -41,6 +41,10 @@ id: collection/hashmap-iterate
 metric: time
 ```
 
+## Standing
+
+Integer keys insert at 1.9x of ankerl's unordered_dense and lookups at 2.3x to 2.5x of hashbrown, with std::unordered_map and the Rust std map between 0.6x and 5x of Cajeta. String keys insert 14x behind ankerl and 3x to 7x behind the Rust maps. Iteration is 105x behind ankerl and 9x behind both Rust maps. The iteration and string-key gaps are not yet investigated.
+
 ## Reproduce
 
 ```sh

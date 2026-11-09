@@ -23,6 +23,10 @@ id: collection/immutableset-contains
 metric: time
 ```
 
+## Standing
+
+Contains is 3.1x behind hashbrown, in line with HashSet. Building is 45x behind Rust's std set and 5x behind Go's maps.Clone. Not yet investigated.
+
 ## Reproduce
 
 ```sh

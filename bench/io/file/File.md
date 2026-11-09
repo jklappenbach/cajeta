@@ -29,6 +29,10 @@ id: io/file-random-read
 metric: time
 ```
 
+## Standing
+
+Sequential read (0.99x of Rust) and write (within 10% of Java's FileChannel) are at parity: the kernel sets the pace. Random reads are 1.4x behind Rust's read_at and 1.3x to 1.4x behind Go and Java.
+
 ## Reproduce
 
 ```sh

@@ -23,6 +23,10 @@ id: math/random-normal
 metric: throughput
 ```
 
+## Standing
+
+Uniform is 18x and normal 23x behind the JDK generator, 7x to 9x behind numpy and 8x to 16x behind the C++ and Rust generators. Not yet investigated.
+
 ## Reproduce
 
 ```sh

@@ -8,4 +8,4 @@ This section measures the compile-time dependency-injection graph.
 
 ## Standing
 
-Written after the first published run.
+2.7x behind Go's wire on the one benchmark, 20x to 170x ahead of Dagger, Guice and Spring.

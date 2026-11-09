@@ -13,4 +13,4 @@ This section measures HTTP/1.1 and HTTP/2 serving, WebSocket, server-sent events
 
 ## Standing
 
-Written after the first published run.
+Not measured yet: the first published run (proton, 2026-11-09) holds no rows for this library. Its bench runs under its own repository and is collected by `bench.sh publish` once it has run on a quiet box.

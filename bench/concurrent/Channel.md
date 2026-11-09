@@ -29,6 +29,10 @@ id: concurrent/channel-mpmc
 metric: time
 ```
 
+## Standing
+
+SPSC is 11x behind Rust's std mpsc, MPSC 8x behind crossbeam and MPMC 8x behind Java's ArrayBlockingQueue; Go's channels are 3x to 7x faster than Cajeta. Not yet investigated.
+
 ## Reproduce
 
 ```sh

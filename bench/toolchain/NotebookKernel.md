@@ -17,6 +17,10 @@ id: toolchain/kernel-startup
 metric: time
 ```
 
+## Standing
+
+Kernel start-up is 7.8x behind ipykernel and 4x ahead of IJava. The kernel starts the JIT before it answers; it follows the [Startup](Startup.md) warm path.
+
 ## Reproduce
 
 ```sh

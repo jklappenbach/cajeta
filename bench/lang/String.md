@@ -61,6 +61,10 @@ id: lang/string-compare
 metric: time
 ```
 
+## Standing
+
+Uppercase is a win (0.87x of Rust, 46x ahead of C++'s toupper loop). Replace is 2.1x behind Rust and ahead of Go and Python; search is 6x behind memchr and 2x behind Rust's std find; concatenation 7.9x behind push_str. Compare is 13x behind Rust and 4x to 8x behind C++, Go and Java; split 17x behind Rust; the code-point walk 18x behind hand-decoded C++; the byte scan 171x behind Rust's bytes. The byte-scan row is the one to investigate first; none is yet scheduled.
+
 ## Reproduce
 
 ```sh

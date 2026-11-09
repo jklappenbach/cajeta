@@ -23,6 +23,10 @@ id: hash/defaulthasher-int
 metric: time
 ```
 
+## Standing
+
+Strings hash 1.8x behind Go's maphash and 1.2x behind Rust's std hasher; integers 2.4x behind Java and 7x to 10x ahead of Rust and Go. Not yet investigated.
+
 ## Reproduce
 
 ```sh

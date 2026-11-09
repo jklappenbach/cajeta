@@ -17,6 +17,10 @@ id: time/localdatetime-arith
 metric: time
 ```
 
+## Standing
+
+Arithmetic is 2.5x of chrono and 1.2x to 1.7x of jiff, Go and java.time. Not yet investigated.
+
 ## Reproduce
 
 ```sh

@@ -25,6 +25,10 @@ id: concurrent/tasks-1m-footprint
 metric: memory
 ```
 
+## Standing
+
+Spawn and await is 29x behind tokio::spawn, 3x behind Java virtual threads and 2x behind Python asyncio; Go goroutines are 25x faster than Cajeta and std::async 2.7x slower. The footprint row did not run. Not yet investigated.
+
 ## Reproduce
 
 ```sh

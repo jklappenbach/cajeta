@@ -17,6 +17,10 @@ id: io/uri-build
 metric: time
 ```
 
+## Standing
+
+Building is 16x behind Go's net/url and 4x to 9x behind Java and Rust; Python is at 0.8x of Cajeta. The same loss as [Uri](Uri.md); not yet investigated.
+
 ## Reproduce
 
 ```sh

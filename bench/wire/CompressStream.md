@@ -17,6 +17,10 @@ id: wire/compressstream-roundtrip
 metric: throughput
 ```
 
+## Standing
+
+The zlib round trip is 2.6x behind flate2 and 1.4x behind the C zlib, java.util.zip and Go's compress/flate. The zstd variant did not run on proton. Not yet investigated; the codec's own rows are on [Deflate](../codec/Deflate.md).
+
 ## Reproduce
 
 ```sh

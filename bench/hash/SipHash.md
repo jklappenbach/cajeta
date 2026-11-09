@@ -17,6 +17,10 @@ id: hash/siphash
 metric: throughput
 ```
 
+## Standing
+
+1.7x behind Rust's siphasher, with the C reference 1.6x and Guava 1.1x behind Cajeta. Not yet investigated.
+
 ## Reproduce
 
 ```sh

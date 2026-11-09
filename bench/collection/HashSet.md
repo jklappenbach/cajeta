@@ -23,6 +23,10 @@ id: collection/hashset-contains
 metric: time
 ```
 
+## Standing
+
+Deduplication is a win, 0.7x of Rust's std HashSet, with Go 1.5x and C++ 2x slower than Cajeta. Contains is 3.6x behind hashbrown and 1.6x behind the Rust std set.
+
 ## Reproduce
 
 ```sh

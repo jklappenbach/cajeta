@@ -23,6 +23,10 @@ id: math/stats-histogram
 metric: throughput
 ```
 
+## Standing
+
+Moments are 4x behind statrs and 1.5x behind commons-math3, with SciPy 2.7x slower than Cajeta. The histogram is 47x behind a plain Java loop and 5x behind numpy. On the cpu tensor paths; follows the tensor-element-access work.
+
 ## Reproduce
 
 ```sh

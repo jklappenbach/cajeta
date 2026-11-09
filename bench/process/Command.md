@@ -17,6 +17,10 @@ id: process/command-spawn-wait
 metric: time
 ```
 
+## Standing
+
+Spawn and wait is 1.04x of Rust's std::process and within 7% of posix_spawn and Go; Java and Python are 2x to 3x slower than Cajeta. Parity.
+
 ## Reproduce
 
 ```sh

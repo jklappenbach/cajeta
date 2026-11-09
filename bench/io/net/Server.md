@@ -23,6 +23,10 @@ id: io/server-echo-throughput
 metric: throughput
 ```
 
+## Standing
+
+A thousand idle connections cost the same as in Java, Rust, Go and Python (within 1%): the idle server is the kernel's. Echo throughput is 3.4x behind tokio and 2x to 3x behind Go and Java's selector; Python asyncio is 2.2x slower than Cajeta. Not yet investigated.
+
 ## Reproduce
 
 ```sh

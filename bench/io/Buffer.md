@@ -29,6 +29,10 @@ id: io/buffer-slice
 metric: time
 ```
 
+## Standing
+
+Fill is at parity with Rust's Vec (0.98x) and 15x to 20x ahead of Go and Java; reading primitives is 2.2x behind Rust's from_le_bytes and 2x behind Java's ByteBuffer; slicing is 11x behind a Rust slice and 4x to 5x behind Go and Java, the same loss as [Slice](../lang/Slice.md). Not yet investigated.
+
 ## Reproduce
 
 ```sh

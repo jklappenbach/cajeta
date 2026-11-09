@@ -17,6 +17,10 @@ id: process/process-pipe-100mb
 metric: throughput
 ```
 
+## Standing
+
+Piping 100 MB through a child is a win at 0.47x of Rust's std::process, with posix_spawn 2.7x, Go 3x and Java 6x slower than Cajeta.
+
 ## Reproduce
 
 ```sh

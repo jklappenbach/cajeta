@@ -12,4 +12,4 @@ This section measures JSON on the nativejson-benchmark corpus, CSV, Base64 and B
 
 ## Standing
 
-Written after the first published run.
+Geometric mean 11x behind over 20 benchmarks, no wins. Tokenizing and bind-skip JSON are within 2x of serde_json; the DOM, serializer, Base64 and CSV are 4x to 40x behind the fast libraries and 300x behind simdutf on Base64 encode. The deflate rows did not run. The Base64 gap is simdutf's SIMD path; the rest is not yet investigated.

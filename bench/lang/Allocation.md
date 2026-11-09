@@ -61,6 +61,10 @@ id: lang/alloc-struct-value
 metric: time
 ```
 
+## Standing
+
+Arrays (1.25x of C++) and value structs (0.99x of Rust) are at parity. Small heap objects are not: a single object is 21x behind Java's allocator, a churning ring 17x, and a transfer chain 13x, with C++ and Rust 5x to 15x faster than Cajeta as well. Java's bump-pointer allocator is the fastest thing on the chart. The allocation path is the single largest cost in this catalog; it is not yet investigated, and the live-set rows did not run.
+
 ## Reproduce
 
 ```sh

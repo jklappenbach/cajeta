@@ -53,6 +53,10 @@ id: lang/instanceof
 metric: time
 ```
 
+## Standing
+
+Direct calls are at parity with every language. Virtual calls are 4.6x behind Java and 2x behind C++, Rust and Go; interface calls 2.2x behind Java and within 1.2x of the others; templates 1.35x of Rust; lambdas 6x behind C++ and 3x to 6x behind Rust and Go. `instanceof` is 354x behind Java and 50x to 100x behind dynamic_cast and a Go type switch. The method-reference row measured 40 ns for a hundred million calls, so the compiler folded the loop and the row compares nothing. The instanceof row is the one to investigate first.
+
 ## Reproduce
 
 ```sh

@@ -23,4 +23,4 @@ This section measures buffers, files and sockets. Network rows run over loopback
 
 ## Standing
 
-Written after the first published run.
+Geometric mean 2.5x behind over 20 benchmarks, 3 wins and 17 losses. Where the kernel sets the pace, Cajeta is at parity: sequential file read and write, bulk TCP, UDP send, a thousand idle connections, and buffer fill; reading lines is a 4x win. The losses are echo throughput (3.4x) and latency (4x), the URI parser and builder (16x), slices (11x) and the line writer (8x), none yet investigated.

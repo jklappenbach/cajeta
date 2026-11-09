@@ -29,6 +29,10 @@ id: concurrent/atomic-contended-16
 metric: time
 ```
 
+## Standing
+
+Fetch-add and compare-and-swap are within 1.1x to 1.2x of the fastest language, and the 16-thread contended counter is a win at 0.94x of Rust with C++ 2x slower than Cajeta. The atomics lower to the same instructions everywhere.
+
 ## Reproduce
 
 ```sh

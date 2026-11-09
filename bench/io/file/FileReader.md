@@ -17,6 +17,10 @@ id: io/filereader-lines
 metric: throughput
 ```
 
+## Standing
+
+Reading lines is a win: 0.26x of Go's bufio.Scanner, with Rust's BufRead lines 7x, Java's BufferedReader 10x and Python 17x slower than Cajeta. 
+
 ## Reproduce
 
 ```sh

@@ -15,4 +15,4 @@ This section measures dates, times and formatting against the date libraries of 
 
 ## Standing
 
-Written after the first published run.
+Geometric mean 5.7x behind over 8 benchmarks, no wins. Clock, Instant and LocalDate are within 1.2x to 1.8x of the fastest library. Duration (14x), LocalTime (6x), the ISO formatter (13x) and region zones (114x) are the losses, none yet investigated.

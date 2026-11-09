@@ -17,4 +17,4 @@ This section measures tensors, linear algebra, FFT, random numbers, NumPy interc
 
 ## Standing
 
-Written after the first published run.
+Geometric mean 35x behind over 31 benchmarks, 2 wins and 29 losses. Transpose and rotation composition are wins or at parity; everything that touches tensor elements is 10x to 1000x behind, with LinAlg at 128x to 1000x and FFT at 144x to 309x. One cause: the cpu paths read every element through an out-of-line call (tensor-element-access, benchmark-reference 22.2.8). That is the cpu parity spec's first job and this package is where it shows.

@@ -17,6 +17,10 @@ id: time/zoneddatetime-region
 metric: time
 ```
 
+## Standing
+
+Region-zone arithmetic is 114x behind jiff and 50x behind Go and java.time; Python's zoneinfo is 2x faster than Cajeta. Not yet investigated.
+
 ## Reproduce
 
 ```sh

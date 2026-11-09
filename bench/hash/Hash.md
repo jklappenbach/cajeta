@@ -17,6 +17,10 @@ id: hash/hash-struct
 metric: time
 ```
 
+## Standing
+
+Hashing a struct is 3.3x behind boost::hash_combine and 2x behind Rust, with Go at 1.2x and Java 0.95x of Cajeta. Not yet investigated.
+
 ## Reproduce
 
 ```sh

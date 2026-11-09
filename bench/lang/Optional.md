@@ -17,6 +17,10 @@ id: lang/optional-map-unwrap
 metric: time
 ```
 
+## Standing
+
+Map and unwrap is 44x behind Rust's Option and 20x behind std::optional; Go's pair and Java's OptionalInt are 2x faster than Cajeta. Not yet investigated.
+
 ## Reproduce
 
 ```sh

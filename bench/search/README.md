@@ -10,4 +10,4 @@ This section measures edit distance, fuzzy matching and n-gram indexing.
 
 ## Standing
 
-Written after the first published run.
+Geometric mean 7x behind over 5 benchmarks, no wins. The n-gram index is within 3x to 5x of a Rust HashMap; the distance functions 5x to 8.5x behind rapidfuzz through `byteAt`; the fuzzy matcher 26x behind nucleo-matcher with no top-k cut-off.

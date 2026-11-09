@@ -17,6 +17,10 @@ id: nucleo/tape-forward-backward
 metric: time
 ```
 
+## Standing
+
+The tape row did not run on proton; the autodiff tape is not yet measured here. See [Transforms](Transforms.md) for grad.
+
 ## Reproduce
 
 ```sh

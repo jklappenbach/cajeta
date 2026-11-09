@@ -11,4 +11,4 @@ This section measures non-cryptographic hashing against the reference implementa
 
 ## Standing
 
-Written after the first published run.
+Geometric mean 2.1x behind over 8 benchmarks, no wins. XXH3-64 and XXH3-128 on 256 KiB inputs are at parity with the C library; short inputs and the struct and string hashers are 2x to 4x behind, not yet investigated.

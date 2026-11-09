@@ -17,6 +17,10 @@ id: io/bytebuffer-put-get
 metric: throughput
 ```
 
+## Standing
+
+Put and get is 3.2x behind Go's encoding/binary and 8x behind Java's ByteBuffer; Rust's bytes crate is 1.4x faster than Cajeta. Not yet investigated.
+
 ## Reproduce
 
 ```sh

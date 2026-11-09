@@ -17,6 +17,10 @@ id: io/uri-parse
 metric: time
 ```
 
+## Standing
+
+Parsing is 16x behind the Rust url crate and 8x to 10x behind Go's net/url and Java's URI; Python's urllib is at 0.95x of Cajeta. Not yet investigated.
+
 ## Reproduce
 
 ```sh

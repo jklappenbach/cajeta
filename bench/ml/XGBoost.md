@@ -29,6 +29,10 @@ id: ml/xgb-predict
 metric: throughput
 ```
 
+## Standing
+
+Fitting on the GPU is at parity with xgboost's gpu_hist (0.99x). On the cpu the histogram fit is 57x and prediction 56x behind xgboost's multi-threaded tree builder. Not yet investigated.
+
 ## Reproduce
 
 ```sh

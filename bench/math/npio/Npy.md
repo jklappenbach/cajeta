@@ -23,6 +23,10 @@ id: math/npy-save-i32
 metric: throughput
 ```
 
+## Standing
+
+Loading an int32 array is 2.75x behind the Java npy reader and 1.2x behind npyz; numpy is 1.5x slower than Cajeta. Saving is 6.3x behind Java and 2.5x to 5x behind npyz and numpy: the writer formats through the generic stream. Not yet investigated.
+
 ## Reproduce
 
 ```sh

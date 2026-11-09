@@ -23,6 +23,10 @@ id: time/datetime-parse-iso
 metric: time
 ```
 
+## Standing
+
+ISO formatting is 12.6x behind chrono and 4x to 5x behind jiff, Go and java.time; Python's datetime is 5x slower than Cajeta. The parse row did not run on proton. Not yet investigated.
+
 ## Reproduce
 
 ```sh

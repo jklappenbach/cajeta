@@ -23,6 +23,10 @@ id: math/fft-2d
 metric: time
 ```
 
+## Standing
+
+The 1-D transform is 209x to 309x behind rustfft and the 2-D transform 144x behind FFTW; numpy, pocketfft and JTransforms are 6x to 50x faster than Cajeta as well. The FFT runs on the cpu tensor paths ([Tensor](../Tensor.md)) and has none of the libraries' planning or SIMD butterflies. Not yet scheduled.
+
 ## Reproduce
 
 ```sh

@@ -23,6 +23,10 @@ id: codec/csv-write
 metric: throughput
 ```
 
+## Standing
+
+Parsing is 4x behind fast-cpp-csv-parse and writing 6x behind Rust's csv crate. Against the mainstream libraries the gap is 3x to 4x on both sides (Rust csv, Go encoding/csv, pandas, univocity); only Python's csv module is slower than Cajeta. Not yet investigated.
+
 ## Reproduce
 
 ```sh

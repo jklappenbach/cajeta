@@ -17,6 +17,10 @@ id: time/time-localdate-arith
 metric: time
 ```
 
+## Standing
+
+Arithmetic is 1.8x of chrono, with jiff and Go 1.3x to 1.7x slower than Cajeta and java.time 1.3x faster.
+
 ## Reproduce
 
 ```sh

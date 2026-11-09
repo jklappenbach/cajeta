@@ -19,6 +19,10 @@ id: xpu/kerneltimer-resolution
 metric: time
 ```
 
+## Standing
+
+Reading the timer is a win at 0.03x of a HIP event pair.
+
 ## Reproduce
 
 ```sh

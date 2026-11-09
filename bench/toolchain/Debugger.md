@@ -17,6 +17,10 @@ id: toolchain/debugger-attach
 metric: time
 ```
 
+## Standing
+
+Reaching the first breakpoint takes 21.5 s, 229x jdb and 100x gdb and debugpy: the debug adapter has no attach, so the row launches the tour under the JIT to a breakpoint, as its note says. The launch path is the [Startup](Startup.md) cold path. Not yet scheduled.
+
 ## Reproduce
 
 ```sh

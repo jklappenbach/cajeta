@@ -29,6 +29,10 @@ id: nucleo/transforms-jit
 metric: time
 ```
 
+## Standing
+
+vmap is 1.7x of jax and 2.9x ahead of torch; jit is 15x behind torch. grad of sum(t * exp(t)) over a million elements is 909x behind torch, 261 ms per call, on the cpu tensor paths. Follows the tensor-element-access work.
+
 ## Reproduce
 
 ```sh

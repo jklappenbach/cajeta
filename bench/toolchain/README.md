@@ -13,4 +13,4 @@ This section measures compile time, start-up, binary size, the build tool, the n
 
 ## Standing
 
-Written after the first published run.
+Geometric mean 31x behind over 12 benchmarks, no wins. A compiled executable starts in 0.45 ms, ahead of Go, Java and Python. Everything that goes through the JIT or the compiler is 8x to 1286x behind: a cold `jit-run` takes 16.8 s and a cold build 69 s, both filling an empty cache, warm compiles are 39x behind g++, and the debugger row is a cold launch. Compile time is the toolchain's open problem.

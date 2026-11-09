@@ -23,6 +23,10 @@ id: xpu/host-device-transfer
 metric: throughput
 ```
 
+## Standing
+
+Allocate and free is a win at 0.06x of torch's caching allocator, and 36000x ahead of hipMalloc and hipFree: the runtime's device block cache recycles blocks. Host-to-device transfer of pageable memory is 1.04x of hipMemcpy and 4.7x ahead of torch's `.to()`.
+
 ## Reproduce
 
 ```sh

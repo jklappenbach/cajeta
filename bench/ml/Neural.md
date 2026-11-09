@@ -132,6 +132,10 @@ id: ml/op-cross-entropy
 metric: throughput
 ```
 
+## Standing
+
+On the Radeon 8060S the elementwise ops are at parity with PyTorch (add 1.00x, conv2d 1.03x, relu 1.09x, tanh 1.14x, gelu 1.18x, sigmoid 1.21x, maxpool a win at 0.85x). Softmax is 1.5x, layernorm and cross-entropy 2.6x behind (two-pass reductions, cajeta-ml-gpu 28.2.4); the MLP train step 1.5x, MLP inference 3x, CNN inference 2.7x and the CNN train step 5.4x behind (launch count and the small-GEMM path, 28.2.5 and 28.2.6). On the cpu the same ops are 20x to 4800x behind torch's 32-thread kernels, and the transformer block and the matmul op produced no row within their cap; these are the cpu tensor paths (benchmark-reference 22.2.8), the cpu parity spec's subject. Autodiff overhead is 6x and checkpoint load 28x behind torch.
+
 ## Reproduce
 
 ```sh

@@ -37,6 +37,10 @@ id: codec/inflate-oneshot
 metric: throughput
 ```
 
+## Standing
+
+Not measured in the first published run: the deflate and inflate rows did not run on proton. They are the next codec rows to collect.
+
 ## Reproduce
 
 ```sh

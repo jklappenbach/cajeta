@@ -31,6 +31,10 @@ id: lang/clbg-spectral-norm
 metric: time
 ```
 
+## Standing
+
+Mandelbrot is a win at 0.18x of the scalar C++ program, 6x ahead of Rust and Go. Spectral norm is 0.77x of C++, fannkuch-redux 0.99x of Go and within 8% of Rust and C++. The three Benchmarks Game programs are at or ahead of parity.
+
 ## Reproduce
 
 ```sh

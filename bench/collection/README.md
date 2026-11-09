@@ -21,4 +21,4 @@ This section measures the collections, each against the standard container of fi
 
 ## Standing
 
-Written after the first published run.
+Geometric mean 4.0x behind over 36 benchmarks, 3 wins and 33 losses. HashSet deduplication, heap push and pop and ArrayList iteration win; B+ tree and heap sort are within 1.6x. The large losses are HashMap iteration (105x), ImmutableSet build (45x), the log-structured tree (39x to 47x), the cache (5x to 14x), the linked list (12x) and collectors (15x). None has been investigated yet; the linked list and collectors share the lang package's allocation and stream losses.

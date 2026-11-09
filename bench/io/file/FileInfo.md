@@ -17,6 +17,10 @@ id: io/file-stat
 metric: time
 ```
 
+## Standing
+
+stat is 2.5x behind Rust's metadata and 1.7x to 1.8x behind Go and Java; Python's os.stat is at 1.06x of Cajeta. Not yet investigated.
+
 ## Reproduce
 
 ```sh

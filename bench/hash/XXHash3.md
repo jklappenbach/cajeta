@@ -35,6 +35,10 @@ id: hash/xxhash3_128-256k
 metric: throughput
 ```
 
+## Standing
+
+At 256 KiB both XXH3-64 and XXH3-128 run at 1.0x of the C xxHash library and Rust's xxhash-rust: parity on the long-input path. On short inputs the 64-bit hash is 3.1x and the 128-bit 4.3x behind C, and 2.4x to 3.7x behind Rust. Not yet investigated.
+
 ## Reproduce
 
 ```sh

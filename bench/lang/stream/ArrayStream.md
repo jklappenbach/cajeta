@@ -17,6 +17,10 @@ id: lang/arraystream-iterate
 metric: time
 ```
 
+## Standing
+
+Map and sum over an array is 81x behind Rust's iterator and 25x to 100x behind C++ ranges, a Go loop and Java's Arrays.stream. The same loss as the [Stream](Stream.md) rows; not yet investigated.
+
 ## Reproduce
 
 ```sh

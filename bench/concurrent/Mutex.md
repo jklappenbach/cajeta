@@ -29,6 +29,10 @@ id: concurrent/mutex-contended-16
 metric: time
 ```
 
+## Standing
+
+Uncontended is 10.7x behind Rust, contended at 4 threads 16x and at 16 threads 22x behind Java's ReentrantLock, with Rust, C++ and Go 5x faster than Cajeta under contention. The uncontended cost is [Lock](Lock.md)'s; neither is yet investigated.
+
 ## Reproduce
 
 ```sh

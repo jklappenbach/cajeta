@@ -23,6 +23,10 @@ id: toolchain/binary-size-tour
 metric: memory
 ```
 
+## Standing
+
+The hello executable is a Cajeta-only row and the tour executable is 70x the size of cargo's, 30x to 50x the C++ and Go binaries, and 1.3x to 1.6x the Java and Python artifacts: the executable carries the runtime and the stdlib it links. The `.cja` archives have no competitor pair. Size is not time; these rows stay out of the standings mean.
+
 ## Reproduce
 
 ```sh

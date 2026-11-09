@@ -17,6 +17,10 @@ id: time/duration-arith
 metric: time
 ```
 
+## Standing
+
+Arithmetic is 13.7x behind Go's time and 5x to 6x behind jiff and chrono; java.time is 1.5x slower than Cajeta. Not yet investigated.
+
 ## Reproduce
 
 ```sh

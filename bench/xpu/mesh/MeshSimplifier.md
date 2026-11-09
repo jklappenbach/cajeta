@@ -17,6 +17,10 @@ id: xpu/mesh-simplify
 metric: time
 ```
 
+## Standing
+
+Simplifying 19 800 triangles to 1 980 takes 5.5 s, 2242x meshoptimizer; the 1e6 variant did not run. The simplifier runs on the cpu. Not yet investigated.
+
 ## Reproduce
 
 ```sh

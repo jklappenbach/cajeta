@@ -17,6 +17,10 @@ id: time/clock-now
 metric: time
 ```
 
+## Standing
+
+Reading the clock is 1.24x of Rust and ahead of Go, Java and Python: parity.
+
 ## Reproduce
 
 ```sh

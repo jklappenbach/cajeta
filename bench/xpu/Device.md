@@ -109,6 +109,10 @@ id: xpu/cross-backend-showcase
 metric: throughput
 ```
 
+## Standing
+
+On the Radeon 8060S the bandwidth rows are at parity: the five BabelStream kernels within 4% of the HIP C++ BabelStream, SAXPY at 1.00x of torch, mixbench within 4% to 12% of the HIP mixbench across the sweep, Mandelbrot a win at 0.95x. Launch overhead is a win at 0.17x of a HIP `<<<>>>` launch. Reduce is 1.16x of rocPRIM's DeviceReduce; scan 3.6x behind DeviceScan (cajeta-ml-gpu 18.2.2, a single-pass look-back scan). GEMM: f64 is a win at 0.55x of torch and 1.9x ahead of rocBLAS; f32 is 1.9x behind rocBLAS; f16 is 2x ahead of rocBLAS and 2.9x behind torch's hipBLASLt path; bf16 is 18x behind torch and 3x behind rocBLAS, its operands taking the f32 path (23.2.2). The vulkan rows run at smoke size only and are not published.
+
 ## Reproduce
 
 ```sh

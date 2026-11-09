@@ -17,6 +17,10 @@ id: math/transform-apply
 metric: throughput
 ```
 
+## Standing
+
+Applying a transform is 6x behind glam and 2.6x to 3.5x behind Eigen and joml; numpy is 2.2x slower than Cajeta. Not yet investigated.
+
 ## Reproduce
 
 ```sh

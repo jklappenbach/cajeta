@@ -29,6 +29,10 @@ id: toolchain/startup-cja-warm
 metric: time
 ```
 
+## Standing
+
+A compiled executable starts in 0.45 ms, 1.85x a C++ binary, ahead of Go (1.35x), Java (29x) and Python (14x). `jit-run` from an empty cache takes 16.8 s, 1286x CPython, all of it filling the cache; warm it takes 306 ms, 47x CPython and 25x Java with class-data sharing. The cold JIT path is the one to fix and is not yet scheduled.
+
 ## Reproduce
 
 ```sh

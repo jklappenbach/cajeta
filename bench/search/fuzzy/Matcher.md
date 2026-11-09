@@ -17,6 +17,10 @@ id: search/fuzzy-topk
 metric: time
 ```
 
+## Standing
+
+Matching ten thousand queries takes 264 s, 26x behind nucleo-matcher, with rapidfuzz 6x and Lucene 20x faster than Cajeta. The bigram index returns every candidate and the OSA distance runs on each with no top-k cut-off, as the note on the row says; the API has no limit parameter yet. Not yet scheduled.
+
 ## Reproduce
 
 ```sh

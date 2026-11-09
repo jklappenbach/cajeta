@@ -17,6 +17,10 @@ id: concurrent/rwlock-read-heavy
 metric: time
 ```
 
+## Standing
+
+Read-heavy is 9.8x behind Go's RWMutex and 2x behind Rust and C++, with Java's ReentrantReadWriteLock 4x faster than Cajeta. Not yet investigated.
+
 ## Reproduce
 
 ```sh

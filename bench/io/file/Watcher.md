@@ -17,6 +17,10 @@ id: io/watcher-event-latency
 metric: time
 ```
 
+## Standing
+
+The event-latency row did not run on proton; the watcher is not yet measured.
+
 ## Reproduce
 
 ```sh

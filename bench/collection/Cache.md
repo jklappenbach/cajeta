@@ -35,6 +35,10 @@ id: collection/cache-ttl
 metric: time
 ```
 
+## Standing
+
+Hit is 5x, miss 14x and evict 13x behind Rust's lru crate, and the hand-written C++ LRU and Go's ristretto are 4x to 6x faster than Cajeta; TTL is 3.5x behind Caffeine. Not yet investigated.
+
 ## Reproduce
 
 ```sh

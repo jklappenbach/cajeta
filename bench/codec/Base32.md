@@ -23,6 +23,10 @@ id: codec/base32-decode
 metric: throughput
 ```
 
+## Standing
+
+Encoding runs at a sixth of Rust's data-encoding and decoding at a third. Go's encoding/base32 encodes 3x faster than Cajeta and decodes 2x slower; Java's commons-codec is within 1.6x either way, Python far behind. Not yet investigated.
+
 ## Reproduce
 
 ```sh

@@ -35,6 +35,10 @@ id: collection/arraylist-sort
 metric: time
 ```
 
+## Standing
+
+Iteration is at parity (0.9x of Rust's Vec); get is 1.4x behind std::vector; append is 3.4x and sort 2.2x behind Rust. Java's ArrayList of boxed Integer is 4x slower than Cajeta on append and get. Neither gap is yet investigated.
+
 ## Reproduce
 
 ```sh

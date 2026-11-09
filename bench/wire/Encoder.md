@@ -29,6 +29,10 @@ id: wire/struct-view-read
 metric: throughput
 ```
 
+## Standing
+
+Encoding is 37x behind bincode and 2x to 8x behind protobuf, FlatBuffers and Cap'n Proto; decoding 10x behind FlatBuffers and 2x behind bincode, with protobuf 1.8x to 2.1x slower than Cajeta. Reading through a struct view is 1.4x of Cap'n Proto and at parity with FlatBuffers. Not yet investigated.
+
 ## Reproduce
 
 ```sh

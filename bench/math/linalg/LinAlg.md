@@ -35,6 +35,10 @@ id: math/linalg-svd
 metric: time
 ```
 
+## Standing
+
+Solve, inverse, QR and SVD are 128x to 607x behind Eigen and SciPy at 512 and 347x to 1000x at 2048, where the inverse takes two minutes and the SVD seven. Every element goes through the out-of-line tensor accessor, so these are the rows the tensor-element-access work is for (benchmark-reference 22.2.8). They are the deepest losses in the catalog and the first the cpu parity spec addresses.
+
 ## Reproduce
 
 ```sh

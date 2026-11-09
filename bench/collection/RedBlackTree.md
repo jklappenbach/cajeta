@@ -23,6 +23,10 @@ id: collection/redblacktree-range
 metric: time
 ```
 
+## Standing
+
+Insert and lookup is 3.2x behind Rust's BTreeMap and 2x behind Go's btree; std::map is at 0.9x of Cajeta and TreeMap slower. The range row did not run. A B-tree beats a red-black tree on this workload by cache behaviour alone; the [BPlusTree](BPlusTree.md) is the one to use.
+
 ## Reproduce
 
 ```sh

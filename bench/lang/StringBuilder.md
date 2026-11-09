@@ -29,6 +29,10 @@ id: lang/stringbuilder-tostring
 metric: time
 ```
 
+## Standing
+
+Append is 9.5x behind Rust's push_str and 2x to 3x behind C++, Go and Java; mixed appends 5.3x behind Java's StringBuilder. toString at 36 ms copies the 16 MiB builder, the same as C++, Rust and Java (within 6%); Go's Builder.String is zero-copy, so its 150 ns is not the same operation. Not yet investigated.
+
 ## Reproduce
 
 ```sh

@@ -17,6 +17,10 @@ id: io/filewriter-lines
 metric: throughput
 ```
 
+## Standing
+
+Writing lines is 8.2x behind Rust's BufWriter and 5x to 6x behind Go's bufio.Writer and Java's BufferedWriter. Not yet investigated.
+
 ## Reproduce
 
 ```sh

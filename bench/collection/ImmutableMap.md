@@ -25,6 +25,10 @@ id: collection/immutablemap-lookup
 metric: time
 ```
 
+## Standing
+
+Lookup is 3.1x behind hashbrown and 1.3x behind the Rust std map, close to the mutable [HashMap](HashMap.md) lookup. The build row did not run on proton.
+
 ## Reproduce
 
 ```sh

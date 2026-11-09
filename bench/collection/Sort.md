@@ -35,6 +35,10 @@ id: collection/binary-search
 metric: time
 ```
 
+## Standing
+
+Random int64 is 3.1x behind Java's Arrays.sort and 7x behind Rust's sort_unstable; descending (1.2x) and duplicate-heavy (1.25x) inputs are near parity, and ascending did not pass its check. Doubles are 2x behind Java and 2.5x behind Rust; the stable sort is 2.9x behind Rust's sort_by_key. Binary search is 3.8x behind Rust and 1.3x behind C++ and Go. The random-input gap is the comparator call in the inner loop; pdqsort-style pattern detection is what the near-parity rows already benefit from.
+
 ## Reproduce
 
 ```sh

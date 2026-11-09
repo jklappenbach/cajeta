@@ -17,6 +17,10 @@ id: io/directory-walk
 metric: time
 ```
 
+## Standing
+
+Walking a tree is 2.2x behind walkdir and 1.6x behind Go's WalkDir and Python's scandir; Java's Files.walk is 1.25x slower than Cajeta. Not yet investigated.
+
 ## Reproduce
 
 ```sh

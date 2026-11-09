@@ -23,6 +23,10 @@ id: math/poly-fit
 metric: time
 ```
 
+## Standing
+
+Evaluating is 104x behind a C++ Horner loop and 5x behind numpy; fitting is 72x behind nalgebra and 20x to 50x behind numpy and Eigen. Fitting runs through [LinAlg](../linalg/LinAlg.md) and follows the tensor-element-access work; evaluation is not yet investigated.
+
 ## Reproduce
 
 ```sh

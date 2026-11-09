@@ -29,6 +29,10 @@ id: lang/guid-format
 metric: time
 ```
 
+## Standing
+
+Generating is 16x, parsing 27x and formatting 67x behind the Rust uuid crate; libuuid is at parity with Cajeta on generation and 2x to 16x faster on parse and format, Java 6x to 14x faster. Not yet investigated.
+
 ## Reproduce
 
 ```sh

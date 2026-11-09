@@ -17,6 +17,10 @@ id: math/rotation-compose
 metric: throughput
 ```
 
+## Standing
+
+Composing rotations is 1.24x of glam, with Eigen 1.8x and joml 1.7x slower than Cajeta.
+
 ## Reproduce
 
 ```sh

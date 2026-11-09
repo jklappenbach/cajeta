@@ -23,6 +23,10 @@ id: collection/collectors-group-by
 metric: time
 ```
 
+## Standing
+
+Collecting a stream to a list is 15x behind Rust's collect and 5x to 7x behind a Go append loop or C++ back_inserter; group-by is 6x behind an unordered_map fold and 2x behind Rust's. The collectors run on the [Stream](../lang/stream/Stream.md) pipeline, whose rows carry the same order of loss; not yet investigated.
+
 ## Reproduce
 
 ```sh

@@ -23,6 +23,10 @@ id: nucleo/column-arith
 metric: throughput
 ```
 
+## Standing
+
+Filtering a column is 103x behind polars and 30x to 50x behind pyarrow and numpy; arithmetic 42x behind numpy. The column ops run on the cpu tensor paths, where the three libraries run vectorized kernels. Follows the tensor-element-access work (benchmark-reference 22.2.8).
+
 ## Reproduce
 
 ```sh

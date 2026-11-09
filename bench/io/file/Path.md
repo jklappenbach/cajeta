@@ -17,6 +17,10 @@ id: io/path-join-normalize
 metric: time
 ```
 
+## Standing
+
+Join and normalize is 3.4x behind Go's filepath.Join and 7x to 10x behind Rust's PathBuf and Java's Path; Python's pathlib is 17x slower than Cajeta. Not yet investigated.
+
 ## Reproduce
 
 ```sh

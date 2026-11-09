@@ -23,6 +23,10 @@ id: lang/slice-iterate
 metric: time
 ```
 
+## Standing
+
+A 64-element window is 14x behind std::span and 10x behind Rust and Go slices; iterating a slice 9x behind span and 7x behind Rust. Java's copyOfRange, which copies, is 1.4x slower than Cajeta. The page's contract is that a slice costs nothing to take and nothing extra to walk, so both rows are defects; not yet scheduled.
+
 ## Reproduce
 
 ```sh

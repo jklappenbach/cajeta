@@ -37,6 +37,10 @@ id: nucleo/table-filter
 metric: time
 ```
 
+## Standing
+
+Group-by is 64x to 732x and join 70x to 351x behind polars and duckdb across the ten db-benchmark queries at 1e6 and 1e7 rows; sort is 470x and filter 124x behind. pandas is 20x to 50x faster than Cajeta as well. polars and duckdb are parallel, vectorized engines; the Cajeta table runs on the cpu tensor paths. The deepest and widest gap on the site; the tensor-element-access work comes first and the engine after it. Not yet scheduled.
+
 ## Reproduce
 
 ```sh

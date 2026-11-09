@@ -47,6 +47,10 @@ id: ml/standard-scaler
 metric: throughput
 ```
 
+## Standing
+
+k-means is 21x behind scikit-learn on the synthetic set and 68x on digits; the standard scaler 7x. Linear and logistic regression, kNN and PCA produced no row within their cap at full size: the least-squares path reads every element through an out-of-line call, and the distance paths are on the same cpu tensor paths (benchmark-reference 22.2.8). Those four, and the k-means distance loop, are the cpu parity spec's first ml items.
+
 ## Reproduce
 
 ```sh

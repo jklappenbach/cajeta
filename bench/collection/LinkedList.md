@@ -17,6 +17,10 @@ id: collection/linkedlist-insert-traverse
 metric: time
 ```
 
+## Standing
+
+Insert and traverse is 12x behind Java's LinkedList and 4.5x behind Rust, C++ and Go, each of which is 2x to 5x faster than Cajeta. A node is allocated per insert; see the [Allocation](../lang/Allocation.md) rows for what a small heap object costs here.
+
 ## Reproduce
 
 ```sh

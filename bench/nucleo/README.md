@@ -12,4 +12,4 @@ This section measures the dataframe and the autodiff and fusion intrinsics, agai
 
 ## Standing
 
-Written after the first published run.
+Geometric mean 142x behind over 29 benchmarks, no wins. vmap is within 1.7x of jax; everything else is 15x to 909x behind. The columns, tables and grad run on the cpu tensor paths against polars, duckdb, numpy and torch's parallel vectorized engines. The tensor-element-access work comes first, the engine after.

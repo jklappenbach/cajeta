@@ -10,4 +10,4 @@ This section measures wire codecs and the zero-copy struct view against protobuf
 
 ## Standing
 
-Written after the first published run.
+Geometric mean 2.2x behind over 6 benchmarks, 2 wins and 4 losses. The schema encoder wins both rows by 3x to 4x; the field encoder is 10x to 37x behind bincode and FlatBuffers; the zlib round trip 2.6x behind flate2.

@@ -29,6 +29,10 @@ id: llm/ttft
 metric: time
 ```
 
+## Standing
+
+Not measured yet: the first published run (proton, 2026-11-09) holds no rows for this library. Its bench runs under its own repository and is collected by `bench.sh publish` once it has run on a quiet box.
+
 ## Reproduce
 
 ```sh

@@ -19,6 +19,10 @@ id: concurrent/fiber-sleep-wake
 metric: time
 ```
 
+## Standing
+
+Sleep and wake takes 20 us, 5.6x Go's time.Sleep, with Java virtual threads and Python asyncio 3x slower than Cajeta and tokio 50x slower. Not yet investigated.
+
 ## Reproduce
 
 ```sh

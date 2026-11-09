@@ -23,6 +23,10 @@ id: lang/stream-parallel-reduce
 metric: time
 ```
 
+## Standing
+
+Filter, map and reduce is 72x behind java.util.stream and 20x to 50x behind Rust, C++ ranges and a Go loop; the parallel reduce is 69x behind goroutines and 50x behind rayon. With [ArrayStream](ArrayStream.md), the lowest standing in the lang package after the byte scan and instanceof rows; not yet investigated.
+
 ## Reproduce
 
 ```sh

@@ -162,5 +162,7 @@ visual computing. They are written once and run across vendors and devices.
   holds the deep-dive documents behind every subsystem.
 - **Wondering about speed?** The [benchmarks](../../bench/README.md) are laid
   out like the stdlib reference, with one page per class, each naming what is
-  measured, against which language or system, and how it is checked. The
-  first published run is pending.
+  measured, against which language or system, and how it is checked. On the
+  first published run Cajeta is at parity with Rust and C++ on loops, calls,
+  I/O and GPU kernels, and behind, often by a lot, on small-object allocation,
+  locks, strings, streams and the cpu tensor paths; every page says which.

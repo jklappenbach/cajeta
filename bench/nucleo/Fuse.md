@@ -17,6 +17,10 @@ id: nucleo/fuse-elementwise-chain
 metric: throughput
 ```
 
+## Standing
+
+The fused chain is 34x behind numexpr and 10x to 17x behind torch and jax; unfused 88x behind numpy. Fusion does remove the intermediates (the fused row is 6.6x faster than the unfused one), but the fused kernel still runs on the cpu tensor paths. Same dependency as [Column](Column.md).
+
 ## Reproduce
 
 ```sh

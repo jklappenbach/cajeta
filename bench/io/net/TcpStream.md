@@ -25,6 +25,10 @@ id: io/tcp-bulk-throughput
 metric: throughput
 ```
 
+## Standing
+
+Bulk throughput is at parity (1.03x of Rust, within 2% of Go and Java): the kernel moves the bytes. Echo latency is 4x behind Go and 10x behind Rust, Java and tokio. Not yet investigated.
+
 ## Reproduce
 
 ```sh

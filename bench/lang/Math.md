@@ -41,6 +41,10 @@ id: lang/dot-product
 metric: throughput
 ```
 
+## Standing
+
+Transcendentals (0.95x of libm), integer division (0.66x of Rust, 7x ahead of C++, Go and Java) and SAXPY (0.46x of numpy, 2x to 5x ahead of the scalar loops) are wins. The intrinsics row is 1.8x behind Rust and the dot product 9.7x behind numpy and 4x to 8x ahead of the scalar loops. Not yet investigated.
+
 ## Reproduce
 
 ```sh

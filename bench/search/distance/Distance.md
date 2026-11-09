@@ -23,6 +23,10 @@ id: search/distance-jaro-winkler
 metric: throughput
 ```
 
+## Standing
+
+Levenshtein is 8.5x and Jaro-Winkler 4.9x behind rapidfuzz, and strsim is 3x to 6x faster than Cajeta; commons-text and the Go implementations are 1.5x to 3x faster. The distance loops index strings byte by byte, where [String](../../lang/String.md)'s byte scan is 171x behind; not yet investigated.
+
 ## Reproduce
 
 ```sh

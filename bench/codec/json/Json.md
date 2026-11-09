@@ -47,6 +47,10 @@ id: codec/json-conformance
 metric: time
 ```
 
+## Standing
+
+Tokenizing and bind-skip are 2x to 5x behind simdjson and within 1x to 2.3x of serde_json and Jackson, with Go's encoding/json 10x to 22x slower than Cajeta. Building a DOM is 18x to 43x behind simdjson and 3x to 4x behind serde_json; serializing is 20x behind yyjson and 5x to 9x behind serde_json and orjson; the round trip follows the DOM. The canada round trip and the conformance row did not pass their checks and carry no number. The tokenizer gap is simdjson's SIMD scanning; the DOM and serializer gaps are not yet investigated. Not yet scheduled.
+
 ## Reproduce
 
 ```sh

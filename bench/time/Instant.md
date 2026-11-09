@@ -17,6 +17,10 @@ id: time/time-instant-arith
 metric: time
 ```
 
+## Standing
+
+Arithmetic is 1.6x of java.time, at parity with jiff (0.95x) and ahead of chrono and Go.
+
 ## Reproduce
 
 ```sh

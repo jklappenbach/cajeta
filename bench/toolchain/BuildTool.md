@@ -17,6 +17,10 @@ id: toolchain/build-noop
 metric: time
 ```
 
+## Standing
+
+A no-op build is 3.2x behind cargo and 1.3x behind go, and 14x ahead of Gradle. Not yet investigated.
+
 ## Reproduce
 
 ```sh

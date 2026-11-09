@@ -23,6 +23,10 @@ id: reflect/field-enumerate
 metric: time
 ```
 
+## Standing
+
+Class lookup by name is 2366x behind Go's reflect, 1.9 us per lookup against Go's hash lookup; Java and Python are 25x to 30x faster than Cajeta. Field enumeration is 14x behind Java and 3x to 8x behind Go and Python. Not yet investigated.
+
 ## Reproduce
 
 ```sh

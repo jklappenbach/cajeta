@@ -59,6 +59,10 @@ id: math/matmul
 metric: throughput
 ```
 
+## Standing
+
+Transpose is a win (0.82x of Eigen, 7.5x ahead of numpy) and cast is 2.1x of numpy. The rest is far behind: element-wise 83x and reduce 100x behind numpy and Eigen, broadcast 62x behind ejml, element get 8x behind ndarray and set 12x behind Eigen. The cpu paths read and write every element through an out-of-line call (tensor-element-access, benchmark-reference 22.2.8), which is also what holds the [LinAlg](linalg/LinAlg.md) and [ml](../ml/Neural.md) cpu rows. That is the cpu parity work and the first item of the math package.
+
 ## Reproduce
 
 ```sh

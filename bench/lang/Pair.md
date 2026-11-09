@@ -17,6 +17,10 @@ id: lang/pair-construct
 metric: time
 ```
 
+## Standing
+
+Constructing a pair is 23x behind a Rust tuple and 12x behind std::pair; Go structs and Java records are 2.5x to 3x faster than Cajeta. Not yet investigated; see [Allocation](Allocation.md) for what a small heap object costs.
+
 ## Reproduce
 
 ```sh

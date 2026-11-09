@@ -25,6 +25,10 @@ id: collection/ltm-lookup
 metric: time
 ```
 
+## Standing
+
+Insert is 39x and lookup 47x behind heed (LMDB), and RocksDB through Rust or Java is 10x to 25x faster than Cajeta. No tuning has been done on the log-structured tree yet. Not yet scheduled.
+
 ## Reproduce
 
 ```sh

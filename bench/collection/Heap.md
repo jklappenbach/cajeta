@@ -23,6 +23,10 @@ id: collection/heap-push-pop
 metric: time
 ```
 
+## Standing
+
+Push and pop at 0.9x of Rust's BinaryHeap is a win; heap sort is 1.6x behind std::priority_queue and 1.5x behind BinaryHeap. Go, Java and Python are 2x to 11x slower than Cajeta on both.
+
 ## Reproduce
 
 ```sh

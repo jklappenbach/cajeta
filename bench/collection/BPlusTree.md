@@ -29,6 +29,10 @@ id: collection/bplustree-range
 metric: time
 ```
 
+## Standing
+
+Insert at 1.2x and point lookup at 1.3x of Rust's BTreeMap, with std::map, TreeMap and the Go btree 1.4x to 4.6x slower than Cajeta. The range row did not run. The closest to parity in the package.
+
 ## Reproduce
 
 ```sh

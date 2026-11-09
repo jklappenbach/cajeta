@@ -21,4 +21,4 @@ This section measures the language itself bare, then the classes of `cajeta.lang
 
 ## Standing
 
-Written after the first published run.
+Geometric mean 5.5x behind the best competitor over 57 benchmarks, 13 wins and 44 losses. Loops, direct calls, arrays, value structs, transcendentals, integer division, SAXPY and the three Benchmarks Game programs are at or ahead of parity. The losses cluster in four places: heap allocation of small objects (13x to 21x), a try that does not throw (219x), String compare, split and byte scans (13x to 171x), and the stream pipeline (70x to 81x), with `instanceof` at 354x on its own. None has been investigated yet.

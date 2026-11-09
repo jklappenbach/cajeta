@@ -35,6 +35,10 @@ id: toolchain/compile-lto
 metric: time
 ```
 
+## Standing
+
+A cold build of the tour sample, from a copy with no build directory and no cache, takes 69 s, 160x cargo's and 20x to 100x javac, go and g++. Warm, the tour compiles in 46 ms, 39x behind g++ and 13x ahead of javac, 1.2x of go and 5x of cargo. Ten thousand lines take 34 s, 77x behind cargo; the LTO variants 20 s to 25 s, 11x to 25x behind cargo and 7x to 10x behind clang++. Compile time is the toolchain's own open problem, with the stdlib build on the cold path first.
+
 ## Reproduce
 
 ```sh

@@ -17,6 +17,10 @@ id: concurrent/lock-uncontended
 metric: time
 ```
 
+## Standing
+
+Uncontended lock and unlock is 8.6x behind Rust's Mutex and 7x behind std::mutex, sync.Mutex and ReentrantLock. Not yet investigated.
+
 ## Reproduce
 
 ```sh

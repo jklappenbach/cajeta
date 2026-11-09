@@ -49,6 +49,10 @@ id: lang/throw-in-fiber
 metric: time
 ```
 
+## Standing
+
+A try that does not throw costs 219x Java's, which is free, and 50x C++, Rust and Go. Throwing through one frame is 165x behind a Rust Result and 3x faster than a C++ throw; through 10 frames 15x behind Rust; through 100 frames 1.9x behind a Go error return and 30x faster than C++. The recoverable rows are a win against Java's stack-trace throw (0.6x). In a fiber the throw is 69x behind Java's no-trace throw. The no-throw path is the row that matters and is not yet investigated.
+
 ## Reproduce
 
 ```sh

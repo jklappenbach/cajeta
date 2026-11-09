@@ -17,6 +17,10 @@ id: aot/di-graph-100-startup
 metric: time
 ```
 
+## Standing
+
+Starting a 100-component graph takes 1.6 ms, 2.7x Go's wire, which generates the wiring at build time. Dagger takes 20x longer than Cajeta, Guice 100x and Spring 170x. wire generates its wiring at build time and Cajeta resolves the graph at start-up; a generated-wiring mode is not planned.
+
 ## Reproduce
 
 ```sh

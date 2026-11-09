@@ -23,6 +23,10 @@ id: collection/immutablelist-get
 metric: time
 ```
 
+## Standing
+
+Building is 3.2x behind Rust's Arc slice and get is 2.7x behind a C++ shared_ptr to a const vector; Go's slices.Clone is 2x faster than Cajeta on both. Java's List.copyOf and Python's tuple are slower. Not yet investigated.
+
 ## Reproduce
 
 ```sh
