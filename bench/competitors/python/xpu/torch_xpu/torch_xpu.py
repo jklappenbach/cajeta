@@ -42,6 +42,7 @@ def skip(bid, reason, ver="", backend="cuda"):
 
 
 def main():
+    # The ROCm wheel still calls its device cuda; torch.version.hip names it (benchmark-reference 22.2.10).
     backend = "hip" if env("CAJETA_XPU_BACKEND", "cuda") in ("hip", "amdgpu") else "cuda"
     if env("CAJETA_BENCH_NO_GPU", "") in ("1", "true"):
         for b in IDS:
@@ -49,6 +50,7 @@ def main():
         return 0
     try:
         import torch
+        backend = "hip" if getattr(torch.version, "hip", None) else "cuda"
     except Exception as e:  # noqa: BLE001
         for b in IDS:
             print(skip(b, f"torch import failed: {type(e).__name__}", backend=backend))

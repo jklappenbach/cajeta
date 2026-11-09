@@ -12,6 +12,7 @@ IDS="device-saxpy wave-reduce scan gemm-f64 gemm-f32 gemm-f16 gemm-bf16 host-dev
 be=cuda; [[ "${CAJETA_XPU_BACKEND:-}" == hip || "${CAJETA_XPU_BACKEND:-}" == amdgpu ]] && be=hip
 var() { case "$1" in gemm-*) echo n4096 ;; *) echo "" ;; esac; }
 tv="$(ls -d "$XPU_VENV"/lib/python3*/site-packages/torch-*.dist-info 2>/dev/null | head -1 | sed -E 's/.*torch-(.*)\.dist-info/\1/')"
+[[ -z "${CAJETA_XPU_BACKEND:-}" && "$tv" == *rocm* ]] && be=hip
 if xpu_build_only; then
     if python3 -m py_compile "$PYF" 2>/dev/null; then r="build-only: compiled (torch $tv); not run"; else r="build-only: py_compile failed"; fi
     for id in $IDS; do xpu_skip "$id" "$(var "$id")" xpu python torch "$be" "$r"; done
