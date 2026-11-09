@@ -391,8 +391,9 @@ const runOf = (data, machine) => (data?.machines ?? []).find((m) => m.name === m
  * skips (a benchmark with rows on the machine but no comparable pair). The
  * time ratio is Cajeta median / best competitor median; for a throughput
  * benchmark whose rows carry throughput it is best competitor throughput /
- * Cajeta throughput, the same "lower is better" ratio. Memory-metric
- * benchmarks are left out: their time is not what they measure. `packages`
+ * Cajeta throughput, the same "lower is better" ratio, when every row of the
+ * variant names the same throughput unit; otherwise the medians decide.
+ * Memory-metric benchmarks are left out: their time is not what they measure. `packages`
  * orders the rows and, when given, limits them to the catalog's packages.
  */
 export function standingsModel(machineResults, { idMeta = {}, packages = [] } = {}) {
@@ -409,7 +410,11 @@ export function standingsModel(machineResults, { idMeta = {}, packages = [] } = 
     const acc = byPkg.get(p);
     for (const variant of Object.values(res[id] ?? {})) {
       const ok = Object.values(variant).filter((e) => e.status === 'ok');
-      const byRate = idMeta[id]?.metric === 'throughput' && ok.some((e) => e.cajeta && e.throughput > 0);
+      // Rates compare only when every row names the same unit: the sides have
+      // written bytes/s and MB/s under one label (benchmark-reference 22.2.11).
+      const units = new Set(ok.map((e) => e.unit ?? ''));
+      const oneUnit = units.size === 1 && !units.has('');
+      const byRate = idMeta[id]?.metric === 'throughput' && oneUnit && ok.every((e) => e.throughput > 0);
       const pick = (side) =>
         ok
           .filter((e) => !!e.cajeta === side)
