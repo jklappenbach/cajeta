@@ -10,7 +10,8 @@
 #   each ecosystem repo <repo>/bench/results/<machine>/<run-id>/ for the repos in
 #                       BENCH_PUBLISH_REPOS ("name=path ..."; default the
 #                       siblings cajeta-llm, cajeta-ml, cajeta-http,
-#                       cajeta-primavera, cajeta-codec and ../ml/cajeta-xgboost)
+#                       cajeta-primavera, cajeta-codec and cajeta-xgboost, the
+#                       last under ../cpp or ../ml, whichever exists)
 # Destination: BENCH_PUBLISH_DEST (default bench/results).
 set -euo pipefail
 HERE="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
@@ -20,7 +21,8 @@ CODE="$( cd -- "$REPO/../.." &> /dev/null && pwd )"
 if [[ $# -ne 2 ]]; then
     echo "usage: bench.sh publish <machine> <run-id>" >&2; exit 2
 fi
-DEFAULT_REPOS="cajeta-llm=$CODE/cpp/cajeta-llm cajeta-ml=$CODE/cpp/cajeta-ml cajeta-xgboost=$CODE/ml/cajeta-xgboost cajeta-http=$CODE/cpp/cajeta-http cajeta-primavera=$CODE/cpp/cajeta-primavera cajeta-codec=$CODE/cpp/cajeta-codec"
+XGB="$CODE/cpp/cajeta-xgboost"; [[ -d "$XGB" ]] || XGB="$CODE/ml/cajeta-xgboost"
+DEFAULT_REPOS="cajeta-llm=$CODE/cpp/cajeta-llm cajeta-ml=$CODE/cpp/cajeta-ml cajeta-xgboost=$XGB cajeta-http=$CODE/cpp/cajeta-http cajeta-primavera=$CODE/cpp/cajeta-primavera cajeta-codec=$CODE/cpp/cajeta-codec"
 exec python3 "$HERE/publish.py" \
     --machine "$1" --run-id "$2" \
     --src "${BENCH_PUBLISH_SRC:-$BENCH/build/results/$2}" \
