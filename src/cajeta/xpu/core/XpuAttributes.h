@@ -21,6 +21,9 @@ namespace xpu {
         static constexpr const char* PushConstant = "PushConstant";  // Vulkan-only
         // @FastMath relaxes IEEE FP over the whole body; opt-in, since it trades precision.
         static constexpr const char* FastMath     = "FastMath";
+        // @Unfused keeps every float multiply and add rounding on its own on a
+        // GPU backend, where a kernel's `a * b + c` otherwise may fuse to an fma.
+        static constexpr const char* Unfused      = "Unfused";
         // @Occupancy overrides the automatic workgroup budgeting; no-op where unsupported.
         static constexpr const char* Occupancy    = "Occupancy";
         // The kernel gate's tracked escapes (XpuKernelGate.h): a kernel with no
@@ -112,6 +115,9 @@ namespace xpu {
     }
     inline bool isFastMath(const Annotatable& a) {
         return a.findAnnotation(XpuAttr::FastMath) != nullptr;
+    }
+    inline bool isUnfused(const Annotatable& a) {
+        return a.findAnnotation(XpuAttr::Unfused) != nullptr;
     }
     inline bool isHost(const Annotatable& a) {
         // @Host is the default; it is explicit only for the @Host @Device dual-emit case.

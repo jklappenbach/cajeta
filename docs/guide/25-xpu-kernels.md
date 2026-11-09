@@ -661,6 +661,11 @@ public static void splitLaunch(KernelBuffer<int8> out,
 - **`@FastMath` folds `x - (f32)(f16) x` to zero.** A device-computed
   f16 residual under `@FastMath` is dead. Take it from LDS after a
   barrier, or leave `@FastMath` off that kernel.
+- **A GPU kernel's `a * b + c` fuses.** On cuda, hip and vulkan the
+  multiply and the add become one multiply-add that rounds once, as nvcc
+  and hipcc do, so a float32 result can differ from the cpu backend's in
+  the last bit. That fusion is half the arithmetic of a GEMM inner loop.
+  Put `@Unfused` on a kernel that must match the cpu bit for bit.
 - **Initialize accumulators by writing to them.** A `0 *` on an
   uninitialized NaN churns and looks like allocator corruption.
 - **`int64 *` traps on overflow.** Multiplicative hashing in a kernel

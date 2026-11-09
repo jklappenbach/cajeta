@@ -140,7 +140,8 @@ TEST(NvptxDynamicLaneTests, dynamicLaneLeavesNoFrameOnNvptx) {
 TEST(NvptxDynamicLaneTests, dynamicLaneEmitsASelectChain) {
     std::string ir, ptx, why;
     ASSERT_TRUE(lowerOne("dyn", &ir, &ptx, &why)) << why;
-    EXPECT_EQ(countOf(ir, "= select i1 %lane."), 7u)
+    // A float select carries the kernel's `contract` flag on a GPU backend.
+    EXPECT_EQ(countOf(ir, "= select i1 %lane.") + countOf(ir, "= select contract i1 %lane."), 7u)
         << "an 8-lane dynamic read must select among the lanes:\n" << ir;
 }
 

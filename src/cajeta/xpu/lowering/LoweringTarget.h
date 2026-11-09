@@ -159,6 +159,11 @@ namespace xpu {
         // linearly gets the offset applied to the pointer, as for a plain tile.
         virtual bool padsBlockPaddedTiles() const { return false; }
 
+        // True when a kernel's float arithmetic may fuse (`contract`) unless the
+        // kernel says @Unfused: every GPU backend, as nvcc and hipcc do by
+        // default. The cpu says false, so its results keep the per-op rounding.
+        virtual bool fusesByDefault() const { return true; }
+
         // Device printf: `fmt` is an i8* constant format string, `args` the already
         // lowered scalars (no C varargs in the language). The default REJECTS.
         virtual void devicePrintf(llvm::IRBuilderBase& b, llvm::Module& m,

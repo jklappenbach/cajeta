@@ -43,6 +43,7 @@ class CpuTarget : public LoweringTarget {
 public:
     explicit CpuTarget(std::shared_ptr<llvm::TargetMachine> tm = nullptr) : levelTm(std::move(tm)) {}
     const char* name() const override { return "cpu"; }
+    bool fusesByDefault() const override { return false; }
     bool honorsStatedAlignment() const override { return false; }
     void prefetch(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* base,
                   llvm::Type* elemTy, llvm::Value* index) override {

@@ -178,10 +178,11 @@ TEST(XpuNvptxEmitTests, lowersSaxpyKernelToPtx) {
     // KernelBuffer params land in global memory (opaque 32-bit loads emit as .b32).
     EXPECT_NE(ptx.find("ld.global"), std::string::npos) << ptx;
     EXPECT_NE(ptx.find("st.global"), std::string::npos) << ptx;
-    // The a*x+y float math: separate multiply + add (no fast-math
-    // contraction, so it stays IEEE-correct rather than fusing to FMA).
-    EXPECT_NE(ptx.find("mul.rn.f32"), std::string::npos) << ptx;
-    EXPECT_NE(ptx.find("add.rn.f32"), std::string::npos) << ptx;
+    // The a*x+y float math fuses to one multiply-add: a GPU kernel's float
+    // arithmetic is `contract` unless the kernel says @Unfused
+    // (XpuFuseByDefaultTests), so no separate multiply is left.
+    EXPECT_NE(ptx.find("fma.rn.f32"), std::string::npos) << ptx;
+    EXPECT_EQ(ptx.find("mul.rn.f32"), std::string::npos) << ptx;
 }
 
 // Item 8 Stage D (NVIDIA, emit-only): tex.sample lowers to the NVPTX unified

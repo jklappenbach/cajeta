@@ -342,6 +342,13 @@ public:
             llvm::FastMathFlags fmf;
             fmf.setFast();   // contract + reassoc + arcp + afn + nnan/ninf/nsz
             builder.setFastMathFlags(fmf);
+        } else if (method && target.fusesByDefault() && !isUnfused(*method)) {
+            // A GPU kernel's `a * b + c` may fuse to one fma, nothing else relaxed;
+            // without it nvptx issued a multiply and an add for every one
+            // (XpuFuseByDefaultTests).
+            llvm::FastMathFlags fmf;
+            fmf.setAllowContract(true);
+            builder.setFastMathFlags(fmf);
         }
         unsigned idx = 0;
         for (auto& p : kparams) {
