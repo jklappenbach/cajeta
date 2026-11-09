@@ -4842,6 +4842,11 @@ private:
                 if (auto lvd =
                         std::dynamic_pointer_cast<LocalVariableDeclaration>(node)) {
                     CajetaTypePtr dt = lvd->getType();
+                    // A fragment array (`CooperativeMatrix<...>[2][4] acc;`) holds
+                    // tiles of its element type: unwrap it, or a straddle made of
+                    // arrays goes unseen and the mma is refused (CoopStraddleArrayTests).
+                    while (auto arr = std::dynamic_pointer_cast<CajetaArray>(dt))
+                        dt = arr->getElementType();
                     bool tile = isTileType(dt);
                     if (isCooperativeMatrixType(dt) || tile) {
                         if (auto cm = std::dynamic_pointer_cast<CajetaClass>(dt)) {
