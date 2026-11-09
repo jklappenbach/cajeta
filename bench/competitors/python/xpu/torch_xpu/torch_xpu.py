@@ -145,10 +145,16 @@ def main():
         ok = True
         for s in range(512):
             r, cc = (s * 37 + 11) % n, (s * 101 + 5) % n
-            if float(c[r, cc]) != float((a_h[r, :] * b_h[:, cc]).sum()):
+            want = (a_h[r, :] * b_h[:, cc]).sum()
+            if dt in (torch.float16, torch.bfloat16):
+                want = want.to(dt).double()
+            if float(c[r, cc]) != float(want):
                 ok = False
                 break
-        emit(bid, 2 * n ** 3, st, "flop/s", ok, f"torch.matmul {dt} (TF32 off)")
+        note = f"torch.matmul {dt} (TF32 off)"
+        if dt in (torch.float16, torch.bfloat16):
+            note += f"; output in {dt}, reference rounded to it"
+        emit(bid, 2 * n ** 3, st, "flop/s", ok, note)
         del a, b, out
     if "host-device-transfer" in only:
         n = 1 << 28
