@@ -1,23 +1,41 @@
 package bench.xpu;
 
 import cajeta.collection.ArrayList;
+import cajeta.lang.System;
 import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Workgroup;
+import cajeta.xpu.Barrier;
+import cajeta.xpu.Shared;
+import cajeta.xpu.BlockPadded;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.Wave;
 
 import bench.xpu.XpuBench;
 import bench.xpu.XpuEnv;
 import bench.xpu.XpuKernels;
 
-// xpu/gemm-f32 and xpu/gemm-bf16: a 4096 x 4096 GEMM through CooperativeMatrix
-// (XpuKernels.gemmF32 / gemmBf16: one wave per 16 x 64 strip, four
-// accumulators). bf16 operands accumulate in float32. Inputs are small
-// integers (A in 0..3, B in 0..4), exact in bf16 and float32 and with every
-// product sum under 2^24, so the check is exact: 512 entries of C against the
-// host's dot product. On the cpu and vulkan backends under CAJETA_BENCH_SMOKE=1
-// the size is 256 (XpuEnv.reduced). Throughput: 2 n^3 flop/s.
+// xpu/gemm-f32 and xpu/gemm-bf16: a 4096 x 4096 GEMM through CooperativeMatrix.
+// gemm-f32 is XpuKernels.gemmF32 (one wave per 16 x 64 strip, four
+// accumulators, the software tier on every backend). gemm-bf16 has two
+// kernels, bf16 operands and float32 accumulators both: on hip the gfx1151
+// torch-recipe tiling of GpuMatMulF16Bench (gemmBf16 below: MT 96x128, depthU
+// 64, four waves of 32, both operands staged through bank-padded LDS with
+// 128-bit loads, B uploaded transposed so its K-contiguous global load is
+// wide; cajeta-ml-gpu 23.2.2), elsewhere XpuKernels.gemmBf16's 128x128 tile
+// (23.2.6). CAJETA_BENCH_BF16_KERNEL=torch|tile overrides the choice for an
+// A/B. Inputs are small integers (A in 0..3, B in 0..4),
+// exact in bf16 and float32 and with every product sum under 2^24, so the
+// check is exact: 512 entries of C against the host's dot product. On the cpu
+// and vulkan backends under CAJETA_BENCH_SMOKE=1 the size is 256
+// (XpuEnv.reduced). Throughput: 2 n^3 flop/s.
 public class GemmBench extends XpuBench {
 
     public boolean bf16;
+    public boolean torchRecipe;
     public uint32 n;
+    public uint32 gridX;
+    public uint32 gridM;
     public float32[] ha;
     public float32[] hb;
     public float32[] hc;
@@ -30,6 +48,145 @@ public class GemmBench extends XpuBench {
     public GemmBench(boolean bf16) {
         this.bf16 = bf16;
         this.n = (uint32) 4096;
+        this.gridX = (uint32) 0;
+        this.gridM = (uint32) 0;
+        this.torchRecipe = false;
+    }
+
+    // The bf16 kernel for this process: the torch recipe on hip, the 128x128
+    // tile elsewhere, unless CAJETA_BENCH_BF16_KERNEL says torch or tile.
+    static boolean useTorchRecipe() {
+        String pick = System.env.get("CAJETA_BENCH_BF16_KERNEL");
+        if (pick != null) {
+            return pick.equals("torch");
+        }
+        return XpuEnv.backend().equals("hip");
+    }
+
+    // C[M][N] = A[M][K] . Bt[N][K]^T, n % 128 == 0; the M tiles of 96 are bounds-checked.
+    // Built for cpu, nvptx and amdgpu: on spir-v the 8-wide staging crosses the K loop's phi
+    // as invalid SPIR-V (cajeta-ml-gpu 23.2.7), and no Vulkan driver exposes a bf16
+    // cooperative-matrix config; the vulkan row skips with that reason.
+    @Kernel(targets = {"cpu", "nvptx", "amdgpu"}) @Wave(width = 32)
+    @Occupancy(maxThreads = 128)
+    public static void gemmBf16(KernelBuffer<float32> c, KernelBuffer<bfloat16> a,
+                                KernelBuffer<bfloat16> bt, uint32 n) {
+        uint32 blockRow = Workgroup.y();
+        uint32 blockCol = Workgroup.x();
+        uint32 tid = KernelThread.x();
+        uint32 wave = tid / 32;
+        uint32 wm = wave / 2;
+        uint32 wn = wave % 2;
+        uint32 rb = blockRow * 96;
+        uint32 cb = blockCol * 128;
+        BlockPadded<bfloat16,64,8> sa = shared bfloat16[6912];
+        BlockPadded<bfloat16,64,8> sb = shared bfloat16[9216];
+        CooperativeMatrix<float32,16,16,2> a00; a00.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a01; a01.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a02; a02.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a03; a03.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a10; a10.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a11; a11.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a12; a12.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a13; a13.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a20; a20.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a21; a21.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a22; a22.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a23; a23.splat(0.0f);
+        CooperativeMatrix<bfloat16,16,16,0> wa0;
+        CooperativeMatrix<bfloat16,16,16,0> wa1;
+        CooperativeMatrix<bfloat16,16,16,0> wa2;
+        CooperativeMatrix<bfloat16,16,16,1> wb0;
+        CooperativeMatrix<bfloat16,16,16,1> wb1;
+        CooperativeMatrix<bfloat16,16,16,1> wb2;
+        CooperativeMatrix<bfloat16,16,16,1> wb3;
+        uint32 ca = tid;
+        while (ca < 768) {
+            uint32 m = ca / 8; uint32 kk = (ca % 8) * 8;
+            if (rb + m < n) {
+                Vector<bfloat16,8> va = a.vload<8>((rb + m) * n + kk);
+                sa.vstore(m * 64 + kk, va);
+            }
+            ca = ca + 128;
+        }
+        uint32 cbk = tid;
+        while (cbk < 1024) {
+            uint32 bn = cbk / 8; uint32 bk = (cbk % 8) * 8;
+            Vector<bfloat16,8> vb = bt.vload<8>((cb + bn) * n + bk);
+            sb.vstore(bn * 64 + bk, vb);
+            cbk = cbk + 128;
+        }
+        Barrier.workgroup();
+        uint32 npanels = n / 64;
+        uint32 ao0 = (wm * 48 + 0) * 64;
+        uint32 ao1 = (wm * 48 + 16) * 64;
+        uint32 ao2 = (wm * 48 + 32) * 64;
+        uint32 cn0 = (wn * 64 + 0) * 64; uint32 cn1 = (wn * 64 + 16) * 64;
+        uint32 cn2 = (wn * 64 + 32) * 64; uint32 cn3 = (wn * 64 + 48) * 64;
+        uint32 bk = (tid % 8) * 8;
+        uint32 bnb = tid / 8;
+        uint32 p = 0;
+        while (p < npanels) {
+            boolean pf = p + 1 < npanels;
+            uint32 ko = (p + 1) * 64;
+            Vector<bfloat16,8> pb0; Vector<bfloat16,8> pb1; Vector<bfloat16,8> pb2; Vector<bfloat16,8> pb3;
+            Vector<bfloat16,8> pb4; Vector<bfloat16,8> pb5; Vector<bfloat16,8> pb6; Vector<bfloat16,8> pb7;
+            if (pf) {
+                pb0 = bt.vload<8>((cb + bnb +  0) * n + ko + bk);
+                pb1 = bt.vload<8>((cb + bnb + 16) * n + ko + bk);
+                pb2 = bt.vload<8>((cb + bnb + 32) * n + ko + bk);
+                pb3 = bt.vload<8>((cb + bnb + 48) * n + ko + bk);
+                pb4 = bt.vload<8>((cb + bnb + 64) * n + ko + bk);
+                pb5 = bt.vload<8>((cb + bnb + 80) * n + ko + bk);
+                pb6 = bt.vload<8>((cb + bnb + 96) * n + ko + bk);
+                pb7 = bt.vload<8>((cb + bnb + 112) * n + ko + bk);
+            }
+            uint32 ks = 0;
+            while (ks < 4) {
+                uint32 ka = ks * 16;
+                wa0.load(sa, ao0 + ka, 0, 64);
+                wa1.load(sa, ao1 + ka, 0, 64);
+                wa2.load(sa, ao2 + ka, 0, 64);
+                wb0.load(sb, cn0 + ka, 1, 64);
+                wb1.load(sb, cn1 + ka, 1, 64);
+                wb2.load(sb, cn2 + ka, 1, 64);
+                wb3.load(sb, cn3 + ka, 1, 64);
+                a00.mma(wa0, wb0); a01.mma(wa0, wb1); a02.mma(wa0, wb2); a03.mma(wa0, wb3);
+                a10.mma(wa1, wb0); a11.mma(wa1, wb1); a12.mma(wa1, wb2); a13.mma(wa1, wb3);
+                a20.mma(wa2, wb0); a21.mma(wa2, wb1); a22.mma(wa2, wb2); a23.mma(wa2, wb3);
+                ks = ks + 1;
+            }
+            Barrier.workgroup();
+            if (pf) {
+                sb.vstore((bnb +  0) * 64 + bk, pb0); sb.vstore((bnb + 16) * 64 + bk, pb1);
+                sb.vstore((bnb + 32) * 64 + bk, pb2); sb.vstore((bnb + 48) * 64 + bk, pb3);
+                sb.vstore((bnb + 64) * 64 + bk, pb4); sb.vstore((bnb + 80) * 64 + bk, pb5);
+                sb.vstore((bnb + 96) * 64 + bk, pb6); sb.vstore((bnb + 112) * 64 + bk, pb7);
+                uint32 ca2 = tid;
+                while (ca2 < 768) {
+                    uint32 m = ca2 / 8; uint32 kk = (ca2 % 8) * 8;
+                    if (rb + m < n) { Vector<bfloat16,8> va = a.vload<8>((rb + m) * n + ko + kk);
+                        sa.vstore(m * 64 + kk, va); }
+                    ca2 = ca2 + 128;
+                }
+                Barrier.workgroup();
+            }
+            p = p + 1;
+        }
+        uint32 r0 = rb + wm * 48;
+        uint32 c0 = cb + wn * 64;
+        if (r0 + 0 < n) {
+            a00.store(c, (r0 + 0) * n + c0 + 0, 0, n); a01.store(c, (r0 + 0) * n + c0 + 16, 0, n);
+            a02.store(c, (r0 + 0) * n + c0 + 32, 0, n); a03.store(c, (r0 + 0) * n + c0 + 48, 0, n);
+        }
+        if (r0 + 16 < n) {
+            a10.store(c, (r0 + 16) * n + c0 + 0, 0, n); a11.store(c, (r0 + 16) * n + c0 + 16, 0, n);
+            a12.store(c, (r0 + 16) * n + c0 + 32, 0, n); a13.store(c, (r0 + 16) * n + c0 + 48, 0, n);
+        }
+        if (r0 + 32 < n) {
+            a20.store(c, (r0 + 32) * n + c0 + 0, 0, n); a21.store(c, (r0 + 32) * n + c0 + 16, 0, n);
+            a22.store(c, (r0 + 32) * n + c0 + 32, 0, n); a23.store(c, (r0 + 32) * n + c0 + 48, 0, n);
+        }
     }
 
     public String name() {
@@ -53,8 +210,11 @@ public class GemmBench extends XpuBench {
         if (XpuEnv.reduced()) {
             sz = "256 (smoke)";
         }
+        if (this.bf16 && this.torchRecipe) {
+            return "n=" + sz + ", CooperativeMatrix<bfloat16> operands, float32 accumulator, the gfx1151 torch-recipe tiling (MT 96x128, 4 waves of 32, B transposed), the strip kernel before 2026-11-09; competitors: cuBLAS cublasGemmEx bf16/f32-acc (devserver), rocBLAS, PyTorch matmul bf16";
+        }
         if (this.bf16) {
-            return "n=" + sz + ", CooperativeMatrix<bfloat16> operands, float32 accumulator, the 128x128 tile (eight waves of 32x64, K slabs of 64, 8-wide staging with prefetch); competitors: cuBLAS cublasGemmEx bf16/f32-acc (devserver), rocBLAS, PyTorch matmul bf16";
+            return "n=" + sz + ", CooperativeMatrix<bfloat16> operands, float32 accumulator, the 128x128 tile (XpuKernels.gemmBf16), the strip kernel before 2026-11-09; competitors: cuBLAS cublasGemmEx bf16/f32-acc (devserver), rocBLAS, PyTorch matmul bf16";
         }
         return "n=" + sz + ", CooperativeMatrix<float32> (no native f32 matrix-core config: the software tier on every backend), one wave per 16x64 strip; competitors: cuBLAS cublasSgemm (devserver), rocBLAS, PyTorch matmul f32 (TF32 off)";
     }
@@ -69,12 +229,22 @@ public class GemmBench extends XpuBench {
         return v;
     }
 
-    public void setupDevice() {
-        if (this.bf16 && XpuEnv.backend().equals("vulkan")) {
-            this.live = false;
-            this.why = "skipped: no native bf16 cooperative matrix on vulkan (the 128x128 bf16 tile is built for cpu, nvptx and amdgpu only; cajeta-ml-gpu 23.2.6)";
-            return;
+    boolean bf16OffVulkan() {
+        return this.bf16 && this.backend().equals("vulkan");
+    }
+
+    public boolean supportsVariant(String variant) {
+        return this.live && !this.bf16OffVulkan();
+    }
+
+    public String skipReason() {
+        if (this.live && this.bf16OffVulkan()) {
+            return "gemm-bf16 is not built for vulkan: its 8-wide staging crosses the K loop's phi as invalid SPIR-V (cajeta-ml-gpu 23.2.7) and no Vulkan driver exposes a bf16 cooperative-matrix config";
         }
+        return this.why;
+    }
+
+    public void setupDevice() {
         if (XpuEnv.reduced()) {
             this.n = (uint32) 256;
         }
@@ -92,14 +262,23 @@ public class GemmBench extends XpuBench {
         this.dc = heap KernelBuffer<float32>((uint64) m);
         this.dc.upload(this.hc);
         if (this.bf16) {
+            // The torch recipe takes B transposed (bt[c][k] = B[k][c]) for its wide K loads.
+            this.torchRecipe = GemmBench.useTorchRecipe();
+            int32 nn = (int32) this.n;
             bfloat16[] a = heap bfloat16[m];
             bfloat16[] b = heap bfloat16[m];
             int32 j = 0;
             while (j < m) {
                 a[j] = (bfloat16) this.ha[j];
-                b[j] = (bfloat16) this.hb[j];
+                if (this.torchRecipe) {
+                    b[j] = (bfloat16) this.hb[(j % nn) * nn + j / nn];
+                } else {
+                    b[j] = (bfloat16) this.hb[j];
+                }
                 j = j + 1;
             }
+            this.gridX = this.n / 128;
+            this.gridM = (this.n + 95) / 96;
             this.da16 = heap KernelBuffer<bfloat16>((uint64) m);
             this.db16 = heap KernelBuffer<bfloat16>((uint64) m);
             this.da16.upload(a);
@@ -122,7 +301,10 @@ public class GemmBench extends XpuBench {
     }
 
     public void runVariant(String variant, int32 iterations) {
-        if (this.bf16) {
+        if (this.bf16 && this.torchRecipe) {
+            gemmBf16.launch(this.stream, grid: [this.gridX, this.gridM], block: [128])(
+                this.dc, this.da16, this.db16, this.n);
+        } else if (this.bf16) {
             XpuKernels.gemmBf16(this.stream, this.dc, this.da16, this.db16, this.n);
         } else {
             XpuKernels.gemmF32(this.stream, this.dc, this.da32, this.db32, this.n);

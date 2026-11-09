@@ -8,6 +8,7 @@ import cajeta.xpu.Barrier;
 import cajeta.xpu.Shared;
 import cajeta.xpu.Wave;
 import cajeta.xpu.GroupOp;
+import cajeta.xpu.MemoryOrder;
 import cajeta.xpu.CooperativeMatrix;
 
 // Every @Kernel of the xpu/ catalog that more than one benchmark launches, and
@@ -143,23 +144,33 @@ public final class XpuKernels {
     }
 
     // ---- wave reduce, float32 -------------------------------------------------
-    // Pass 1: each thread sums a grid-stride slice, Wave.reduceSumF32 folds the
+    // Pass 1: each thread sums a grid-stride slice four floats at a time (one
+    // 16-byte load, four independent accumulators), Wave.reduceSumF32 folds the
     // wave, and the wave's first lane writes the wave's partial (slot = global
     // wave index; slots a narrower wave never reaches stay at the zero they were
     // uploaded with). Pass 2: one workgroup folds the partials with
-    // Workgroup.reduce (waves, then one barrier) into out[0].
+    // Workgroup.reduce (waves, then one barrier) into out[0]. n a multiple of 4.
 
     @Kernel
     @Occupancy(maxThreads = 256)
     public static void reduceWaves(KernelBuffer<float32> partials, KernelBuffer<float32> x,
                                    uint32 n, uint32 stride) {
         uint32 g = KernelThread.globalIdX();
-        float32 acc = 0.0f;
-        uint32 i = g;
+        float32 a0 = 0.0f;
+        float32 a1 = 0.0f;
+        float32 a2 = 0.0f;
+        float32 a3 = 0.0f;
+        uint32 i = g * 4;
+        uint32 step = stride * 4;
         while (i < n) {
-            acc = acc + x[i];
-            i = i + stride;
+            Vector<float32,4> v = x.vload<4>(i);
+            a0 = a0 + v.x;
+            a1 = a1 + v.y;
+            a2 = a2 + v.z;
+            a3 = a3 + v.w;
+            i = i + step;
         }
+        float32 acc = (a0 + a1) + (a2 + a3);
         float32 w = Wave.reduceSumF32(acc);
         if (Wave.isFirstLane()) {
             partials[g / Wave.width()] = w;
@@ -192,81 +203,111 @@ public final class XpuKernels {
         reduceFinal.launch(s, grid: [1], block: [256])(out, partials, m);
     }
 
-    // ---- inclusive scan, int32 ------------------------------------------------
-    // Reduce-then-scan over tiles of 4096 (256 threads x 16 items):
-    //   scanTileSums  tile totals,
-    //   scanOffsets   one workgroup turns the totals into exclusive tile offsets,
-    //   scanTiles     each thread's 16 items, its exclusive Workgroup.scan
-    //                 within the tile plus the tile's offset, written inclusive.
+    // ---- inclusive scan, int32: one pass, decoupled look-back -----------------
+    // Tiles of 4096 (256 threads x 16 items, four 16-byte loads a thread) are
+    // taken in order from an atomic counter, so every predecessor of a tile is
+    // already running. A tile publishes its aggregate (flag 1) before it looks
+    // back, then its inclusive prefix (flag 2); the look-back walks predecessors
+    // from tile - 1, adding aggregates until it meets a prefix. x is read once
+    // and out written once (the reduce-then-scan before 2026-11-09 read x twice
+    // and ran three launches: 0.24x rocPRIM, cajeta-ml-gpu 18.2.2). The spin is
+    // capped, so a fault ends the launch with a wrong result, not a hung GPU.
 
     @Kernel
     @Occupancy(maxThreads = 256)
-    public static void scanTileSums(KernelBuffer<int32> sums, KernelBuffer<int32> x) {
-        uint32 t = KernelThread.x();
-        uint32 base = Workgroup.x() * 4096 + t * 16;
-        int32 acc = 0;
-        uint32 k = 0;
-        while (k < 16) {
-            acc = acc + x[base + k];
-            k = k + 1;
+    public static void scanReset(KernelBuffer<int32> flag, KernelBuffer<int32> counter, uint32 tiles) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < tiles) {
+            flag[i] = 0;
         }
-        int32 total = Workgroup.reduce(GroupOp.Add, acc);
+        if (i == 0) {
+            counter[0] = 0;
+        }
+    }
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void scanLookback(KernelBuffer<int32> out, KernelBuffer<int32> x, KernelBuffer<int32> agg,
+                                    KernelBuffer<int32> inc, KernelBuffer<int32> flag, KernelBuffer<int32> counter) {
+        Shared<int32> bc = shared int32[2];
+        uint32 t = KernelThread.x();
         if (t == 0) {
-            sums[Workgroup.x()] = total;
+            bc[0] = counter.atomicAdd(0, 1, MemoryOrder.Relaxed);
         }
-    }
-
-    @Kernel
-    @Occupancy(maxThreads = 256)
-    public static void scanOffsets(KernelBuffer<int32> offs, KernelBuffer<int32> sums, uint32 per) {
-        uint32 t = KernelThread.x();
-        uint32 base = t * per;
-        int32 acc = 0;
-        uint32 k = 0;
-        while (k < per) {
-            acc = acc + sums[base + k];
-            k = k + 1;
-        }
-        int32 before = Workgroup.scan(GroupOp.Add, acc);
-        int32 run = before;
-        uint32 j = 0;
-        while (j < per) {
-            offs[base + j] = run;
-            run = run + sums[base + j];
-            j = j + 1;
-        }
-    }
-
-    @Kernel
-    @Occupancy(maxThreads = 256)
-    public static void scanTiles(KernelBuffer<int32> out, KernelBuffer<int32> x, KernelBuffer<int32> offs) {
-        uint32 t = KernelThread.x();
-        uint32 tile = Workgroup.x();
+        Barrier.workgroup();
+        uint32 tile = (uint32) bc[0];
         uint32 base = tile * 4096 + t * 16;
-        int32 local = 0;
-        uint32 k = 0;
-        while (k < 16) {
-            local = local + x[base + k];
-            k = k + 1;
-        }
+        Vector<int32,4> q0 = x.vload<4>(base);
+        Vector<int32,4> q1 = x.vload<4>(base + 4);
+        Vector<int32,4> q2 = x.vload<4>(base + 8);
+        Vector<int32,4> q3 = x.vload<4>(base + 12);
+        int32 local = ((q0.x + q0.y) + (q0.z + q0.w)) + ((q1.x + q1.y) + (q1.z + q1.w))
+                    + ((q2.x + q2.y) + (q2.z + q2.w)) + ((q3.x + q3.y) + (q3.z + q3.w));
         int32 before = Workgroup.scan(GroupOp.Add, local);
-        int32 run = before + offs[tile];
-        uint32 j = 0;
-        while (j < 16) {
-            run = run + x[base + j];
-            out[base + j] = run;
-            j = j + 1;
+        if (t == 255) {
+            int32 a = before + local;
+            agg.atomicExchange(tile, a, MemoryOrder.Relaxed);
+            flag.atomicExchange(tile, 1, MemoryOrder.Release);
+            bc[1] = a;
         }
+        Barrier.workgroup();
+        if (t == 0) {
+            int32 run = 0;
+            if (tile > 0) {
+                uint32 p = tile - 1;
+                uint32 spins = 0;
+                boolean done = false;
+                while (!done) {
+                    int32 f = flag.atomicAdd(p, 0, MemoryOrder.Acquire);
+                    if (f == 2) {
+                        run = run + inc.atomicAdd(p, 0, MemoryOrder.Relaxed);
+                        done = true;
+                    } else if (f == 1) {
+                        run = run + agg.atomicAdd(p, 0, MemoryOrder.Relaxed);
+                        if (p == 0) {
+                            done = true;
+                        } else {
+                            p = p - 1;
+                        }
+                    } else {
+                        spins = spins + 1;
+                        if (spins > 1000000) {
+                            done = true;
+                        }
+                    }
+                }
+            }
+            inc.atomicExchange(tile, run + bc[1], MemoryOrder.Relaxed);
+            flag.atomicExchange(tile, 2, MemoryOrder.Release);
+            bc[0] = run;
+        }
+        Barrier.workgroup();
+        int32 r = bc[0] + before;
+        r = r + q0.x; out[base] = r;
+        r = r + q0.y; out[base + 1] = r;
+        r = r + q0.z; out[base + 2] = r;
+        r = r + q0.w; out[base + 3] = r;
+        r = r + q1.x; out[base + 4] = r;
+        r = r + q1.y; out[base + 5] = r;
+        r = r + q1.z; out[base + 6] = r;
+        r = r + q1.w; out[base + 7] = r;
+        r = r + q2.x; out[base + 8] = r;
+        r = r + q2.y; out[base + 9] = r;
+        r = r + q2.z; out[base + 10] = r;
+        r = r + q2.w; out[base + 11] = r;
+        r = r + q3.x; out[base + 12] = r;
+        r = r + q3.y; out[base + 13] = r;
+        r = r + q3.z; out[base + 14] = r;
+        r = r + q3.w; out[base + 15] = r;
     }
 
-    // n a multiple of 4096 * 256 (tiles a multiple of 256).
+    // n a multiple of 4096; agg, inc and flag hold n / 4096 slots, counter one.
     public static void scan(KernelStream s, KernelBuffer<int32> out, KernelBuffer<int32> x,
-                            KernelBuffer<int32> sums, KernelBuffer<int32> offs, uint32 n) {
+                            KernelBuffer<int32> agg, KernelBuffer<int32> inc, KernelBuffer<int32> flag,
+                            KernelBuffer<int32> counter, uint32 n) {
         uint32 tiles = n / 4096;
-        uint32 per = tiles / 256;
-        scanTileSums.launch(s, grid: [tiles], block: [256])(sums, x);
-        scanOffsets.launch(s, grid: [1], block: [256])(offs, sums, per);
-        scanTiles.launch(s, grid: [tiles], block: [256])(out, x, offs);
+        scanReset.launch(s, grid: [(tiles + 255) / 256], block: [256])(flag, counter, tiles);
+        scanLookback.launch(s, grid: [tiles], block: [256])(out, x, agg, inc, flag, counter);
     }
 
     // ---- GEMM through CooperativeMatrix ---------------------------------------
