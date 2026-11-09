@@ -70,6 +70,11 @@ public class GemmBench extends XpuBench {
     }
 
     public void setupDevice() {
+        if (this.bf16 && XpuEnv.backend().equals("vulkan")) {
+            this.live = false;
+            this.why = "skipped: no native bf16 cooperative matrix on vulkan (the 128x128 bf16 tile is built for cpu, nvptx and amdgpu only; cajeta-ml-gpu 23.2.6)";
+            return;
+        }
         if (XpuEnv.reduced()) {
             this.n = (uint32) 256;
         }

@@ -321,7 +321,9 @@ public final class XpuKernels {
     // cajeta-ml-gpu 19.2.2) at bfloat16: eight waves of 32 each a 32x64 sub-tile, K slabs of 64
     // through padded shared tiles, 8-wide staging with the next slab prefetched. It replaced a
     // one-wave 16x64 strip read straight from global (2.31 ms at n4096 on sm_89, 0.37x cuBLAS).
-    @Kernel @Wave(width = 32)
+    // Built for cpu, nvptx and amdgpu only: SPIR-V has no native bf16 cooperative matrix
+    // here, and this tile on the software path is a 15-minute compile at -O3.
+    @Kernel(targets = {"cpu", "nvptx", "amdgpu"}) @Wave(width = 32)
     @Occupancy(maxThreads = 256)
     public static void gemmBf16K(KernelBuffer<float32> c, KernelBuffer<bfloat16> a, KernelBuffer<bfloat16> b,
                                  uint32 n) {
@@ -341,12 +343,19 @@ public final class XpuKernels {
         uint32 nj = wid - mi * ntiles;
         uint32 m0 = mi * 128;
         uint32 n0 = nj * 128;
-        CooperativeMatrix<float32,16,16,2>[2][4] acc;
-        for (uint32 i = 0; i < 2; i = i + 1) {
-            for (uint32 j = 0; j < 4; j = j + 1) { acc[i][j].splat(0.0f); }
-        }
+        CooperativeMatrix<float32,16,16,2> a00; a00.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a01; a01.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a02; a02.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a03; a03.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a10; a10.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a11; a11.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a12; a12.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a13; a13.splat(0.0f);
         CooperativeMatrix<bfloat16,16,16,0> ma;
-        CooperativeMatrix<bfloat16,16,16,1>[4] mb;
+        CooperativeMatrix<bfloat16,16,16,1> mb0;
+        CooperativeMatrix<bfloat16,16,16,1> mb1;
+        CooperativeMatrix<bfloat16,16,16,1> mb2;
+        CooperativeMatrix<bfloat16,16,16,1> mb3;
         boolean wide = m0 + 128 <= m && n0 + 128 <= n && (k % 8) == 0 && (n % 8) == 0;
         uint32 kFull = 0;
         if (wide) { kFull = (k / 64) * 64; }
@@ -393,11 +402,20 @@ public final class XpuKernels {
                     pb3 = b.vload<8>((next + br3) * n + n0 + bc0);
                 }
                 for (uint32 ks = 0; ks < 4; ks = ks + 1) {
-                    for (uint32 j = 0; j < 4; j = j + 1) { mb[j].load(sb, ks * 16 * 136 + wn * 64 + j * 16, 0, 136); }
-                    for (uint32 i = 0; i < 2; i = i + 1) {
-                        ma.load(sa, (wm * 32 + i * 16) * 72 + ks * 16, 0, 72);
-                        for (uint32 j = 0; j < 4; j = j + 1) { acc[i][j].mma(ma, mb[j]); }
-                    }
+                    mb0.load(sb, ks * 16 * 136 + wn * 64 + 0, 0, 136);
+                    mb1.load(sb, ks * 16 * 136 + wn * 64 + 16, 0, 136);
+                    mb2.load(sb, ks * 16 * 136 + wn * 64 + 32, 0, 136);
+                    mb3.load(sb, ks * 16 * 136 + wn * 64 + 48, 0, 136);
+                    ma.load(sa, (wm * 32 + 0) * 72 + ks * 16, 0, 72);
+                    a00.mma(ma, mb0);
+                    a01.mma(ma, mb1);
+                    a02.mma(ma, mb2);
+                    a03.mma(ma, mb3);
+                    ma.load(sa, (wm * 32 + 16) * 72 + ks * 16, 0, 72);
+                    a10.mma(ma, mb0);
+                    a11.mma(ma, mb1);
+                    a12.mma(ma, mb2);
+                    a13.mma(ma, mb3);
                 }
 
                 Barrier.workgroup();
@@ -436,11 +454,20 @@ public final class XpuKernels {
             }
             Barrier.workgroup();
             for (uint32 ks = 0; ks < 4; ks = ks + 1) {
-                for (uint32 j = 0; j < 4; j = j + 1) { mb[j].load(sb, ks * 16 * 136 + wn * 64 + j * 16, 0, 136); }
-                for (uint32 i = 0; i < 2; i = i + 1) {
-                    ma.load(sa, (wm * 32 + i * 16) * 72 + ks * 16, 0, 72);
-                    for (uint32 j = 0; j < 4; j = j + 1) { acc[i][j].mma(ma, mb[j]); }
-                }
+                mb0.load(sb, ks * 16 * 136 + wn * 64 + 0, 0, 136);
+                mb1.load(sb, ks * 16 * 136 + wn * 64 + 16, 0, 136);
+                mb2.load(sb, ks * 16 * 136 + wn * 64 + 32, 0, 136);
+                mb3.load(sb, ks * 16 * 136 + wn * 64 + 48, 0, 136);
+                ma.load(sa, (wm * 32 + 0) * 72 + ks * 16, 0, 72);
+                a00.mma(ma, mb0);
+                a01.mma(ma, mb1);
+                a02.mma(ma, mb2);
+                a03.mma(ma, mb3);
+                ma.load(sa, (wm * 32 + 16) * 72 + ks * 16, 0, 72);
+                a10.mma(ma, mb0);
+                a11.mma(ma, mb1);
+                a12.mma(ma, mb2);
+                a13.mma(ma, mb3);
             }
 
             Barrier.workgroup();
@@ -448,28 +475,111 @@ public final class XpuKernels {
         }
         boolean interior = m0 + 128 <= m && n0 + 128 <= n && (n % 8) == 0;
         if (interior) {
-            for (uint32 i = 0; i < 2; i = i + 1) {
-                for (uint32 j = 0; j < 4; j = j + 1) {
-                    acc[i][j].store(c, (m0 + wm * 32 + i * 16) * n + n0 + wn * 64 + j * 16, 0, n);
-                }
-            }
+            a00.store(c, (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 0, 0, n);
+            a01.store(c, (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 16, 0, n);
+            a02.store(c, (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 32, 0, n);
+            a03.store(c, (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 48, 0, n);
+            a10.store(c, (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 0, 0, n);
+            a11.store(c, (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 16, 0, n);
+            a12.store(c, (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 32, 0, n);
+            a13.store(c, (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 48, 0, n);
         } else {
-            for (uint32 i = 0; i < 2; i = i + 1) {
-                for (uint32 j = 0; j < 4; j = j + 1) {
-                    acc[i][j].store(sc, wave * 256, 0, 16);
-                    Barrier.workgroup();
-                    uint32 r0 = m0 + wm * 32 + i * 16;
-                    uint32 c0 = n0 + wn * 64 + j * 16;
-                    uint32 e = lane;
-                    while (e < 256) {
-                        uint32 er = e / 16;
-                        uint32 ec = e - er * 16;
-                        if (r0 + er < m && c0 + ec < n) { c[(r0 + er) * n + c0 + ec] = sc[wave * 256 + e]; }
-                        e = e + 32;
-                    }
-                    Barrier.workgroup();
-                }
+            a00.store(sc, wave * 256, 0, 16);
+            Barrier.workgroup();
+            uint32 r00 = m0 + wm * 32 + 0;
+            uint32 c00 = n0 + wn * 64 + 0;
+            uint32 e00 = lane;
+            while (e00 < 256) {
+                uint32 er = e00 / 16;
+                uint32 ec = e00 - er * 16;
+                if (r00 + er < m && c00 + ec < n) { c[(r00 + er) * n + c00 + ec] = sc[wave * 256 + e00]; }
+                e00 = e00 + 32;
             }
+            Barrier.workgroup();
+            a01.store(sc, wave * 256, 0, 16);
+            Barrier.workgroup();
+            uint32 r01 = m0 + wm * 32 + 0;
+            uint32 c01 = n0 + wn * 64 + 16;
+            uint32 e01 = lane;
+            while (e01 < 256) {
+                uint32 er = e01 / 16;
+                uint32 ec = e01 - er * 16;
+                if (r01 + er < m && c01 + ec < n) { c[(r01 + er) * n + c01 + ec] = sc[wave * 256 + e01]; }
+                e01 = e01 + 32;
+            }
+            Barrier.workgroup();
+            a02.store(sc, wave * 256, 0, 16);
+            Barrier.workgroup();
+            uint32 r02 = m0 + wm * 32 + 0;
+            uint32 c02 = n0 + wn * 64 + 32;
+            uint32 e02 = lane;
+            while (e02 < 256) {
+                uint32 er = e02 / 16;
+                uint32 ec = e02 - er * 16;
+                if (r02 + er < m && c02 + ec < n) { c[(r02 + er) * n + c02 + ec] = sc[wave * 256 + e02]; }
+                e02 = e02 + 32;
+            }
+            Barrier.workgroup();
+            a03.store(sc, wave * 256, 0, 16);
+            Barrier.workgroup();
+            uint32 r03 = m0 + wm * 32 + 0;
+            uint32 c03 = n0 + wn * 64 + 48;
+            uint32 e03 = lane;
+            while (e03 < 256) {
+                uint32 er = e03 / 16;
+                uint32 ec = e03 - er * 16;
+                if (r03 + er < m && c03 + ec < n) { c[(r03 + er) * n + c03 + ec] = sc[wave * 256 + e03]; }
+                e03 = e03 + 32;
+            }
+            Barrier.workgroup();
+            a10.store(sc, wave * 256, 0, 16);
+            Barrier.workgroup();
+            uint32 r10 = m0 + wm * 32 + 16;
+            uint32 c10 = n0 + wn * 64 + 0;
+            uint32 e10 = lane;
+            while (e10 < 256) {
+                uint32 er = e10 / 16;
+                uint32 ec = e10 - er * 16;
+                if (r10 + er < m && c10 + ec < n) { c[(r10 + er) * n + c10 + ec] = sc[wave * 256 + e10]; }
+                e10 = e10 + 32;
+            }
+            Barrier.workgroup();
+            a11.store(sc, wave * 256, 0, 16);
+            Barrier.workgroup();
+            uint32 r11 = m0 + wm * 32 + 16;
+            uint32 c11 = n0 + wn * 64 + 16;
+            uint32 e11 = lane;
+            while (e11 < 256) {
+                uint32 er = e11 / 16;
+                uint32 ec = e11 - er * 16;
+                if (r11 + er < m && c11 + ec < n) { c[(r11 + er) * n + c11 + ec] = sc[wave * 256 + e11]; }
+                e11 = e11 + 32;
+            }
+            Barrier.workgroup();
+            a12.store(sc, wave * 256, 0, 16);
+            Barrier.workgroup();
+            uint32 r12 = m0 + wm * 32 + 16;
+            uint32 c12 = n0 + wn * 64 + 32;
+            uint32 e12 = lane;
+            while (e12 < 256) {
+                uint32 er = e12 / 16;
+                uint32 ec = e12 - er * 16;
+                if (r12 + er < m && c12 + ec < n) { c[(r12 + er) * n + c12 + ec] = sc[wave * 256 + e12]; }
+                e12 = e12 + 32;
+            }
+            Barrier.workgroup();
+            a13.store(sc, wave * 256, 0, 16);
+            Barrier.workgroup();
+            uint32 r13 = m0 + wm * 32 + 16;
+            uint32 c13 = n0 + wn * 64 + 48;
+            uint32 e13 = lane;
+            while (e13 < 256) {
+                uint32 er = e13 / 16;
+                uint32 ec = e13 - er * 16;
+                if (r13 + er < m && c13 + ec < n) { c[(r13 + er) * n + c13 + ec] = sc[wave * 256 + e13]; }
+                e13 = e13 + 32;
+            }
+            Barrier.workgroup();
         }
     }
 
