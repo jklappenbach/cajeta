@@ -383,14 +383,11 @@ std::vector<ArchHsaco> assembleHsacoPerArch(
         llvm::Module& deviceModule, const std::vector<std::string>& arches) {
     std::vector<ArchHsaco> out;
     if (arches.empty()) return out;
-    if (arches.size() == 1) {
-        auto tm = createAmdgpuTargetMachine(arches[0]);
-        if (!tm) return out;
-        std::vector<uint8_t> hsaco = assembleHsaco(deviceModule, *tm, arches[0]);
-        if (hsaco.empty()) return out;
-        out.push_back({arches[0], std::move(hsaco)});
-        return out;
-    }
+    // assembleHsaco runs the device pipeline in place, so every arch assembles a
+    // clone: the caller keeps the module, and the registration emitter its
+    // kernel's Function*, as lowering left them. One arch handed over the
+    // caller's own module, and on gfx942 the pipeline replaced the kernel there
+    // under the emitter (AmdgpuAssemblyKeepsModuleTests).
     for (const std::string& arch : arches) {
         auto tm = createAmdgpuTargetMachine(arch);
         if (!tm) return {};
