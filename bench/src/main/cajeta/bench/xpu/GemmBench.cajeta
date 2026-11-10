@@ -56,7 +56,7 @@ public class GemmBench extends XpuBench {
         if (this.bf16) {
             return "n=" + sz + ", CooperativeMatrix<bfloat16> operands, float32 accumulator, the 128x128 tile (eight waves of 32x64, K slabs of 64, 8-wide staging with prefetch); competitors: cuBLAS cublasGemmEx bf16/f32-acc (devserver), rocBLAS, PyTorch matmul bf16";
         }
-        return "n=" + sz + ", CooperativeMatrix<float32> (no native f32 matrix-core config: the software tier on every backend), one wave per 16x64 strip; competitors: cuBLAS cublasSgemm (devserver), rocBLAS, PyTorch matmul f32 (TF32 off)";
+        return "n=" + sz + ", the 128x128 SIMT register tile (an 8x8 block a lane, 4-wide shared loads, fused multiply-adds; no native f32 matrix core on any backend); competitors: cuBLAS cublasSgemm (devserver), rocBLAS, PyTorch matmul f32 (TF32 off)";
     }
 
     public #ArrayList<String> variants() {
