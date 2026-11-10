@@ -54,7 +54,7 @@ public class GemmBench extends XpuBench {
             sz = "256 (smoke)";
         }
         if (this.bf16) {
-            return "n=" + sz + ", CooperativeMatrix<bfloat16> operands, float32 accumulator, the 128x128 tile (eight waves of 32x64, K slabs of 64, 8-wide staging with prefetch); competitors: cuBLAS cublasGemmEx bf16/f32-acc (devserver), rocBLAS, PyTorch matmul bf16";
+            return "n=" + sz + ", CooperativeMatrix<bfloat16> operands, float32 accumulator, the 256x128 tile (sixteen waves of 32x64, K slabs of 32, double-buffered shared memory, three slabs of prefetch); competitors: cuBLAS cublasGemmEx bf16/f32-acc (devserver), rocBLAS, PyTorch matmul bf16";
         }
         return "n=" + sz + ", the 128x128 SIMT register tile (an 8x8 block a lane, 4-wide shared loads, fused multiply-adds; no native f32 matrix core on any backend); competitors: cuBLAS cublasSgemm (devserver), rocBLAS, PyTorch matmul f32 (TF32 off)";
     }
@@ -72,7 +72,7 @@ public class GemmBench extends XpuBench {
     public void setupDevice() {
         if (this.bf16 && XpuEnv.backend().equals("vulkan")) {
             this.live = false;
-            this.why = "skipped: no native bf16 cooperative matrix on vulkan (the 128x128 bf16 tile is built for cpu, nvptx and amdgpu only; cajeta-ml-gpu 23.2.6)";
+            this.why = "skipped: no native bf16 cooperative matrix on vulkan (the 256x128 bf16 tile is built for cpu, nvptx and amdgpu only; cajeta-ml-gpu 23.2.6)";
             return;
         }
         if (XpuEnv.reduced()) {

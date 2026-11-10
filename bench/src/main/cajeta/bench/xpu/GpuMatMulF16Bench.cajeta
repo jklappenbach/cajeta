@@ -40,7 +40,7 @@ public class GpuMatMulF16Bench extends XpuBench {
     public uint32 gridX;
     public uint32 gridM;
     public float64 bSum;
-    // The 128x128 tile (true) or the torch recipe; CAJETA_BENCH_F16_KERNEL=tile|torch overrides.
+    // The 256x128 tile (true) or the torch recipe; CAJETA_BENCH_F16_KERNEL=tile|torch overrides.
     public boolean tile;
     public float64 cSum;
 
@@ -176,23 +176,19 @@ public class GpuMatMulF16Bench extends XpuBench {
     }
 
     // The tile (the kernel package's gemm128 shape at float16, cajeta-ml-gpu 23.2.8, tuned for
-    // gfx1151 under 23.2.2): a 256x128 macro tile, sixteen waves of 32x64, K slabs of 64. Built
-    // for cpu, nvptx and amdgpu; on spir-v its 8-wide prefetch lowers to invalid SPIR-V
-    // (23.2.7), so vulkan keeps the torch recipe above. On gfx1151 the tile's
-    // global loads are the floor (loads alone take longer than the matrix ops), so: B is staged
-    // transposed (n rows of 64 k, stride 72) and every fragment is one wide load; the next slab
-    // is prefetched two loads per K step; the barriers order shared memory only, so the
-    // prefetch stays in flight across them; each workgroup starts its K walk at a slab chosen
-    // by its id, spreading the workgroups in flight over the L2 channels (every row pitch here
-    // maps to the same channel); the edge epilogue shares a 2 KB scratch in rounds.
+    // gfx1151 under 23.2.2): a 256x128 macro tile, sixteen waves of 32x64, K slabs of 32 through
+    // two padded shared buffers (B staged transposed), three register sets fetching three slabs
+    // ahead, one shared-memory barrier per slab, and a K walk rotated by one slab per workgroup.
+    // Built for cpu, nvptx and amdgpu; on spir-v its 8-wide prefetch lowers to invalid SPIR-V
+    // (23.2.7), so vulkan keeps the torch recipe above.
     @Kernel(targets = {"cpu", "nvptx", "amdgpu"}) @Wave(width = 32)
     @Occupancy(maxThreads = 512)
     public static void gemmF16Tile(KernelBuffer<float32> c, KernelBuffer<float16> a, KernelBuffer<float16> b,
                                  uint32 n) {
         uint32 m = n;
         uint32 k = n;
-        Shared<float16> sa = shared float16[18432];
-        Shared<float16> sb = shared float16[9216];
+        Shared<float16> sa = shared float16[20480];
+        Shared<float16> sb = shared float16[10240];
         Shared<float32> sc = shared float32[512];
         uint32 t = KernelThread.x();
         uint32 wave = t / 32;
@@ -220,219 +216,393 @@ public class GpuMatMulF16Bench extends XpuBench {
         CooperativeMatrix<float16,16,16,1> mb3;
         boolean wide = m0 + 256 <= m && n0 + 128 <= n && (k % 8) == 0 && (n % 8) == 0;
         uint32 kFull = 0;
-        if (wide) { kFull = (k / 64) * 64; }
-        uint32 ac0 = (t % 8) * 8;
-        uint32 ar0 = t / 8 + 0;
-        uint32 ar1 = t / 8 + 64;
-        uint32 ar2 = t / 8 + 128;
-        uint32 ar3 = t / 8 + 192;
-        uint32 kr = t % 64;
-        uint32 bn0 = (t / 64) * 8;
-        uint32 bn1 = bn0 + 64;
+        if (wide) { kFull = (k / 32) * 32; }
+        uint32 ac0 = (t % 4) * 8;
+        uint32 ar0 = t / 4;
+        uint32 ar1 = t / 4 + 128;
+        uint32 kr = t % 32;
+        uint32 bn0 = (t / 32) * 8;
         uint32 k0 = 0;
-        uint32 kc = 0;
-        if (kFull > 0) { kc = (wid * 64) % kFull; }
+        uint32 ks0 = 0;
+        if (kFull > 0) { ks0 = (wid * 32) % kFull; }
         if (kFull > 0) {
-            Vector<float16,8> pa0 = a.vload<8>((m0 + ar0) * k + kc + ac0);
-            Vector<float16,8> pa1 = a.vload<8>((m0 + ar1) * k + kc + ac0);
-            Vector<float16,8> pa2 = a.vload<8>((m0 + ar2) * k + kc + ac0);
-            Vector<float16,8> pa3 = a.vload<8>((m0 + ar3) * k + kc + ac0);
-            Vector<float16,8> pb0 = b.vload<8>((kc + kr) * n + n0 + bn0);
-            Vector<float16,8> pb1 = b.vload<8>((kc + kr) * n + n0 + bn1);
-            sa.vstore(ar0 * 72 + ac0, pa0);
-            sa.vstore(ar1 * 72 + ac0, pa1);
-            sa.vstore(ar2 * 72 + ac0, pa2);
-            sa.vstore(ar3 * 72 + ac0, pa3);
-            sb[(bn0 + 0) * 72 + kr] = pb0[0];
-            sb[(bn0 + 1) * 72 + kr] = pb0[1];
-            sb[(bn0 + 2) * 72 + kr] = pb0[2];
-            sb[(bn0 + 3) * 72 + kr] = pb0[3];
-            sb[(bn0 + 4) * 72 + kr] = pb0[4];
-            sb[(bn0 + 5) * 72 + kr] = pb0[5];
-            sb[(bn0 + 6) * 72 + kr] = pb0[6];
-            sb[(bn0 + 7) * 72 + kr] = pb0[7];
-            sb[(bn1 + 0) * 72 + kr] = pb1[0];
-            sb[(bn1 + 1) * 72 + kr] = pb1[1];
-            sb[(bn1 + 2) * 72 + kr] = pb1[2];
-            sb[(bn1 + 3) * 72 + kr] = pb1[3];
-            sb[(bn1 + 4) * 72 + kr] = pb1[4];
-            sb[(bn1 + 5) * 72 + kr] = pb1[5];
-            sb[(bn1 + 6) * 72 + kr] = pb1[6];
-            sb[(bn1 + 7) * 72 + kr] = pb1[7];
+            uint32 ks1 = ks0 + 32;
+            if (ks1 >= kFull) { ks1 = 0; }
+            uint32 ks2 = ks1 + 32;
+            if (ks2 >= kFull) { ks2 = 0; }
+            Vector<float16,8> pa0 = a.vload<8>((m0 + ar0) * k + ks0 + ac0);
+            Vector<float16,8> pa1 = a.vload<8>((m0 + ar1) * k + ks0 + ac0);
+            Vector<float16,8> pb0 = b.vload<8>((ks0 + kr) * n + n0 + bn0);
+            Vector<float16,8> qa0 = a.vload<8>((m0 + ar0) * k + ks1 + ac0);
+            Vector<float16,8> qa1 = a.vload<8>((m0 + ar1) * k + ks1 + ac0);
+            Vector<float16,8> qb0 = b.vload<8>((ks1 + kr) * n + n0 + bn0);
+            Vector<float16,8> ra0 = a.vload<8>((m0 + ar0) * k + ks2 + ac0);
+            Vector<float16,8> ra1 = a.vload<8>((m0 + ar1) * k + ks2 + ac0);
+            Vector<float16,8> rb0 = b.vload<8>((ks2 + kr) * n + n0 + bn0);
+            sa.vstore(0 + ar0 * 40 + ac0, pa0);
+            sa.vstore(0 + ar1 * 40 + ac0, pa1);
+            sb[0 + (bn0 + 0) * 40 + kr] = pb0[0];
+            sb[0 + (bn0 + 1) * 40 + kr] = pb0[1];
+            sb[0 + (bn0 + 2) * 40 + kr] = pb0[2];
+            sb[0 + (bn0 + 3) * 40 + kr] = pb0[3];
+            sb[0 + (bn0 + 4) * 40 + kr] = pb0[4];
+            sb[0 + (bn0 + 5) * 40 + kr] = pb0[5];
+            sb[0 + (bn0 + 6) * 40 + kr] = pb0[6];
+            sb[0 + (bn0 + 7) * 40 + kr] = pb0[7];
             Barrier.shared();
             while (k0 < kFull) {
-                uint32 next = k0 + 64;
-                boolean more = next < kFull;
-                uint32 kn = kc + 64;
+                uint32 kn = ks2 + 32;
                 if (kn >= kFull) { kn = 0; }
-                if (more) { pa0 = a.vload<8>((m0 + ar0) * k + kn + ac0); pa1 = a.vload<8>((m0 + ar1) * k + kn + ac0); }
-                mb0.load(sb, (wn * 64 + 0) * 72 + 0 * 16, 1, 72);
-                mb1.load(sb, (wn * 64 + 16) * 72 + 0 * 16, 1, 72);
-                mb2.load(sb, (wn * 64 + 32) * 72 + 0 * 16, 1, 72);
-                mb3.load(sb, (wn * 64 + 48) * 72 + 0 * 16, 1, 72);
-                ma.load(sa, (wm * 32 + 0) * 72 + 0 * 16, 0, 72);
+                if (k0 + 96 >= kFull) { kn = ks0; }
+                pa0 = a.vload<8>((m0 + ar0) * k + kn + ac0); pa1 = a.vload<8>((m0 + ar1) * k + kn + ac0);
+                mb0.load(sb, 0 + (wn * 64 + 0) * 40 + 0 * 16, 1, 40);
+                mb1.load(sb, 0 + (wn * 64 + 16) * 40 + 0 * 16, 1, 40);
+                mb2.load(sb, 0 + (wn * 64 + 32) * 40 + 0 * 16, 1, 40);
+                mb3.load(sb, 0 + (wn * 64 + 48) * 40 + 0 * 16, 1, 40);
+                ma.load(sa, 0 + (wm * 32 + 0) * 40 + 0 * 16, 0, 40);
                 a00.mma(ma, mb0);
                 a01.mma(ma, mb1);
                 a02.mma(ma, mb2);
                 a03.mma(ma, mb3);
-                ma.load(sa, (wm * 32 + 16) * 72 + 0 * 16, 0, 72);
+                ma.load(sa, 0 + (wm * 32 + 16) * 40 + 0 * 16, 0, 40);
                 a10.mma(ma, mb0);
                 a11.mma(ma, mb1);
                 a12.mma(ma, mb2);
                 a13.mma(ma, mb3);
-                if (more) { pa2 = a.vload<8>((m0 + ar2) * k + kn + ac0); pa3 = a.vload<8>((m0 + ar3) * k + kn + ac0); }
-                mb0.load(sb, (wn * 64 + 0) * 72 + 1 * 16, 1, 72);
-                mb1.load(sb, (wn * 64 + 16) * 72 + 1 * 16, 1, 72);
-                mb2.load(sb, (wn * 64 + 32) * 72 + 1 * 16, 1, 72);
-                mb3.load(sb, (wn * 64 + 48) * 72 + 1 * 16, 1, 72);
-                ma.load(sa, (wm * 32 + 0) * 72 + 1 * 16, 0, 72);
+                pb0 = b.vload<8>((kn + kr) * n + n0 + bn0);
+                mb0.load(sb, 0 + (wn * 64 + 0) * 40 + 1 * 16, 1, 40);
+                mb1.load(sb, 0 + (wn * 64 + 16) * 40 + 1 * 16, 1, 40);
+                mb2.load(sb, 0 + (wn * 64 + 32) * 40 + 1 * 16, 1, 40);
+                mb3.load(sb, 0 + (wn * 64 + 48) * 40 + 1 * 16, 1, 40);
+                ma.load(sa, 0 + (wm * 32 + 0) * 40 + 1 * 16, 0, 40);
                 a00.mma(ma, mb0);
                 a01.mma(ma, mb1);
                 a02.mma(ma, mb2);
                 a03.mma(ma, mb3);
-                ma.load(sa, (wm * 32 + 16) * 72 + 1 * 16, 0, 72);
+                ma.load(sa, 0 + (wm * 32 + 16) * 40 + 1 * 16, 0, 40);
                 a10.mma(ma, mb0);
                 a11.mma(ma, mb1);
                 a12.mma(ma, mb2);
                 a13.mma(ma, mb3);
-                if (more) { pb0 = b.vload<8>((kn + kr) * n + n0 + bn0); }
-                mb0.load(sb, (wn * 64 + 0) * 72 + 2 * 16, 1, 72);
-                mb1.load(sb, (wn * 64 + 16) * 72 + 2 * 16, 1, 72);
-                mb2.load(sb, (wn * 64 + 32) * 72 + 2 * 16, 1, 72);
-                mb3.load(sb, (wn * 64 + 48) * 72 + 2 * 16, 1, 72);
-                ma.load(sa, (wm * 32 + 0) * 72 + 2 * 16, 0, 72);
-                a00.mma(ma, mb0);
-                a01.mma(ma, mb1);
-                a02.mma(ma, mb2);
-                a03.mma(ma, mb3);
-                ma.load(sa, (wm * 32 + 16) * 72 + 2 * 16, 0, 72);
-                a10.mma(ma, mb0);
-                a11.mma(ma, mb1);
-                a12.mma(ma, mb2);
-                a13.mma(ma, mb3);
-                if (more) { pb1 = b.vload<8>((kn + kr) * n + n0 + bn1); }
-                mb0.load(sb, (wn * 64 + 0) * 72 + 3 * 16, 1, 72);
-                mb1.load(sb, (wn * 64 + 16) * 72 + 3 * 16, 1, 72);
-                mb2.load(sb, (wn * 64 + 32) * 72 + 3 * 16, 1, 72);
-                mb3.load(sb, (wn * 64 + 48) * 72 + 3 * 16, 1, 72);
-                ma.load(sa, (wm * 32 + 0) * 72 + 3 * 16, 0, 72);
-                a00.mma(ma, mb0);
-                a01.mma(ma, mb1);
-                a02.mma(ma, mb2);
-                a03.mma(ma, mb3);
-                ma.load(sa, (wm * 32 + 16) * 72 + 3 * 16, 0, 72);
-                a10.mma(ma, mb0);
-                a11.mma(ma, mb1);
-                a12.mma(ma, mb2);
-                a13.mma(ma, mb3);
+                sa.vstore(10240 + ar0 * 40 + ac0, qa0);
+                sa.vstore(10240 + ar1 * 40 + ac0, qa1);
+                sb[5120 + (bn0 + 0) * 40 + kr] = qb0[0];
+                sb[5120 + (bn0 + 1) * 40 + kr] = qb0[1];
+                sb[5120 + (bn0 + 2) * 40 + kr] = qb0[2];
+                sb[5120 + (bn0 + 3) * 40 + kr] = qb0[3];
+                sb[5120 + (bn0 + 4) * 40 + kr] = qb0[4];
+                sb[5120 + (bn0 + 5) * 40 + kr] = qb0[5];
+                sb[5120 + (bn0 + 6) * 40 + kr] = qb0[6];
+                sb[5120 + (bn0 + 7) * 40 + kr] = qb0[7];
                 Barrier.shared();
-                if (more) {
-                    sa.vstore(ar0 * 72 + ac0, pa0);
-                    sa.vstore(ar1 * 72 + ac0, pa1);
-                    sa.vstore(ar2 * 72 + ac0, pa2);
-                    sa.vstore(ar3 * 72 + ac0, pa3);
-                    sb[(bn0 + 0) * 72 + kr] = pb0[0];
-                    sb[(bn0 + 1) * 72 + kr] = pb0[1];
-                    sb[(bn0 + 2) * 72 + kr] = pb0[2];
-                    sb[(bn0 + 3) * 72 + kr] = pb0[3];
-                    sb[(bn0 + 4) * 72 + kr] = pb0[4];
-                    sb[(bn0 + 5) * 72 + kr] = pb0[5];
-                    sb[(bn0 + 6) * 72 + kr] = pb0[6];
-                    sb[(bn0 + 7) * 72 + kr] = pb0[7];
-                    sb[(bn1 + 0) * 72 + kr] = pb1[0];
-                    sb[(bn1 + 1) * 72 + kr] = pb1[1];
-                    sb[(bn1 + 2) * 72 + kr] = pb1[2];
-                    sb[(bn1 + 3) * 72 + kr] = pb1[3];
-                    sb[(bn1 + 4) * 72 + kr] = pb1[4];
-                    sb[(bn1 + 5) * 72 + kr] = pb1[5];
-                    sb[(bn1 + 6) * 72 + kr] = pb1[6];
-                    sb[(bn1 + 7) * 72 + kr] = pb1[7];
+                ks0 = ks1;
+                ks1 = ks2;
+                ks2 = kn;
+                k0 = k0 + 32;
+                if (k0 < kFull) {
+                    uint32 kn = ks2 + 32;
+                    if (kn >= kFull) { kn = 0; }
+                    if (k0 + 96 >= kFull) { kn = ks0; }
+                    qa0 = a.vload<8>((m0 + ar0) * k + kn + ac0); qa1 = a.vload<8>((m0 + ar1) * k + kn + ac0);
+                    mb0.load(sb, 5120 + (wn * 64 + 0) * 40 + 0 * 16, 1, 40);
+                    mb1.load(sb, 5120 + (wn * 64 + 16) * 40 + 0 * 16, 1, 40);
+                    mb2.load(sb, 5120 + (wn * 64 + 32) * 40 + 0 * 16, 1, 40);
+                    mb3.load(sb, 5120 + (wn * 64 + 48) * 40 + 0 * 16, 1, 40);
+                    ma.load(sa, 10240 + (wm * 32 + 0) * 40 + 0 * 16, 0, 40);
+                    a00.mma(ma, mb0);
+                    a01.mma(ma, mb1);
+                    a02.mma(ma, mb2);
+                    a03.mma(ma, mb3);
+                    ma.load(sa, 10240 + (wm * 32 + 16) * 40 + 0 * 16, 0, 40);
+                    a10.mma(ma, mb0);
+                    a11.mma(ma, mb1);
+                    a12.mma(ma, mb2);
+                    a13.mma(ma, mb3);
+                    qb0 = b.vload<8>((kn + kr) * n + n0 + bn0);
+                    mb0.load(sb, 5120 + (wn * 64 + 0) * 40 + 1 * 16, 1, 40);
+                    mb1.load(sb, 5120 + (wn * 64 + 16) * 40 + 1 * 16, 1, 40);
+                    mb2.load(sb, 5120 + (wn * 64 + 32) * 40 + 1 * 16, 1, 40);
+                    mb3.load(sb, 5120 + (wn * 64 + 48) * 40 + 1 * 16, 1, 40);
+                    ma.load(sa, 10240 + (wm * 32 + 0) * 40 + 1 * 16, 0, 40);
+                    a00.mma(ma, mb0);
+                    a01.mma(ma, mb1);
+                    a02.mma(ma, mb2);
+                    a03.mma(ma, mb3);
+                    ma.load(sa, 10240 + (wm * 32 + 16) * 40 + 1 * 16, 0, 40);
+                    a10.mma(ma, mb0);
+                    a11.mma(ma, mb1);
+                    a12.mma(ma, mb2);
+                    a13.mma(ma, mb3);
+                    sa.vstore(0 + ar0 * 40 + ac0, ra0);
+                    sa.vstore(0 + ar1 * 40 + ac0, ra1);
+                    sb[0 + (bn0 + 0) * 40 + kr] = rb0[0];
+                    sb[0 + (bn0 + 1) * 40 + kr] = rb0[1];
+                    sb[0 + (bn0 + 2) * 40 + kr] = rb0[2];
+                    sb[0 + (bn0 + 3) * 40 + kr] = rb0[3];
+                    sb[0 + (bn0 + 4) * 40 + kr] = rb0[4];
+                    sb[0 + (bn0 + 5) * 40 + kr] = rb0[5];
+                    sb[0 + (bn0 + 6) * 40 + kr] = rb0[6];
+                    sb[0 + (bn0 + 7) * 40 + kr] = rb0[7];
                     Barrier.shared();
+                    ks0 = ks1;
+                    ks1 = ks2;
+                    ks2 = kn;
+                    k0 = k0 + 32;
                 }
-                kc = kn;
-                k0 = next;
+                if (k0 < kFull) {
+                    uint32 kn = ks2 + 32;
+                    if (kn >= kFull) { kn = 0; }
+                    if (k0 + 96 >= kFull) { kn = ks0; }
+                    ra0 = a.vload<8>((m0 + ar0) * k + kn + ac0); ra1 = a.vload<8>((m0 + ar1) * k + kn + ac0);
+                    mb0.load(sb, 0 + (wn * 64 + 0) * 40 + 0 * 16, 1, 40);
+                    mb1.load(sb, 0 + (wn * 64 + 16) * 40 + 0 * 16, 1, 40);
+                    mb2.load(sb, 0 + (wn * 64 + 32) * 40 + 0 * 16, 1, 40);
+                    mb3.load(sb, 0 + (wn * 64 + 48) * 40 + 0 * 16, 1, 40);
+                    ma.load(sa, 0 + (wm * 32 + 0) * 40 + 0 * 16, 0, 40);
+                    a00.mma(ma, mb0);
+                    a01.mma(ma, mb1);
+                    a02.mma(ma, mb2);
+                    a03.mma(ma, mb3);
+                    ma.load(sa, 0 + (wm * 32 + 16) * 40 + 0 * 16, 0, 40);
+                    a10.mma(ma, mb0);
+                    a11.mma(ma, mb1);
+                    a12.mma(ma, mb2);
+                    a13.mma(ma, mb3);
+                    rb0 = b.vload<8>((kn + kr) * n + n0 + bn0);
+                    mb0.load(sb, 0 + (wn * 64 + 0) * 40 + 1 * 16, 1, 40);
+                    mb1.load(sb, 0 + (wn * 64 + 16) * 40 + 1 * 16, 1, 40);
+                    mb2.load(sb, 0 + (wn * 64 + 32) * 40 + 1 * 16, 1, 40);
+                    mb3.load(sb, 0 + (wn * 64 + 48) * 40 + 1 * 16, 1, 40);
+                    ma.load(sa, 0 + (wm * 32 + 0) * 40 + 1 * 16, 0, 40);
+                    a00.mma(ma, mb0);
+                    a01.mma(ma, mb1);
+                    a02.mma(ma, mb2);
+                    a03.mma(ma, mb3);
+                    ma.load(sa, 0 + (wm * 32 + 16) * 40 + 1 * 16, 0, 40);
+                    a10.mma(ma, mb0);
+                    a11.mma(ma, mb1);
+                    a12.mma(ma, mb2);
+                    a13.mma(ma, mb3);
+                    sa.vstore(10240 + ar0 * 40 + ac0, pa0);
+                    sa.vstore(10240 + ar1 * 40 + ac0, pa1);
+                    sb[5120 + (bn0 + 0) * 40 + kr] = pb0[0];
+                    sb[5120 + (bn0 + 1) * 40 + kr] = pb0[1];
+                    sb[5120 + (bn0 + 2) * 40 + kr] = pb0[2];
+                    sb[5120 + (bn0 + 3) * 40 + kr] = pb0[3];
+                    sb[5120 + (bn0 + 4) * 40 + kr] = pb0[4];
+                    sb[5120 + (bn0 + 5) * 40 + kr] = pb0[5];
+                    sb[5120 + (bn0 + 6) * 40 + kr] = pb0[6];
+                    sb[5120 + (bn0 + 7) * 40 + kr] = pb0[7];
+                    Barrier.shared();
+                    ks0 = ks1;
+                    ks1 = ks2;
+                    ks2 = kn;
+                    k0 = k0 + 32;
+                }
+                if (k0 < kFull) {
+                    uint32 kn = ks2 + 32;
+                    if (kn >= kFull) { kn = 0; }
+                    if (k0 + 96 >= kFull) { kn = ks0; }
+                    pa0 = a.vload<8>((m0 + ar0) * k + kn + ac0); pa1 = a.vload<8>((m0 + ar1) * k + kn + ac0);
+                    mb0.load(sb, 5120 + (wn * 64 + 0) * 40 + 0 * 16, 1, 40);
+                    mb1.load(sb, 5120 + (wn * 64 + 16) * 40 + 0 * 16, 1, 40);
+                    mb2.load(sb, 5120 + (wn * 64 + 32) * 40 + 0 * 16, 1, 40);
+                    mb3.load(sb, 5120 + (wn * 64 + 48) * 40 + 0 * 16, 1, 40);
+                    ma.load(sa, 10240 + (wm * 32 + 0) * 40 + 0 * 16, 0, 40);
+                    a00.mma(ma, mb0);
+                    a01.mma(ma, mb1);
+                    a02.mma(ma, mb2);
+                    a03.mma(ma, mb3);
+                    ma.load(sa, 10240 + (wm * 32 + 16) * 40 + 0 * 16, 0, 40);
+                    a10.mma(ma, mb0);
+                    a11.mma(ma, mb1);
+                    a12.mma(ma, mb2);
+                    a13.mma(ma, mb3);
+                    pb0 = b.vload<8>((kn + kr) * n + n0 + bn0);
+                    mb0.load(sb, 5120 + (wn * 64 + 0) * 40 + 1 * 16, 1, 40);
+                    mb1.load(sb, 5120 + (wn * 64 + 16) * 40 + 1 * 16, 1, 40);
+                    mb2.load(sb, 5120 + (wn * 64 + 32) * 40 + 1 * 16, 1, 40);
+                    mb3.load(sb, 5120 + (wn * 64 + 48) * 40 + 1 * 16, 1, 40);
+                    ma.load(sa, 10240 + (wm * 32 + 0) * 40 + 1 * 16, 0, 40);
+                    a00.mma(ma, mb0);
+                    a01.mma(ma, mb1);
+                    a02.mma(ma, mb2);
+                    a03.mma(ma, mb3);
+                    ma.load(sa, 10240 + (wm * 32 + 16) * 40 + 1 * 16, 0, 40);
+                    a10.mma(ma, mb0);
+                    a11.mma(ma, mb1);
+                    a12.mma(ma, mb2);
+                    a13.mma(ma, mb3);
+                    sa.vstore(0 + ar0 * 40 + ac0, qa0);
+                    sa.vstore(0 + ar1 * 40 + ac0, qa1);
+                    sb[0 + (bn0 + 0) * 40 + kr] = qb0[0];
+                    sb[0 + (bn0 + 1) * 40 + kr] = qb0[1];
+                    sb[0 + (bn0 + 2) * 40 + kr] = qb0[2];
+                    sb[0 + (bn0 + 3) * 40 + kr] = qb0[3];
+                    sb[0 + (bn0 + 4) * 40 + kr] = qb0[4];
+                    sb[0 + (bn0 + 5) * 40 + kr] = qb0[5];
+                    sb[0 + (bn0 + 6) * 40 + kr] = qb0[6];
+                    sb[0 + (bn0 + 7) * 40 + kr] = qb0[7];
+                    Barrier.shared();
+                    ks0 = ks1;
+                    ks1 = ks2;
+                    ks2 = kn;
+                    k0 = k0 + 32;
+                }
+                if (k0 < kFull) {
+                    uint32 kn = ks2 + 32;
+                    if (kn >= kFull) { kn = 0; }
+                    if (k0 + 96 >= kFull) { kn = ks0; }
+                    qa0 = a.vload<8>((m0 + ar0) * k + kn + ac0); qa1 = a.vload<8>((m0 + ar1) * k + kn + ac0);
+                    mb0.load(sb, 0 + (wn * 64 + 0) * 40 + 0 * 16, 1, 40);
+                    mb1.load(sb, 0 + (wn * 64 + 16) * 40 + 0 * 16, 1, 40);
+                    mb2.load(sb, 0 + (wn * 64 + 32) * 40 + 0 * 16, 1, 40);
+                    mb3.load(sb, 0 + (wn * 64 + 48) * 40 + 0 * 16, 1, 40);
+                    ma.load(sa, 0 + (wm * 32 + 0) * 40 + 0 * 16, 0, 40);
+                    a00.mma(ma, mb0);
+                    a01.mma(ma, mb1);
+                    a02.mma(ma, mb2);
+                    a03.mma(ma, mb3);
+                    ma.load(sa, 0 + (wm * 32 + 16) * 40 + 0 * 16, 0, 40);
+                    a10.mma(ma, mb0);
+                    a11.mma(ma, mb1);
+                    a12.mma(ma, mb2);
+                    a13.mma(ma, mb3);
+                    qb0 = b.vload<8>((kn + kr) * n + n0 + bn0);
+                    mb0.load(sb, 0 + (wn * 64 + 0) * 40 + 1 * 16, 1, 40);
+                    mb1.load(sb, 0 + (wn * 64 + 16) * 40 + 1 * 16, 1, 40);
+                    mb2.load(sb, 0 + (wn * 64 + 32) * 40 + 1 * 16, 1, 40);
+                    mb3.load(sb, 0 + (wn * 64 + 48) * 40 + 1 * 16, 1, 40);
+                    ma.load(sa, 0 + (wm * 32 + 0) * 40 + 1 * 16, 0, 40);
+                    a00.mma(ma, mb0);
+                    a01.mma(ma, mb1);
+                    a02.mma(ma, mb2);
+                    a03.mma(ma, mb3);
+                    ma.load(sa, 0 + (wm * 32 + 16) * 40 + 1 * 16, 0, 40);
+                    a10.mma(ma, mb0);
+                    a11.mma(ma, mb1);
+                    a12.mma(ma, mb2);
+                    a13.mma(ma, mb3);
+                    sa.vstore(10240 + ar0 * 40 + ac0, ra0);
+                    sa.vstore(10240 + ar1 * 40 + ac0, ra1);
+                    sb[5120 + (bn0 + 0) * 40 + kr] = rb0[0];
+                    sb[5120 + (bn0 + 1) * 40 + kr] = rb0[1];
+                    sb[5120 + (bn0 + 2) * 40 + kr] = rb0[2];
+                    sb[5120 + (bn0 + 3) * 40 + kr] = rb0[3];
+                    sb[5120 + (bn0 + 4) * 40 + kr] = rb0[4];
+                    sb[5120 + (bn0 + 5) * 40 + kr] = rb0[5];
+                    sb[5120 + (bn0 + 6) * 40 + kr] = rb0[6];
+                    sb[5120 + (bn0 + 7) * 40 + kr] = rb0[7];
+                    Barrier.shared();
+                    ks0 = ks1;
+                    ks1 = ks2;
+                    ks2 = kn;
+                    k0 = k0 + 32;
+                }
+                if (k0 < kFull) {
+                    uint32 kn = ks2 + 32;
+                    if (kn >= kFull) { kn = 0; }
+                    if (k0 + 96 >= kFull) { kn = ks0; }
+                    ra0 = a.vload<8>((m0 + ar0) * k + kn + ac0); ra1 = a.vload<8>((m0 + ar1) * k + kn + ac0);
+                    mb0.load(sb, 5120 + (wn * 64 + 0) * 40 + 0 * 16, 1, 40);
+                    mb1.load(sb, 5120 + (wn * 64 + 16) * 40 + 0 * 16, 1, 40);
+                    mb2.load(sb, 5120 + (wn * 64 + 32) * 40 + 0 * 16, 1, 40);
+                    mb3.load(sb, 5120 + (wn * 64 + 48) * 40 + 0 * 16, 1, 40);
+                    ma.load(sa, 10240 + (wm * 32 + 0) * 40 + 0 * 16, 0, 40);
+                    a00.mma(ma, mb0);
+                    a01.mma(ma, mb1);
+                    a02.mma(ma, mb2);
+                    a03.mma(ma, mb3);
+                    ma.load(sa, 10240 + (wm * 32 + 16) * 40 + 0 * 16, 0, 40);
+                    a10.mma(ma, mb0);
+                    a11.mma(ma, mb1);
+                    a12.mma(ma, mb2);
+                    a13.mma(ma, mb3);
+                    rb0 = b.vload<8>((kn + kr) * n + n0 + bn0);
+                    mb0.load(sb, 5120 + (wn * 64 + 0) * 40 + 1 * 16, 1, 40);
+                    mb1.load(sb, 5120 + (wn * 64 + 16) * 40 + 1 * 16, 1, 40);
+                    mb2.load(sb, 5120 + (wn * 64 + 32) * 40 + 1 * 16, 1, 40);
+                    mb3.load(sb, 5120 + (wn * 64 + 48) * 40 + 1 * 16, 1, 40);
+                    ma.load(sa, 10240 + (wm * 32 + 0) * 40 + 1 * 16, 0, 40);
+                    a00.mma(ma, mb0);
+                    a01.mma(ma, mb1);
+                    a02.mma(ma, mb2);
+                    a03.mma(ma, mb3);
+                    ma.load(sa, 10240 + (wm * 32 + 16) * 40 + 1 * 16, 0, 40);
+                    a10.mma(ma, mb0);
+                    a11.mma(ma, mb1);
+                    a12.mma(ma, mb2);
+                    a13.mma(ma, mb3);
+                    sa.vstore(0 + ar0 * 40 + ac0, pa0);
+                    sa.vstore(0 + ar1 * 40 + ac0, pa1);
+                    sb[0 + (bn0 + 0) * 40 + kr] = pb0[0];
+                    sb[0 + (bn0 + 1) * 40 + kr] = pb0[1];
+                    sb[0 + (bn0 + 2) * 40 + kr] = pb0[2];
+                    sb[0 + (bn0 + 3) * 40 + kr] = pb0[3];
+                    sb[0 + (bn0 + 4) * 40 + kr] = pb0[4];
+                    sb[0 + (bn0 + 5) * 40 + kr] = pb0[5];
+                    sb[0 + (bn0 + 6) * 40 + kr] = pb0[6];
+                    sb[0 + (bn0 + 7) * 40 + kr] = pb0[7];
+                    Barrier.shared();
+                    ks0 = ks1;
+                    ks1 = ks2;
+                    ks2 = kn;
+                    k0 = k0 + 32;
+                }
             }
         }
         while (k0 < k) {
             uint32 idx = t;
-            while (idx < 16384) {
-                uint32 ra = idx / 64;
-                uint32 ca = idx - ra * 64;
+            while (idx < 8192) {
+                uint32 ra = idx / 32;
+                uint32 ca = idx - ra * 32;
                 uint32 gm = m0 + ra;
                 uint32 gk = k0 + ca;
                 float16 va = (float16) 0;
                 if (gm < m && gk < k) { va = a[gm * k + gk]; }
-                sa[ra * 72 + ca] = va;
-                if (idx < 8192) {
+                sa[ra * 40 + ca] = va;
+                if (idx < 4096) {
                     uint32 rb = idx / 128;
                     uint32 cb = idx - rb * 128;
                     uint32 gk2 = k0 + rb;
                     uint32 gn = n0 + cb;
                     float16 vb = (float16) 0;
                     if (gk2 < k && gn < n) { vb = b[gk2 * n + gn]; }
-                    sb[cb * 72 + rb] = vb;
+                    sb[cb * 40 + rb] = vb;
                 }
                 idx = idx + 512;
             }
             Barrier.shared();
-            mb0.load(sb, (wn * 64 + 0) * 72 + 0 * 16, 1, 72);
-            mb1.load(sb, (wn * 64 + 16) * 72 + 0 * 16, 1, 72);
-            mb2.load(sb, (wn * 64 + 32) * 72 + 0 * 16, 1, 72);
-            mb3.load(sb, (wn * 64 + 48) * 72 + 0 * 16, 1, 72);
-            ma.load(sa, (wm * 32 + 0) * 72 + 0 * 16, 0, 72);
+            mb0.load(sb, 0 + (wn * 64 + 0) * 40 + 0 * 16, 1, 40);
+            mb1.load(sb, 0 + (wn * 64 + 16) * 40 + 0 * 16, 1, 40);
+            mb2.load(sb, 0 + (wn * 64 + 32) * 40 + 0 * 16, 1, 40);
+            mb3.load(sb, 0 + (wn * 64 + 48) * 40 + 0 * 16, 1, 40);
+            ma.load(sa, 0 + (wm * 32 + 0) * 40 + 0 * 16, 0, 40);
             a00.mma(ma, mb0);
             a01.mma(ma, mb1);
             a02.mma(ma, mb2);
             a03.mma(ma, mb3);
-            ma.load(sa, (wm * 32 + 16) * 72 + 0 * 16, 0, 72);
+            ma.load(sa, 0 + (wm * 32 + 16) * 40 + 0 * 16, 0, 40);
             a10.mma(ma, mb0);
             a11.mma(ma, mb1);
             a12.mma(ma, mb2);
             a13.mma(ma, mb3);
-            mb0.load(sb, (wn * 64 + 0) * 72 + 1 * 16, 1, 72);
-            mb1.load(sb, (wn * 64 + 16) * 72 + 1 * 16, 1, 72);
-            mb2.load(sb, (wn * 64 + 32) * 72 + 1 * 16, 1, 72);
-            mb3.load(sb, (wn * 64 + 48) * 72 + 1 * 16, 1, 72);
-            ma.load(sa, (wm * 32 + 0) * 72 + 1 * 16, 0, 72);
+            mb0.load(sb, 0 + (wn * 64 + 0) * 40 + 1 * 16, 1, 40);
+            mb1.load(sb, 0 + (wn * 64 + 16) * 40 + 1 * 16, 1, 40);
+            mb2.load(sb, 0 + (wn * 64 + 32) * 40 + 1 * 16, 1, 40);
+            mb3.load(sb, 0 + (wn * 64 + 48) * 40 + 1 * 16, 1, 40);
+            ma.load(sa, 0 + (wm * 32 + 0) * 40 + 1 * 16, 0, 40);
             a00.mma(ma, mb0);
             a01.mma(ma, mb1);
             a02.mma(ma, mb2);
             a03.mma(ma, mb3);
-            ma.load(sa, (wm * 32 + 16) * 72 + 1 * 16, 0, 72);
-            a10.mma(ma, mb0);
-            a11.mma(ma, mb1);
-            a12.mma(ma, mb2);
-            a13.mma(ma, mb3);
-            mb0.load(sb, (wn * 64 + 0) * 72 + 2 * 16, 1, 72);
-            mb1.load(sb, (wn * 64 + 16) * 72 + 2 * 16, 1, 72);
-            mb2.load(sb, (wn * 64 + 32) * 72 + 2 * 16, 1, 72);
-            mb3.load(sb, (wn * 64 + 48) * 72 + 2 * 16, 1, 72);
-            ma.load(sa, (wm * 32 + 0) * 72 + 2 * 16, 0, 72);
-            a00.mma(ma, mb0);
-            a01.mma(ma, mb1);
-            a02.mma(ma, mb2);
-            a03.mma(ma, mb3);
-            ma.load(sa, (wm * 32 + 16) * 72 + 2 * 16, 0, 72);
-            a10.mma(ma, mb0);
-            a11.mma(ma, mb1);
-            a12.mma(ma, mb2);
-            a13.mma(ma, mb3);
-            mb0.load(sb, (wn * 64 + 0) * 72 + 3 * 16, 1, 72);
-            mb1.load(sb, (wn * 64 + 16) * 72 + 3 * 16, 1, 72);
-            mb2.load(sb, (wn * 64 + 32) * 72 + 3 * 16, 1, 72);
-            mb3.load(sb, (wn * 64 + 48) * 72 + 3 * 16, 1, 72);
-            ma.load(sa, (wm * 32 + 0) * 72 + 3 * 16, 0, 72);
-            a00.mma(ma, mb0);
-            a01.mma(ma, mb1);
-            a02.mma(ma, mb2);
-            a03.mma(ma, mb3);
-            ma.load(sa, (wm * 32 + 16) * 72 + 3 * 16, 0, 72);
+            ma.load(sa, 0 + (wm * 32 + 16) * 40 + 1 * 16, 0, 40);
             a10.mma(ma, mb0);
             a11.mma(ma, mb1);
             a12.mma(ma, mb2);
             a13.mma(ma, mb3);
             Barrier.shared();
-            k0 = k0 + 64;
+            k0 = k0 + 32;
         }
         boolean interior = m0 + 256 <= m && n0 + 128 <= n && (n % 8) == 0;
         if (interior) {
@@ -1344,6 +1514,7 @@ public class GpuMatMulF16Bench extends XpuBench {
         }
     }
 
+
     public GpuMatMulF16Bench() {
         this.nDim = 4096;
     }
@@ -1358,7 +1529,7 @@ public class GpuMatMulF16Bench extends XpuBench {
 
     public String competitorNote() {
         String kern = "the gfx1151 torch-recipe tiling (MT 96x128, 4 waves of 32, wave width 32 declared)";
-        if (this.tile) { kern = "the 128x128 tile (eight waves of 32x64, K slabs of 64, 8-wide staging with prefetch)"; }
+        if (this.tile) { kern = "the 256x128 tile (sixteen waves of 32x64, K slabs of 32, double-buffered shared memory, three slabs of prefetch)"; }
         String n = "float16 operands, float32 accumulate, " + kern + ", A = identity; competitors: cuBLAS cublasGemmEx f16/f32-acc (devserver), rocBLAS, PyTorch matmul f16";
         if (this.cSum != this.bSum) {
             n = n + "; check: sum C " + this.cSum + " vs sum B " + this.bSum;
