@@ -175,29 +175,35 @@ public class GpuMatMulF16Bench extends XpuBench {
         }
     }
 
-    // The 128x128 tile (dev.cajeta.ml.kernels Gemm.gemm128 at float16, cajeta-ml-gpu 23.2.8):
-    // eight waves of 32x64, K slabs of 64, 8-wide staging with the next slab prefetched, B as
-    // stored. Built for cpu, nvptx and amdgpu; on spir-v its 8-wide prefetch lowers to invalid
-    // SPIR-V (23.2.7), so vulkan keeps the torch recipe above.
+    // The tile (the kernel package's gemm128 shape at float16, cajeta-ml-gpu 23.2.8, tuned for
+    // gfx1151 under 23.2.2): a 256x128 macro tile, sixteen waves of 32x64, K slabs of 64. Built
+    // for cpu, nvptx and amdgpu; on spir-v its 8-wide prefetch lowers to invalid SPIR-V
+    // (23.2.7), so vulkan keeps the torch recipe above. On gfx1151 the tile's
+    // global loads are the floor (loads alone take longer than the matrix ops), so: B is staged
+    // transposed (n rows of 64 k, stride 72) and every fragment is one wide load; the next slab
+    // is prefetched two loads per K step; the barriers order shared memory only, so the
+    // prefetch stays in flight across them; each workgroup starts its K walk at a slab chosen
+    // by its id, spreading the workgroups in flight over the L2 channels (every row pitch here
+    // maps to the same channel); the edge epilogue shares a 2 KB scratch in rounds.
     @Kernel(targets = {"cpu", "nvptx", "amdgpu"}) @Wave(width = 32)
-    @Occupancy(maxThreads = 256)
+    @Occupancy(maxThreads = 512)
     public static void gemmF16Tile(KernelBuffer<float32> c, KernelBuffer<float16> a, KernelBuffer<float16> b,
-                                   uint32 n) {
+                                 uint32 n) {
         uint32 m = n;
         uint32 k = n;
-        Shared<float16> sa = shared float16[9216];
-        Shared<float16> sb = shared float16[8704];
-        Shared<float32> sc = shared float32[2048];
+        Shared<float16> sa = shared float16[18432];
+        Shared<float16> sb = shared float16[9216];
+        Shared<float32> sc = shared float32[512];
         uint32 t = KernelThread.x();
         uint32 wave = t / 32;
         uint32 lane = t - wave * 32;
-        uint32 wm = wave % 4;
-        uint32 wn = wave / 4;
+        uint32 wm = wave % 8;
+        uint32 wn = wave / 8;
         uint32 ntiles = (n + 127) / 128;
         uint32 wid = Workgroup.x();
         uint32 mi = wid / ntiles;
         uint32 nj = wid - mi * ntiles;
-        uint32 m0 = mi * 128;
+        uint32 m0 = mi * 256;
         uint32 n0 = nj * 128;
         CooperativeMatrix<float32,16,16,2> a00; a00.splat(0.0f);
         CooperativeMatrix<float32,16,16,2> a01; a01.splat(0.0f);
@@ -212,124 +218,223 @@ public class GpuMatMulF16Bench extends XpuBench {
         CooperativeMatrix<float16,16,16,1> mb1;
         CooperativeMatrix<float16,16,16,1> mb2;
         CooperativeMatrix<float16,16,16,1> mb3;
-        boolean wide = m0 + 128 <= m && n0 + 128 <= n && (k % 8) == 0 && (n % 8) == 0;
+        boolean wide = m0 + 256 <= m && n0 + 128 <= n && (k % 8) == 0 && (n % 8) == 0;
         uint32 kFull = 0;
         if (wide) { kFull = (k / 64) * 64; }
-        uint32 ar0 = t / 8 + 0;
-        uint32 ar1 = t / 8 + 32;
-        uint32 ar2 = t / 8 + 64;
-        uint32 ar3 = t / 8 + 96;
         uint32 ac0 = (t % 8) * 8;
-        uint32 br0 = t / 16 + 0;
-        uint32 br1 = t / 16 + 16;
-        uint32 br2 = t / 16 + 32;
-        uint32 br3 = t / 16 + 48;
-        uint32 bc0 = (t % 16) * 8;
+        uint32 ar0 = t / 8 + 0;
+        uint32 ar1 = t / 8 + 64;
+        uint32 ar2 = t / 8 + 128;
+        uint32 ar3 = t / 8 + 192;
+        uint32 kr = t % 64;
+        uint32 bn0 = (t / 64) * 8;
+        uint32 bn1 = bn0 + 64;
         uint32 k0 = 0;
+        uint32 kc = 0;
+        if (kFull > 0) { kc = (wid * 64) % kFull; }
         if (kFull > 0) {
-            Vector<float16,8> pa0 = a.vload<8>((m0 + ar0) * k + ac0);
-            Vector<float16,8> pa1 = a.vload<8>((m0 + ar1) * k + ac0);
-            Vector<float16,8> pa2 = a.vload<8>((m0 + ar2) * k + ac0);
-            Vector<float16,8> pa3 = a.vload<8>((m0 + ar3) * k + ac0);
-            Vector<float16,8> pb0 = b.vload<8>(br0 * n + n0 + bc0);
-            Vector<float16,8> pb1 = b.vload<8>(br1 * n + n0 + bc0);
-            Vector<float16,8> pb2 = b.vload<8>(br2 * n + n0 + bc0);
-            Vector<float16,8> pb3 = b.vload<8>(br3 * n + n0 + bc0);
+            Vector<float16,8> pa0 = a.vload<8>((m0 + ar0) * k + kc + ac0);
+            Vector<float16,8> pa1 = a.vload<8>((m0 + ar1) * k + kc + ac0);
+            Vector<float16,8> pa2 = a.vload<8>((m0 + ar2) * k + kc + ac0);
+            Vector<float16,8> pa3 = a.vload<8>((m0 + ar3) * k + kc + ac0);
+            Vector<float16,8> pb0 = b.vload<8>((kc + kr) * n + n0 + bn0);
+            Vector<float16,8> pb1 = b.vload<8>((kc + kr) * n + n0 + bn1);
             sa.vstore(ar0 * 72 + ac0, pa0);
             sa.vstore(ar1 * 72 + ac0, pa1);
             sa.vstore(ar2 * 72 + ac0, pa2);
             sa.vstore(ar3 * 72 + ac0, pa3);
-            sb.vstore(br0 * 136 + bc0, pb0);
-            sb.vstore(br1 * 136 + bc0, pb1);
-            sb.vstore(br2 * 136 + bc0, pb2);
-            sb.vstore(br3 * 136 + bc0, pb3);
-            Barrier.workgroup();
+            sb[(bn0 + 0) * 72 + kr] = pb0[0];
+            sb[(bn0 + 1) * 72 + kr] = pb0[1];
+            sb[(bn0 + 2) * 72 + kr] = pb0[2];
+            sb[(bn0 + 3) * 72 + kr] = pb0[3];
+            sb[(bn0 + 4) * 72 + kr] = pb0[4];
+            sb[(bn0 + 5) * 72 + kr] = pb0[5];
+            sb[(bn0 + 6) * 72 + kr] = pb0[6];
+            sb[(bn0 + 7) * 72 + kr] = pb0[7];
+            sb[(bn1 + 0) * 72 + kr] = pb1[0];
+            sb[(bn1 + 1) * 72 + kr] = pb1[1];
+            sb[(bn1 + 2) * 72 + kr] = pb1[2];
+            sb[(bn1 + 3) * 72 + kr] = pb1[3];
+            sb[(bn1 + 4) * 72 + kr] = pb1[4];
+            sb[(bn1 + 5) * 72 + kr] = pb1[5];
+            sb[(bn1 + 6) * 72 + kr] = pb1[6];
+            sb[(bn1 + 7) * 72 + kr] = pb1[7];
+            Barrier.shared();
             while (k0 < kFull) {
                 uint32 next = k0 + 64;
                 boolean more = next < kFull;
-                if (more) {
-                    pa0 = a.vload<8>((m0 + ar0) * k + next + ac0);
-                    pa1 = a.vload<8>((m0 + ar1) * k + next + ac0);
-                    pa2 = a.vload<8>((m0 + ar2) * k + next + ac0);
-                    pa3 = a.vload<8>((m0 + ar3) * k + next + ac0);
-                    pb0 = b.vload<8>((next + br0) * n + n0 + bc0);
-                    pb1 = b.vload<8>((next + br1) * n + n0 + bc0);
-                    pb2 = b.vload<8>((next + br2) * n + n0 + bc0);
-                    pb3 = b.vload<8>((next + br3) * n + n0 + bc0);
-                }
-                for (uint32 ks = 0; ks < 4; ks = ks + 1) {
-                    mb0.load(sb, ks * 16 * 136 + wn * 64 + 0, 0, 136);
-                    mb1.load(sb, ks * 16 * 136 + wn * 64 + 16, 0, 136);
-                    mb2.load(sb, ks * 16 * 136 + wn * 64 + 32, 0, 136);
-                    mb3.load(sb, ks * 16 * 136 + wn * 64 + 48, 0, 136);
-                    ma.load(sa, (wm * 32 + 0) * 72 + ks * 16, 0, 72);
-                    a00.mma(ma, mb0);
-                    a01.mma(ma, mb1);
-                    a02.mma(ma, mb2);
-                    a03.mma(ma, mb3);
-                    ma.load(sa, (wm * 32 + 16) * 72 + ks * 16, 0, 72);
-                    a10.mma(ma, mb0);
-                    a11.mma(ma, mb1);
-                    a12.mma(ma, mb2);
-                    a13.mma(ma, mb3);
-                }
-
-                Barrier.workgroup();
+                uint32 kn = kc + 64;
+                if (kn >= kFull) { kn = 0; }
+                if (more) { pa0 = a.vload<8>((m0 + ar0) * k + kn + ac0); pa1 = a.vload<8>((m0 + ar1) * k + kn + ac0); }
+                mb0.load(sb, (wn * 64 + 0) * 72 + 0 * 16, 1, 72);
+                mb1.load(sb, (wn * 64 + 16) * 72 + 0 * 16, 1, 72);
+                mb2.load(sb, (wn * 64 + 32) * 72 + 0 * 16, 1, 72);
+                mb3.load(sb, (wn * 64 + 48) * 72 + 0 * 16, 1, 72);
+                ma.load(sa, (wm * 32 + 0) * 72 + 0 * 16, 0, 72);
+                a00.mma(ma, mb0);
+                a01.mma(ma, mb1);
+                a02.mma(ma, mb2);
+                a03.mma(ma, mb3);
+                ma.load(sa, (wm * 32 + 16) * 72 + 0 * 16, 0, 72);
+                a10.mma(ma, mb0);
+                a11.mma(ma, mb1);
+                a12.mma(ma, mb2);
+                a13.mma(ma, mb3);
+                if (more) { pa2 = a.vload<8>((m0 + ar2) * k + kn + ac0); pa3 = a.vload<8>((m0 + ar3) * k + kn + ac0); }
+                mb0.load(sb, (wn * 64 + 0) * 72 + 1 * 16, 1, 72);
+                mb1.load(sb, (wn * 64 + 16) * 72 + 1 * 16, 1, 72);
+                mb2.load(sb, (wn * 64 + 32) * 72 + 1 * 16, 1, 72);
+                mb3.load(sb, (wn * 64 + 48) * 72 + 1 * 16, 1, 72);
+                ma.load(sa, (wm * 32 + 0) * 72 + 1 * 16, 0, 72);
+                a00.mma(ma, mb0);
+                a01.mma(ma, mb1);
+                a02.mma(ma, mb2);
+                a03.mma(ma, mb3);
+                ma.load(sa, (wm * 32 + 16) * 72 + 1 * 16, 0, 72);
+                a10.mma(ma, mb0);
+                a11.mma(ma, mb1);
+                a12.mma(ma, mb2);
+                a13.mma(ma, mb3);
+                if (more) { pb0 = b.vload<8>((kn + kr) * n + n0 + bn0); }
+                mb0.load(sb, (wn * 64 + 0) * 72 + 2 * 16, 1, 72);
+                mb1.load(sb, (wn * 64 + 16) * 72 + 2 * 16, 1, 72);
+                mb2.load(sb, (wn * 64 + 32) * 72 + 2 * 16, 1, 72);
+                mb3.load(sb, (wn * 64 + 48) * 72 + 2 * 16, 1, 72);
+                ma.load(sa, (wm * 32 + 0) * 72 + 2 * 16, 0, 72);
+                a00.mma(ma, mb0);
+                a01.mma(ma, mb1);
+                a02.mma(ma, mb2);
+                a03.mma(ma, mb3);
+                ma.load(sa, (wm * 32 + 16) * 72 + 2 * 16, 0, 72);
+                a10.mma(ma, mb0);
+                a11.mma(ma, mb1);
+                a12.mma(ma, mb2);
+                a13.mma(ma, mb3);
+                if (more) { pb1 = b.vload<8>((kn + kr) * n + n0 + bn1); }
+                mb0.load(sb, (wn * 64 + 0) * 72 + 3 * 16, 1, 72);
+                mb1.load(sb, (wn * 64 + 16) * 72 + 3 * 16, 1, 72);
+                mb2.load(sb, (wn * 64 + 32) * 72 + 3 * 16, 1, 72);
+                mb3.load(sb, (wn * 64 + 48) * 72 + 3 * 16, 1, 72);
+                ma.load(sa, (wm * 32 + 0) * 72 + 3 * 16, 0, 72);
+                a00.mma(ma, mb0);
+                a01.mma(ma, mb1);
+                a02.mma(ma, mb2);
+                a03.mma(ma, mb3);
+                ma.load(sa, (wm * 32 + 16) * 72 + 3 * 16, 0, 72);
+                a10.mma(ma, mb0);
+                a11.mma(ma, mb1);
+                a12.mma(ma, mb2);
+                a13.mma(ma, mb3);
+                Barrier.shared();
                 if (more) {
                     sa.vstore(ar0 * 72 + ac0, pa0);
                     sa.vstore(ar1 * 72 + ac0, pa1);
                     sa.vstore(ar2 * 72 + ac0, pa2);
                     sa.vstore(ar3 * 72 + ac0, pa3);
-                    sb.vstore(br0 * 136 + bc0, pb0);
-                    sb.vstore(br1 * 136 + bc0, pb1);
-                    sb.vstore(br2 * 136 + bc0, pb2);
-                    sb.vstore(br3 * 136 + bc0, pb3);
-                    Barrier.workgroup();
+                    sb[(bn0 + 0) * 72 + kr] = pb0[0];
+                    sb[(bn0 + 1) * 72 + kr] = pb0[1];
+                    sb[(bn0 + 2) * 72 + kr] = pb0[2];
+                    sb[(bn0 + 3) * 72 + kr] = pb0[3];
+                    sb[(bn0 + 4) * 72 + kr] = pb0[4];
+                    sb[(bn0 + 5) * 72 + kr] = pb0[5];
+                    sb[(bn0 + 6) * 72 + kr] = pb0[6];
+                    sb[(bn0 + 7) * 72 + kr] = pb0[7];
+                    sb[(bn1 + 0) * 72 + kr] = pb1[0];
+                    sb[(bn1 + 1) * 72 + kr] = pb1[1];
+                    sb[(bn1 + 2) * 72 + kr] = pb1[2];
+                    sb[(bn1 + 3) * 72 + kr] = pb1[3];
+                    sb[(bn1 + 4) * 72 + kr] = pb1[4];
+                    sb[(bn1 + 5) * 72 + kr] = pb1[5];
+                    sb[(bn1 + 6) * 72 + kr] = pb1[6];
+                    sb[(bn1 + 7) * 72 + kr] = pb1[7];
+                    Barrier.shared();
                 }
+                kc = kn;
                 k0 = next;
             }
         }
         while (k0 < k) {
             uint32 idx = t;
-            while (idx < 8192) {
-                uint32 r = idx / 64;
-                uint32 cc = idx - r * 64;
-                uint32 gm = m0 + r;
-                uint32 gk = k0 + cc;
+            while (idx < 16384) {
+                uint32 ra = idx / 64;
+                uint32 ca = idx - ra * 64;
+                uint32 gm = m0 + ra;
+                uint32 gk = k0 + ca;
                 float16 va = (float16) 0;
                 if (gm < m && gk < k) { va = a[gm * k + gk]; }
-                sa[r * 72 + cc] = va;
-                uint32 rb = idx / 128;
-                uint32 cb = idx - rb * 128;
-                uint32 gk2 = k0 + rb;
-                uint32 gn = n0 + cb;
-                float16 vb = (float16) 0;
-                if (gk2 < k && gn < n) { vb = b[gk2 * n + gn]; }
-                sb[rb * 136 + cb] = vb;
-                idx = idx + 256;
+                sa[ra * 72 + ca] = va;
+                if (idx < 8192) {
+                    uint32 rb = idx / 128;
+                    uint32 cb = idx - rb * 128;
+                    uint32 gk2 = k0 + rb;
+                    uint32 gn = n0 + cb;
+                    float16 vb = (float16) 0;
+                    if (gk2 < k && gn < n) { vb = b[gk2 * n + gn]; }
+                    sb[cb * 72 + rb] = vb;
+                }
+                idx = idx + 512;
             }
-            Barrier.workgroup();
-            for (uint32 ks = 0; ks < 4; ks = ks + 1) {
-                mb0.load(sb, ks * 16 * 136 + wn * 64 + 0, 0, 136);
-                mb1.load(sb, ks * 16 * 136 + wn * 64 + 16, 0, 136);
-                mb2.load(sb, ks * 16 * 136 + wn * 64 + 32, 0, 136);
-                mb3.load(sb, ks * 16 * 136 + wn * 64 + 48, 0, 136);
-                ma.load(sa, (wm * 32 + 0) * 72 + ks * 16, 0, 72);
-                a00.mma(ma, mb0);
-                a01.mma(ma, mb1);
-                a02.mma(ma, mb2);
-                a03.mma(ma, mb3);
-                ma.load(sa, (wm * 32 + 16) * 72 + ks * 16, 0, 72);
-                a10.mma(ma, mb0);
-                a11.mma(ma, mb1);
-                a12.mma(ma, mb2);
-                a13.mma(ma, mb3);
-            }
-
-            Barrier.workgroup();
+            Barrier.shared();
+            mb0.load(sb, (wn * 64 + 0) * 72 + 0 * 16, 1, 72);
+            mb1.load(sb, (wn * 64 + 16) * 72 + 0 * 16, 1, 72);
+            mb2.load(sb, (wn * 64 + 32) * 72 + 0 * 16, 1, 72);
+            mb3.load(sb, (wn * 64 + 48) * 72 + 0 * 16, 1, 72);
+            ma.load(sa, (wm * 32 + 0) * 72 + 0 * 16, 0, 72);
+            a00.mma(ma, mb0);
+            a01.mma(ma, mb1);
+            a02.mma(ma, mb2);
+            a03.mma(ma, mb3);
+            ma.load(sa, (wm * 32 + 16) * 72 + 0 * 16, 0, 72);
+            a10.mma(ma, mb0);
+            a11.mma(ma, mb1);
+            a12.mma(ma, mb2);
+            a13.mma(ma, mb3);
+            mb0.load(sb, (wn * 64 + 0) * 72 + 1 * 16, 1, 72);
+            mb1.load(sb, (wn * 64 + 16) * 72 + 1 * 16, 1, 72);
+            mb2.load(sb, (wn * 64 + 32) * 72 + 1 * 16, 1, 72);
+            mb3.load(sb, (wn * 64 + 48) * 72 + 1 * 16, 1, 72);
+            ma.load(sa, (wm * 32 + 0) * 72 + 1 * 16, 0, 72);
+            a00.mma(ma, mb0);
+            a01.mma(ma, mb1);
+            a02.mma(ma, mb2);
+            a03.mma(ma, mb3);
+            ma.load(sa, (wm * 32 + 16) * 72 + 1 * 16, 0, 72);
+            a10.mma(ma, mb0);
+            a11.mma(ma, mb1);
+            a12.mma(ma, mb2);
+            a13.mma(ma, mb3);
+            mb0.load(sb, (wn * 64 + 0) * 72 + 2 * 16, 1, 72);
+            mb1.load(sb, (wn * 64 + 16) * 72 + 2 * 16, 1, 72);
+            mb2.load(sb, (wn * 64 + 32) * 72 + 2 * 16, 1, 72);
+            mb3.load(sb, (wn * 64 + 48) * 72 + 2 * 16, 1, 72);
+            ma.load(sa, (wm * 32 + 0) * 72 + 2 * 16, 0, 72);
+            a00.mma(ma, mb0);
+            a01.mma(ma, mb1);
+            a02.mma(ma, mb2);
+            a03.mma(ma, mb3);
+            ma.load(sa, (wm * 32 + 16) * 72 + 2 * 16, 0, 72);
+            a10.mma(ma, mb0);
+            a11.mma(ma, mb1);
+            a12.mma(ma, mb2);
+            a13.mma(ma, mb3);
+            mb0.load(sb, (wn * 64 + 0) * 72 + 3 * 16, 1, 72);
+            mb1.load(sb, (wn * 64 + 16) * 72 + 3 * 16, 1, 72);
+            mb2.load(sb, (wn * 64 + 32) * 72 + 3 * 16, 1, 72);
+            mb3.load(sb, (wn * 64 + 48) * 72 + 3 * 16, 1, 72);
+            ma.load(sa, (wm * 32 + 0) * 72 + 3 * 16, 0, 72);
+            a00.mma(ma, mb0);
+            a01.mma(ma, mb1);
+            a02.mma(ma, mb2);
+            a03.mma(ma, mb3);
+            ma.load(sa, (wm * 32 + 16) * 72 + 3 * 16, 0, 72);
+            a10.mma(ma, mb0);
+            a11.mma(ma, mb1);
+            a12.mma(ma, mb2);
+            a13.mma(ma, mb3);
+            Barrier.shared();
             k0 = k0 + 64;
         }
-        boolean interior = m0 + 128 <= m && n0 + 128 <= n && (n % 8) == 0;
+        boolean interior = m0 + 256 <= m && n0 + 128 <= n && (n % 8) == 0;
         if (interior) {
             a00.store(c, (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 0, 0, n);
             a01.store(c, (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 16, 0, n);
@@ -340,102 +445,902 @@ public class GpuMatMulF16Bench extends XpuBench {
             a12.store(c, (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 32, 0, n);
             a13.store(c, (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 48, 0, n);
         } else {
-            a00.store(sc, wave * 256, 0, 16);
-            Barrier.workgroup();
-            uint32 r00 = m0 + wm * 32 + 0;
-            uint32 c00 = n0 + wn * 64 + 0;
-            uint32 e00 = lane;
-            while (e00 < 256) {
-                uint32 er = e00 / 16;
-                uint32 ec = e00 - er * 16;
-                if (r00 + er < m && c00 + ec < n) { c[(r00 + er) * n + c00 + ec] = sc[wave * 256 + e00]; }
-                e00 = e00 + 32;
+            if (wave / 2 == 0) { a00.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 0) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 0;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
             }
-            Barrier.workgroup();
-            a01.store(sc, wave * 256, 0, 16);
-            Barrier.workgroup();
-            uint32 r01 = m0 + wm * 32 + 0;
-            uint32 c01 = n0 + wn * 64 + 16;
-            uint32 e01 = lane;
-            while (e01 < 256) {
-                uint32 er = e01 / 16;
-                uint32 ec = e01 - er * 16;
-                if (r01 + er < m && c01 + ec < n) { c[(r01 + er) * n + c01 + ec] = sc[wave * 256 + e01]; }
-                e01 = e01 + 32;
+            Barrier.shared();
+            if (wave / 2 == 1) { a00.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 1) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 0;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
             }
-            Barrier.workgroup();
-            a02.store(sc, wave * 256, 0, 16);
-            Barrier.workgroup();
-            uint32 r02 = m0 + wm * 32 + 0;
-            uint32 c02 = n0 + wn * 64 + 32;
-            uint32 e02 = lane;
-            while (e02 < 256) {
-                uint32 er = e02 / 16;
-                uint32 ec = e02 - er * 16;
-                if (r02 + er < m && c02 + ec < n) { c[(r02 + er) * n + c02 + ec] = sc[wave * 256 + e02]; }
-                e02 = e02 + 32;
+            Barrier.shared();
+            if (wave / 2 == 2) { a00.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 2) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 0;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
             }
-            Barrier.workgroup();
-            a03.store(sc, wave * 256, 0, 16);
-            Barrier.workgroup();
-            uint32 r03 = m0 + wm * 32 + 0;
-            uint32 c03 = n0 + wn * 64 + 48;
-            uint32 e03 = lane;
-            while (e03 < 256) {
-                uint32 er = e03 / 16;
-                uint32 ec = e03 - er * 16;
-                if (r03 + er < m && c03 + ec < n) { c[(r03 + er) * n + c03 + ec] = sc[wave * 256 + e03]; }
-                e03 = e03 + 32;
+            Barrier.shared();
+            if (wave / 2 == 3) { a00.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 3) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 0;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
             }
-            Barrier.workgroup();
-            a10.store(sc, wave * 256, 0, 16);
-            Barrier.workgroup();
-            uint32 r10 = m0 + wm * 32 + 16;
-            uint32 c10 = n0 + wn * 64 + 0;
-            uint32 e10 = lane;
-            while (e10 < 256) {
-                uint32 er = e10 / 16;
-                uint32 ec = e10 - er * 16;
-                if (r10 + er < m && c10 + ec < n) { c[(r10 + er) * n + c10 + ec] = sc[wave * 256 + e10]; }
-                e10 = e10 + 32;
+            Barrier.shared();
+            if (wave / 2 == 4) { a00.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 4) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 0;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
             }
-            Barrier.workgroup();
-            a11.store(sc, wave * 256, 0, 16);
-            Barrier.workgroup();
-            uint32 r11 = m0 + wm * 32 + 16;
-            uint32 c11 = n0 + wn * 64 + 16;
-            uint32 e11 = lane;
-            while (e11 < 256) {
-                uint32 er = e11 / 16;
-                uint32 ec = e11 - er * 16;
-                if (r11 + er < m && c11 + ec < n) { c[(r11 + er) * n + c11 + ec] = sc[wave * 256 + e11]; }
-                e11 = e11 + 32;
+            Barrier.shared();
+            if (wave / 2 == 5) { a00.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 5) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 0;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
             }
-            Barrier.workgroup();
-            a12.store(sc, wave * 256, 0, 16);
-            Barrier.workgroup();
-            uint32 r12 = m0 + wm * 32 + 16;
-            uint32 c12 = n0 + wn * 64 + 32;
-            uint32 e12 = lane;
-            while (e12 < 256) {
-                uint32 er = e12 / 16;
-                uint32 ec = e12 - er * 16;
-                if (r12 + er < m && c12 + ec < n) { c[(r12 + er) * n + c12 + ec] = sc[wave * 256 + e12]; }
-                e12 = e12 + 32;
+            Barrier.shared();
+            if (wave / 2 == 6) { a00.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 6) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 0;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
             }
-            Barrier.workgroup();
-            a13.store(sc, wave * 256, 0, 16);
-            Barrier.workgroup();
-            uint32 r13 = m0 + wm * 32 + 16;
-            uint32 c13 = n0 + wn * 64 + 48;
-            uint32 e13 = lane;
-            while (e13 < 256) {
-                uint32 er = e13 / 16;
-                uint32 ec = e13 - er * 16;
-                if (r13 + er < m && c13 + ec < n) { c[(r13 + er) * n + c13 + ec] = sc[wave * 256 + e13]; }
-                e13 = e13 + 32;
+            Barrier.shared();
+            if (wave / 2 == 7) { a00.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 7) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 0;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
             }
-            Barrier.workgroup();
+            Barrier.shared();
+            if (wave / 2 == 0) { a01.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 0) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 16;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 1) { a01.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 1) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 16;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 2) { a01.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 2) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 16;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 3) { a01.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 3) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 16;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 4) { a01.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 4) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 16;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 5) { a01.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 5) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 16;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 6) { a01.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 6) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 16;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 7) { a01.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 7) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 16;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 0) { a02.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 0) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 32;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 1) { a02.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 1) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 32;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 2) { a02.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 2) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 32;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 3) { a02.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 3) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 32;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 4) { a02.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 4) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 32;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 5) { a02.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 5) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 32;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 6) { a02.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 6) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 32;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 7) { a02.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 7) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 32;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 0) { a03.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 0) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 48;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 1) { a03.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 1) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 48;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 2) { a03.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 2) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 48;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 3) { a03.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 3) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 48;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 4) { a03.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 4) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 48;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 5) { a03.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 5) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 48;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 6) { a03.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 6) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 48;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 7) { a03.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 7) {
+                uint32 rr = m0 + wm * 32 + 0;
+                uint32 cc = n0 + wn * 64 + 48;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 0) { a10.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 0) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 0;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 1) { a10.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 1) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 0;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 2) { a10.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 2) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 0;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 3) { a10.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 3) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 0;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 4) { a10.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 4) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 0;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 5) { a10.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 5) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 0;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 6) { a10.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 6) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 0;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 7) { a10.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 7) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 0;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 0) { a11.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 0) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 16;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 1) { a11.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 1) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 16;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 2) { a11.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 2) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 16;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 3) { a11.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 3) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 16;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 4) { a11.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 4) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 16;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 5) { a11.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 5) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 16;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 6) { a11.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 6) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 16;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 7) { a11.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 7) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 16;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 0) { a12.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 0) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 32;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 1) { a12.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 1) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 32;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 2) { a12.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 2) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 32;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 3) { a12.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 3) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 32;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 4) { a12.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 4) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 32;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 5) { a12.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 5) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 32;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 6) { a12.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 6) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 32;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 7) { a12.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 7) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 32;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 0) { a13.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 0) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 48;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 1) { a13.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 1) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 48;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 2) { a13.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 2) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 48;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 3) { a13.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 3) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 48;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 4) { a13.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 4) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 48;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 5) { a13.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 5) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 48;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 6) { a13.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 6) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 48;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
+            if (wave / 2 == 7) { a13.store(sc, (wave % 2) * 256, 0, 16); }
+            Barrier.shared();
+            if (wave / 2 == 7) {
+                uint32 rr = m0 + wm * 32 + 16;
+                uint32 cc = n0 + wn * 64 + 48;
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 er = e / 16;
+                    uint32 ec = e - er * 16;
+                    if (rr + er < m && cc + ec < n) { c[(rr + er) * n + cc + ec] = sc[(wave % 2) * 256 + e]; }
+                    e = e + 32;
+                }
+            }
+            Barrier.shared();
         }
     }
 
@@ -549,8 +1454,9 @@ public class GpuMatMulF16Bench extends XpuBench {
 
     public void runVariant(String variant, int32 iterations) {
         if (this.tile) {
-            uint32 t = (this.nU + 127) / 128;
-            gemmF16Tile.launch(this.stream, grid: [t * t], block: [256])(this.kc, this.ka, this.kb, this.nU);
+            uint32 tn = (this.nU + 127) / 128;
+            uint32 tm = (this.nU + 255) / 256;
+            gemmF16Tile.launch(this.stream, grid: [tm * tn], block: [512])(this.kc, this.ka, this.kb, this.nU);
         } else {
             gemmF16.launch(this.stream, grid: [this.gridX, this.gridM], block: [128])(
                 this.kc, this.ka, this.kb, this.nU);

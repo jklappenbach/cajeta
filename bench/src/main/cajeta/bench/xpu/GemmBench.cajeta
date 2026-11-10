@@ -8,8 +8,8 @@ import bench.xpu.XpuEnv;
 import bench.xpu.XpuKernels;
 
 // xpu/gemm-f32 and xpu/gemm-bf16: a 4096 x 4096 GEMM through CooperativeMatrix
-// (XpuKernels.gemmF32 / gemmBf16: one wave per 16 x 64 strip, four
-// accumulators). bf16 operands accumulate in float32. Inputs are small
+// (XpuKernels.gemmF32: one wave per 16 x 64 strip, four accumulators;
+// XpuKernels.gemmBf16: the 256x128 tile). bf16 operands accumulate in float32. Inputs are small
 // integers (A in 0..3, B in 0..4), exact in bf16 and float32 and with every
 // product sum under 2^24, so the check is exact: 512 entries of C against the
 // host's dot product. On the cpu and vulkan backends under CAJETA_BENCH_SMOKE=1
