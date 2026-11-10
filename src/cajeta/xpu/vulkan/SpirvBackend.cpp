@@ -121,6 +121,77 @@ void expandBf16Narrowing(llvm::Module& m) {
     }
 }
 
+// Vulkan SPIR-V carries vectors of at most four components. The backend splits a wider
+// vector at a load, a store or arithmetic, but a wider phi came out as `OpPhi %v4half`
+// over an incoming of another type (v4ushort): spirv-val refused the module and RADV
+// crashed compiling it (cajeta-ml-gpu 23.2.7, SpirvWideVectorPhiTests). Each phi of more
+// than four lanes becomes four-lane phis: every incoming value is split by shuffles at
+// the end of its block, and the pieces are joined again after the phis.
+static void splitWidePhis(llvm::Module& m) {
+    for (llvm::Function& f : m) {
+        llvm::SmallVector<llvm::PHINode*, 8> wide;
+        for (llvm::BasicBlock& bb : f)
+            for (llvm::PHINode& p : bb.phis())
+                if (auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(p.getType()))
+                    if (vt->getNumElements() > 4) wide.push_back(&p);
+        for (llvm::PHINode* p : wide) {
+            auto* vt = llvm::cast<llvm::FixedVectorType>(p->getType());
+            const unsigned n = vt->getNumElements();
+            const unsigned parts = (n + 3) / 4;
+            std::vector<llvm::PHINode*> pieces;
+            std::vector<llvm::SmallVector<int, 4>> masks;
+            for (unsigned q = 0; q < parts; ++q) {
+                const unsigned w = std::min(4u, n - 4 * q);
+                llvm::SmallVector<int, 4> mask;
+                for (unsigned e = 0; e < w; ++e) mask.push_back((int) (4 * q + e));
+                masks.push_back(mask);
+                pieces.push_back(llvm::PHINode::Create(
+                    llvm::FixedVectorType::get(vt->getElementType(), w),
+                    p->getNumIncomingValues(), p->getName() + ".q" + std::to_string(q),
+                    p->getIterator()));
+            }
+            // A block may reach the phi on more than one edge; its pieces are made once.
+            llvm::DenseMap<llvm::BasicBlock*, std::vector<llvm::Value*>> made;
+            for (unsigned e = 0; e < p->getNumIncomingValues(); ++e) {
+                llvm::BasicBlock* from = p->getIncomingBlock(e);
+                auto it = made.find(from);
+                if (it == made.end()) {
+                    llvm::IRBuilder<> b(from->getTerminator());
+                    std::vector<llvm::Value*> vals;
+                    for (unsigned q = 0; q < parts; ++q)
+                        vals.push_back(b.CreateShuffleVector(p->getIncomingValue(e), masks[q],
+                                                             "wphi.split"));
+                    it = made.insert({from, vals}).first;
+                }
+                for (unsigned q = 0; q < parts; ++q) pieces[q]->addIncoming(it->second[q], from);
+            }
+            llvm::IRBuilder<> b(&*p->getParent()->getFirstInsertionPt());
+            llvm::Value* joined = pieces[0];
+            for (unsigned q = 1; q < parts; ++q) {
+                // Widen the running vector and the next piece to the joined width, then blend.
+                const unsigned have = 4 * q;
+                const unsigned w = std::min(4u, n - have);
+                llvm::SmallVector<int, 16> mask;
+                for (unsigned e = 0; e < have + w; ++e) mask.push_back((int) e);
+                llvm::SmallVector<int, 16> widenNext;
+                for (unsigned e = 0; e < have + w; ++e)
+                    widenNext.push_back(e < w ? (int) e : -1);
+                llvm::Value* next = b.CreateShuffleVector(pieces[q], widenNext, "wphi.wide");
+                llvm::SmallVector<int, 16> blend;
+                for (unsigned e = 0; e < have + w; ++e)
+                    blend.push_back(e < have ? (int) e : (int) (have + w + (e - have)));
+                llvm::SmallVector<int, 16> widenRun;
+                for (unsigned e = 0; e < have + w; ++e)
+                    widenRun.push_back(e < have ? (int) e : -1);
+                llvm::Value* run = b.CreateShuffleVector(joined, widenRun, "wphi.run");
+                joined = b.CreateShuffleVector(run, next, blend, "wphi.join");
+            }
+            p->replaceAllUsesWith(joined);
+            p->eraseFromParent();
+        }
+    }
+}
+
 // GLSL Round leaves the direction at .5 to the driver: llvm.round becomes trunc plus a
 // half-away step, exact for every finite float, so Vulkan rounds as the other backends do.
 void expandRoundHalfAway(llvm::Module& m) {
@@ -450,6 +521,7 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
 
     expandBf16Narrowing(m);
     expandRoundHalfAway(m);
+    splitWidePhis(m);
 
     // SPIRVLegalizePointerCast crashes on an address that is a constant-expression GEP, a
     // shared array read at a constant index, so every such address becomes an instruction.
