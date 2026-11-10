@@ -10,6 +10,15 @@ package cajeta.xpu;
  *                 s_barrier (AMDGPU), OpControlBarrier(Workgroup,
  *                 Workgroup, AcquireRelease) (SPIR-V).
  *
+ *   shared():     workgroup rendezvous that orders only workgroup-SHARED memory
+ *                 (Shared<T> tiles). A global load issued before it may still be
+ *                 in flight after it, so a kernel can prefetch the next K slab
+ *                 into registers across it; the staging stores that consume
+ *                 those registers wait for them. On AMDGPU the fences carry
+ *                 the local address-space annotation (s_barrier without the
+ *                 vmcnt(0) drain a workgroup-scope fence needs in WGP mode);
+ *                 elsewhere it is workgroup().
+ *
  *   wave():       wave-level barrier. No-op on most targets because
  *                 waves are lock-stepped, but mandatory on Volta+
  *                 (independent thread scheduling) and required
@@ -28,6 +37,9 @@ public final class Barrier {
 
     @Native("__cajeta_xpu_barrier_workgroup")
     public static void workgroup();
+
+    @Native("__cajeta_xpu_barrier_shared")
+    public static void shared();
 
     @Native("__cajeta_xpu_barrier_wave")
     public static void wave();

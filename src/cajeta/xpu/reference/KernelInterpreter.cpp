@@ -680,7 +680,7 @@ const std::set<std::string>& staticBuiltins() {
         "Workgroup.x", "Workgroup.y", "Workgroup.z",
         "Workgroup.dimX", "Workgroup.dimY", "Workgroup.dimZ", "Workgroup.reduce",
         "Workgroup.scan",
-        "Barrier.workgroup", "Barrier.wave", "Barrier.workgroupMemory", "Barrier.deviceMemory",
+        "Barrier.workgroup", "Barrier.shared", "Barrier.wave", "Barrier.workgroupMemory", "Barrier.deviceMemory",
         "Wave.width", "Wave.laneId", "Wave.isFirstLane",
         "Wave.shuffleSync", "Wave.ballotSync", "Wave.rotate",
         "Wave.shuffleXorSync", "Wave.shuffleUpSync", "Wave.shuffleDownSync",
@@ -1111,6 +1111,7 @@ private:
             return;
         }
         std::string q = r + "." + name;
+        if (q == "Barrier.shared") q = "Barrier.workgroup";   // the reference has one memory
         if (!staticBuiltins().count(q)) {
             if (auto m = resolveDevice(cls, r, name, argc)) {
                 bindings.helpers[mc.get()] = m;
@@ -2177,6 +2178,7 @@ private:
         }
         if (recvId && !slotOf(recvId)) {
             std::string q = recvId->getTextValue() + "." + nm;
+            if (q == "Barrier.shared") q = "Barrier.workgroup";
             if (staticBuiltins().count(q)) return staticCall(q, mc);
             if (bound != R.bindings.helpers.end()) return deviceCall(bound->second, mc);
             refuse("`" + q + "` (" + where + ")");
@@ -3616,7 +3618,8 @@ private:
             return node(&Item::xFallback, *rt, mc);
         }
         if (!recvId || nameOf(recvId)) return nullptr;   // a call on a local
-        const std::string q = recvId->getTextValue() + "." + nm;
+        std::string q = recvId->getTextValue() + "." + nm;
+        if (q == "Barrier.shared") q = "Barrier.workgroup";
         static const std::map<std::string, int> ids = {
             {"KernelThread.x", 0}, {"KernelThread.y", 1}, {"KernelThread.z", 2},
             {"KernelThread.globalIdX", 3}, {"KernelThread.globalIdY", 4},

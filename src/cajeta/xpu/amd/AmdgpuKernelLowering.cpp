@@ -2,6 +2,7 @@
 // AMDGPU kernel lowering — see header.
 //
 
+#include "llvm/IR/MemoryModelRelaxationAnnotations.h"
 #include "../core/KernelManifest.h"
 #include "AmdgpuKernelLowering.h"
 
@@ -90,6 +91,22 @@ public:
             &m, llvm::Intrinsic::amdgcn_s_barrier);
         b.CreateCall(bar, {});
         b.CreateFence(llvm::AtomicOrdering::Acquire, wg);
+    }
+
+    // The same rendezvous with the fences restricted to the local address space (the
+    // "amdgpu-synchronize-as" MMRA): the memory legalizer then waits lgkmcnt only, and a
+    // global load issued before the barrier stays in flight across it.
+    void sharedBarrier(llvm::IRBuilderBase& b, llvm::Module& m) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::SyncScope::ID wg = ctx.getOrInsertSyncScopeID("workgroup");
+        llvm::MDNode* local = llvm::MMRAMetadata::getTagMD(ctx, "amdgpu-synchronize-as", "local");
+        llvm::FenceInst* rel = b.CreateFence(llvm::AtomicOrdering::Release, wg);
+        rel->setMetadata(llvm::LLVMContext::MD_mmra, local);
+        llvm::Function* bar = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_s_barrier);
+        b.CreateCall(bar, {});
+        llvm::FenceInst* acq = b.CreateFence(llvm::AtomicOrdering::Acquire, wg);
+        acq->setMetadata(llvm::LLVMContext::MD_mmra, local);
     }
 
     // A scoped fence at `order`, no s_barrier and so no rendezvous: the sync-scope name
@@ -936,6 +953,33 @@ public:
                 frag = b.CreateInsertElement(frag, word, w);
             }
             return frag;
+        }
+        // FAST PATH for 16-bit operand fragments: an A fragment of a row-major tile and a
+        // B fragment of a column-major tile hold, per lane, 16 CONSECUTIVE elements at
+        // lane16 * stride, so the whole fragment is one wide load. The alignment hint
+        // follows the stride as the int8 path's does, capped at 16 bytes.
+        {
+            auto* cl = llvm::dyn_cast<llvm::ConstantInt>(layout);
+            auto* cs = llvm::dyn_cast<llvm::ConstantInt>(stride);
+            bool laneRun = cl && use != 2 && n == 16 && swz == 0 && !blk.period &&
+                fe->getPrimitiveSizeInBits() == 16 &&
+                ((use == 0 && cl->getZExtValue() == 0) ||
+                 (use == 1 && cl->getZExtValue() == 1));
+            if (laneRun) {
+                llvm::Type* i32t = llvm::Type::getInt32Ty(m.getContext());
+                llvm::Value* lane16 = b.CreateAnd(
+                    waveLaneId(b, m), llvm::ConstantInt::get(i32t, 15));
+                llvm::Value* off = b.CreateMul(lane16, stride, "cm.ld16.off");
+                llvm::Value* p = b.CreateGEP(fe, ptr, off, "cm.ld16.ptr");
+                llvm::LoadInst* wide = b.CreateLoad(vecTy, p, "cm.ld16");
+                unsigned align = 2;
+                if (cs) {
+                    uint64_t bytes = cs->getZExtValue() * 2;
+                    align = bytes % 16 == 0 ? 16 : bytes % 8 == 0 ? 8 : bytes % 4 == 0 ? 4 : 2;
+                }
+                wide->setAlignment(llvm::Align(align));
+                return wide;
+            }
         }
         for (unsigned e = 0; e < n; ++e) {
             auto rc = fragCoord(b, m, use, e, layout, stride, swz, blk);

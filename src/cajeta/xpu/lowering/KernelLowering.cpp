@@ -3583,6 +3583,10 @@ private:
                 target.workgroupBarrier(builder, mod);
                 return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
             }
+            if (name == "shared") {
+                target.sharedBarrier(builder, mod);
+                return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
+            }
             if (name == "workgroupMemory" || name == "deviceMemory") {
                 const auto& fargs = mc->getParameters();
                 if (fargs.size() > 1)

@@ -109,6 +109,12 @@ namespace xpu {
         virtual void workgroupBarrier(llvm::IRBuilderBase& b,
                                       llvm::Module& m) = 0;
 
+        // Workgroup barrier that orders only workgroup-shared memory, so global loads
+        // issued before it may stay in flight across it. Default: workgroupBarrier.
+        virtual void sharedBarrier(llvm::IRBuilderBase& b, llvm::Module& m) {
+            workgroupBarrier(b, m);
+        }
+
         // Scoped memory fence: order and make visible the accesses at `scope`, with
         // NO thread rendezvous. Default: a system-scope acq_rel `fence`.
         virtual void memoryFence(llvm::IRBuilderBase& b, llvm::Module& m,
