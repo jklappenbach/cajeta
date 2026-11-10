@@ -179,9 +179,8 @@ public class GpuMatMulF16Bench extends XpuBench {
     // gfx1151 under 23.2.2): a 256x128 macro tile, sixteen waves of 32x64, K slabs of 32 through
     // two padded shared buffers (B staged transposed), three register sets fetching three slabs
     // ahead, one shared-memory barrier per slab, and a K walk rotated by one slab per workgroup.
-    // Built for cpu, nvptx and amdgpu; on spir-v its 8-wide prefetch lowers to invalid SPIR-V
-    // (23.2.7), so vulkan keeps the torch recipe above.
-    @Kernel(targets = {"cpu", "nvptx", "amdgpu"}) @Wave(width = 32)
+    // Every backend; the torch recipe above stays as the A/B reference (CAJETA_BENCH_F16_KERNEL=torch).
+    @Kernel @Wave(width = 32)
     @Occupancy(maxThreads = 512)
     public static void gemmF16Tile(KernelBuffer<float32> c, KernelBuffer<float16> a, KernelBuffer<float16> b,
                                  uint32 n) {
@@ -1588,10 +1587,9 @@ public class GpuMatMulF16Bench extends XpuBench {
         // B is uploaded TRANSPOSED (bt[nn][k] = b[k][nn]) so the kernel's wide K-contiguous
         // global load feeds a wide b128 LDS write. With A=identity, C[m][nn]=b[m][nn] still ⇒
         // cSum == bSum (transpose preserves the sum). torch's Bljk variant does the same.
-        this.tile = !XpuEnv.backend().equals("vulkan");
+        this.tile = true;
         String pick = System.env.get("CAJETA_BENCH_F16_KERNEL");
         if (pick != null && pick.equals("torch")) { this.tile = false; }
-        if (pick != null && pick.equals("tile") && !XpuEnv.backend().equals("vulkan")) { this.tile = true; }
         float16[] bt = heap float16[sz];
         int32 ti = 0;
         while (ti < this.nDim) {
