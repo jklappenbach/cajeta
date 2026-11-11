@@ -342,10 +342,12 @@ public:
             llvm::FastMathFlags fmf;
             fmf.setFast();   // contract + reassoc + arcp + afn + nnan/ninf/nsz
             builder.setFastMathFlags(fmf);
-        } else if (method && target.fusesByDefault() && !isUnfused(*method)) {
+        } else if (method && target.fusesByDefault() && !isUnfused(*method)
+                   && !(method->getParent() && isUnfused(*method->getParent()))) {
             // A GPU kernel's `a * b + c` may fuse to one fma, nothing else relaxed;
             // without it nvptx issued a multiply and an add for every one
-            // (XpuFuseByDefaultTests).
+            // (XpuFuseByDefaultTests). @Unfused on the method or on its own class
+            // opts out; a helper follows its class, not its caller's.
             llvm::FastMathFlags fmf;
             fmf.setAllowContract(true);
             builder.setFastMathFlags(fmf);

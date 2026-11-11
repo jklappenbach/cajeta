@@ -24,7 +24,8 @@ declares the lane count a body assumes. `@Occupancy` declares the launch
 ceiling and register pins. `@FastMath` relaxes IEEE arithmetic over the
 body. On a GPU backend a kernel's `a * b + c` may fuse into one multiply-add
 by default, and `@Unfused` keeps every multiply and add rounding on its own,
-as the cpu backend always does. `@Unlowered` and `@Unbounded` declare, against a tracked plan
+as the cpu backend always does. On a class, `@Unfused` covers every kernel and
+`@Device` helper the class declares. `@Unlowered` and `@Unbounded` declare, against a tracked plan
 item, a construct a backend cannot lower or a launch with no constant block.
 `@Unlowered` may only name backends among the kernel's targets.
 A class template carrying `@Instantiate({T<…>, …})` and `@Requires(expr)` is

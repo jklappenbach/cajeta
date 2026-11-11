@@ -149,7 +149,7 @@ author and half are measured from its compiled code.
 | `@Occupancy(maxRegisters = N)`, `minResident = N` | explicit register and residency pins; a spilling kernel's remedy (NVPTX honours all four; AMD has no register pin; Vulkan's workgroup size is a specialisation constant and the annotation is a no-op there) |
 | `@Wave(width = N)` | the lane count the body assumes |
 | `@FastMath` | IEEE arithmetic relaxed over the body: reassociation, reciprocals and approximate transcendentals as well as fusion |
-| `@Unfused` | every multiply and add rounds on its own; without it a GPU kernel's `a * b + c` may fuse into one multiply-add, which rounds once (the cpu never fuses) |
+| `@Unfused` | every multiply and add rounds on its own; without it a GPU kernel's `a * b + c` may fuse into one multiply-add, which rounds once (the cpu never fuses). On a class it covers every kernel and helper the class declares |
 | `@Device` | a helper callable from kernels; a `Vector<int8>` through a `@Device` parameter dots as unsigned today, so signed dots stay on locals |
 | `@Unlowered(backend, tracked, mayLower, hold, hostWaveBelow)` | a construct this backend cannot lower, declared against the plan item that tracks it; the gate below reads an unneeded declaration as STALE |
 | `@Unbounded(tracked)` | a kernel launched with a non-constant block and no declared ceiling, tracked |

@@ -65,7 +65,7 @@ public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,
 | `@Wave(width = N)` | the lane count the body assumes (§3.2) |
 | `@Occupancy(maxThreads, maxWaves, minResident, maxRegisters)` | the structural launch ceiling and the register and residency pins (§3.4) |
 | `@FastMath` | IEEE arithmetic relaxed in this body (reassociation, reciprocals, approximate transcendentals, fusion) |
-| `@Unfused` | every multiply and add in this body rounds on its own; a GPU kernel otherwise may fuse `a * b + c` into one multiply-add |
+| `@Unfused` | every multiply and add in this body rounds on its own; a GPU kernel otherwise may fuse `a * b + c` into one multiply-add. On a class it covers every kernel and `@Device` helper the class declares |
 | `@Unlowered(backend, tracked, mayLower, hold, hostWaveBelow)` | a construct one of the kernel's targets cannot lower, declared against the plan item that tracks it (§3.6) |
 | `@Unbounded(tracked)` | a kernel launched with a non-constant block and no declared ceiling, tracked (§3.6) |
 | `@Intrinsic`, `@TargetIntrinsic`, `@TargetAsm` | the escape hatches: a body-less declaration, or per-backend arms beside a portable body that the reference interpreter runs |

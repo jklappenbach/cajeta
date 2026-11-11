@@ -20,7 +20,8 @@ N)` or `maxWaves = N` gives the structural launch ceiling. `@Wave(width = N)`
 says where the body's indexing assumes a width. `@FastMath` relaxes IEEE
 arithmetic over the body. On a GPU backend a kernel's `a * b + c` fuses into
 one multiply-add by default, as nvcc and hipcc do, and `@Unfused` keeps each
-multiply and add rounding on its own. `@Instantiate` and `@Requires` on a class template
+multiply and add rounding on its own, over one body or, on a class, over every
+kernel and helper the class declares. `@Instantiate` and `@Requires` on a class template
 give the shapes to build and the constraint a shape must satisfy. `@Unlowered`
 and `@Unbounded` each name the plan item that tracks the condition. Everything
 else is derived, because derived beats declared.

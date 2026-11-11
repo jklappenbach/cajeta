@@ -123,3 +123,52 @@ TEST(XpuFuseByDefaultTests, cpuNeverFuses) {
     EXPECT_EQ(ir.find("contract"), std::string::npos) << ir;
     EXPECT_NE(ir.find("fmul float"), std::string::npos) << ir;
 }
+
+// @Unfused on a class covers every kernel and @Device helper it declares, so a
+// library whose kernels are checked bit for bit against a host oracle (cajeta-llm's
+// quant mat-vecs) opts out once per class rather than once per method. A helper
+// follows its own class, not its caller's.
+TEST(XpuFuseByDefaultTests, unfusedOnAClassKeepsItsKernelsApart) {
+    const std::string src =
+        "package test;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "@Unfused\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void mad(KernelBuffer<float32> out, KernelBuffer<float32> a,\n"
+        "                           KernelBuffer<float32> b, KernelBuffer<float32> c, uint32 n) {\n"
+        "        uint32 i = KernelThread.globalIdX();\n"
+        "        if (i < n) { out[i] = a[i] * b[i] + c[i]; }\n"
+        "    }\n"
+        "}\n";
+    Lowered l = lowerForNvptx(src, "mad", "test.M", "sm_89", "fuse");
+    ASSERT_TRUE(l.ok) << l.why;
+    EXPECT_EQ(l.ir.find("contract"), std::string::npos) << l.ir;
+    EXPECT_EQ(l.ptx.find("fma.rn.f32"), std::string::npos) << l.ptx;
+}
+
+TEST(XpuFuseByDefaultTests, aHelperInAnUnfusedClassStaysApartUnderAFusedCaller) {
+    const std::string src =
+        "package test;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "@Unfused\n"
+        "class H {\n"
+        "    @Device\n"
+        "    static float32 mad(float32 a, float32 b, float32 c) { return a * b + c; }\n"
+        "}\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void two(KernelBuffer<float32> out, KernelBuffer<float32> a,\n"
+        "                           KernelBuffer<float32> b, KernelBuffer<float32> c, uint32 n) {\n"
+        "        uint32 i = KernelThread.globalIdX();\n"
+        "        if (i < n) { out[i] = H.mad(a[i], b[i], c[i]) + a[i] * c[i]; }\n"
+        "    }\n"
+        "}\n";
+    Lowered l = lowerForNvptx(src, "two", "test.M", "sm_89", "fuse");
+    ASSERT_TRUE(l.ok) << l.why;
+    // The kernel's own product-plus-sum fuses; the helper's multiply does not.
+    EXPECT_NE(l.ir.find("fmul contract"), std::string::npos) << l.ir;
+    EXPECT_NE(l.ir.find("fmul float"), std::string::npos) << l.ir;
+}

@@ -665,7 +665,9 @@ public static void splitLaunch(KernelBuffer<int8> out,
   multiply and the add become one multiply-add that rounds once, as nvcc
   and hipcc do, so a float32 result can differ from the cpu backend's in
   the last bit. That fusion is half the arithmetic of a GEMM inner loop.
-  Put `@Unfused` on a kernel that must match the cpu bit for bit.
+  Put `@Unfused` on a kernel that must match the cpu bit for bit. On a
+  class it covers every kernel and `@Device` helper the class declares, and
+  a helper follows its own class rather than its caller's.
 - **Initialize accumulators by writing to them.** A `0 *` on an
   uninitialized NaN churns and looks like allocator corruption.
 - **`int64 *` traps on overflow.** Multiplicative hashing in a kernel
