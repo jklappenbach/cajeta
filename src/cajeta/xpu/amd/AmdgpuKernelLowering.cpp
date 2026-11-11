@@ -22,6 +22,9 @@ namespace cajeta {
 namespace xpu {
 namespace amd {
 
+static thread_local bool gCoop16Wide = true;
+static thread_local unsigned gCoop16WideTaken = 0;
+
 namespace {
 
 class AmdgpuTarget : public LoweringTarget {
@@ -961,7 +964,7 @@ public:
         {
             auto* cl = llvm::dyn_cast<llvm::ConstantInt>(layout);
             auto* cs = llvm::dyn_cast<llvm::ConstantInt>(stride);
-            bool laneRun = cl && use != 2 && n == 16 && swz == 0 && !blk.period &&
+            bool laneRun = gCoop16Wide && cl && use != 2 && n == 16 && swz == 0 && !blk.period &&
                 fe->getPrimitiveSizeInBits() == 16 &&
                 ((use == 0 && cl->getZExtValue() == 0) ||
                  (use == 1 && cl->getZExtValue() == 1));
@@ -978,6 +981,7 @@ public:
                     align = bytes % 16 == 0 ? 16 : bytes % 8 == 0 ? 8 : bytes % 4 == 0 ? 4 : 2;
                 }
                 wide->setAlignment(llvm::Align(align));
+                ++gCoop16WideTaken;
                 return wide;
             }
         }
@@ -1307,6 +1311,10 @@ private:
 };
 
 } // namespace
+
+void setCoop16WideLoads(bool on) { gCoop16Wide = on; }
+unsigned coop16WideLoadsTaken() { return gCoop16WideTaken; }
+void resetCoop16WideLoadsTaken() { gCoop16WideTaken = 0; }
 
 llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule) {
     AmdgpuTarget target;

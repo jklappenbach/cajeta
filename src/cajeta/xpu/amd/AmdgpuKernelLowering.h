@@ -26,6 +26,14 @@ namespace amd {
     llvm::Function* lowerKernel(const MethodPtr& method,
                                 llvm::Module& deviceModule);
 
+    // Whether a 16-bit cooperative fragment whose lane elements are consecutive lowers to one
+    // wide load (the default); registration turns it off to re-lower a kernel it made spill.
+    void setCoop16WideLoads(bool on);
+
+    // How many fragment loads took the 16-bit wide load since the last reset.
+    unsigned coop16WideLoadsTaken();
+    void resetCoop16WideLoadsTaken();
+
 } // namespace amd
 } // namespace xpu
 } // namespace cajeta

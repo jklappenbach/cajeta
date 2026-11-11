@@ -25,6 +25,7 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <cstdio>
+#include <memory>
 
 namespace {
     // Per-work-item bytes of portable software CooperativeMatrix storage the
@@ -37,6 +38,15 @@ namespace {
         if (v.getAsInteger(10, bytes)) return 0;
         return bytes;
     }
+    // The largest private segment `entry` takes in any of the per-arch code objects.
+    unsigned scratchOf(const std::vector<cajeta::xpu::amd::ArchHsaco>& perArch, const std::string& entry) {
+        unsigned most = 0;
+        for (const auto& ah : perArch)
+            for (const auto& fp : cajeta::xpu::amd::readCodeObjectFootprint(ah.hsaco))
+                if (fp.name == entry && fp.privateSegmentBytes > most) most = fp.privateSegmentBytes;
+        return most;
+    }
+
 } // namespace
 
 namespace cajeta {
@@ -99,6 +109,7 @@ namespace amd {
             devMod.addModuleFlag(llvm::Module::Warning, "cajeta.amdgpu.archlist",
                                  llvm::MDString::get(devCtx, arch));
             llvm::Function* kfn = nullptr;
+            resetCoop16WideLoadsTaken();
             try {
                 kfn = lowerKernel(method, devMod);
             } catch (cajeta::Exception& ex) {
@@ -115,29 +126,32 @@ namespace amd {
             KernelAccessSummary access = classifyKernelAccess(*kfn, method);
 
             // Pin the real launch workgroup size so registers are budgeted for it.
-            if (auto it = maxThreads.find(method->getName()); it != maxThreads.end()) {
-                setKernelWorkgroupSize(kfn, it->second);
-            } else {
-                // xpu-kernel-adaptor 7.0.4: an UNBOUNDED kernel (a non-constant
-                // block at some launch site, no @Occupancy) used to fall through
-                // to LLVM's invisible default. Say the fallback out loud and read
-                // it off the profile: the part's per-block ceiling, which is 1024
-                // on every part we own, so this changes no number today and is
-                // right on a part that caps lower. The manifest still reports
-                // feasibleBlocks for it (a ceiling is not a pin); only the
-                // register budget is stated. setKernelWorkgroupSize yields to an
-                // @Occupancy range the lowering already set.
-                // One lowered body serves every arch of the bundle; the ceiling
-                // is the smallest across them, so no arch is over-budgeted.
-                unsigned ceiling = 0;
-                for (const std::string& a : archList) {
-                    DeviceModel model;
-                    if (!lookupArch(a, model)) model = defaultDeviceModel();
-                    ceiling = ceiling ? std::min(ceiling, model.maxThreadsPerBlock)
-                                      : model.maxThreadsPerBlock;
+            auto sizeWorkgroup = [&](llvm::Function* kfn) {
+                if (auto it = maxThreads.find(method->getName()); it != maxThreads.end()) {
+                    setKernelWorkgroupSize(kfn, it->second);
+                } else {
+                    // xpu-kernel-adaptor 7.0.4: an UNBOUNDED kernel (a non-constant
+                    // block at some launch site, no @Occupancy) used to fall through
+                    // to LLVM's invisible default. Say the fallback out loud and read
+                    // it off the profile: the part's per-block ceiling, which is 1024
+                    // on every part we own, so this changes no number today and is
+                    // right on a part that caps lower. The manifest still reports
+                    // feasibleBlocks for it (a ceiling is not a pin); only the
+                    // register budget is stated. setKernelWorkgroupSize yields to an
+                    // @Occupancy range the lowering already set.
+                    // One lowered body serves every arch of the bundle; the ceiling
+                    // is the smallest across them, so no arch is over-budgeted.
+                    unsigned ceiling = 0;
+                    for (const std::string& a : archList) {
+                        DeviceModel model;
+                        if (!lookupArch(a, model)) model = defaultDeviceModel();
+                        ceiling = ceiling ? std::min(ceiling, model.maxThreadsPerBlock)
+                                          : model.maxThreadsPerBlock;
+                    }
+                    setKernelWorkgroupSize(kfn, ceiling);
                 }
-                setKernelWorkgroupSize(kfn, ceiling);
-            }
+            };
+            sizeWorkgroup(kfn);
 
             // A kernel that LOWERED but could not be ASSEMBLED used to fall
             // off the end of this loop with a bare `continue`: no code object,
@@ -152,6 +166,42 @@ namespace amd {
             // emits; its phrase "no assembler" is what a consumer keys on to
             // tell "this box cannot build it" from "the lowering refused it".
             std::vector<ArchHsaco> perArch = assembleHsacoPerArch(devMod, archList);
+            // A kernel the 16-bit wide fragment loads push into scratch is lowered again without
+            // them, and the build with less scratch is the one registered (cajeta-ml-gpu 23.2.2.1).
+            std::unique_ptr<llvm::LLVMContext> altCtx;
+            std::unique_ptr<llvm::Module> altMod;
+            unsigned scratch = scratchOf(perArch, entryName);
+            if (scratch > 0 && coop16WideLoadsTaken() > 0) {
+                altCtx = std::make_unique<llvm::LLVMContext>();
+                altMod = std::make_unique<llvm::Module>("xpu.dev." + entryName, *altCtx);
+                configureDeviceModule(*altMod, *tm);
+                altMod->addModuleFlag(llvm::Module::Warning, "cajeta.amdgpu.archlist",
+                                      llvm::MDString::get(*altCtx, arch));
+                llvm::Function* altFn = nullptr;
+                setCoop16WideLoads(false);
+                try {
+                    altFn = lowerKernel(method, *altMod);
+                } catch (cajeta::Exception&) {
+                    altFn = nullptr;
+                }
+                setCoop16WideLoads(true);
+                if (altFn) {
+                    KernelAccessSummary altAccess = classifyKernelAccess(*altFn, method);
+                    sizeWorkgroup(altFn);
+                    std::vector<ArchHsaco> altArch = assembleHsacoPerArch(*altMod, archList);
+                    unsigned altScratch = scratchOf(altArch, entryName);
+                    if (!altArch.empty() && altScratch < scratch) {
+                        fprintf(stderr,
+                                "cajeta: note: [xpu-kernel-relowered] %s on amdgpu: %u bytes of "
+                                "scratch per work-item with the 16-bit wide fragment loads, %u "
+                                "without them; registered the build without them\n",
+                                entryName.c_str(), scratch, altScratch);
+                        kfn = altFn;
+                        access = altAccess;
+                        perArch = std::move(altArch);
+                    }
+                }
+            }
             if (perArch.empty()) {
                 fprintf(stderr,
                         "cajeta: note: [xpu-kernel-skipped] %s: no amdgpu device "
