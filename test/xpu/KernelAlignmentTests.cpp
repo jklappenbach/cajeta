@@ -19,9 +19,16 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/Support/Program.h"
 #include "llvm/Support/SourceMgr.h"
 
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <map>
 #include <memory>
+#include <optional>
+#include <random>
 #include <sstream>
 #include <string>
 
@@ -423,6 +430,69 @@ TEST(KernelAlignment, aStatementTheProofConfirmsCarriesNoCheck) {
         "chk_proven", flagsFor(cajeta::CompilerMode::Debug, true));
     ASSERT_TRUE(l.ok) << l.why;
     EXPECT_FALSE(carriesTheCheck(l)) << l.ptx;
+}
+
+namespace {
+
+std::vector<uint8_t> checkedVulkanBinary(const std::string& src) {
+    cajeta::Compiler compiler;
+    compiler.setFlags(flagsFor(cajeta::CompilerMode::Debug, true));
+    auto module = compileForInspection(compiler, src, "test.M", "chk_vk");
+    auto k = findMethod(module->getStructures()["test.M"], "k");
+    if (!k) return {};
+    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
+    llvm::LLVMContext ctx;
+    llvm::Module m("chk_vk", ctx);
+    cajeta::xpu::vulkan::configureDeviceModule(m, *tm);
+    cajeta::xpu::vulkan::lowerKernel(k, m);
+    return cajeta::xpu::vulkan::emitSpirv(m, *tm);
+}
+
+// The memory-scope constant of every OpAtomicCompareExchange in a SPIR-V binary.
+std::vector<uint32_t> casScopes(const std::vector<uint8_t>& spirv) {
+    std::vector<uint32_t> w(spirv.size() / 4), scopeIds, out;
+    std::memcpy(w.data(), spirv.data(), w.size() * 4);
+    std::map<uint32_t, uint32_t> constants;
+    for (size_t i = 5; i < w.size();) {
+        uint32_t wc = w[i] >> 16, op = w[i] & 0xFFFFu;
+        if (wc == 0 || i + wc > w.size()) break;
+        if (op == 43u /*OpConstant*/ && wc == 4) constants[w[i + 2]] = w[i + 3];
+        if (op == 230u /*OpAtomicCompareExchange*/ && wc == 9) scopeIds.push_back(w[i + 4]);
+        i += wc;
+    }
+    for (uint32_t id : scopeIds) out.push_back(constants.count(id) ? constants[id] : ~0u);
+    return out;
+}
+
+// spirv-val in the environment the Vulkan validation layer checks; nullopt without the tool.
+std::optional<bool> spirvValid(const std::vector<uint8_t>& spirv) {
+    auto tool = llvm::sys::findProgramByName("spirv-val");
+    if (!tool) return std::nullopt;
+    auto path = std::filesystem::temp_directory_path()
+              / ("cajeta_align_" + std::to_string(std::random_device{}()) + ".spv");
+    {
+        std::ofstream out(path, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(spirv.data()), (std::streamsize) spirv.size());
+    }
+    std::string file = path.string();
+    llvm::SmallVector<llvm::StringRef, 5> args = {*tool, "--relax-block-layout", "--target-env",
+                                                  "vulkan1.3", file};
+    int rc = llvm::sys::ExecuteAndWait(*tool, args);
+    std::filesystem::remove(path);
+    return rc == 0;
+}
+
+}  // namespace
+
+// 5.2.2 (spec 4.1), Vulkan: the fault record's compare-exchange is Device-scoped, since
+// Vulkan rejects the CrossDevice default and the validation layer refuses the module.
+TEST(KernelAlignment, aCheckedVulkanBuildRecordsTheFaultAtDeviceScope) {
+    const std::vector<uint8_t> spv = checkedVulkanBinary(statedSource(kStated));
+    ASSERT_FALSE(spv.empty());
+    const std::vector<uint32_t> scopes = casScopes(spv);
+    ASSERT_EQ(scopes.size(), 1u) << "the checked build carries one fault-record CAS";
+    EXPECT_EQ(scopes[0], 1u) << "scope " << scopes[0] << ", want 1 (Device)";
+    if (auto valid = spirvValid(spv)) EXPECT_TRUE(*valid) << "spirv-val rejected the checked module";
 }
 
 namespace {

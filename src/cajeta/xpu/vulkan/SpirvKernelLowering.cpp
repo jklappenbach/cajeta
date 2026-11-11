@@ -1019,10 +1019,12 @@ public:
         auto word = [&](uint64_t w) {
             return getElementPtr(b, m, handle, llvm::ConstantInt::get(i64, w));
         };
-        auto* cas = b.CreateAtomicCmpXchg(word(0), llvm::ConstantInt::get(i32, 0),
+        llvm::Value* w0 = word(0);
+        const llvm::AtomicOrdering success = vkClamp(llvm::AtomicOrdering::Monotonic);
+        auto* cas = b.CreateAtomicCmpXchg(w0, llvm::ConstantInt::get(i32, 0),
                                           b.CreateTrunc(info, i32), llvm::MaybeAlign(4),
-                                          llvm::AtomicOrdering::Monotonic,
-                                          llvm::AtomicOrdering::Monotonic);
+                                          success, casFailureOrdering(success),
+                                          atomicScope(m, w0));
         llvm::Value* won = b.CreateExtractValue(cas, 1);
         auto* firstBB = llvm::BasicBlock::Create(ctx, "align.first", f);
         auto* doneBB = llvm::BasicBlock::Create(ctx, "align.recorded", f);
