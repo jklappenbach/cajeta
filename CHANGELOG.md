@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.53.4 (2026-11-11)
+
+- **`@Unfused` on a class covers every kernel and `@Device` helper the class declares.** A library whose kernels are checked bit for bit against a host oracle can now keep per-op rounding with one annotation per class instead of one per method, and a helper follows its own class rather than its caller's. cajeta-llm needs this: fused on sm_89, 33 of its quant kernel checks moved by one or two ulps and two of its column kernels spilled 8 bytes, while fused and unfused builds of the 8B Q4_K_M measured the same prefill and decode rates on the 4090 (`XpuFuseByDefaultTests`).
+- **A checked vulkan build's `align:` fault record is valid SPIR-V.** The compare-and-swap that records the first misaligned access used the cross-device scope, which spirv-val rejects, so a checked build failed to load on RADV. It now takes the Device scope Vulkan requires (`KernelAlignment.aCheckedVulkanBuildRecordsTheFaultAtDeviceScope`).
+
 ## 0.53.3 (2026-11-10)
 
 - **A GPU kernel's `a * b + c` fuses into one multiply-add by default.** Kernel lowering stamped no fast-math flags on a plain kernel, and LLVM fuses a multiply into an add only when the IR allows it, so every float32 kernel written as `c = c + a * b` issued a separate multiply and add on cuda: the kernel package's register-tile GEMM ran 0.55 ms at 8192x512x2048 that way and 0.416 ms fused, against torch's 0.40. A kernel's float arithmetic on nvptx, amdgpu and vulkan now carries LLVM's `contract` flag, as nvcc and hipcc do; nothing else is relaxed, and `@FastMath` is unchanged. A fused step rounds once, so a GPU float32 result may differ from the cpu's in the last bit; the new `@Unfused` on a kernel keeps every multiply and add rounding on its own, and the cpu backend never fuses.
