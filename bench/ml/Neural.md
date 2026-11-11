@@ -1,6 +1,6 @@
 # Neural models
 
-`dev.cajeta.ml` fills the torch role over `Tensor<float32>`. The rows are a training step and inference for an MLP, a small CNN and a transformer block at batch 64, on the CPU and on the device, plus the autodiff overhead and checkpoint load, and one row per forward op on the same activations.
+`dev.cajeta.ml` fills the torch role over `Tensor<float32>`. The rows are a training step and inference for an MLP, a small CNN and a transformer block at batch 64, on the CPU and on the device, plus a SPELA training step, the autodiff overhead and checkpoint load, and one row per forward op on the same activations.
 
 ## Benchmarks
 
@@ -12,6 +12,7 @@
 | `ml/cnn-infer` | inference at batch 64 | PyTorch | within epsilon |
 | `ml/transformer-block-train` | one encoder block, d = 512, seq 128, one step | PyTorch | loss decreases |
 | `ml/transformer-block-infer` | inference | PyTorch | within epsilon |
+| `ml/spela-train-step` | one SPELA step of a 784-512-10 stack: per-layer cosface loss, AdamW, detached handoff; variants cpu, device | PyTorch, the same local-loss loop | mean local loss decreases over 100 steps |
 | `ml/autodiff-overhead` | backward over forward ratio for the MLP | PyTorch autograd | gradients within epsilon |
 | `ml/checkpoint-load` | load a torch checkpoint of the MLP, 1e2 times | `torch.load` | weights equal |
 
@@ -64,6 +65,11 @@ metric: throughput
 
 ```bench
 id: ml/transformer-block-infer
+metric: throughput
+```
+
+```bench
+id: ml/spela-train-step
 metric: throughput
 ```
 
