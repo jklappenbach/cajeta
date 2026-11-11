@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.53.5 (2026-11-11)
+
+- **A kernel that the 16-bit wide fragment loads push into scratch on amdgpu is built again without them.** v0.53.3's wide loads for half and bfloat16 cooperative fragments raised register pressure in some kernels: cajeta-llm's `q4kF16CoopN256Kernel` went from no scratch to 28 bytes on gfx1151 and failed llm's amdgpu spill gate. Whether a kernel crosses the register file shows only after codegen, so a kernel whose first build has scratch and took a wide fragment load is now lowered again with element loads, and the build with less scratch is registered, noted as `[xpu-kernel-relowered]`. A kernel that does not spill keeps its wide loads and costs nothing extra (`AmdgpuCoop16SpillRetryTests`).
+
 ## 0.53.4 (2026-11-11)
 
 - **`@Unfused` on a class covers every kernel and `@Device` helper the class declares.** A library whose kernels are checked bit for bit against a host oracle can now keep per-op rounding with one annotation per class instead of one per method, and a helper follows its own class rather than its caller's. cajeta-llm needs this: fused on sm_89, 33 of its quant kernel checks moved by one or two ulps and two of its column kernels spilled 8 bytes, while fused and unfused builds of the 8B Q4_K_M measured the same prefill and decode rates on the 4090 (`XpuFuseByDefaultTests`).
