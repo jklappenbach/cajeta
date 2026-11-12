@@ -88,6 +88,9 @@ struct cajeta_vk {
     uint32_t queueFamily;
     VkCommandPool cmdPool;
     VkPhysicalDeviceMemoryProperties memProps;
+    // VK_EXT_memory_budget: the per-heap budget and usage behind freeMemoryBytes.
+    PFN_vkGetPhysicalDeviceMemoryProperties2 getMemProps2;
+    int hasMemBudget;
     PFN_vkCreateInstance vkCreateInstance;
     PFN_vkDestroyInstance vkDestroyInstance;
     PFN_vkEnumeratePhysicalDevices vkEnumeratePhysicalDevices;
@@ -415,6 +418,9 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     PFN_vkGetPhysicalDeviceProperties2 getProps2 =
         (PFN_vkGetPhysicalDeviceProperties2) g_xpu_vk.getInstanceProcAddr(
             g_xpu_vk.instance, "vkGetPhysicalDeviceProperties2");
+    g_xpu_vk.getMemProps2 =
+        (PFN_vkGetPhysicalDeviceMemoryProperties2) g_xpu_vk.getInstanceProcAddr(
+            g_xpu_vk.instance, "vkGetPhysicalDeviceMemoryProperties2");
     #undef CAJ_VKI
     g_xpu_vk.getDeviceProcAddr = (PFN_vkGetDeviceProcAddr)
         g_xpu_vk.getInstanceProcAddr(g_xpu_vk.instance, "vkGetDeviceProcAddr");
@@ -507,6 +513,7 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     int wantRayQuery = 0, wantAtomicFloat = 0, wantAtomicFloat2 = 0, wantCoopMat = 0;
     int wantAtomicInt64 = 0;
     int hasMaxReconv = 0, hasBf16 = 0, hasClock = 0, hasQuadCtl = 0, hasSgRotate = 0;
+    int hasMemBudget = 0;
     int wantMaxReconv = 0, wantBf16 = 0, wantClock = 0, wantQuadCtl = 0, wantSgRotate = 0, wantDot = 0;
     (void) hasMaxReconv; (void) hasBf16; (void) hasClock; (void) hasQuadCtl; (void) hasSgRotate;
 #if defined(VK_KHR_shader_maximal_reconvergence)
@@ -566,6 +573,9 @@ static int cajeta_xpu_vulkan_init_locked(void) {
 #endif
 #if defined(VK_KHR_shader_subgroup_rotate)
                     else if (!strcmp(en, VK_KHR_SHADER_SUBGROUP_ROTATE_EXTENSION_NAME)) hasSgRotate = 1;
+#endif
+#if defined(VK_EXT_memory_budget)
+                    else if (!strcmp(en, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) hasMemBudget = 1;
 #endif
                 }
                 free(exts);
@@ -1043,6 +1053,9 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         qSgRotate.pNext = (void*) dci.pNext; dci.pNext = &qSgRotate;
     }
 #endif
+#if defined(VK_EXT_memory_budget)
+    if (hasMemBudget) devExts[nDevExts++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
+#endif
 #if defined(VK_VERSION_1_3)
     if (wantDot) {
         qDot.pNext = (void*) dci.pNext; dci.pNext = &qDot;
@@ -1055,6 +1068,7 @@ static int cajeta_xpu_vulkan_init_locked(void) {
             != VK_SUCCESS)
         return 0;
     g_xpu_vk.hasHostQueryReset = wantHostQueryReset;
+    g_xpu_vk.hasMemBudget = hasMemBudget && g_xpu_vk.getMemProps2 != NULL;
     g_xpu_vk.hasSync2 = wantSync2;
     g_xpu_vk.hasCalibratedTs = wantCalTs;
     g_xpu_vk.caps = 0;
@@ -1290,6 +1304,33 @@ static int32_t caj_vk_calibration_read(int64_t* hostBeforeNs, int64_t* devTicks,
 int32_t __cajeta_xpu_vk_has_host_query_reset(void) { return g_xpu_vk.hasHostQueryReset; }
 int32_t __cajeta_xpu_vk_has_sync2(void)            { return g_xpu_vk.hasSync2; }
 int32_t __cajeta_xpu_vk_has_calibrated_ts(void)    { return g_xpu_vk.hasCalibratedTs; }
+
+// Device.freeMemoryBytes() on vulkan: over the device-local heaps, what the driver's
+// budget still allows (budget less this process's usage, VK_EXT_memory_budget). 0 when
+// the device has no budget query, which callers read as "cannot answer".
+int64_t __cajeta_xpu_vk_free_memory_bytes(void) {
+#if defined(VK_EXT_memory_budget)
+    if (!g_xpu_vk.hasMemBudget) return 0;
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT budget;
+    memset(&budget, 0, sizeof(budget));
+    budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+    VkPhysicalDeviceMemoryProperties2 mp;
+    memset(&mp, 0, sizeof(mp));
+    mp.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
+    mp.pNext = &budget;
+    g_xpu_vk.getMemProps2(g_xpu_vk.phys, &mp);
+    int64_t sum = 0;
+    for (uint32_t i = 0; i < mp.memoryProperties.memoryHeapCount; ++i) {
+        if (!(mp.memoryProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT))
+            continue;
+        if (budget.heapBudget[i] > budget.heapUsage[i])
+            sum += (int64_t) (budget.heapBudget[i] - budget.heapUsage[i]);
+    }
+    return sum;
+#else
+    return 0;
+#endif
+}
 
 // (Re)calibrate the Vulkan clock domain; ~15 ppm of drift makes one-shot stale.
 #define CAJ_VK_RECAL_INTERVAL_NS (5LL * 1000000000LL)
@@ -4524,6 +4565,7 @@ int32_t __cajeta_xpu_vk_init_status(void)     { return -9; }  // INCOMPATIBLE_DR
 int32_t __cajeta_xpu_vk_has_host_query_reset(void) { return 0; }
 int32_t __cajeta_xpu_vk_has_sync2(void)            { return 0; }
 int32_t __cajeta_xpu_vk_has_calibrated_ts(void)    { return 0; }
+int64_t __cajeta_xpu_vk_free_memory_bytes(void)    { return 0; }
 static int64_t cajeta_xpu_vk_alloc(uint64_t b) { (void) b; return 0; }
 static int64_t caj_vk_alloc_pref(uint64_t b, int s) { (void) b; (void) s; return 0; }
 static int64_t cajeta_xpu_vk_slice(int64_t p, uint64_t o) { (void) p; (void) o; return 0; }

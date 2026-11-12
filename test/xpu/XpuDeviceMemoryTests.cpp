@@ -29,6 +29,7 @@
 #include <random>
 #include <string>
 #include "../PortableEnv.h"
+#include "XpuDeviceTestUtil.h"
 
 #ifdef _WIN32
 #  ifndef WIN32_LEAN_AND_MEAN
@@ -85,7 +86,8 @@ std::string capture(const std::string& cmd) {
     return out;
 }
 
-std::string buildAndRun(const std::string& source, const char* entry) {
+std::string buildAndRun(const std::string& source, const char* entry,
+                        const char* backend = "cpu") {
     static std::mt19937_64 rng(std::random_device{}());
     auto base = fs::temp_directory_path()
               / ("cajeta_dmem_" + std::to_string(rng()));
@@ -94,7 +96,7 @@ std::string buildAndRun(const std::string& source, const char* entry) {
     std::ofstream(base / "probe" / "B.cajeta") << source;
     const std::string exe = (base / "out").string();
     const std::string cmd = "\"" + compilerPath() + "\""
-        + " --release --emit=exe --xpu-backend=cpu"
+        + " --release --emit=exe --xpu-backend=" + backend
         + " -o \"" + exe + "\" " + entry
         + " \"" + base.string() + "\" \"" + (base / "arch").string() + "\"";
     // Windows flake guard: the AV scanner can briefly lock the freshly-built
@@ -258,4 +260,19 @@ TEST(XpuDeviceMemoryTests, cpuBackendReportsAvailableRamAsFree) {
     // Within a factor of two of an independent read taken moments apart.
     EXPECT_GT(got * 2, independent) << out;
     EXPECT_LT(got, independent * 2) << out;
+}
+
+// Device.freeMemoryBytes() on vulkan. The arm answered 0 ("cannot answer")
+// on every vulkan device, so cajeta-llm's AUTO expert residency budget froze
+// at zero there, no MoE expert slab was ever bound, and the batched MoE
+// decode never ran on vulkan (proton, RADV, 2026-11-11). VK_EXT_memory_budget
+// gives the level: per device-local heap, the budget less what is in use.
+TEST(XpuDeviceMemoryTests, vulkanBackendReportsAFreeLevelUnderItsCapacity) {
+    if (!cajeta::xpu::test::vulkanAvailable()) GTEST_SKIP() << "no Vulkan device";
+    const std::string out = buildAndRun(FREE_REPORT, "probe.B.run", "vulkan");
+    const int64_t total = memFrom(out);
+    const int64_t got = freeFrom(out);
+    ASSERT_GT(total, 0) << out;
+    EXPECT_GT(got, 0) << "the vulkan backend must answer free memory:\n" << out;
+    EXPECT_LE(got, total) << "free cannot exceed the capacity:\n" << out;
 }

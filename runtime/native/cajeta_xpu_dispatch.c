@@ -1159,6 +1159,8 @@ int64_t __cajeta_xpu_device_memory_bytes(void) {
 // capacity, and an allocator that budgets against a capacity discovers the
 // ceiling by failing. Both HIP and CUDA hand back free and total from ONE
 // call and this runtime was already making it for the total alone.
+extern int64_t __cajeta_xpu_vk_free_memory_bytes(void);
+
 int64_t __cajeta_xpu_device_free_memory_bytes(void) {
     int be = cajeta_xpu_active_backend();
     switch (be) {
@@ -1174,6 +1176,10 @@ int64_t __cajeta_xpu_device_free_memory_bytes(void) {
             if (g_xpu_hip.hipMemGetInfo(&memfree, &total) != 0) return 0;
             return (int64_t) memfree;
         }
+        case CAJ_XPU_VULKAN:
+            // Answered 0 until 2026-11-12, which froze cajeta-llm's expert
+            // residency budget at zero on every vulkan device.
+            return __cajeta_xpu_vk_free_memory_bytes();
         case CAJ_XPU_CPU:
             // The device is the host: what the OS says is still available,
             // the level under the capacity the total arm reports. Answered
