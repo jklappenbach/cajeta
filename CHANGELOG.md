@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.53.6 (2026-11-12)
+
+- **`@Unfused` holds on vulkan.** On vulkan the driver compiles the SPIR-V and fuses a multiply into an add on its own unless the instruction says `NoContraction`, so an `@Unfused` kernel's results there were whatever the driver chose. A Mesa upgrade on an AMD Strix Halo box (26.0.8 to 26.2.6) moved cajeta-llm's bit-identical results by a few ulps with byte-identical SPIR-V. An `@Unfused` kernel's float multiplies, adds and subtracts now carry `NoContraction`, so its results stay the same from one driver version to the next. Measured there on cajeta-llm's 8B Q4_K_M, decode is unchanged and single-sequence prefill is up to 0.8% slower (`XpuFuseByDefaultTests`).
+- **`Device.freeMemoryBytes()` answers on vulkan.** It returned 0 there, which a residency policy reads as "nothing free", so cajeta-llm never placed its MoE expert weights on a vulkan device. It now answers from `VK_EXT_memory_budget`, the budget the driver still allows across the device-local heaps (`XpuDeviceMemoryTests`).
+
 ## 0.53.5 (2026-11-11)
 
 - **A kernel that the 16-bit wide fragment loads push into scratch on amdgpu is built again without them.** v0.53.3's wide loads for half and bfloat16 cooperative fragments raised register pressure in some kernels: cajeta-llm's `q4kF16CoopN256Kernel` went from no scratch to 28 bytes on gfx1151 and failed llm's amdgpu spill gate. Whether a kernel crosses the register file shows only after codegen, so a kernel whose first build has scratch and took a wide fragment load is now lowered again with element loads, and the build with less scratch is registered, noted as `[xpu-kernel-relowered]`. A kernel that does not spill keeps its wide loads and costs nothing extra (`AmdgpuCoop16SpillRetryTests`).
