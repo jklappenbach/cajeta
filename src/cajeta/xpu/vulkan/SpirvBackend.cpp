@@ -434,6 +434,74 @@ void defineUndefCooperativeMatrices(llvm::Module& m) {
 
 // Runs the codegen pipeline into an in-memory buffer, as SPIR-V text for Assembly or
 // binary for Object. False on failure, with an LLVM fatal error's reason in `failure`.
+// On vulkan the driver compiles the SPIR-V, and it fuses a multiply into an add on its
+// own unless the instruction is decorated NoContraction; leaving LLVM's `contract` flag
+// off says nothing to it. So every float multiply, add and subtract a compute kernel
+// keeps unfused (@Unfused, or a helper of an @Unfused class) is decorated. LLVM 23's
+// SPIR-V pre-legalizer drops a NoContraction decoration from `spirv.Decorations`, so the
+// instruction carries a UserSemantic marker through codegen and the word stream turns
+// it into NoContraction (kNoContractMarker). Measured 2026-11-11 on proton: Mesa 26.0.8
+// to 26.2.6 moved cajeta-llm's bit-identical @Unfused results by a few ulps with
+// byte-identical SPIR-V. Graphics stages are left to the driver as before.
+constexpr const char* kNoContractMarker = "cajeta.nocontract";
+constexpr uint32_t kDecoUserSemantic = 5635, kDecoNoContraction = 42;
+
+void markUncontractedArithmetic(llvm::Module& m) {
+    if (m.getTargetTriple().getEnvironment() != llvm::Triple::Compute) return;
+    llvm::LLVMContext& ctx = m.getContext();
+    llvm::Metadata* deco[] = {
+        llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+            llvm::Type::getInt32Ty(ctx), kDecoUserSemantic)),
+        llvm::MDString::get(ctx, kNoContractMarker)};
+    llvm::MDNode* decos = llvm::MDNode::get(ctx, {llvm::MDNode::get(ctx, deco)});
+    for (auto& f : m)
+        for (auto& bb : f)
+            for (auto& inst : bb) {
+                unsigned op = inst.getOpcode();
+                if (op != llvm::Instruction::FMul && op != llvm::Instruction::FAdd
+                    && op != llvm::Instruction::FSub)
+                    continue;
+                if (inst.hasAllowContract()) continue;
+                inst.setMetadata("spirv.Decorations", decos);
+            }
+}
+
+// Rewrites every `OpDecorate[String] %id UserSemantic "cajeta.nocontract"` into
+// `OpDecorate %id NoContraction`. True if anything changed.
+bool decorateNoContraction(std::vector<uint8_t>& bytes) {
+    if (bytes.size() < 20 || (bytes.size() % 4) != 0) return false;
+    std::vector<uint32_t> w(bytes.size() / 4);
+    std::memcpy(w.data(), bytes.data(), bytes.size());
+    if (w[0] != 0x07230203u) return false;
+    constexpr uint32_t kOpDecorate = 71, kOpDecorateString = 5632;
+    const size_t markLen = std::strlen(kNoContractMarker);
+    std::vector<uint32_t> out(w.begin(), w.begin() + 5);
+    bool changed = false;
+    for (size_t i = 5; i < w.size();) {
+        uint32_t wc = w[i] >> 16, op = w[i] & 0xFFFFu;
+        if (wc == 0 || i + wc > w.size()) return false;
+        if ((op == kOpDecorate || op == kOpDecorateString) && wc >= 4
+            && w[i + 2] == kDecoUserSemantic) {
+            const char* str = reinterpret_cast<const char*>(&w[i + 3]);
+            size_t maxLen = (wc - 3) * 4;
+            if (strnlen(str, maxLen) == markLen
+                && std::strncmp(str, kNoContractMarker, markLen) == 0) {
+                out.insert(out.end(), {(3u << 16) | kOpDecorate, w[i + 1],
+                                       kDecoNoContraction});
+                changed = true;
+                i += wc;
+                continue;
+            }
+        }
+        out.insert(out.end(), w.begin() + i, w.begin() + i + wc);
+        i += wc;
+    }
+    if (!changed) return false;
+    bytes.resize(out.size() * 4);
+    std::memcpy(bytes.data(), out.data(), bytes.size());
+    return true;
+}
+
 bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
                   llvm::CodeGenFileType type, llvm::SmallVectorImpl<char>& out,
                   std::string* failure) {
@@ -512,6 +580,8 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
                     b.CreateFPExt(inst->getOperand(1), fTy, "bf16.y"),
                     "bf16.w");
             }
+            // The widened op keeps the original's flags, so an unfused one stays unfused.
+            if (auto* wi = llvm::dyn_cast<llvm::Instruction>(wide)) wi->copyIRFlags(inst);
             llvm::Value* back = b.CreateFPTrunc(wide, inst->getType(),
                                                 "bf16.t");
             inst->replaceAllUsesWith(back);
@@ -530,6 +600,8 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
         for (auto& g : m.globals()) globals.push_back(&g);
         llvm::convertUsersOfConstantsToInstructions(globals);
     }
+
+    markUncontractedArithmetic(m);
 
     // CAJETA_XPU_DUMP_BC=<dir>: the post-structurize, pre-codegen bitcode, so a legalizer
     // failure can be reproduced under a standalone `llc -global-isel`.
@@ -959,7 +1031,13 @@ std::string emitSpirvText(llvm::Module& deviceModule, llvm::TargetMachine& tm,
                       buf, failure)) {
         return {};
     }
-    return std::string(buf.begin(), buf.end());
+    std::string text(buf.begin(), buf.end());
+    const std::string marker =
+        std::string("UserSemantic \"") + kNoContractMarker + "\"";
+    for (size_t at = text.find(marker); at != std::string::npos;
+         at = text.find(marker, at))
+        text.replace(at, marker.size(), "NoContraction");
+    return text;
 }
 
 std::vector<uint8_t> emitSpirv(llvm::Module& deviceModule,
@@ -971,6 +1049,7 @@ std::vector<uint8_t> emitSpirv(llvm::Module& deviceModule,
     }
     std::vector<uint8_t> spirv(buf.begin(), buf.end());
     // Each of these word-stream fixups is a no-op on a kernel that lacks its feature.
+    decorateNoContraction(spirv);
     fixupControlBarriers(spirv);
     injectWorkgroupSizeSpecConstant(spirv);
     injectDynamicSharedSpecConstant(spirv);

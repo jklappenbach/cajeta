@@ -667,7 +667,10 @@ public static void splitLaunch(KernelBuffer<int8> out,
   the last bit. That fusion is half the arithmetic of a GEMM inner loop.
   Put `@Unfused` on a kernel that must match the cpu bit for bit. On a
   class it covers every kernel and `@Device` helper the class declares, and
-  a helper follows its own class rather than its caller's.
+  a helper follows its own class rather than its caller's. On vulkan the
+  driver compiles the SPIR-V and fuses on its own, so an `@Unfused`
+  kernel's multiplies, adds and subtracts carry `NoContraction`, which
+  keeps its results the same from one driver version to the next.
 - **Initialize accumulators by writing to them.** A `0 *` on an
   uninitialized NaN churns and looks like allocator corruption.
 - **`int64 *` traps on overflow.** Multiplicative hashing in a kernel

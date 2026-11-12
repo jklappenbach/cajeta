@@ -13,6 +13,13 @@
 // (fusion allowed, nothing else relaxed). A fused step rounds once where the
 // unfused pair rounds twice, so the last bit may differ from the cpu.
 //
+// On vulkan the driver compiles the SPIR-V and fuses on its own unless an
+// instruction carries NoContraction, so leaving `contract` off is not enough
+// there. An @Unfused kernel's float multiplies, adds and subtracts are
+// decorated NoContraction. Measured 2026-11-11 on proton: Mesa 26.0.8 to
+// 26.2.6 moved three of cajeta-llm's bit-identical wave-32 rows by a few ulps
+// with byte-identical SPIR-V.
+//
 #include <gtest/gtest.h>
 
 #include "KernelLoweringProbe.h"
@@ -29,7 +36,10 @@
 #include "llvm/IR/Module.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cstring>
+#include <memory>
 #include <string>
+#include <vector>
 
 using namespace cajeta::xpu::probe;
 
@@ -89,6 +99,60 @@ std::string spirvIr(bool unfused) {
     return print(dev);
 }
 
+std::unique_ptr<llvm::Module> spirvModule(bool unfused, llvm::LLVMContext& ctx,
+                                          llvm::TargetMachine& tm,
+                                          cajeta::Compiler& compiler) {
+    using namespace cajeta::xpu::vulkan;
+    auto module = compileForInspection(compiler, source(unfused), "test.M", "fuse");
+    auto k = findMethod(module->getStructures()["test.M"], "mad");
+    if (!k) return nullptr;
+    auto dev = std::make_unique<llvm::Module>("xpu_fuse_spirv", ctx);
+    configureDeviceModule(*dev, tm);
+    if (!lowerKernel(k, *dev)) return nullptr;
+    return dev;
+}
+
+std::string spirvText(bool unfused) {
+    using namespace cajeta::xpu::vulkan;
+    auto tm = createSpirvTargetMachine("vulkan1.3");
+    if (!tm) return {};
+    cajeta::Compiler compiler;
+    llvm::LLVMContext ctx;
+    auto dev = spirvModule(unfused, ctx, *tm, compiler);
+    if (!dev) return {};
+    return emitSpirvText(*dev, *tm);
+}
+
+// The NoContraction decorations (Decoration 42) in a SPIR-V binary, and
+// whether any UserSemantic (5635) decoration is left in it.
+struct Decos { int noContraction = 0; bool userSemantic = false; bool ok = false; };
+
+Decos spirvBinaryDecos(bool unfused) {
+    using namespace cajeta::xpu::vulkan;
+    Decos d;
+    auto tm = createSpirvTargetMachine("vulkan1.3");
+    if (!tm) return d;
+    cajeta::Compiler compiler;
+    llvm::LLVMContext ctx;
+    auto dev = spirvModule(unfused, ctx, *tm, compiler);
+    if (!dev) return d;
+    std::vector<uint8_t> bytes = emitSpirv(*dev, *tm);
+    if (bytes.size() < 20 || bytes.size() % 4) return d;
+    std::vector<uint32_t> w(bytes.size() / 4);
+    std::memcpy(w.data(), bytes.data(), bytes.size());
+    for (size_t i = 5; i < w.size();) {
+        uint32_t wc = w[i] >> 16, op = w[i] & 0xFFFFu;
+        if (wc == 0 || i + wc > w.size()) return d;
+        if ((op == 71 || op == 5632) && wc >= 3) {
+            if (w[i + 2] == 42) ++d.noContraction;
+            if (w[i + 2] == 5635) d.userSemantic = true;
+        }
+        i += wc;
+    }
+    d.ok = true;
+    return d;
+}
+
 } // namespace
 
 TEST(XpuFuseByDefaultTests, nvptxFusesAMultiplyAdd) {
@@ -115,6 +179,26 @@ TEST(XpuFuseByDefaultTests, spirvMarksItsFloatArithmeticContract) {
     const std::string ir = spirvIr(false);
     ASSERT_FALSE(ir.empty());
     EXPECT_NE(ir.find("fmul contract"), std::string::npos) << ir;
+}
+
+TEST(XpuFuseByDefaultTests, unfusedDecoratesItsSpirvArithmeticNoContraction) {
+    const std::string text = spirvText(true);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("NoContraction"), std::string::npos) << text;
+    EXPECT_EQ(text.find("UserSemantic"), std::string::npos) << text;
+    Decos d = spirvBinaryDecos(true);
+    ASSERT_TRUE(d.ok);
+    EXPECT_GE(d.noContraction, 2);   // the multiply and the add
+    EXPECT_FALSE(d.userSemantic);
+}
+
+TEST(XpuFuseByDefaultTests, aFusedKernelLeavesItsSpirvToTheDriver) {
+    const std::string text = spirvText(false);
+    ASSERT_FALSE(text.empty());
+    EXPECT_EQ(text.find("NoContraction"), std::string::npos) << text;
+    Decos d = spirvBinaryDecos(false);
+    ASSERT_TRUE(d.ok);
+    EXPECT_EQ(d.noContraction, 0);
 }
 
 TEST(XpuFuseByDefaultTests, cpuNeverFuses) {
