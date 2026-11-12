@@ -62,6 +62,33 @@ std::string source(bool unfused) {
     return s;
 }
 
+// An eight-lane float vector, as cajeta-llm's q4kMatVecKernel builds its
+// scale rows: an 8-wide multiply, lanes written one by one, lanes read back.
+std::string wideSource() {
+    return
+        "package test;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.Vector;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    @Unfused\n"
+        "    public static void mad(KernelBuffer<float32> out, KernelBuffer<float32> a,\n"
+        "                           KernelBuffer<float32> b, KernelBuffer<float32> c, uint32 n) {\n"
+        "        uint32 i = KernelThread.globalIdX();\n"
+        "        if (i >= n) { return; }\n"
+        "        Vector<float32,8> tv = a.vload<8>((int64) i * 8L) * 0.0f;\n"
+        "        Vector<float32,8> uv = tv;\n"
+        "        int32 j = 0;\n"
+        "        while (j < 8) { tv[j] = b[i] * (float32) j; uv[j] = c[i] - (float32) j; j = j + 1; }\n"
+        "        float32 acc = 0.0f;\n"
+        "        j = 0;\n"
+        "        while (j < 8) { acc = acc + tv[j] * a[i] - uv[j] * b[i]; j = j + 1; }\n"
+        "        out[i] = acc;\n"
+        "    }\n"
+        "}\n";
+}
+
 std::string print(llvm::Module& m) {
     std::string ir;
     llvm::raw_string_ostream os(ir);
@@ -127,6 +154,36 @@ std::string spirvText(bool unfused) {
 // whether any UserSemantic (5635) decoration is left in it.
 struct Decos { int noContraction = 0; bool userSemantic = false; bool ok = false; };
 
+// Lowers `src` for vulkan and emits the SPIR-V binary; `failure` says why not.
+std::vector<uint8_t> spirvBinaryOf(const std::string& src, std::string* failure) {
+    using namespace cajeta::xpu::vulkan;
+    auto tm = createSpirvTargetMachine("vulkan1.3");
+    if (!tm) { *failure = "no spirv target"; return {}; }
+    cajeta::Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M", "fuse");
+    auto k = findMethod(module->getStructures()["test.M"], "mad");
+    if (!k) { *failure = "no kernel"; return {}; }
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_fuse_spirv", ctx);
+    configureDeviceModule(dev, *tm);
+    if (!lowerKernel(k, dev)) { *failure = "lowering refused"; return {}; }
+    return emitSpirv(dev, *tm, failure);
+}
+
+int countNoContraction(const std::vector<uint8_t>& bytes) {
+    if (bytes.size() < 20 || bytes.size() % 4) return -1;
+    std::vector<uint32_t> w(bytes.size() / 4);
+    std::memcpy(w.data(), bytes.data(), bytes.size());
+    int n = 0;
+    for (size_t i = 5; i < w.size();) {
+        uint32_t wc = w[i] >> 16, op = w[i] & 0xFFFFu;
+        if (wc == 0 || i + wc > w.size()) return -1;
+        if (op == 71 && wc >= 3 && w[i + 2] == 42) ++n;
+        i += wc;
+    }
+    return n;
+}
+
 Decos spirvBinaryDecos(bool unfused) {
     using namespace cajeta::xpu::vulkan;
     Decos d;
@@ -190,6 +247,18 @@ TEST(XpuFuseByDefaultTests, unfusedDecoratesItsSpirvArithmeticNoContraction) {
     ASSERT_TRUE(d.ok);
     EXPECT_GE(d.noContraction, 2);   // the multiply and the add
     EXPECT_FALSE(d.userSemantic);
+}
+
+// An eight-lane vector op carrying the decoration reached the legalizer whole
+// and failed G_CONCAT_VECTORS of two four-lane halves, so cajeta-llm's
+// q4kMatVecKernel, q4kMatVecKernelIL and q5kMatVecKernel lost their vulkan
+// code (proton, d08f4a605, 2026-11-12).
+TEST(XpuFuseByDefaultTests, anUnfusedEightLaneVectorStillLowersToSpirv) {
+    std::string failure;
+    std::vector<uint8_t> bytes = spirvBinaryOf(wideSource(), &failure);
+    ASSERT_FALSE(bytes.empty()) << failure;
+    EXPECT_TRUE(failure.empty()) << failure;
+    EXPECT_GT(countNoContraction(bytes), 0);
 }
 
 TEST(XpuFuseByDefaultTests, aFusedKernelLeavesItsSpirvToTheDriver) {

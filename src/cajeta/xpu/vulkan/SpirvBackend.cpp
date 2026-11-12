@@ -454,6 +454,7 @@ void markUncontractedArithmetic(llvm::Module& m) {
             llvm::Type::getInt32Ty(ctx), kDecoUserSemantic)),
         llvm::MDString::get(ctx, kNoContractMarker)};
     llvm::MDNode* decos = llvm::MDNode::get(ctx, {llvm::MDNode::get(ctx, deco)});
+    llvm::SmallVector<llvm::Instruction*, 64> ops;
     for (auto& f : m)
         for (auto& bb : f)
             for (auto& inst : bb) {
@@ -462,8 +463,52 @@ void markUncontractedArithmetic(llvm::Module& m) {
                     && op != llvm::Instruction::FSub)
                     continue;
                 if (inst.hasAllowContract()) continue;
-                inst.setMetadata("spirv.Decorations", decos);
+                ops.push_back(&inst);
             }
+    for (llvm::Instruction* inst : ops) {
+        auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(inst->getType());
+        if (!vt || vt->getNumElements() <= 4) {
+            inst->setMetadata("spirv.Decorations", decos);
+            continue;
+        }
+        // A decorated value wider than four lanes reaches the legalizer whole, which
+        // cannot concatenate the halves it splits it into (G_CONCAT_VECTORS, cajeta-llm's
+        // q4kMatVecKernel on 2026-11-12). The op is done here in four-lane parts, each
+        // decorated, and the parts shuffled back together.
+        unsigned n = vt->getNumElements();
+        llvm::IRBuilder<> b(inst);
+        llvm::Value* lhs = inst->getOperand(0);
+        llvm::Value* rhs = inst->getOperand(1);
+        llvm::SmallVector<llvm::Value*, 4> parts;
+        for (unsigned at = 0; at < n; at += 4) {
+            unsigned w = std::min(4u, n - at);
+            llvm::SmallVector<int, 4> mask;
+            for (unsigned l = 0; l < w; ++l) mask.push_back((int) (at + l));
+            llvm::Value* x = b.CreateShuffleVector(lhs, mask);
+            llvm::Value* y = b.CreateShuffleVector(rhs, mask);
+            llvm::Value* p = b.CreateBinOp(
+                (llvm::Instruction::BinaryOps) inst->getOpcode(), x, y);
+            if (auto* pi = llvm::dyn_cast<llvm::Instruction>(p)) {
+                pi->copyIRFlags(inst);
+                pi->setMetadata("spirv.Decorations", decos);
+            }
+            parts.push_back(p);
+        }
+        // Widen each part to n lanes and merge them in, part by part.
+        llvm::Value* whole = llvm::PoisonValue::get(vt);
+        for (unsigned pi = 0, at = 0; pi < parts.size(); ++pi, at += 4) {
+            unsigned w = std::min(4u, n - at);
+            llvm::SmallVector<int, 16> grow(n, -1);
+            for (unsigned l = 0; l < w; ++l) grow[at + l] = (int) l;
+            llvm::Value* wide = b.CreateShuffleVector(parts[pi], grow);
+            llvm::SmallVector<int, 16> merge(n);
+            for (unsigned l = 0; l < n; ++l)
+                merge[l] = (l >= at && l < at + w) ? (int) (n + l) : (int) l;
+            whole = b.CreateShuffleVector(whole, wide, merge);
+        }
+        inst->replaceAllUsesWith(whole);
+        inst->eraseFromParent();
+    }
 }
 
 // Rewrites every `OpDecorate[String] %id UserSemantic "cajeta.nocontract"` into
