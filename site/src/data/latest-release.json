@@ -2,25 +2,25 @@
   "platforms": [
     {
       "archive": {
-        "name": "cajeta-v0.53.5-x86_64-linux-gnu.tar.gz",
-        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.5/cajeta-v0.53.5-x86_64-linux-gnu.tar.gz"
+        "name": "cajeta-v0.53.6-x86_64-linux-gnu.tar.gz",
+        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.6/cajeta-v0.53.6-x86_64-linux-gnu.tar.gz"
       },
       "compiler": {
-        "name": "cajeta-v0.53.5-x86_64-linux-gnu",
-        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.5/cajeta-v0.53.5-x86_64-linux-gnu"
+        "name": "cajeta-v0.53.6-x86_64-linux-gnu",
+        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.6/cajeta-v0.53.6-x86_64-linux-gnu"
       },
       "installers": [
         {
           "format": "rpm",
-          "name": "cajeta-0.53.5-1.x86_64.rpm",
-          "sha256": "67c9bcb874af1accaffdce0d0bc1b4c07e8f396b367b5a6e4f1b0ea833b2fa8c",
-          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.5/cajeta-0.53.5-1.x86_64.rpm"
+          "name": "cajeta-0.53.6-1.x86_64.rpm",
+          "sha256": "b82c0b2371861ed3335a60ec33632890fdf7a4513819ac5c3ec37e8e1e4a61f4",
+          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.6/cajeta-0.53.6-1.x86_64.rpm"
         },
         {
           "format": "deb",
-          "name": "cajeta_0.53.5_amd64.deb",
-          "sha256": "5d830e49b6c9b7f09814833ae8e1c80e5e4d0fbe5bfc57359430ac6db2db070a",
-          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.5/cajeta_0.53.5_amd64.deb"
+          "name": "cajeta_0.53.6_amd64.deb",
+          "sha256": "baaa2267d919192f56c53999800cb572d916177539a2e152dcfa7009d9ea9fe6",
+          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.6/cajeta_0.53.6_amd64.deb"
         }
       ],
       "label": "Linux x86_64",
@@ -28,25 +28,25 @@
     },
     {
       "archive": {
-        "name": "cajeta-v0.53.5-aarch64-linux-gnu.tar.gz",
-        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.5/cajeta-v0.53.5-aarch64-linux-gnu.tar.gz"
+        "name": "cajeta-v0.53.6-aarch64-linux-gnu.tar.gz",
+        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.6/cajeta-v0.53.6-aarch64-linux-gnu.tar.gz"
       },
       "compiler": {
-        "name": "cajeta-v0.53.5-aarch64-linux-gnu",
-        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.5/cajeta-v0.53.5-aarch64-linux-gnu"
+        "name": "cajeta-v0.53.6-aarch64-linux-gnu",
+        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.6/cajeta-v0.53.6-aarch64-linux-gnu"
       },
       "installers": [
         {
           "format": "rpm",
-          "name": "cajeta-0.53.5-1.aarch64.rpm",
-          "sha256": "19fbc3aa1453a7cd029cb2304aa13b9f45f063e510e7e365316e58be1a9d502e",
-          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.5/cajeta-0.53.5-1.aarch64.rpm"
+          "name": "cajeta-0.53.6-1.aarch64.rpm",
+          "sha256": "3981ce0053f0e4733ef1bf913efc615b6406d04d364663bd5575918c9810494e",
+          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.6/cajeta-0.53.6-1.aarch64.rpm"
         },
         {
           "format": "deb",
-          "name": "cajeta_0.53.5_arm64.deb",
-          "sha256": "316a3f00ec0bfe5d9618e2a975c6832c196c5725314c7fe5c06653dec748efcd",
-          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.5/cajeta_0.53.5_arm64.deb"
+          "name": "cajeta_0.53.6_arm64.deb",
+          "sha256": "82d49bb5c9155afe4c21d10bbed65cca51d716f38eaddd482b1e73bb43aacc2b",
+          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.6/cajeta_0.53.6_arm64.deb"
         }
       ],
       "label": "Linux ARM64",
@@ -54,19 +54,19 @@
     },
     {
       "archive": {
-        "name": "cajeta-v0.53.5-aarch64-apple-darwin.tar.gz",
-        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.5/cajeta-v0.53.5-aarch64-apple-darwin.tar.gz"
+        "name": "cajeta-v0.53.6-aarch64-apple-darwin.tar.gz",
+        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.6/cajeta-v0.53.6-aarch64-apple-darwin.tar.gz"
       },
       "compiler": {
-        "name": "cajeta-v0.53.5-aarch64-apple-darwin",
-        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.5/cajeta-v0.53.5-aarch64-apple-darwin"
+        "name": "cajeta-v0.53.6-aarch64-apple-darwin",
+        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.6/cajeta-v0.53.6-aarch64-apple-darwin"
       },
       "installers": [
         {
           "format": "pkg",
-          "name": "cajeta-0.53.5-arm64.pkg",
-          "sha256": "8b706a179e457698b3b5033db2e32ff17bd853afbe014f8d4fb591d59af9a032",
-          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.5/cajeta-0.53.5-arm64.pkg"
+          "name": "cajeta-0.53.6-arm64.pkg",
+          "sha256": "57cf77a980d993156f6bd4ab4708f3c588ece4fc4c63f279138f3b4f7b784f03",
+          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.6/cajeta-0.53.6-arm64.pkg"
         }
       ],
       "label": "macOS Apple Silicon",
@@ -74,27 +74,27 @@
     },
     {
       "archive": {
-        "name": "cajeta-v0.53.5-x86_64-w64-mingw32.zip",
-        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.5/cajeta-v0.53.5-x86_64-w64-mingw32.zip"
+        "name": "cajeta-v0.53.6-x86_64-w64-mingw32.zip",
+        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.6/cajeta-v0.53.6-x86_64-w64-mingw32.zip"
       },
       "compiler": {
-        "name": "cajeta-v0.53.5-x86_64-w64-mingw32.exe",
-        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.5/cajeta-v0.53.5-x86_64-w64-mingw32.exe"
+        "name": "cajeta-v0.53.6-x86_64-w64-mingw32.exe",
+        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.6/cajeta-v0.53.6-x86_64-w64-mingw32.exe"
       },
       "installers": [
         {
           "format": "msi",
-          "name": "cajeta-0.53.5-AMD64.msi",
-          "sha256": "31678e9b175d76b2c751756a4fa89abaf5d2c39d5045d5d98ed0d982aa7904a2",
-          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.5/cajeta-0.53.5-AMD64.msi"
+          "name": "cajeta-0.53.6-AMD64.msi",
+          "sha256": "9f7bb61917fc6db63c057c110073a2a7db62ca9472818c9ac08395195fa1380f",
+          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.53.6/cajeta-0.53.6-AMD64.msi"
         }
       ],
       "label": "Windows x86_64",
       "triple": "x86_64-w64-mingw32"
     }
   ],
-  "releaseUrl": "https://github.com/jklappenbach/cajeta/releases/tag/v0.53.5",
+  "releaseUrl": "https://github.com/jklappenbach/cajeta/releases/tag/v0.53.6",
   "schemaVersion": 1,
-  "tag": "v0.53.5",
-  "version": "0.53.5"
+  "tag": "v0.53.6",
+  "version": "0.53.6"
 }
