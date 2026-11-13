@@ -289,7 +289,8 @@ namespace cajeta::ownership {
         return at;
     }
 
-    TitleShape classify(const ExpressionPtr& e0, const CajetaModulePtr& module) {
+    /// The title of `e0` with reference casts peeled; the cast's own type is the caller's to add.
+    static TitleShape classifyOperand(const ExpressionPtr& e0, const CajetaModulePtr& module) {
         if (!e0) return make(TitleFamily::Unsupported, TitleAnswer::Scalar, TitleSource::None, e0);
         ExpressionPtr e = e0;
         for (;;) {
@@ -467,6 +468,18 @@ namespace cajeta::ownership {
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
 #endif
+
+    /// A reference cast keeps its operand's title, and a cast to String marks the shape a String.
+    TitleShape classify(const ExpressionPtr& e0, const CajetaModulePtr& module) {
+        TitleShape s = classifyOperand(e0, module);
+        ExpressionPtr e = e0;
+        while (e && e->kind() == ExprKind::Primary) e = childOf(e, 0);
+        if (e && e->kind() == ExprKind::Cast) {
+            auto dt = std::static_pointer_cast<CastExpression>(e)->getDestType();
+            if (isReferenceCast(dt) && isLangString(dt)) s.flags |= TitleShape::kString;
+        }
+        return s;
+    }
 
     namespace {
         // The shape of a `#x` move: classify the inner expression, then hand it to

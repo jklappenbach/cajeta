@@ -369,6 +369,10 @@ public final class String {
     @Native("__cajeta_string_lower")
     public #String toLowerCase();
 
+    /** An owned copy in its own buffer, typed String so it passes straight to a `#String` formal. */
+    @Native("__cajeta_object_clone")
+    public #String clone();
+
     /**
      * Strips leading and trailing ASCII whitespace (bytes 0..0x20) and
      * returns the resulting window — zero-copy for > 12 B results.
