@@ -15,6 +15,7 @@
 #include "llvm/Transforms/Utils/Mem2Reg.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/CodeGen.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Program.h"
@@ -185,13 +186,34 @@ void optimizeDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
     cajeta::xpu::dropUnusedAlignFault(m);
 }
 
+/// Turns MachineSink off while the codegen pipeline is built: it moved an unrolled tile's FMAs past
+/// its barrier into the structurizer's join block and the tile spilled. Process-global, so restored.
+struct ScopedNoMachineSink {
+    llvm::cl::opt<bool>* opt = nullptr;
+    bool was = false;
+    ScopedNoMachineSink() {
+        auto& opts = llvm::cl::getRegisteredOptions();
+        auto it = opts.find("disable-machine-sink");
+        if (it == opts.end()) return;
+        opt = static_cast<llvm::cl::opt<bool>*>(it->second);
+        was = opt->getValue();
+        opt->setValue(true);
+    }
+    ~ScopedNoMachineSink() { if (opt) opt->setValue(was); }
+};
+
 /// Runs codegen to Assembly or Object in memory; false if that type cannot be emitted.
 bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
                   llvm::CodeGenFileType type, llvm::SmallVectorImpl<char>& out) {
     optimizeDeviceModule(m, tm);
     llvm::raw_svector_ostream os(out);
     llvm::legacy::PassManager pm;
-    if (tm.addPassesToEmitFile(pm, os, /*DwoOut=*/nullptr, type)) {
+    bool refused;
+    {
+        ScopedNoMachineSink noSink;
+        refused = tm.addPassesToEmitFile(pm, os, /*DwoOut=*/nullptr, type);
+    }
+    if (refused) {
         llvm::errs() << "cajeta.xpu.amd: AMDGPU TargetMachine cannot emit "
                      << (type == llvm::CodeGenFileType::AssemblyFile
                              ? "assembly" : "object") << "\n";
