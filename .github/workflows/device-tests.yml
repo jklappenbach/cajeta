@@ -360,7 +360,7 @@ jobs:
           [ -n "$LINE" ] || { echo "::error::no kernel census line on nvptx — the gate never ran"; exit 1; }
           RAN=$(sed -n 's/.*, ran \([0-9]*\)[ ,].*/\1/p' <<<"$LINE")
           UNCOVERED=$(sed -n 's/.*, uncovered \([0-9]*\),.*/\1/p' <<<"$LINE")
-          STALE=$(sed -n 's/.*, stale skips \([0-9]*\).*/\1/p' <<<"$LINE")
+          STALE=$(sed -n -E 's/.*, stale (skips )?([0-9]+).*/\2/p' <<<"$LINE")
           SUITE=$(sed -n 's/^SUITE_RC=//p' llm-census.log | tail -1)
           TESTS=$(grep -E '^Tests: ' llm-census.log | tail -1 || true)
           echo "$LINE"
@@ -371,7 +371,7 @@ jobs:
             echo "|---|---|"
             echo "| kernels that ran under a test | $RAN |"
             echo "| uncovered | $UNCOVERED |"
-            echo "| stale skips | $STALE |"
+            echo "| stale entries | $STALE |"
             echo "| suite | $TESTS (rc $SUITE) |"
             echo ""
             grep -E '^  (SKIP|UNCOVERED|STALE-SKIP|OUT-OF-TARGET) ' llm-census.log | sed 's/^/    /' || true
@@ -381,7 +381,7 @@ jobs:
             exit 1
           fi
           if [ "${UNCOVERED:-1}" -ne 0 ] || [ "${STALE:-1}" -ne 0 ]; then
-            echo "::error::kernel census on nvptx: $UNCOVERED uncovered, $STALE stale skips"
+            echo "::error::kernel census on nvptx: $UNCOVERED uncovered, $STALE stale entries"
             exit 1
           fi
           if [ "$SUITE" != "0" ]; then
