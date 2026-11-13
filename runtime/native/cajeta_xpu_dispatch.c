@@ -2442,17 +2442,45 @@ int64_t __cajeta_xpu_buffer_alloc(void* self, uint64_t byteCount, int32_t kind) 
 #ifdef _WIN32
 #include <malloc.h>   // _aligned_malloc
 #endif
-// cpu "device" memory on a 64-byte boundary, so a 512-bit load never splits a
-// cache line; malloc hands a large block back 16 bytes past a page.
+#if defined(__linux__)
+#include <sys/mman.h>
+#endif
+// Transparent huge pages for cpu buffers of 2 MiB or more: 1 on (the default), 0 off (CAJETA_XPU_CPU_HUGEPAGES=0).
+static int32_t g_cpu_hugepages = -1;
+static int32_t caj_cpu_hugepages(void) {
+    if (g_cpu_hugepages < 0) {
+        const char* e = getenv("CAJETA_XPU_CPU_HUGEPAGES");
+        g_cpu_hugepages = (e && e[0] == '0') ? 0 : 1;
+    }
+    return g_cpu_hugepages;
+}
+// cpu "device" memory on a 64-byte boundary, so a 512-bit load never splits a cache line; from 2 MiB on Linux its
+// whole pages are advised for huge pages (a 2 MiB start for every slab measured slower, so only the advice).
 static void* caj_cpu_buffer_alloc(size_t n) {
     if (n == 0) n = 1;
 #ifdef _WIN32
     return _aligned_malloc(n, 64);
 #else
     void* p = NULL;
+#if defined(__linux__)
+    if (posix_memalign(&p, 64, n) != 0) return NULL;
+    if (n >= (size_t) 2097152 && caj_cpu_hugepages()) {
+        uintptr_t lo = ((uintptr_t) p + 4095u) & ~(uintptr_t) 4095u;
+        uintptr_t hi = ((uintptr_t) p + n) & ~(uintptr_t) 4095u;
+        if (hi > lo) madvise((void*) lo, hi - lo, MADV_HUGEPAGE);
+    }
+    return p;
+#endif
     if (posix_memalign(&p, 64, n) != 0) return NULL;
     return p;
 #endif
+}
+/** Huge pages for large cpu buffers on (1) or off (0); flushes the buffer cache so the next allocation follows. */
+void __cajeta_xpu_cpu_set_hugepages(int32_t on) {
+    g_cpu_hugepages = on ? 1 : 0;
+    pthread_mutex_lock(&g_xpu_bcache_lock);
+    caj_bcache_trim_locked(0);
+    pthread_mutex_unlock(&g_xpu_bcache_lock);
 }
 static void caj_cpu_buffer_free(void* p) {
 #ifdef _WIN32
