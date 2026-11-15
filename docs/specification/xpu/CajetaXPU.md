@@ -112,7 +112,7 @@ answers for them.
 | `Wave.reduceSumF32/I64`, `reduceMaxF32`, `prefixSumI64`, `ballotSync`, `shuffleSync*`, the segmented reductions | wave verbs, exact at every width |
 | `Workgroup.reduce(GroupOp, v)`, `Workgroup.scan(GroupOp, v)` | barrier collectives across every wave of the workgroup, with no wave width or count in the source; partials combine from wave 0 upward, so the result is deterministic at a given width |
 | `Vector<T, N>`, `vload<N>`, `vstore`, `prefetch`, `asWords`, `asBytes`, `lut4` | wide loads and stores; an aligned byte-vector load lowers to a word load |
-| `dotSum`, `dotAccum` | the integer dot products (`dp4a` and its equivalents) |
+| `dotSum`, `dotAccum` | the integer dot products (`dp4a` and its equivalents); `dotSum` on float16 pairs (`v_dot2_f32_f16` where the AMD arch has it, two fmas elsewhere) |
 | `CooperativeMatrix<T, 16, 16, Use>`, `load`, `store`, `mma`, `fromWords`, `splat`, `TileOps.scaledAccumI32`, `rank1Accum`, `scaledAccumInto(2)` | the matrix fragments and their epilogues (§3.3) |
 | `Tile<T, Rows, Cols>`, `Group.mac` | the role-free fragment form; roles inferred from position |
 

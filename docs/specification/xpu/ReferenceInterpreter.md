@@ -137,7 +137,7 @@ These are every built-in the interpreter defines.
 | `v.toI8()` | each integer lane truncated to its low byte, keeping the element's signedness |
 | `v.bitcastF32()`, `bitcastI32()` | 32-bit lanes reinterpreted |
 | `v.lut4(t)` | lane `i` is `t[v[i] & 15]` |
-| `v.dotSum(a, acc)` | `acc + Σi v[i]·a[i]`, with `v` extended by its own signedness and `a` sign-extended, wrapping in int32 |
+| `v.dotSum(a, acc)` | `acc + Σi v[i]·a[i]`, with `v` extended by its own signedness and `a` sign-extended, wrapping in int32. On float16 (even `N`, float32 `acc`): one float32 fma per lane in lane order. AMD's `v_dot2_f32_f16` rounds once a pair, so a device result can differ in the last bits. |
 | `v.dot(w)`, `dot(w, acc)` | float: products summed in lane order. 4 × 8-bit integers: both operands take the receiver's signedness. |
 | `w.dotAccum(a, acc)` | `acc[j] + Σk w[4j+k]·a[4j+k]`, with `w` extended by its own signedness and `a` always sign-extended, wrapping in int32 |
 | a call to a `@Device` helper | a new frame. Arguments are converted to the parameter types; buffers, `Shared` arrays and tiles pass by reference, so a tile the helper writes is the caller's, and a tile of another shape than the parameter's is refused. The result is converted to the return type. A recursive call is refused. A helper that names backend arms (`@TargetIntrinsic`, `@TargetAsm`) runs its BODY, the portable arm, which is how the corpus checks an arm against it; one with arms and no body is refused by name. |

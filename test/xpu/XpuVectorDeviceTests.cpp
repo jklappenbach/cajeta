@@ -969,6 +969,106 @@ TEST(XpuVectorDeviceTests, integerDotRunsOnAmdDevice) {
     EXPECT_EQ(mismatches, 0u);
 }
 
+// cajeta-llm 15.2.21.4.3.8.1: float16 `dotSum` in pairs. Products 2, -2.5, -1.5, 4.5 sum to 2.5, all
+// exact in float32, so the fma chain gives 2.5 + (i % 7) exactly; gfx1151's v_dot2acc_f32_f16 is not
+// correctly rounded (measured 3.4999998 for 3.5), so the device run allows 4 ulp.
+const char* kHalfDotSource =
+    "package test;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
+    "public class HD {\n"
+    "    @Kernel\n"
+    "    public static void hdot(KernelBuffer<float32> out, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            Vector<float32,4> fa = heap Vector<float32,4>(0.5f, -1.25f, 2.0f, 3.0f);\n"
+    "            Vector<float32,4> fb = heap Vector<float32,4>(4.0f, 2.0f, -0.75f, 1.5f);\n"
+    "            Vector<float16,4> a = fa.toF16();\n"
+    "            Vector<float16,4> b = fb.toF16();\n"
+    "            out[i] = a.dotSum(b, (float32) (i % 7));\n"
+    "        }\n"
+    "    }\n"
+    "}\n";
+
+std::string halfDotIr(const char* arch) {
+    using namespace cajeta::xpu::amd;
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kHalfDotSource);
+    auto k = findMethod(module->getStructures()["test.HD"], "hdot");
+    if (k == nullptr) return "no kernel";
+    auto tm = createAmdgpuTargetMachine(arch);
+    if (tm == nullptr) return "no target machine";
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_hdot_amd", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    if (lowerKernel(k, deviceModule) == nullptr) return "lowering failed";
+    std::string ir;
+    { llvm::raw_string_ostream os(ir); deviceModule.print(os, nullptr); }
+    return ir;
+}
+
+// Measured against llc arch by arch: fdot2 selects on gfx906/908/90a/942/950, gfx1011/1012, gfx103x,
+// gfx11xx and gfx12xx, and fails to select on gfx900, gfx1010 and gfx1013 (which has the int8 dot).
+TEST(XpuVectorDeviceTests, halfDotEmitsAmdFdot2) {
+    std::string ir = halfDotIr("gfx1151");
+    EXPECT_NE(ir.find("amdgcn.fdot2"), std::string::npos) << "gfx1151 has v_dot2_f32_f16";
+}
+
+TEST(XpuVectorDeviceTests, halfDotFallsBackToFmaWithoutFdot2) {
+    for (const char* arch : {"gfx1013", "gfx1010"}) {
+        std::string ir = halfDotIr(arch);
+        EXPECT_EQ(ir.find("amdgcn.fdot2"), std::string::npos) << arch << " cannot select fdot2";
+        EXPECT_NE(ir.find("llvm.fma.f32"), std::string::npos) << arch << " takes the fma chain";
+    }
+}
+
+TEST(XpuVectorDeviceTests, halfDotRunsOnAmdDevice) {
+    using namespace cajeta::xpu::amd;
+    if (!HipDriver::available()) GTEST_SKIP() << "no HIP device";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kHalfDotSource);
+    auto k = findMethod(module->getStructures()["test.HD"], "hdot");
+    ASSERT_NE(k, nullptr);
+    auto tm = createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_hdot_amddevice", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    ASSERT_NE(lowerKernel(k, deviceModule), nullptr);
+    std::vector<uint8_t> hsaco = assembleHsaco(deviceModule, *tm, "gfx1151");
+    ASSERT_FALSE(hsaco.empty()) << "hsaco assembly failed (ld.lld present?)";
+
+    const uint32_t n = 1u << 12;
+    std::vector<float> out(n, -1.0f);
+    HipDriver hip;
+    ASSERT_TRUE(hip.init());
+    HipModule mod = hip.loadModule(hsaco.data(), hsaco.size());
+    ASSERT_NE(mod, nullptr);
+    HipFunction fn = hip.getFunction(mod, "hdot");
+    ASSERT_NE(fn, nullptr);
+    const std::size_t bytes = std::size_t(n) * sizeof(float);
+    HipDevicePtr dOut = hip.alloc(bytes);
+    ASSERT_NE(dOut, nullptr);
+    ASSERT_TRUE(hip.memcpyHtoD(dOut, out.data(), bytes));
+    void* params[] = { &dOut, (void*) &n };
+    const unsigned block = 256;
+    ASSERT_TRUE(hip.launch(fn, (n + block - 1) / block, block, params));
+    ASSERT_TRUE(hip.synchronize());
+    std::vector<float> result(n);
+    ASSERT_TRUE(hip.memcpyDtoH(result.data(), dOut, bytes));
+    hip.free(dOut);
+    size_t bad = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        float want = 2.5f + (float) (i % 7);
+        float ulp = std::nextafter(want, 1.0e30f) - want;
+        if (!(std::fabs(result[i] - want) <= 4.0f * ulp)) {
+            if (bad < 5) ADD_FAILURE() << "i=" << i << " got " << result[i] << " expected " << want;
+            ++bad;
+        }
+    }
+    EXPECT_EQ(bad, 0u);
+}
+
 TEST(XpuVectorDeviceTests, integerDotRunsOnCpu) {
     Compiler compiler;
     auto module = compileForInspection(compiler, kDp4aSource);

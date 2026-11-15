@@ -2913,9 +2913,31 @@ private:
                 llvm::FixedVectorType::get(llvm::Type::getInt8Ty(c),
                                            lanes * 4), "as.bytes");
         }
+        if (name == "dotSum" && isFloat) {
+            auto* hvt = llvm::cast<llvm::FixedVectorType>(self->getType());
+            if (!hvt->getElementType()->isHalfTy() || (hvt->getNumElements() % 2) != 0)
+                unsupported("Vector.dotSum on floats needs a float16 vector with an even "
+                            "lane count");
+            if (args.size() != 2)
+                unsupported("Vector.dotSum expects (other, acc)");
+            llvm::Value* other = lowerExpr(args[0].expression);
+            llvm::Value* acc = lowerExpr(args[1].expression);
+            auto* ovt = llvm::dyn_cast<llvm::FixedVectorType>(other->getType());
+            if (ovt == nullptr || !ovt->getElementType()->isHalfTy()
+                    || ovt->getNumElements() != hvt->getNumElements())
+                unsupported("Vector.dotSum's operands must have the same float16 lane count");
+            if (!acc->getType()->isFloatTy())
+                unsupported("Vector.dotSum on float16 needs a float32 accumulator");
+            llvm::Value* run = acc;
+            for (unsigned p = 0; p < hvt->getNumElements(); p += 2) {
+                llvm::SmallVector<int, 2> m2 = {(int) p, (int) p + 1};
+                llvm::Value* a2 = builder.CreateShuffleVector(self, self, m2, "fdot2.a2");
+                llvm::Value* c2 = builder.CreateShuffleVector(other, other, m2, "fdot2.c2");
+                run = target.floatDot2x16(builder, mod, a2, c2, run);
+            }
+            return run;
+        }
         if (name == "dotSum") {
-            if (isFloat)
-                unsupported("Vector.dotSum is integer-only");
             if (args.size() != 2)
                 unsupported("Vector.dotSum expects (other, acc)");
             auto* wvt = llvm::dyn_cast<llvm::FixedVectorType>(self->getType());
@@ -8407,6 +8429,22 @@ llvm::Value* LoweringTarget::integerDot4x8(
     llvm::IRBuilderBase& b, llvm::Module& /*m*/, llvm::Value* a, llvm::Value* c,
     llvm::Value* acc, bool aSigned, bool cSigned) {
     return vecops::idotWiden(b, a, c, acc, aSigned, cSigned);
+}
+
+// Default f16 pair dot: fma(a1, c1, fma(a0, c0, acc)) on lanes widened to f32.
+llvm::Value* LoweringTarget::floatDot2x16(
+    llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* a, llvm::Value* c,
+    llvm::Value* acc) {
+    llvm::Type* f32 = llvm::Type::getFloatTy(m.getContext());
+    llvm::Function* fma = llvm::Intrinsic::getOrInsertDeclaration(
+        &m, llvm::Intrinsic::fma, {f32});
+    llvm::Value* run = acc;
+    for (unsigned i = 0; i < 2; ++i) {
+        llvm::Value* x = b.CreateFPExt(b.CreateExtractElement(a, i), f32, "fdot2.a");
+        llvm::Value* y = b.CreateFPExt(b.CreateExtractElement(c, i), f32, "fdot2.c");
+        run = b.CreateCall(fma, {x, y, run}, "fdot2.fma");
+    }
+    return run;
 }
 
 // Default runtime lane read: a plain extractelement, which each backend

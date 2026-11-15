@@ -742,6 +742,28 @@ TEST(XpuReferenceInterpreter, vectorMethodsMatchTheCpuBackend) {
     EXPECT_EQ(compareOn<float>(p, ins, 1, shape(1, G)), "");
 }
 
+// cajeta-llm 15.2.21.4.3.8.1: float16 `dotSum` is one float32 fma a lane in lane order on both sides.
+TEST(XpuReferenceInterpreter, halfDotSumMatchesTheCpuBackend) {
+    Pair p(R"CJ(
+    @Kernel
+    public static void refHalfDot(KernelBuffer<float32> out, KernelBuffer<float32> x) {
+        uint32 g = KernelThread.globalIdX();
+        int64 o = (int64) g * 16L;
+        Vector<float32,8> fa = x.vload<8>(o);
+        Vector<float32,8> fb = x.vload<8>(o + 8L);
+        Vector<float16,8> a = fa.toF16();
+        Vector<float16,8> b = fb.toF16();
+        out[g] = a.dotSum(b, x[o] * 0.5f);
+    }
+)CJ", "refHalfDot");
+    const uint32_t G = 16;
+    std::vector<float> x(G * 16);
+    for (uint32_t i = 0; i < G * 16; ++i) x[i] = std::sin((float) i * 0.37f) * 3.0f;
+    std::vector<In> ins = {buffer(std::vector<float>(G)), buffer(x)};
+    // Bound: 0 ulp; the same fma chain on both sides.
+    EXPECT_EQ(compareOn<float>(p, ins, 0, shape(1, G)), "");
+}
+
 TEST(XpuReferenceInterpreter, mathMatchesTheCpuBackendWithinItsBound) {
     Pair p(R"CJ(
     @Kernel

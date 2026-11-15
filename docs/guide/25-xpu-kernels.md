@@ -56,6 +56,9 @@ Inside a kernel body:
 - The integer dot products `dotSum` (signed × signed) and `dotAccum`
   (unsigned × signed). See
   [IntegerDotProduct](../specification/gpu/IntegerDotProduct.md).
+- `dotSum` on an even-length `Vector<float16, N>` with a `float32`
+  accumulator: the products summed in float32, two lanes at a time. On AMD
+  GPUs that have it, each pair is one `v_dot2_f32_f16`.
 - `CooperativeMatrix<T,16,16,Use>` with `load`, `store`, `mma`, `fromWords`,
   and the epilogues `TileOps.scaledAccumI32`, `rank1Accum`,
   `scaledAccumInto`.

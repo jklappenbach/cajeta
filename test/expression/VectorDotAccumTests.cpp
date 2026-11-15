@@ -524,3 +524,60 @@ TEST(VectorDotAccumTests, dotSumCastsALiteralAccumulatorToInt32) {
         at = next;
     }
 }
+
+// cajeta-llm 15.2.21.4.3.8.1: `dotSum` on float16 lanes with a float32 accumulator, the products summed
+// in float32. Exact operands (quarters times odd integers), so any summation order gives `want`.
+const char* HALF_DOTSUM =
+    "package test;\n"
+    "public final class D {\n"
+    "    public static int32 run() {\n"
+    "        float16[] w #= heap float16[8];\n"
+    "        float16[] a #= heap float16[8];\n"
+    "        float32 want = 0.5f;\n"
+    "        int32 i = 0;\n"
+    "        while (i < 8) {\n"
+    "            w[i] = (float16) ((float32) (i - 3) * 0.25f);\n"
+    "            a[i] = (float16) ((float32) (2 * i + 1));\n"
+    "            want = want + (float32) w[i] * (float32) a[i];\n"
+    "            i = i + 1;\n"
+    "        }\n"
+    "        Vector<float16,8> wv = w.vload<8>(0);\n"
+    "        Vector<float16,8> av = a.vload<8>(0);\n"
+    "        float32 got = wv.dotSum(av, 0.5f);\n"
+    "        if (got != want) { return 2; }\n"
+    "        return 1;\n"
+    "    }\n"
+    "}\n";
+
+TEST(VectorDotAccumTests, halfDotSumSumsTheProductsInFloat32) {
+    EXPECT_EQ(runI32(HALF_DOTSUM), 1);
+}
+
+std::string dotSumErrorId(const std::string& body) {
+    std::string src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        float16[] h #= heap float16[8];\n"
+        "        float32[] f #= heap float32[8];\n" + body +
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+    } catch (cajeta::Exception& e) {
+        return e.getErrorId();
+    }
+    return "";
+}
+
+TEST(VectorDotAccumTests, halfDotSumRefusesAnIntegerAccumulatorAndFloat32Lanes) {
+    EXPECT_EQ(dotSumErrorId("        Vector<float16,8> v = h.vload<8>(0);\n"
+                            "        float32 d = v.dotSum(v, 0);\n"),
+              "CAJETA_ERROR_VECTOR_METHOD");
+    EXPECT_EQ(dotSumErrorId("        Vector<float32,8> v = f.vload<8>(0);\n"
+                            "        float32 d = v.dotSum(v, 0.0f);\n"),
+              "CAJETA_ERROR_VECTOR_METHOD");
+    EXPECT_EQ(dotSumErrorId("        Vector<float16,8> v = h.vload<8>(0);\n"
+                            "        float32 d = v.dotSum(v, 0.0f);\n"), "");
+}

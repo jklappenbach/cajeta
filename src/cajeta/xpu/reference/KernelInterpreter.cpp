@@ -2442,6 +2442,15 @@ private:
             for (auto& l : self.lanes) out.push_back(mkInt(et, a[0].lanes[l.i & 15].i));
             return vec(et, out);
         }
+        if (nm == "dotSum" && et.prim == Prim::F16) {
+            if (n % 2 || a.size() != 2 || a[0].k != Val::Vector || a[0].lanes.size() != n
+                    || a[0].t.prim != Prim::F16)
+                return bad("on float16 takes (float16 vector of the same length, float32)");
+            float acc = (float) convert(a[1], {Prim::F32, true}).f;
+            for (size_t i = 0; i < n; ++i)
+                acc = std::fma((float) self.lanes[i].f, (float) a[0].lanes[i].f, acc);
+            return mkFloat(Prim::F32, acc);
+        }
         if (nm == "dotSum") {
             if (w != 8 || n % 4 || a.size() != 2 || a[0].k != Val::Vector
                     || a[0].lanes.size() != n)

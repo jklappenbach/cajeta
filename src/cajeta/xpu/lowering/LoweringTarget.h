@@ -416,6 +416,12 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* a,
             llvm::Value* c, llvm::Value* acc, bool aSigned, bool cSigned);
 
+        // <2 x half> . <2 x half> + f32 `acc` -> f32, the pair `dotSum` on float16. DEFAULT: two
+        // f32 fmas over the widened lanes, lane 0 first; AMD emits llvm.amdgcn.fdot2 where it exists.
+        virtual llvm::Value* floatDot2x16(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* a,
+            llvm::Value* c, llvm::Value* acc);
+
         // WIDE `dotAccum` for an ISA with a wide fused int8 dot (x86 vpdpbusd takes
         // 16 or 64 lanes at once, which the per-lane slicing destroys). nullptr = none.
         virtual llvm::Value* integerDotWide(

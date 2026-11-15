@@ -204,6 +204,43 @@ public:
         return b.CreateCall(f, {x, y, acc, b.getFalse()}, "dp4a");
     }
 
+    // True iff `arch` selects llvm.amdgcn.fdot2 (v_dot2_f32_f16, v_dot2c, or gfx11's v_dot2acc),
+    // checked against this LLVM's llc arch by arch. Unknown arches answer no.
+    static bool archHasFdot2(llvm::StringRef arch) {
+        unsigned num = 0;
+        if (!arch.starts_with("gfx") || arch.drop_front(3).getAsInteger(10, num))
+            return false;
+        if (num >= 900 && num < 1000) return num >= 906 && num != 940;
+        if (num >= 1000 && num < 1100) return num == 1011 || num == 1012 || num >= 1030;
+        return num >= 1100 && num < 1300;
+    }
+
+    // Same bundle rule as bundleHasDot4: usable only when every arch has it.
+    static bool bundleHasFdot2(llvm::Module& m) {
+        auto readFlag = [&](const char* name) -> llvm::StringRef {
+            if (auto* f = m.getModuleFlag(name))
+                if (auto* s = llvm::dyn_cast<llvm::MDString>(f)) return s->getString();
+            return {};
+        };
+        llvm::StringRef list = readFlag("cajeta.amdgpu.archlist");
+        if (list.empty()) return archHasFdot2(readFlag("cajeta.amdgpu.arch"));
+        llvm::SmallVector<llvm::StringRef, 4> arches;
+        list.split(arches, ',', -1, /*KeepEmpty=*/false);
+        for (auto a : arches)
+            if (!archHasFdot2(a.trim())) return false;
+        return !arches.empty();
+    }
+
+    // The native f16 pair dot, unclamped; the portable fma chain where an arch lacks it.
+    llvm::Value* floatDot2x16(llvm::IRBuilderBase& b, llvm::Module& m,
+                              llvm::Value* a, llvm::Value* c, llvm::Value* acc) override {
+        if (!bundleHasFdot2(m))
+            return LoweringTarget::floatDot2x16(b, m, a, c, acc);
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_fdot2);
+        return b.CreateCall(f, {a, c, acc, b.getFalse()}, "fdot2");
+    }
+
     // 16-entry int8 LUT by 4-bit index via v_perm_b32: perm the low (0-7) and high (8-15)
     // table halves with the 3-bit index, then a third perm picks per byte off bit 3. An
     // index the caller has visibly masked to 0-7 skips the high half and its select, which

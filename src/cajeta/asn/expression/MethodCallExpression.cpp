@@ -5563,6 +5563,49 @@ namespace cajeta {
                         CajetaType::of(next), vecT->getLanes());
                     return self;
                 }
+                if (methodCallName == "dotSum" && isFloat) {
+                    if (parameters.size() != 2) {
+                        throw Exception("Vector.dotSum expects (other, acc)",
+                                        "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    if (!vecT->getElementType()->getLlvmType()->isHalfTy()
+                            || (vecT->getLanes() % 2) != 0) {
+                        throw Exception(
+                            "Vector.dotSum on floats needs a float16 vector with "
+                            "an even lane count",
+                            "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    llvm::Value* other = loadIfLValue(module,
+                        parameters[0].expression->generateCode(module),
+                        parameters[0].expression);
+                    llvm::Value* acc = loadIfLValue(module,
+                        parameters[1].expression->generateCode(module),
+                        parameters[1].expression);
+                    auto* ovt = llvm::dyn_cast<llvm::FixedVectorType>(other->getType());
+                    if (ovt == nullptr || !ovt->getElementType()->isHalfTy()
+                            || ovt->getNumElements() != vecT->getLanes()) {
+                        throw Exception("Vector.dotSum's operands must have the "
+                                        "same float16 lane count",
+                                        "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    if (!acc->getType()->isFloatTy()) {
+                        throw Exception("Vector.dotSum on float16 needs a float32 "
+                                        "accumulator", "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    llvm::Type* f32 = acc->getType();
+                    llvm::Function* fma = llvm::Intrinsic::getOrInsertDeclaration(
+                        module->getLlvmModule(), llvm::Intrinsic::fma, {f32});
+                    llvm::Value* run = acc;
+                    for (unsigned i = 0; i < vecT->getLanes(); ++i) {
+                        llvm::Value* x = builder->CreateFPExt(
+                            builder->CreateExtractElement(self, i), f32, "fdot.a");
+                        llvm::Value* y = builder->CreateFPExt(
+                            builder->CreateExtractElement(other, i), f32, "fdot.c");
+                        run = builder->CreateCall(fma, {x, y, run}, "fdot.fma");
+                    }
+                    resolvedType = CajetaType::of("float32");
+                    return run;
+                }
                 if (methodCallName == "dotSum") {
                     if (parameters.size() != 2) {
                         throw Exception("Vector.dotSum expects (other, acc)",
