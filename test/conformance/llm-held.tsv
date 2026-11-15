@@ -163,7 +163,7 @@ q6kWmmaKernel	cuda	rel=5e-7	a * b + c fused since 65aa0f1e; worst 6.7e-08
 q80F32WaveMatVecKernel	cuda	rel=5e-7	a * b + c fused since 65aa0f1e; worst 1.5e-07
 q80Q8WaveMatVecKernel	cuda	rel=5e-7	a * b + c fused since 65aa0f1e; worst 3.3e-07
 qkvWaveMatVecKernel	cuda	rel=5e-7	a * b + c fused since 65aa0f1e; worst 3.4e-07
-rmsnormPackRowF32	cuda	rel=5e-7	a * b + c fused since 65aa0f1e; worst 1.3e-07
+rmsnormPackRowF32	cuda	ulps=2,rel=5e-7	a * b + c fused since 65aa0f1e; out worst 1.3e-07, packed worst 2 steps (the block scale d's low byte)
 routerBatchF32Kernel	cuda	rel=5e-7	a * b + c fused since 65aa0f1e; worst 2.4e-07
 routerF32MatVecKernel	cuda	rel=5e-7	a * b + c fused since 65aa0f1e; worst 2.4e-07
 routerTopKWaveKernel	cuda	rel=5e-7	a * b + c fused since 65aa0f1e; worst 4.9e-08
