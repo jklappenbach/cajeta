@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.53.7 (2026-11-15)
+
+- **`Vector<float16, N>.dotSum(other, float32 acc)` sums half products in float32.** N must be even. On AMD arches that have it (gfx906, 908, 90a, 942, 950, gfx1011, 1012, gfx103x, gfx11xx, gfx12xx) each lane pair is one `v_dot2_f32_f16`; elsewhere, on the host and in the reference interpreter it is two float32 fmas in lane order. The AMD instruction is not correctly rounded on gfx1151 (an exact 3.5 came back 3.4999998), so a device result may differ from the cpu's in the last bits. cajeta-llm's batched f16 column kernel uses it (`VectorDotAccumTests`, `XpuVectorDeviceTests`).
+- **A String cast keeps an owned call result's title, and `String.clone()` returns `#String`.** `f((String) h.clone())` to a `#String` formal leaked the clone on every call (87.6 MB peak over 200k calls), because the cast hid the result's String-ness from ownership classification. The cast now carries it, and `f(h.clone())` and `f(#h.clone())` reach a `#String` formal without a cast; both were overload failures before (`CastArgOwnershipTests`).
+- **An unrolled GEMM tile no longer spills on amdgpu.** LLVM's MachineSink moved every FMA of an unrolled K loop past the end-of-pass barrier while the shared-tile loads stayed ahead of it, so the operands were all live at once: cajeta-ml's five unrolled tiles spilled 460 to 516 bytes at 256 VGPRs on gfx1151. The amdgpu backend now turns the pass off for its own codegen, scoped and restored; the five build at 121 to 130 VGPRs and no other kernel changes (`AmdgpuUnrolledTileSinkTests`).
+- **Large cpu kernel buffers are advised for transparent huge pages.** On Linux a cpu `KernelBuffer` of 2 MiB or more is `madvise`d `MADV_HUGEPAGE`, since THP is madvise-only on most distributions and decode streamed its weight slabs on 4 KiB pages. `CAJETA_XPU_CPU_HUGEPAGES=0` turns it off (`XpuCpuBufferAlign`).
+
 ## 0.53.6 (2026-11-12)
 
 - **`@Unfused` holds on vulkan.** On vulkan the driver compiles the SPIR-V and fuses a multiply into an add on its own unless the instruction says `NoContraction`, so an `@Unfused` kernel's results there were whatever the driver chose. A Mesa upgrade on an AMD Strix Halo box (26.0.8 to 26.2.6) moved cajeta-llm's bit-identical results by a few ulps with byte-identical SPIR-V. An `@Unfused` kernel's float multiplies, adds and subtracts now carry `NoContraction`, so its results stay the same from one driver version to the next. Measured there on cajeta-llm's 8B Q4_K_M, decode is unchanged and single-sequence prefill is up to 0.8% slower (`XpuFuseByDefaultTests`).
