@@ -4965,6 +4965,7 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
         if (!lhsExpr->getResolvedType()) {
             lhsExpr->resolveTypes(module);
         }
+        llvm::Value* rawLhs = children[0]->generateCode(module);
         CajetaTypePtr lhsType = lhsExpr->getResolvedType();
 
         std::string targetCanon = type->toCanonical();
@@ -4991,8 +4992,7 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
         bool needObj = wantRuntime || wantBounded || !pattern.empty();
         llvm::Value* objPtr = nullptr;
         if (needObj) {
-            llvm::Value* raw = children[0]->generateCode(module);
-            objPtr = loadIfLValue(module, raw, lhsExpr);
+            objPtr = loadIfLValue(module, rawLhs, lhsExpr);
             // An interface-typed lhs points at the fat body `{ data, vtable, kind }`; strip to
             // the data pointer before any runtime type question or pattern binding.
             auto lhsIfaceClass = dynamic_pointer_cast<CajetaClass>(lhsType);
@@ -5024,8 +5024,6 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
                 phi->addIncoming(data, loadBb);
                 objPtr = phi;
             }
-        } else {
-            children[0]->generateCode(module);
         }
 
         llvm::Value* matchBit;
