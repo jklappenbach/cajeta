@@ -80,16 +80,25 @@ Use cases:
 
 ### 2.2 One optimizer launch per layer
 
-A layer's parameters, their moments and their gradients live in one flat
-arena per layer, so AdamW or SGD updates the whole layer in one launch, with
-the anchor term and the clip's scale applied in the same pass. (Per-tensor
-buffer arrays would also give one launch, but a launch that takes a buffer
-array is never deferred, so it would break the graph.)
+One AdamW or SGD launch updates a whole layer: the kernel takes up to four
+tensors as fixed arguments, each with its parameter, moments, gradient, size
+and bias corrections, and applies the clip's device scale in the same pass.
+A Linear layer has two parameters, so every cut-1 layer fits. Fixed arguments
+keep the launch inside the deferred queue's limits, so it lands in the graph;
+a launch over a buffer array would not (the runtime never defers one).
+Parameters keep their own tensors. (Amended 2026-11-14, Julian: the earlier
+text put each layer in one flat arena, which would have taken storage away
+from the parameters and the modules that move them.)
+
+The L2-SP anchor term stays on the tape. Each layer's reported loss includes
+the anchor penalty, so moving its gradient into the optimizer would also mean
+reducing that penalty in the kernel; anchors are off by default and cost
+nothing when off.
 
 Use cases:
 1. A two-Linear layer stack takes two optimizer launches a step.
-2. An anchored layer adds `lambda (W - W0)^2`'s gradient in the update, with
-   no launch of its own.
+2. A clipped layer's update applies the clip's scale in the same launch, with
+   no scaling launch of its own.
 3. A frozen layer launches nothing.
 
 ### 2.3 The loss head, in two class regimes
