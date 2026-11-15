@@ -129,6 +129,30 @@ chunk:
 - **7.4** When peak host memory is measured at ctx 4096, it is at most 1.25 of
   llama.cpp's CPU peak.
 
+## 9. A new x86 generation (approved by Julian 2026-11-15)
+
+The kernels in this spec were measured on proton's Zen 5 (Strix Halo). A new
+part, Zen 6 first, should get what it offers without a rewrite, and what it
+offers should be measured on it rather than assumed from proton.
+
+- **9.1** When the engine is built natively on a new x86 part, every extension
+  the bundled LLVM knows is enabled from the host's feature bits, even before
+  LLVM names the part, and the cpu legs and census pass on that build.
+- **9.2** When a portable build runs on a part whose extensions have no cpu
+  level yet, it takes the highest level the part meets (v4 on an AVX-512
+  part) and runs correctly.
+- **9.3** When a new extension carries an instruction an existing lowering hook
+  can use, such as a half-pair dot into float32 or a signed int8 dot, the hook
+  emits it where the target has it and keeps the fallback elsewhere, and the
+  kernel's host-reference test holds both ways.
+- **9.4** When a cpu level is added, the portable build emits a copy for it,
+  the dispatcher selects it from the feature bits, and
+  `CAJETA_XPU_CPU_LEVEL` pins any level for an A/B.
+- **9.5** When the bar (7.1 to 7.3) is measured on the new part, llama.cpp is
+  built and measured on the same box in the same hour. A choice measured on
+  proton (split counts, interleave width, kernel variant) is measured again
+  there before it is kept.
+
 ## 8. Decisions
 
 Settled with the approval, 2026-10-28:
