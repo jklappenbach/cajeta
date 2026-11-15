@@ -1,6 +1,6 @@
 # Kernelized SPELA — spec
 
-Status: **draft** 2026-11-14 (Phoenix, with Julian). Plan:
+Status: **approved** 2026-11-14 (Julian); drafted by Phoenix. Plan:
 [`agents/spela-kernels-plan.md`](../agents/spela-kernels-plan.md).
 Layer: `dev.cajeta.ml.kernels` and `dev.cajeta.ml.train`, with one runtime
 change in `cajeta.xpu`. Research and decisions:
