@@ -347,3 +347,63 @@ TEST(XpuRouteRefusal, namingARefusalCostsNothingOnTheTakenPath) {
         "        return 0;\n");
     EXPECT_EQ(rc, 0);
 }
+
+// spela-kernels 1.1.1 — the training regimes. A row registered under TrainStep
+// (a layer's forward, weight gradient and update) or TrainLoss (a loss head) is
+// admitted for a query of its own regime and refused by the Regime clause for any
+// other, and the one-line form names the query's regime.
+TEST(XpuRouteRefusal, aTrainingRegimeAdmitsItsOwnQueriesAndRefusesTheRest) {
+    int rc = runGated(
+        "        t.register(heap V(\"spela-linear-step\", Regime.TrainStep, 12,\n"
+        "            10, 1, 0, null, false));\n"
+        "        t.register(heap V(\"spela-head\", Regime.TrainLoss, 13,\n"
+        "            10, 1, 0, null, false));\n"
+        "        WQuery step = heap WQuery(Regime.TrainStep, 12, 1024);\n"
+        "        if (t.whyNotAdmissible(step) != null) { return 1; }\n"
+        "        WQuery loss = heap WQuery(Regime.TrainLoss, 13, 1024);\n"
+        "        if (t.whyNotAdmissible(loss) != null) { return 2; }\n"
+        "        WQuery crossed = heap WQuery(Regime.TrainLoss, 12, 1024);\n"
+        "        RouteRefusal a #= t.whyNotAdmissible(crossed);\n"
+        "        if (a == null) { return 3; }\n"
+        "        if (a.clause != RouteClause.Regime) { return 4; }\n"
+        "        String at #= a.text();\n"
+        "        if (!at.contains(\"TrainLoss\")) { return 5; }\n"
+        "        WQuery decode = heap WQuery(Regime.DecodeRow, 13, 1024);\n"
+        "        RouteRefusal b #= t.whyNotAdmissible(decode);\n"
+        "        if (b == null) { return 6; }\n"
+        "        if (b.clause != RouteClause.Regime) { return 7; }\n"
+        "        WQuery back = heap WQuery(Regime.TrainStep, 13, 1024);\n"
+        "        RouteRefusal c #= t.whyNotAdmissible(back);\n"
+        "        if (c == null) { return 8; }\n"
+        "        if (c.clause != RouteClause.Regime) { return 9; }\n"
+        "        String ct #= c.text();\n"
+        "        if (!ct.contains(\"TrainStep\")) { return 10; }\n"
+        "        return 0;\n");
+    EXPECT_EQ(rc, 0);
+}
+
+// spela-kernels 1.1.2 — the enum is append-only: the four regimes keep their
+// ordinals, the training regimes follow them, and each prints its own name.
+TEST(XpuRouteRefusal, theTrainingRegimesAppendAfterTheExistingFour) {
+    int rc = runGated(
+        "        Regime r0 = Regime.DecodeRow;\n"
+        "        if ((int32) r0 != 0) { return 1; }\n"
+        "        Regime r1 = Regime.PrefillBatch;\n"
+        "        if ((int32) r1 != 1) { return 2; }\n"
+        "        Regime r2 = Regime.Bind;\n"
+        "        if ((int32) r2 != 2) { return 3; }\n"
+        "        Regime r3 = Regime.FusedTail;\n"
+        "        if ((int32) r3 != 3) { return 4; }\n"
+        "        Regime r4 = Regime.TrainStep;\n"
+        "        if ((int32) r4 != 4) { return 5; }\n"
+        "        Regime r5 = Regime.TrainLoss;\n"
+        "        if ((int32) r5 != 5) { return 6; }\n"
+        "        String a #= r3.toName();\n"
+        "        if (!a.equals(\"FusedTail\")) { return 7; }\n"
+        "        String b #= r4.toName();\n"
+        "        if (!b.equals(\"TrainStep\")) { return 8; }\n"
+        "        String c #= r5.toName();\n"
+        "        if (!c.equals(\"TrainLoss\")) { return 9; }\n"
+        "        return 0;\n");
+    EXPECT_EQ(rc, 0);
+}

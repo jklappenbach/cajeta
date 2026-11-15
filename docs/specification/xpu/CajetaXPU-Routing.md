@@ -35,7 +35,7 @@ place of the sixteen booleans it resolves at bind today.
 | field | meaning |
 |---|---|
 | `name()` | what a refusal, a route record or the audit prints |
-| `regime()` | `DecodeRow` (M = 1) \| `PrefillBatch` (M ≥ tile) \| `Bind` \| `FusedTail` |
+| `regime()` | `DecodeRow` (M = 1) \| `PrefillBatch` (M ≥ tile) \| `Bind` \| `FusedTail` \| `TrainStep` (a layer's forward, weight gradient and update) \| `TrainLoss` (a loss head) |
 | `format()` | the ONE format this variant serves, an opaque `int32` to the layer |
 | `shapeRefusal(query)` | the static half: null when the shape fits, else the gate that refused |
 | `needs()` | the `Capability` list the device must satisfy, stored, so asking costs no allocation |

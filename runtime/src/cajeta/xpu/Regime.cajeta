@@ -14,13 +14,17 @@ public enum Regime {
     DecodeRow,      // 0 — one row, M = 1
     PrefillBatch,   // 1 — M at or above a tile
     Bind,           // 2 — the resident layout chosen when data is bound
-    FusedTail;      // 3 — a route that fuses what two rows would do separately
+    FusedTail,      // 3 — a route that fuses what two rows would do separately
+    TrainStep,      // 4 — a layer's training step: its forward, weight gradient and update
+    TrainLoss;      // 5 — a loss head: the loss and its output's gradient
 
     /** The word a diagnostic record prints for this regime. */
     public #String toName() {
         if (this == Regime.DecodeRow) { return "DecodeRow"; }
         if (this == Regime.PrefillBatch) { return "PrefillBatch"; }
         if (this == Regime.Bind) { return "Bind"; }
-        return "FusedTail";
+        if (this == Regime.FusedTail) { return "FusedTail"; }
+        if (this == Regime.TrainStep) { return "TrainStep"; }
+        return "TrainLoss";
     }
 }
