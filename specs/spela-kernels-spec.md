@@ -192,6 +192,10 @@ Linear head of 8,192 classes over 4,096 rows of width 512 from a fixed random
 input, with a torch twin of the same local loss. Both are read against
 torch, interleaved, by medians.
 
+The cpu variant is read the same way against torch cpu. It runs 2.4x behind
+on proton's 16 cores (2026-11-14), and closing that is part of this work
+(plan Unit 10).
+
 ## 5. The second cut: conv
 
 Conv layers (Conv2d, ReLU, MaxPool2d blocks) need families of their own:
