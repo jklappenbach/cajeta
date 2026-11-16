@@ -1,7 +1,7 @@
 # host-vector-width — the vector register width host code is built for
 
-> Status: **active**, approved by Julian 2026-11-15 ("Add a host vector-width
-> query"; decision below). Plan: [host-simd](../agents/host-simd-plan.md).
+> Status: **closed 2026-11-16** (shipped in v0.53.9), was **active**, approved by Julian 2026-11-15 ("Add a host vector-width
+> query"; decision below). Plan: [host-simd](../../agents/archive/host-simd-plan.md).
 
 ## 1. Definition
 

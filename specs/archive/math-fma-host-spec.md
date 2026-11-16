@@ -1,8 +1,8 @@
 # math-fma-host — `Math.fma` and the element-wise forms on the host (defect spec)
 
-> Status: **active**, scope widened and approved by Julian 2026-11-15 ("Add the
+> Status: **closed 2026-11-16** (shipped in v0.53.9), was **active**, scope widened and approved by Julian 2026-11-15 ("Add the
 > Math.fma work"; decisions below). Filed 2026-10-25 by benchmark-reference
-> unit 5 on v0.46.3. Plan: [host-simd](../agents/host-simd-plan.md).
+> unit 5 on v0.46.3. Plan: [host-simd](../../agents/archive/host-simd-plan.md).
 
 ## 1. Definition
 
