@@ -1,6 +1,7 @@
 // In-process JIT host: compile every .cajeta under a source root, merge in the
 // embedded runtime + stdlib, build an LLJIT, and run a chosen entry — plus the
 // debug-session variant that runs the entry on a controller-wired thread.
+#include "cajeta/compile/Optimizer.h"
 #include "cajeta/jit/CajetaJitHost.h"
 #include "cajeta/xpu/core/XpuAttributes.h"
 #include "cajeta/xpu/core/KernelManifest.h"
@@ -690,6 +691,17 @@ bool buildLLJITFromModules(const std::vector<ModuleBC>& modules,
             cajeta::jit::cantFail(
                 mainDylib.define(llvm::orc::absoluteSymbols(std::move(winSymMap))));
         }
+    }
+
+    // host-vector-width: modules added here skip the optimizer, so the JIT answers
+    // Cajeta.hostVectorBits() itself, for the host it compiles for.
+    {
+        llvm::orc::SymbolMap hv;
+        hv[out.jit->mangleAndIntern(cajeta::kHostVectorBitsSymbol)] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&cajeta_jit_host_vector_bits),
+                llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable);
+        cajeta::jit::cantFail(mainDylib.define(llvm::orc::absoluteSymbols(std::move(hv))));
     }
 
     if (!liveNativeLibs.empty()) {

@@ -61,4 +61,6 @@ parse.
   `a*0.5+1.0` substitute.
 - The scalar float32 host forms already in place (`sqrt` and the rest) are
   unchanged: they still compute through float64, as today.
-- The two guide errors are fixed.
+- The two guide errors are fixed. The lambda one was fixed before this unit:
+  `(int32) -> int32 mul = (x) -> x * k;` compiles and runs on main at
+  d0f58bc75 (measured 2026-11-15), so only the `instanceof` paragraph changed.

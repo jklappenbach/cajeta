@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`Math.fma` works in host code, at its operands' own precision.** A host call failed with `CAJETA_ERROR_MEMBER_NOT_FOUND`, although the Math class listed `fma` as native everywhere. It now lowers to `llvm.fma`: three `float32` values make a float32 fma and three `float64` values a float64 one, rather than widening to float64 first and rounding twice. Host code never fuses `a * b + c` on its own, so this is how a host loop asks for a fused multiply-add. Mixed or non-floating operands are `CAJETA_ERROR_MATH_FMA_OPERANDS` (`HostMathFmaTests`).
+- **`Math.fma` and the native forms take a `Vector<T,N>` in host code.** `fma`, `sqrt`, `abs`, `floor`, `ceil`, `trunc` and `round` on a floating Vector return the same Vector type, lane by lane. Before, the host path widened every argument to float64, and `Math.sqrt` on a `Vector<float32,4>` stopped the LLVM backend ("Cannot select"). `round` keeps `floor(x + 0.5)` in the lane type, and scalar `trunc` is new on the host too. The transcendentals on a Vector stay kernel-only (`HostMathVectorTests`).
+- **`Cajeta.hostVectorBits()` answers the vector register width the code is compiled for.** It reads 128 for SSE or NEON, 256 for AVX2 and 512 for AVX-512, so host code holding several Vector accumulators can size its register tile. The answer is the build's, not the running CPU's: an `x86-64-v2` build reads 128 on a machine with AVX2. It resolves when a module is emitted as code, so an archive keeps the query and answers for the build that consumes it, and a branch on it folds away. Under `jit-run` and in a notebook the JIT answers for the host it compiles for (`HostVectorBitsTests`).
+- **The guide says `instanceof` tests the runtime type**, which it does.
+
 ## 0.53.7 (2026-11-15)
 
 - **`cajeta.xpu.Regime` has two training regimes, `TrainStep` and `TrainLoss`.** A route table can now hold training rows: a layer's forward, weight gradient and update under `TrainStep`, and a loss head under `TrainLoss`. A refusal and the audit print them by name. The enum is append-only, so the four inference regimes keep their ordinals. cajeta-ml's kernelized SPELA trainer will route its layer steps and loss heads through them (`XpuRouteRefusal.aTrainingRegimeAdmitsItsOwnQueriesAndRefusesTheRest`, `theTrainingRegimesAppendAfterTheExistingFour`).

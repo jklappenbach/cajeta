@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <vector>
 
 #include "CompilerMode.h"   // OptLevel
@@ -27,6 +28,26 @@ namespace cajeta {
     // Run the standard per-module pipeline at `level` over `m`; a no-op at O0.
     // `tm` may be null, but O2/O3 vectorization cannot cost-model without it.
     void optimizeModule(llvm::Module& m, llvm::TargetMachine* tm, OptLevel level);
+
+    // host-vector-width: replace each call of __cajeta_host_vector_bits in `m` with
+    // the fixed-width vector register width its function is compiled for under `tm`,
+    // or under a host TargetMachine when `tm` is null (the JIT compiles for the host).
+    // Both optimize entry points run it; an archive never reaches them, so it keeps
+    // the call for its consumer to answer.
+    void resolveHostVectorBits(llvm::Module& m, llvm::TargetMachine* tm);
+
+    // The same answer for a host-targeted JIT that never runs the optimizer: the width
+    // a function compiled for this machine's CPU and features has. Cached.
+    int32_t hostVectorBitsOfHost();
+
+    // The symbol name the Cajeta.hostVectorBits() intrinsic calls.
+    inline constexpr const char* kHostVectorBitsSymbol = "__cajeta_host_vector_bits";
+}
+
+// The JIT hosts' definition of kHostVectorBitsSymbol: hostVectorBitsOfHost().
+extern "C" int32_t cajeta_jit_host_vector_bits();
+
+namespace cajeta {
 
     // Run the ThinLTO PRE-LINK half at `level`: local optimization only, plus
     // AlwaysInliner even at O0. Pair with a bitcode-with-summary write.

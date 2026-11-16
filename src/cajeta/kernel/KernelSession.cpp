@@ -1,3 +1,4 @@
+#include "cajeta/compile/Optimizer.h"
 #include "cajeta/kernel/KernelSession.h"
 #include "cajeta/jit/CajetaJitWinSymbols.h"
 
@@ -430,6 +431,19 @@ std::unique_ptr<KernelSession> KernelSession::create(const SessionOptions& optio
                 return setErr("windows symbol bridge define failed: "
                               + llvm::toString(std::move(err)));
             }
+        }
+    }
+
+    // host-vector-width: cells skip the optimizer, so the session answers
+    // Cajeta.hostVectorBits() itself, for the host it compiles for.
+    {
+        llvm::orc::SymbolMap hv;
+        hv[impl.jit->mangleAndIntern(cajeta::kHostVectorBitsSymbol)] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&cajeta_jit_host_vector_bits),
+                llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable);
+        if (auto err = mainJD.define(llvm::orc::absoluteSymbols(std::move(hv)))) {
+            return setErr("host vector width define failed: " + llvm::toString(std::move(err)));
         }
     }
 

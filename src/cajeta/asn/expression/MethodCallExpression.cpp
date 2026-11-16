@@ -4051,17 +4051,102 @@ namespace cajeta {
                     return v;
                 };
                 llvm::Module* lm = module->getLlvmModule();
-                if (methodCallName == "abs" && parameters.size() == 1) {
-                    llvm::Value* x = loadArg(0);
-                    if (x->getType()->isFloatingPointTy()) {
-                        llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
-                            lm, llvm::Intrinsic::fabs, {x->getType()});
-                        return builder->CreateCall(fn, {x});
+                if (methodCallName == "fma") {
+                    // One fused multiply-add at the operands' own type, scalar or
+                    // Vector<T,N> lane by lane. Unlike the forms below it does not widen
+                    // to float64: rounding twice would not be an fma (math-fma-host).
+                    if (parameters.size() != 3) {
+                        throw locatedException(getSourceLine(), getSourceColumn() + 1,
+                            "Math.fma takes three values, a * b + c; this call has "
+                                + std::to_string(parameters.size()),
+                            "CAJETA_ERROR_MATH_FMA_OPERANDS");
                     }
-                    x = toI64(x);
+                    llvm::Value* a = loadArg(0);
+                    llvm::Value* b = loadArg(1);
+                    llvm::Value* c = loadArg(2);
+                    llvm::Type* t = a->getType();
+                    const char* which = nullptr;
+                    if (!t->isFPOrFPVectorTy()) which = "first";
+                    else if (b->getType() != t) which = "second";
+                    else if (c->getType() != t) which = "third";
+                    if (which) {
+                        throw locatedException(getSourceLine(), getSourceColumn() + 1,
+                            std::string("Math.fma takes three floating values of one type "
+                                "(float32, float64, or one Vector<T,N> of them); the ")
+                                + which + " operand differs",
+                            "CAJETA_ERROR_MATH_FMA_OPERANDS");
+                    }
                     llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
-                        lm, llvm::Intrinsic::abs, {i64Ty});
-                    return builder->CreateCall(fn, {x, llvm::ConstantInt::getFalse(llvmCtx)});
+                        lm, llvm::Intrinsic::fma, {t});
+                    // typed as its operands, so the result can be an argument
+                    // (overload resolution reads the resolved type)
+                    if (auto e0 = dynamic_pointer_cast<Expression>(parameters[0].expression)) {
+                        resolvedType = e0->getResolvedType();
+                    }
+                    return builder->CreateCall(fn, {a, b, c});
+                }
+                // The native element-wise forms on a floating Vector<T,N> keep its type,
+                // lane by lane; widening a vector to float64 stopped the backend
+                // (math-fma-host). Scalars keep the float64 forms below.
+                static const std::set<std::string> vectorNative = {
+                    "sqrt", "abs", "floor", "ceil", "trunc", "round"};
+                if (parameters.size() == 1 && vectorNative.count(methodCallName)) {
+                    llvm::Value* x = loadArg(0);
+                    if (x->getType()->isVectorTy() && x->getType()->isFPOrFPVectorTy()) {
+                        llvm::Type* vt = x->getType();
+                        if (auto e0 = dynamic_pointer_cast<Expression>(parameters[0].expression)) {
+                            resolvedType = e0->getResolvedType();
+                        }
+                        auto lanewise = [&](llvm::Intrinsic::ID id, llvm::Value* v) {
+                            llvm::Function* fn =
+                                llvm::Intrinsic::getOrInsertDeclaration(lm, id, {vt});
+                            return builder->CreateCall(fn, {v});
+                        };
+                        if (methodCallName == "sqrt") return lanewise(llvm::Intrinsic::sqrt, x);
+                        if (methodCallName == "abs") return lanewise(llvm::Intrinsic::fabs, x);
+                        if (methodCallName == "floor") return lanewise(llvm::Intrinsic::floor, x);
+                        if (methodCallName == "ceil") return lanewise(llvm::Intrinsic::ceil, x);
+                        if (methodCallName == "trunc") return lanewise(llvm::Intrinsic::trunc, x);
+                        // round: Java's floor(x + 0.5) per lane, in the lane type, since a
+                        // lane-wise int64 has no Vector to land in
+                        llvm::Value* half = llvm::ConstantFP::get(vt, 0.5);
+                        return lanewise(llvm::Intrinsic::floor, builder->CreateFAdd(x, half));
+                    }
+                    if (methodCallName == "abs") {
+                        if (x->getType()->isFloatingPointTy()) {
+                            llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
+                                lm, llvm::Intrinsic::fabs, {x->getType()});
+                            return builder->CreateCall(fn, {x});
+                        }
+                        x = toI64(x);
+                        llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
+                            lm, llvm::Intrinsic::abs, {i64Ty});
+                        return builder->CreateCall(fn, {x, llvm::ConstantInt::getFalse(llvmCtx)});
+                    }
+                    if (methodCallName == "trunc") {
+                        llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
+                            lm, llvm::Intrinsic::trunc, {f64Ty});
+                        return builder->CreateCall(fn, {toF64(x)});
+                    }
+                    if (methodCallName == "sqrt") {
+                        llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
+                            lm, llvm::Intrinsic::sqrt, {f64Ty});
+                        return builder->CreateCall(fn, {toF64(x)});
+                    }
+                    if (methodCallName == "floor" || methodCallName == "ceil") {
+                        llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(lm,
+                            methodCallName == "floor" ? llvm::Intrinsic::floor : llvm::Intrinsic::ceil,
+                            {f64Ty});
+                        return builder->CreateCall(fn, {toF64(x)});
+                    }
+                    // round: Java's Math.round(double), (long)floor(x + 0.5), ties toward
+                    // +inf, NOT llvm.round, which ties away from zero: they disagree on
+                    // negative .5 values (round(-2.5) is -2 in Java, -3 through llvm.round).
+                    llvm::Value* xr = toF64(x);
+                    llvm::Value* shifted = builder->CreateFAdd(xr, llvm::ConstantFP::get(f64Ty, 0.5));
+                    llvm::Function* fl = llvm::Intrinsic::getOrInsertDeclaration(
+                        lm, llvm::Intrinsic::floor, {f64Ty});
+                    return builder->CreateFPToSI(builder->CreateCall(fl, {shifted}), i64Ty);
                 }
                 if ((methodCallName == "max" || methodCallName == "min")
                         && parameters.size() == 2) {
@@ -4084,12 +4169,6 @@ namespace cajeta {
                     llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(lm, id, {i64Ty});
                     return builder->CreateCall(fn, {a, b});
                 }
-                if (methodCallName == "sqrt" && parameters.size() == 1) {
-                    llvm::Value* x = toF64(loadArg(0));
-                    llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
-                        lm, llvm::Intrinsic::sqrt, {f64Ty});
-                    return builder->CreateCall(fn, {x});
-                }
                 if (methodCallName == "pow" && parameters.size() == 2) {
                     llvm::Value* x = toF64(loadArg(0));
                     llvm::Value* y = toF64(loadArg(1));
@@ -4103,30 +4182,6 @@ namespace cajeta {
                     llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
                         lm, llvm::Intrinsic::atan2, {f64Ty});
                     return builder->CreateCall(fn, {y, x});
-                }
-                if (methodCallName == "floor" && parameters.size() == 1) {
-                    llvm::Value* x = toF64(loadArg(0));
-                    llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
-                        lm, llvm::Intrinsic::floor, {f64Ty});
-                    return builder->CreateCall(fn, {x});
-                }
-                if (methodCallName == "ceil" && parameters.size() == 1) {
-                    llvm::Value* x = toF64(loadArg(0));
-                    llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
-                        lm, llvm::Intrinsic::ceil, {f64Ty});
-                    return builder->CreateCall(fn, {x});
-                }
-                if (methodCallName == "round" && parameters.size() == 1) {
-                    // Java's Math.round(double) is (long)floor(x + 0.5), ties toward +inf, NOT
-                    // llvm.round, which ties away from zero: they disagree on negative .5 values
-                    // (round(-2.5) is -2 in Java, -3 through llvm.round).
-                    llvm::Value* x = toF64(loadArg(0));
-                    llvm::Value* half = llvm::ConstantFP::get(f64Ty, 0.5);
-                    llvm::Value* shifted = builder->CreateFAdd(x, half);
-                    llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
-                        lm, llvm::Intrinsic::floor, {f64Ty});
-                    llvm::Value* rounded = builder->CreateCall(fn, {shifted});
-                    return builder->CreateFPToSI(rounded, i64Ty);
                 }
                 struct UnaryFn { const char* name; llvm::Intrinsic::ID id; };
                 static const UnaryFn unaryFns[] = {
@@ -4180,6 +4235,26 @@ namespace cajeta {
                     }
                     return loadIfLValue(module, v, ast);
                 };
+                if (ns == "Cajeta" && methodCallName == "hostVectorBits") {
+                    // The vector register width the code is compiled for, answered when the
+                    // module is emitted as code (resolveHostVectorBits) or by the JIT host;
+                    // an archive keeps the call for its consumer (host-vector-width).
+                    if (!parameters.empty()) {
+                        throw locatedException(getSourceLine(), getSourceColumn() + 1,
+                            "Cajeta.hostVectorBits() takes no arguments",
+                            "CAJETA_ERROR_HOST_VECTOR_BITS_ARGS");
+                    }
+                    llvm::Module* lm = module->getLlvmModule();
+                    llvm::Function* fn = lm->getFunction(cajeta::kHostVectorBitsSymbol);
+                    if (!fn) {
+                        fn = llvm::Function::Create(llvm::FunctionType::get(i32Ty, false),
+                            llvm::Function::ExternalLinkage, cajeta::kHostVectorBitsSymbol, lm);
+                        fn->setDoesNotThrow();
+                        fn->setDoesNotAccessMemory();
+                        fn->setWillReturn();
+                    }
+                    return builder->CreateCall(fn, {});
+                }
                 if (ns == "Cajeta" && methodCallName == "dropCount" && parameters.empty()) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_drop_count_get");
                     return builder->CreateCall(fn, {});

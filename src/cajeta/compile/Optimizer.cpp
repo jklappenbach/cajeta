@@ -11,6 +11,12 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/StandardInstrumentations.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/Analysis/TargetTransformInfo.h"
+#include "llvm/MC/TargetRegistry.h"
+#include "llvm/Target/TargetOptions.h"
+#include "llvm/TargetParser/Host.h"
+#include "llvm/TargetParser/SubtargetFeature.h"
+#include "llvm/TargetParser/Triple.h"
 
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
@@ -538,7 +544,68 @@ bool timePassesWanted() {
     return on;
 }
 
+namespace {
+// A TargetMachine for this machine's CPU and features, what the JIT compiles for.
+std::unique_ptr<llvm::TargetMachine> hostTargetMachine() {
+    llvm::Triple triple(llvm::sys::getProcessTriple());
+    std::string err;
+    const llvm::Target* t = llvm::TargetRegistry::lookupTarget(triple, err);
+    if (!t) return nullptr;
+    llvm::SubtargetFeatures feats;
+    for (auto& kv : llvm::sys::getHostCPUFeatures()) feats.AddFeature(kv.getKey(), kv.getValue());
+    return std::unique_ptr<llvm::TargetMachine>(t->createTargetMachine(
+        triple, llvm::sys::getHostCPUName(), feats.getString(),
+        llvm::TargetOptions(), std::nullopt));
+}
+
+int32_t fixedVectorBits(llvm::TargetMachine& tm, const llvm::Function& f) {
+    llvm::TargetTransformInfo tti = tm.getTargetTransformInfo(f);
+    return (int32_t) tti.getRegisterBitWidth(
+        llvm::TargetTransformInfo::RGK_FixedWidthVector).getFixedValue();
+}
+} // namespace
+
+void resolveHostVectorBits(llvm::Module& m, llvm::TargetMachine* tm) {
+    llvm::Function* q = m.getFunction(kHostVectorBitsSymbol);
+    if (!q || q->use_empty()) return;
+    std::unique_ptr<llvm::TargetMachine> host;
+    if (!tm) {
+        host = hostTargetMachine();
+        tm = host.get();
+        if (!tm) return;
+    }
+    for (llvm::User* u : llvm::make_early_inc_range(q->users())) {
+        auto* call = llvm::dyn_cast<llvm::CallInst>(u);
+        if (!call || call->getCalledFunction() != q) continue;
+        int32_t bits = fixedVectorBits(*tm, *call->getFunction());
+        call->replaceAllUsesWith(llvm::ConstantInt::get(call->getType(), bits));
+        call->eraseFromParent();
+    }
+    if (q->use_empty()) q->eraseFromParent();
+}
+
+int32_t hostVectorBitsOfHost() {
+    static int32_t cached = [] {
+        std::unique_ptr<llvm::TargetMachine> tm = hostTargetMachine();
+        if (!tm) return (int32_t) 128;
+        llvm::LLVMContext ctx;
+        llvm::Module mod("host-vector-bits", ctx);
+        mod.setDataLayout(tm->createDataLayout());
+        auto* fty = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), false);
+        auto* f = llvm::Function::Create(fty, llvm::Function::ExternalLinkage, "probe", mod);
+        return fixedVectorBits(*tm, *f);
+    }();
+    return cached;
+}
+
+} // namespace cajeta
+
+extern "C" int32_t cajeta_jit_host_vector_bits() { return cajeta::hostVectorBitsOfHost(); }
+
+namespace cajeta {
+
 void optimizeModule(llvm::Module& m, llvm::TargetMachine* tm, OptLevel level) {
+    resolveHostVectorBits(m, tm);
     if (level == OptLevel::O0) {
         // Still honor `alwaysinline` at O0: it is an attribute, not a transform, and takes
         // effect only when an AlwaysInlinerPass runs, which the O0 pipeline otherwise skips.
@@ -561,6 +628,7 @@ void optimizeModule(llvm::Module& m, llvm::TargetMachine* tm, OptLevel level) {
 }
 
 void optimizeModuleThinLTOPreLink(llvm::Module& m, llvm::TargetMachine* tm, OptLevel level) {
+    resolveHostVectorBits(m, tm);
     if (level == OptLevel::O0) {
         // Same as optimizeModule's O0 branch: run only the AlwaysInlinerPass.
         PassEnv env(tm);

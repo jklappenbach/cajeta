@@ -26,6 +26,11 @@ package cajeta.lang;
  * float32 h = Math.sqrt(x*x + y*y);
  * float32 m = Math.fma(a, b, c);        // fused multiply-add
  * ```
+ * `fma` rounds once, at its operands' own precision: three `float32` values make
+ * a float32 fma and three `float64` values a float64 one, in host code and in a
+ * kernel alike. Its operands must share one floating type. Host code never fuses
+ * `a * b + c` on its own, so `fma` is how a host loop asks for one. The other
+ * scalar forms compute through `float64` in host code.
  *
  * **Transcendentals (B2 increment 2):** `sin`, `cos`, `tan`, `asin`, `acos`,
  * `atan`, `atan2(y,x)`, `exp`, `exp2`, `log`, `log2`, `log10`, `pow(x,y)`,
@@ -49,6 +54,14 @@ package cajeta.lang;
  * Vector<float32,4> sq = Math.sqrt(v);    // element-wise sqrt
  * ```
  * (On AMD/NVIDIA the per-lane device-library call is scalarized automatically.)
+ *
+ * In host code the native forms (`sqrt`, `abs`, `floor`, `ceil`, `trunc`, `round`)
+ * and `fma` take a floating `Vector<T,N>` and return the same type, lane by lane;
+ * `round` keeps `floor(x + 0.5)` in the lane type. The transcendentals on a Vector
+ * are kernel-only.
+ * ```
+ * Vector<float32,16> acc = Math.fma(a, b, acc);   // sixteen fused lanes
+ * ```
  *
  * ## Precision: `@FastMath`
  *

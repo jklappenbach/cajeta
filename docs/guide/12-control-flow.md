@@ -113,7 +113,8 @@ boolean isInt = a instanceof int32;
 String tag = mixed instanceof float64 ? "f64" : "other";
 ```
 
-`instanceof` currently matches against the operand's static type. It does not
-yet walk the runtime class hierarchy for class types.
+`instanceof` tests the operand's runtime type. A class operand matches its own
+class and every class it extends, whatever its declared type, and a primitive
+operand matches its own type.
 
 Next: [Strings & formatting](13-strings.md).

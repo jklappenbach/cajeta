@@ -65,6 +65,26 @@ public final class C {
 }
 ```
 
+Host code that holds several vectors at once, such as a register tile of
+accumulators, can size itself with `Cajeta.hostVectorBits()`. It answers the
+width in bits of the fixed-width vector registers the code was compiled for:
+128 for SSE or NEON, 256 for AVX2, and 512 for AVX-512. The answer is the
+build's, not the running CPU's. A program built for `x86-64-v3` reads 256 on an
+AVX-512 machine, because that is what its loops were lowered to. It is fixed
+when the module is emitted as code, so a library answers for the build that
+consumes it, and a branch on it folds away.
+
+**Example 3.2-3.** A tile sized by the register file.
+
+```cajeta
+public final class T {
+    public static int32 accumulators() {
+        if (Cajeta.hostVectorBits() >= 512) { return 8; }
+        return 4;
+    }
+}
+```
+
 A vector is a value type, so it is a legal record field (Arrays, Views, Slices & Records §12.4).
 
 ## 3.3 Reference Types
