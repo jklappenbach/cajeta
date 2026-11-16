@@ -38,7 +38,7 @@ public class MathScalarCase {
     public String competitorNote() {
         if (this.kind == 0) { return "Math.sin/exp/sqrt (compiler intrinsics; libm on the host)"; }
         if (this.kind == 1) { return "divisor (i & 7) + 1 varies per iteration so it stays a hardware divide"; }
-        return "Math.fma is kernel-only today (no host lowering): the row computes a * 0.5 + 1.0; every term is exact so the sum is too";
+        return "Math.abs/min/max/fma (Math.fma on the host since cajeta v0.53.9; every term is exact so the sum is too)";
     }
 
     public void setup() {
@@ -85,7 +85,7 @@ public class MathScalarCase {
             float64 s = 0.0;
             for (int64 i = 0; i < n; i = i + 1) {
                 float64 a = (float64) ((i & 1023) - 512);
-                s = s + Math.abs(a) + Math.min(a, 100.0) + Math.max(a, -100.0) + (a * 0.5 + 1.0);
+                s = s + Math.abs(a) + Math.min(a, 100.0) + Math.max(a, -100.0) + Math.fma(a, 0.5, 1.0);
             }
             this.fresult = s;
         }
