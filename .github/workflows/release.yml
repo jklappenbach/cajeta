@@ -180,7 +180,7 @@ jobs:
         run: |
           set -euo pipefail
           FULL='[
-            {"os":"ubuntu-latest","target":"x86_64-linux-gnu","archive_ext":"tar.gz","shell":"bash"},
+            {"os":"ubuntu-24.04","target":"x86_64-linux-gnu","archive_ext":"tar.gz","shell":"bash"},
             {"os":"ubuntu-24.04-arm","target":"aarch64-linux-gnu","archive_ext":"tar.gz","shell":"bash"},
             {"os":"macos-15","target":"aarch64-apple-darwin","archive_ext":"tar.gz","shell":"bash"},
             {"os":["self-hosted","Windows","X64","gpu"],"target":"x86_64-w64-mingw32","archive_ext":"zip","shell":"msys2 {0}"}
@@ -743,6 +743,23 @@ jobs:
         run: |
           ./build/src/cajeta --version
           ./build/src/cajeta --version --verbose
+
+      # ---- The Linux binary runs on Ubuntu 24.04's glibc ----------------
+      # The x86-64 leg built on ubuntu-latest, which moved to 26.04 (glibc
+      # 2.43) between v0.53.7 and v0.53.8, so v0.53.8 required sqrtf@GLIBC_2.43
+      # and would not start on 24.04 (glibc 2.39). The legs are pinned to
+      # 24.04 now; this refuses a binary that needs more, whatever the image.
+      - name: glibc ceiling (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          ceiling=2.39
+          need="$(objdump -T build/src/cajeta | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -V | tail -1)"
+          echo "cajeta needs glibc ${need}; the ceiling is ${ceiling}"
+          if [ "$(printf '%s\n%s\n' "$need" "$ceiling" | sort -V | tail -1)" != "$ceiling" ]; then
+            echo "::error::cajeta needs glibc ${need}, past the ${ceiling} ceiling (Ubuntu 24.04)"
+            objdump -T build/src/cajeta | grep "GLIBC_${need}" | head -20
+            exit 1
+          fi
 
       # ---- Smoke test: the shipped binary's JIT runs a program ----------
       # The release tests run through cajeta_test, which links winpthread as
