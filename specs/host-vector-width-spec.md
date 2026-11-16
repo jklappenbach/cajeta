@@ -29,6 +29,12 @@ emits code: the executable's object, or the JIT's module, for the host.
 - **2.1** As host code, when I call `Cajeta.hostVectorBits()` in an executable
   built with `--cpu=native` on an AVX-512 machine, I get 512. Built with
   `--cpu=x86-64-v3` on the same machine, I get 256.
+- **2.1a** As host code built with `--cpu=x86-64-v4`, I get 256, even though
+  the target has AVX-512. LLVM's generic tuning for that level prefers 256-bit
+  vectors, so 256 is the width its loops are lowered to, and the answer follows
+  the build rather than the instruction set. Measured on proton's Zen 5
+  (2026-11-15): native and jit-run read 512, x86-64-v4 and v3 read 256, and v2
+  reads 128.
 - **2.2** As host code in a library, the answer is the consuming build's, not
   the library's, because the archive keeps the query unresolved.
 - **2.3** As host code under the JIT, I get the host's width, which is what the
