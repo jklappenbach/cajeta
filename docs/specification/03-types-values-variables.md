@@ -68,8 +68,9 @@ public final class C {
 Host code that holds several vectors at once, such as a register tile of
 accumulators, can size itself with `Cajeta.hostVectorBits()`. It answers the
 width in bits of the fixed-width vector registers the code was compiled for:
-128 for SSE or NEON, 256 for AVX2, and 512 for AVX-512. The answer is the
-build's, not the running CPU's. A program built for `x86-64-v3` reads 256 on an
+128 for SSE or NEON, 256 for AVX2, and 512 for AVX-512, `x86-64-v4` included,
+even though LLVM's auto-vectorizer prefers 256-bit vectors there. The answer is
+the build's, not the running CPU's. A program built for `x86-64-v3` reads 256 on an
 AVX-512 machine, because that is what its loops were lowered to. It is fixed
 when the module is emitted as code, so a library answers for the build that
 consumes it, and a branch on it folds away.

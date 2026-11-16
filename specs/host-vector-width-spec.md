@@ -6,7 +6,7 @@
 ## 1. Definition
 
 `Cajeta.hostVectorBits()` answers, as an `int32`, the width in bits of the
-fixed-width vector registers the running code was compiled for: 128 for SSE or
+widest fixed-width vector register the running code was compiled to use: 128 for SSE or
 NEON, 256 for AVX2, and 512 for AVX-512. Host code that holds several
 `Vector<T,N>` accumulators sizes its register tile from it. Four 16-lane float32
 accumulators fill 8 of AVX2's 16 ymm registers, but only 4 of AVX-512's 32 zmm.
@@ -29,12 +29,14 @@ emits code: the executable's object, or the JIT's module, for the host.
 - **2.1** As host code, when I call `Cajeta.hostVectorBits()` in an executable
   built with `--cpu=native` on an AVX-512 machine, I get 512. Built with
   `--cpu=x86-64-v3` on the same machine, I get 256.
-- **2.1a** As host code built with `--cpu=x86-64-v4`, I get 256, even though
-  the target has AVX-512. LLVM's generic tuning for that level prefers 256-bit
-  vectors, so 256 is the width its loops are lowered to, and the answer follows
-  the build rather than the instruction set. Measured on proton's Zen 5
-  (2026-11-15): native and jit-run read 512, x86-64-v4 and v3 read 256, and v2
-  reads 128.
+- **2.1a** As host code built with `--cpu=x86-64-v4`, I get 512. The answer is
+  the widest vector the build holds in a register, which is what explicit
+  `Vector<T,N>` code is lowered to. It is not LLVM's cost-model register width,
+  which follows the auto-vectorizer's preference. Generic x86-64-v4 tuning
+  prefers 256-bit vectors there, yet a 16-lane float32 fma under it is one zmm
+  `vfmadd`, measured with the fork's llc and a cajeta object (2026-11-15). The
+  first cut read the cost model and answered 256 on proton's Zen 5 for v4
+  (Proton); corrected by Julian's call the same day ("Fix now").
 - **2.2** As host code in a library, the answer is the consuming build's, not
   the library's, because the archive keeps the query unresolved.
 - **2.3** As host code under the JIT, I get the host's width, which is what the

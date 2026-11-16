@@ -12,6 +12,9 @@
 #include "llvm/Passes/StandardInstrumentations.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
+#include "llvm/CodeGen/TargetLowering.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
+#include "llvm/CodeGenTypes/MachineValueType.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/TargetParser/Host.h"
@@ -558,7 +561,22 @@ std::unique_ptr<llvm::TargetMachine> hostTargetMachine() {
         llvm::TargetOptions(), std::nullopt));
 }
 
+// The widest vector the function's build holds in a register: the width explicit
+// Vector<T,N> code is lowered to. Not TTI's register width, which answers the
+// auto-vectorizer's preference: generic x86-64-v4 prefers 256-bit vectors there,
+// yet a 16-lane float32 fma under it is one zmm vfmadd (host-vector-width 2.1a).
 int32_t fixedVectorBits(llvm::TargetMachine& tm, const llvm::Function& f) {
+    const llvm::TargetSubtargetInfo* st = tm.getSubtargetImpl(f);
+    const llvm::TargetLowering* tli = st ? st->getTargetLowering() : nullptr;
+    if (tli) {
+        for (unsigned bits = 2048; bits >= 64; bits /= 2) {
+            llvm::MVT f32 = llvm::MVT::getVectorVT(llvm::MVT::f32, bits / 32);
+            llvm::MVT i32 = llvm::MVT::getVectorVT(llvm::MVT::i32, bits / 32);
+            if ((f32.isValid() && tli->isTypeLegal(f32)) || (i32.isValid() && tli->isTypeLegal(i32))) {
+                return (int32_t) bits;
+            }
+        }
+    }
     llvm::TargetTransformInfo tti = tm.getTargetTransformInfo(f);
     return (int32_t) tti.getRegisterBitWidth(
         llvm::TargetTransformInfo::RGK_FixedWidthVector).getFixedValue();
