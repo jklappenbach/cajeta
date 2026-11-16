@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.53.9 (2026-11-16)
+
+- **The x86-64 Linux binary runs on Ubuntu 24.04 again.** v0.53.8's was built on GitHub's ubuntu-latest image, which had just moved to 26.04, and it required glibc 2.43 (`sqrtf@GLIBC_2.43`). It would not start on 24.04 ("version `GLIBC_2.43' not found"). The release builds that leg on ubuntu-24.04 again, and now refuses a binary that needs a glibc newer than 2.39. v0.53.9 is v0.53.8's compiler; the arm64, macOS and Windows builds were not affected.
+
 ## 0.53.8 (2026-11-16)
 
 - **`instanceof` on a method-call result tests the runtime type.** `h.at(0) instanceof Lin` and `xs.get(0) instanceof Lin` were always false, silently, while the same value through a local tested true: the lhs's type was read before the call was generated, so it was still unresolved and the test folded to false. The lhs is now generated first, once, and the call still runs once. cajeta-ml's Sequential fused a Linear followed by a ReLU through such a test and so never fused (`InstanceofCallLhsTests`).
