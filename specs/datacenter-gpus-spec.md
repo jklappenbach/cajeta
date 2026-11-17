@@ -77,10 +77,24 @@ The package's matrix-core kernels stop pinning wave 32. Their tile shapes and
 lane arithmetic read the wave width, so each builds on gfx1151 at 32 and on
 gfx942 at 64, register- and LDS-budgeted per arch.
 
+Decided with Julian 2026-11-17: a kernel with no `@Wave` builds at the target's
+native width (32 on nvptx and RDNA, 64 on CDNA, the host SIMD width on cpu), and
+`@Wave` is kept only for a kernel whose processing needs one width on every
+target. The ten kernels that pin 32 today (flash attention, convBackWeight3x3,
+and gemm128 and gemm256 at f16 and bf16, each with its 16-bit-output variant)
+take the pin off, read `Wave.width()` on the device, and size their launch from
+a host query of the width the loaded kernel was built at,
+`kernel.waveWidth()`, which reads the kernel manifest. The cpu backend must run
+them correctly at its own width.
+
 Use cases:
 1. On gfx942 all 126 kernels build, none spilling, and the census lists the
    matrix-core ones as native.
-2. On gfx1151, sm_89 and vulkan nothing regresses: same kernels, same rates.
+2. `gemm128.waveWidth()` on the host answers the width its device code was
+   built at: 32 on sm_89 and gfx1151, 64 on gfx942, the vectorized width on cpu,
+   and a pinned kernel's pin.
+3. The unpinned kernels pass the kernels suite on cpu at the host's width.
+4. On gfx1151, sm_89 and vulkan nothing regresses: same kernels, same rates.
 
 ### 2.4 Hopper warpgroup matrices and TMA
 
