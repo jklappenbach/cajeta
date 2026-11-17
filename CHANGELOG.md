@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **The amdgpu backend finds ROCm 7.2's device libraries.** ROCm 7.2's rocm-device-libs package puts ocml.bc and ockl.bc under `lib/llvm/lib/clang/<N>/lib/amdgcn/bitcode`, a layout the backend did not search, and a build that finds no device bitcode leaves `Math.sin`, `cos`, `exp` and `sqrt` as external calls in device code. Those calls' frames read as spills, and such a kernel falls back to the host stub. On a box with no ROCm, offline gfx1151 builds of cajeta-llm spilled `attnFlashPrefillF16` (144 bytes), `attnFlashPrefillTile` (48) and `qkPrep` (80, at 47 VGPRs), and all four flash-attention spills go once the bitcode is found. The newest clang resource directory under `ROCM_PATH` or `/opt/rocm` is now probed after the existing layouts (`AmdgpuRocmBitcodeTests`).
+
 ## 0.53.9 (2026-11-16)
 
 - **The x86-64 Linux binary runs on Ubuntu 24.04 again.** v0.53.8's was built on GitHub's ubuntu-latest image, which had just moved to 26.04, and it required glibc 2.43 (`sqrtf@GLIBC_2.43`). It would not start on 24.04 ("version `GLIBC_2.43' not found"). The release builds that leg on ubuntu-24.04 again, and now refuses a binary that needs a glibc newer than 2.39. v0.53.9 is v0.53.8's compiler; the arm64, macOS and Windows builds were not affected.

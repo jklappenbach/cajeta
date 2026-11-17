@@ -1,5 +1,8 @@
 // AMDGPU backend — see header.
 
+#include <vector>
+#include <algorithm>
+#include "llvm/Support/Path.h"
 #include "AmdgpuBackend.h"
 #include "../lowering/AlignmentProof.h"
 
@@ -53,6 +56,8 @@ void ensureTargetsInitialized() {
     });
 }
 
+} // namespace
+
 /// The ROCm device-bitcode directory under ROCM_PATH or /opt/rocm; every known
 /// layout is probed, since its place moved across releases.
 std::string findRocmBitcodeDir() {
@@ -69,6 +74,23 @@ std::string findRocmBitcodeDir() {
             std::string d = root + sub;
             if (has(d)) return d;
         }
+        // ROCm 7.2's rocm-device-libs package: under the bundled clang's resource
+        // dir, lib/llvm/lib/clang/<N>/lib/amdgcn/bitcode, the newest <N> first.
+        std::string clangRoot = root + "/lib/llvm/lib/clang";
+        std::error_code ec;
+        std::vector<std::pair<long, std::string>> versions;
+        for (llvm::sys::fs::directory_iterator it(clangRoot, ec), end; it != end && !ec; it.increment(ec)) {
+            std::string name = llvm::sys::path::filename(it->path()).str();
+            char* rest = nullptr;
+            long v = std::strtol(name.c_str(), &rest, 10);
+            if (rest != name.c_str()) versions.emplace_back(v, it->path());
+        }
+        std::sort(versions.begin(), versions.end(),
+                  [](const auto& a, const auto& b) { return a.first > b.first; });
+        for (const auto& [v, dir] : versions) {
+            std::string d = dir + "/lib/amdgcn/bitcode";
+            if (has(d)) return d;
+        }
         return {};
     };
     if (const char* rp = std::getenv("ROCM_PATH")) {
@@ -77,6 +99,8 @@ std::string findRocmBitcodeDir() {
     if (std::string d = probe("/opt/rocm"); !d.empty()) return d;
     return {};
 }
+
+namespace {
 
 /// Links one ROCm bitcode file into `m`, pulling ONLY still-needed symbols.
 bool linkRocmBitcode(llvm::Module& m, const std::string& path) {

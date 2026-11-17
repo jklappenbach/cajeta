@@ -85,6 +85,11 @@ namespace amd {
     std::vector<KernelResourceInfo> parseKernelResourceUsage(
         const std::string& isa);
 
+    // The ROCm device-bitcode directory (ocml.bc, ockl.bc, oclc_*.bc) under ROCM_PATH,
+    // then /opt/rocm, or "" when none is installed. Without it a kernel's device
+    // math stays an external call, which spills as a call frame and cannot run.
+    std::string findRocmBitcodeDir();
+
     // Records the real launch size as "amdgpu-flat-work-group-size": the backend's
     // pessimistic 1024-thread default caps VGPRs and spills. No-op at 0.
     void setKernelWorkgroupSize(llvm::Function* fn, unsigned maxThreads);
