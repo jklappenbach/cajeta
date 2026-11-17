@@ -67,6 +67,9 @@ Use cases:
    CDNA; an MFMA fragment carries its own.
 3. The reference interpreter's fragment semantics stay the definition, so the
    cpu backend checks the MFMA kernels' arithmetic without the hardware.
+4. Before any rental, gem5's AMD GPU model runs the gfx942 gemm16 code object
+   and its values match the host product, which proves the MFMA fragment map
+   without the hardware (Julian, 2026-11-17).
 
 ### 2.3 Wave-generic matrix-core kernels
 
@@ -90,6 +93,9 @@ Use cases:
 1. A Hopper GEMM member at f16 and bf16 builds for sm_90 with `wgmma` and
    `cp.async.bulk.tensor` in its PTX.
 2. On sm_89 and earlier the member is not built, and the existing tiles run.
+3. `ptxas -v` for sm_90a assembles every Hopper member with no spills, so the
+   rented hour checks values and speed, not whether the code assembles
+   (Julian, 2026-11-17).
 
 ### 2.5 Measured on the parts
 
