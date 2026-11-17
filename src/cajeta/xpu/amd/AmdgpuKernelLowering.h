@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
 
 namespace llvm {
@@ -33,6 +34,15 @@ namespace amd {
     // How many fragment loads took the 16-bit wide load since the last reset.
     unsigned coop16WideLoadsTaken();
     void resetCoop16WideLoadsTaken();
+
+    // The MFMA fragment map on CDNA3 (gfx94x, gfx950): the tile cell element `e` of
+    // `lane` holds for a role (`use` 0 = A, 1 = B, 2 = C/D) whose lanes carry
+    // `kPerLane` K-values (4 for f16/bf16 16x16x16, 8 for the int8 16x16x32 that
+    // carries a 16x16x16 tile). `row`/`col` are tile coordinates; for A the column
+    // is K and for B the row is. `valid` is false for an int8 lane past K = 16,
+    // which carries zero.
+    struct MfmaCell { unsigned row = 0; unsigned col = 0; bool valid = false; };
+    MfmaCell mfmaFragmentCell(uint32_t use, unsigned kPerLane, unsigned lane, unsigned e);
 
 } // namespace amd
 } // namespace xpu

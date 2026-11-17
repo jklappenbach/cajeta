@@ -5,6 +5,8 @@
 #include "llvm/IR/MemoryModelRelaxationAnnotations.h"
 #include "../core/KernelManifest.h"
 #include "AmdgpuKernelLowering.h"
+#include "AmdgpuBackend.h"
+#include "cajeta/error/Exception.h"
 
 #include "../lowering/KernelLowering.h"
 #include "../lowering/LoweringTarget.h"
@@ -29,6 +31,24 @@ namespace {
 
 class AmdgpuTarget : public LoweringTarget {
 public:
+    // The bundle's arches decide the matrix-core encoding, since a module is lowered
+    // once and codegen'd per arch. MFMA only when every arch is CDNA3; a bundle
+    // mixing RDNA and CDNA has no fragment map right for both and lowers tiles
+    // portably. Wave 32 is out of reach as soon as one arch is CDNA.
+    explicit AmdgpuTarget(llvm::Module& m) {
+        llvm::SmallVector<llvm::StringRef, 4> arches;
+        llvm::StringRef list = readArchFlag(m, "cajeta.amdgpu.archlist");
+        if (list.empty()) list = readArchFlag(m, "cajeta.amdgpu.arch");
+        list.split(arches, ',', -1, /*KeepEmpty=*/false);
+        bool allMfma = !arches.empty();
+        for (auto a : arches) {
+            a = a.trim();
+            if (nativeWaveWidth(a.str()) == 64) anyCdna_ = true; else anyRdna_ = true;
+            if (!archHasMfma3(a)) allMfma = false;
+        }
+        mfma_ = allMfma && !anyRdna_;
+    }
+
     const char* name() const override { return "amdgpu"; }
     // `!nontemporal` becomes the slc / nt cache policy — a @Streaming buffer skips L2.
     bool supportsNontemporal() const override { return true; }
@@ -880,6 +900,8 @@ public:
     // matters — an int32 *operand* has no WMMA while an int32 *accumulator* is native.
     ImplTier coopMatrixTier(llvm::Type* elem, uint32_t rows, uint32_t cols,
                             uint32_t use) override {
+        // CDNA without CDNA3's MFMA set, or a bundle that mixes the two families.
+        if (anyCdna_ && !mfma_) return ImplTier::Portable;
         if (rows == 16 && cols == 16) {
             if (use == 2) {
                 if (elem->isFloatTy() || elem->isIntegerTy(32))
@@ -895,12 +917,16 @@ public:
     // @Wave(width = N) pins the function's wavefront, which is 32 or 64 on this target.
     bool pinWaveWidth(llvm::Function* fn, unsigned width) override {
         if (width != 32 && width != 64) return false;
+        // CDNA has no wave32: the function would codegen to no kernel at all.
+        if (width == 32 && anyCdna_) return false;
         fn->addFnAttr("target-features", width == 32 ? "+wavefrontsize32" : "+wavefrontsize64");
         return true;
     }
 
     // RDNA3 WMMA exists only in the wave32 encoding, so pin the function's wave size.
+    // MFMA is the wave64 encoding, CDNA's only one, so nothing is pinned there.
     void prepareNativeCoopMatrix(llvm::Function* fn) override {
+        if (mfma_) return;
         fn->addFnAttr("target-features", "+wavefrontsize32");
     }
 
@@ -908,12 +934,15 @@ public:
     // COMPILE time, so the width has to be pinned exactly as the WMMA encoding
     // pins it. wave32 is the one RDNA3+ guarantees, regardless of the tile's
     // column count.
+    // CDNA has only wave64, and RDNA runs wave64 too, so a bundle holding any
+    // CDNA arch lays the tile out for 64 lanes.
     unsigned distributedCoopMatrixWaveWidth(uint32_t /*cols*/) override {
-        return 32;
+        return anyCdna_ ? 64 : 32;
     }
     void prepareDistributedCoopMatrix(llvm::Function* fn,
                                       unsigned /*waveW*/) override {
-        fn->addFnAttr("target-features", "+wavefrontsize32");
+        fn->addFnAttr("target-features",
+                      anyCdna_ ? "+wavefrontsize64" : "+wavefrontsize32");
     }
     // Replicated, the stdlib's f32 / f64 / bf16 Ewise.matmul tiles spilled 3076 /
     // 6152 / 1232 bytes per work-item on gfx1151; distributed they spill none.
@@ -924,17 +953,20 @@ public:
                                uint32_t /*rows*/, uint32_t /*cols*/,
                                uint32_t use) override {
         llvm::LLVMContext& ctx = m.getContext();
+        // MFMA (see the map above mfmaFragmentCell): 4 accumulator elements and 4
+        // K-values a lane; int8 packs its 8 K-values (the 16x16x32 form) in two words.
+        unsigned accN = mfma_ ? 4 : 8, opN = mfma_ ? 4 : 16, i8Words = mfma_ ? 2 : 4;
         if (use == 2) {
             llvm::Type* ae = elem->isIntegerTy()
                 ? (llvm::Type*) llvm::Type::getInt32Ty(ctx)
                 : (llvm::Type*) llvm::Type::getFloatTy(ctx);
-            return llvm::FixedVectorType::get(ae, 8);
+            return llvm::FixedVectorType::get(ae, accN);
         }
         if (elem->isIntegerTy(8))
-            return llvm::FixedVectorType::get(llvm::Type::getInt32Ty(ctx), 4);
+            return llvm::FixedVectorType::get(llvm::Type::getInt32Ty(ctx), i8Words);
         llvm::Type* fe = elem->isBFloatTy()
             ? (llvm::Type*) llvm::Type::getInt16Ty(ctx) : elem;
-        return llvm::FixedVectorType::get(fe, 16);
+        return llvm::FixedVectorType::get(fe, opN);
     }
 
     // Assemble this lane's fragment from memory: the int8 A/B path packs 4 consecutive
@@ -949,6 +981,7 @@ public:
         llvm::Type* fe = vecTy->getElementType();
         unsigned n = vecTy->getNumElements();
         llvm::Value* frag = llvm::UndefValue::get(vecTy);
+        if (mfma_) return mfmaLoad(b, m, ptr, layout, stride, vecTy, use, swz, blk);
         if (use != 2 && fe->isIntegerTy(32)) {
             llvm::LLVMContext& ctx = m.getContext();
             llvm::Type* i8 = llvm::Type::getInt8Ty(ctx);
@@ -1054,6 +1087,7 @@ public:
                                   uint32_t /*bLayout*/ = 0) override {
         llvm::Type* ae =
             llvm::cast<llvm::FixedVectorType>(a->getType())->getElementType();
+        if (mfma_) return mfmaMulAdd(b, m, a, bMat, c, ae, signFlags);
         if (ae->isIntegerTy(32)) {
             llvm::LLVMContext& ctx = m.getContext();
             llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
@@ -1080,7 +1114,8 @@ public:
     // 2e + (lane>>4), column lane & 15. The association (rowF*colF)*C is a cross-tier contract.
     bool coopMatrixEpilogueSupported() const override { return true; }
     // The iu8 fragment is <4 x i32> per lane, so fromWords is a plain vector build.
-    bool coopMatrixFromWordsSupported() const override { return true; }
+    // fromWords builds WMMA's <4 x i32> lane fragment; MFMA's int8 fragment is not that.
+    bool coopMatrixFromWordsSupported() const override { return !mfma_ && !anyCdna_; }
 
     // The lane-to-element map of the WMMA wave32 accumulator, the one the
     // epilogue above walks: element e of lane L is row 2e + (L>>4), column
@@ -1091,13 +1126,15 @@ public:
                                uint32_t use, llvm::Type* matrixType,
                                llvm::Value*& row, llvm::Value*& col) override {
         auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(matrixType);
-        if (use != 2 || rows != 16 || cols != 16 || !vt || vt->getNumElements() != 8)
+        if (use != 2 || rows != 16 || cols != 16 || !vt ||
+            vt->getNumElements() != (mfma_ ? 4u : 8u))
             return false;
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         llvm::Value* lane = waveLaneId(b, m);
-        row = b.CreateAdd(b.CreateShl(e, llvm::ConstantInt::get(i32, 1)),
-                          b.CreateLShr(lane, llvm::ConstantInt::get(i32, 4)),
-                          "cm.row");
+        llvm::Value* half = b.CreateLShr(lane, llvm::ConstantInt::get(i32, 4));
+        row = mfma_
+            ? b.CreateAdd(b.CreateShl(half, llvm::ConstantInt::get(i32, 2)), e, "cm.row")
+            : b.CreateAdd(b.CreateShl(e, llvm::ConstantInt::get(i32, 1)), half, "cm.row");
         col = b.CreateAnd(lane, llvm::ConstantInt::get(i32, 15), "cm.col");
         return true;
     }
@@ -1199,8 +1236,7 @@ public:
         unsigned n = vecTy->getNumElements();
         llvm::Value* out = faccVal;
         for (unsigned e = 0; e < n; ++e) {
-            llvm::Value* row = b.CreateAdd(
-                llvm::ConstantInt::get(i32, 2 * e), half, "epi.row");
+            llvm::Value* row = accRow(b, half, e, "epi.row");
             llvm::Value* rv = b.CreateLoad(
                 rowETy, b.CreateGEP(rowETy, rowFPtr, row, "epi.rf.ptr"),
                 "epi.rf");
@@ -1288,14 +1324,27 @@ private:
     // `use`, on the current lane: row-major `row*stride+col`, column-major `col*stride+row`.
     llvm::Value* fragCoord(llvm::IRBuilderBase& b, llvm::Module& m, uint32_t use,
                            unsigned e, llvm::Value* layout, llvm::Value* stride,
-                           uint32_t swz = 0, LdsBlockPad blk = {}) {
+                           uint32_t swz = 0, LdsBlockPad blk = {},
+                           unsigned kPerLane = 4) {
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         llvm::Value* lane = waveLaneId(b, m);
         llvm::Value* lane16 = b.CreateAnd(lane, llvm::ConstantInt::get(i32, 15));
         llvm::Value* half = b.CreateLShr(lane, llvm::ConstantInt::get(i32, 4));
         llvm::Value* row;
         llvm::Value* col;
-        if (use == 0) {            // A: lane = row, e = K index
+        if (mfma_) {
+            // MFMA: K = kPerLane * (lane >> 4) + e for an operand. The int8 lane past
+            // K = 16 carries zero (the caller selects it) and reads K mod 16 to stay
+            // inside the tile.
+            llvm::Value* kHalf = kPerLane == 8
+                ? b.CreateAnd(half, llvm::ConstantInt::get(i32, 1)) : half;
+            llvm::Value* k = b.CreateAdd(
+                b.CreateMul(kHalf, llvm::ConstantInt::get(i32, kPerLane)),
+                llvm::ConstantInt::get(i32, e), "cm.k");
+            if (use == 0)      { row = lane16; col = k; }
+            else if (use == 1) { row = k; col = lane16; }
+            else               { row = accRow(b, half, e, "cm.row"); col = lane16; }
+        } else if (use == 0) {     // A: lane = row, e = K index
             row = lane16;
             col = llvm::ConstantInt::get(i32, e);
         } else if (use == 1) {     // B: lane = col, e = K index
@@ -1340,6 +1389,97 @@ private:
         return idx;
     }
 
+    // The accumulator row of element e: WMMA 2e + (lane >> 4), MFMA 4 (lane >> 4) + e.
+    llvm::Value* accRow(llvm::IRBuilderBase& b, llvm::Value* half, unsigned e,
+                        const char* name) {
+        llvm::Type* i32 = half->getType();
+        return mfma_
+            ? b.CreateAdd(b.CreateShl(half, llvm::ConstantInt::get(i32, 2)),
+                          llvm::ConstantInt::get(i32, e), name)
+            : b.CreateAdd(llvm::ConstantInt::get(i32, 2 * e), half, name);
+    }
+
+    // One MFMA fragment, element by element over the map; the int8 operand packs
+    // 4 K-values a word, little-endian, and lanes past K = 16 read zero.
+    llvm::Value* mfmaLoad(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
+                          llvm::Value* layout, llvm::Value* stride,
+                          llvm::FixedVectorType* vecTy, uint32_t use, uint32_t swz,
+                          LdsBlockPad blk) {
+        llvm::Type* fe = vecTy->getElementType();
+        unsigned n = vecTy->getNumElements();
+        llvm::Value* frag = llvm::UndefValue::get(vecTy);
+        if (use != 2 && fe->isIntegerTy(32)) {
+            llvm::LLVMContext& ctx = m.getContext();
+            llvm::Type* i8 = llvm::Type::getInt8Ty(ctx);
+            llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+            llvm::Value* inK = b.CreateICmpULT(
+                waveLaneId(b, m), llvm::ConstantInt::get(i32, 32), "cm.ink");
+            for (unsigned w = 0; w < n; ++w) {
+                llvm::Value* word = llvm::ConstantInt::get(fe, 0);
+                for (unsigned s = 0; s < 4; ++s) {
+                    auto rc = fragCoord(b, m, use, 4 * w + s, layout, stride, swz, blk, 8);
+                    llvm::Value* byte = b.CreateLoad(
+                        i8, b.CreateGEP(i8, ptr, rc, "cm.ld.ptr"), "cm.ld");
+                    word = b.CreateOr(word, b.CreateShl(
+                        b.CreateZExt(byte, fe), llvm::ConstantInt::get(fe, s * 8)));
+                }
+                word = b.CreateSelect(inK, word, llvm::ConstantInt::get(fe, 0), "cm.kpad");
+                frag = b.CreateInsertElement(frag, word, w);
+            }
+            return frag;
+        }
+        for (unsigned e = 0; e < n; ++e) {
+            auto rc = fragCoord(b, m, use, e, layout, stride, swz, blk, 4);
+            llvm::Value* p = b.CreateGEP(fe, ptr, rc, "cm.ld.ptr");
+            frag = b.CreateInsertElement(frag, b.CreateLoad(fe, p, "cm.ld"), e);
+        }
+        return frag;
+    }
+
+    // CDNA3's 16x16 MFMA by A/B element: f16, bf16 (the _1k form, <4 x i16>) and
+    // int8 through 16x16x32 with K's upper half zero. CDNA3 has no unsigned int8 MFMA.
+    llvm::Value* mfmaMulAdd(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* a,
+                            llvm::Value* bMat, llvm::Value* c, llvm::Type* ae,
+                            uint32_t signFlags) {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Value* z = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
+        llvm::Intrinsic::ID id;
+        if (ae->isIntegerTy(32)) {
+            if ((signFlags & 3u) != 3u)
+                throw cajeta::Exception(
+                    "XPU kernel lowering: unsupported construct — an unsigned int8 "
+                    "CooperativeMatrix mma on CDNA, whose MFMA is signed only; use "
+                    "int8 operands", "XPU-N01");
+            llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+            a = b.CreateBitCast(a, i64);
+            bMat = b.CreateBitCast(bMat, i64);
+            id = llvm::Intrinsic::amdgcn_mfma_i32_16x16x32_i8;
+        } else {
+            id = ae->isHalfTy() ? llvm::Intrinsic::amdgcn_mfma_f32_16x16x16f16
+                                : llvm::Intrinsic::amdgcn_mfma_f32_16x16x16bf16_1k;
+        }
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(&m, id);
+        cajeta::xpu::recordNativeOp(b, "mma", cajeta::xpu::nativeInstructionName(id));
+        return b.CreateCall(f, {a, bMat, c, z, z, z}, "mfma");
+    }
+
+    static llvm::StringRef readArchFlag(llvm::Module& m, const char* name) {
+        if (auto* f = m.getModuleFlag(name))
+            if (auto* s = llvm::dyn_cast<llvm::MDString>(f)) return s->getString();
+        return {};
+    }
+
+    // CDNA3's matrix-core set (gfx940/941/942, and gfx950 which keeps these forms).
+    // CDNA1/2 spell int8 as 16x16x16 and gfx908 has no bf16_1k, so they stay portable.
+    static bool archHasMfma3(llvm::StringRef arch) {
+        arch = arch.take_until([](char ch) { return ch == ':'; });
+        return arch == "gfx940" || arch == "gfx941" || arch == "gfx942" || arch == "gfx950";
+    }
+
+    bool anyCdna_ = false;
+    bool anyRdna_ = false;
+    bool mfma_ = false;
+
     static llvm::Value* readId(llvm::IRBuilderBase& b, llvm::Module& m,
                                llvm::Intrinsic::ID id) {
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(&m, id);
@@ -1353,8 +1493,19 @@ void setCoop16WideLoads(bool on) { gCoop16Wide = on; }
 unsigned coop16WideLoadsTaken() { return gCoop16WideTaken; }
 void resetCoop16WideLoadsTaken() { gCoop16WideTaken = 0; }
 
+MfmaCell mfmaFragmentCell(uint32_t use, unsigned kPerLane, unsigned lane, unsigned e) {
+    MfmaCell c;
+    unsigned lane16 = lane & 15, half = lane >> 4;
+    unsigned k = kPerLane * half + e;
+    if (use == 0)      { c.row = lane16; c.col = k; }
+    else if (use == 1) { c.row = k; c.col = lane16; }
+    else               { c.row = 4 * half + e; c.col = lane16; }
+    c.valid = c.row < 16 && c.col < 16;
+    return c;
+}
+
 llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule) {
-    AmdgpuTarget target;
+    AmdgpuTarget target(deviceModule);
     return cajeta::xpu::lowerKernel(method, deviceModule, target);
 }
 
