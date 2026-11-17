@@ -4,7 +4,9 @@
 #include "../lowering/AlignmentProof.h"
 #include "cajeta/xpu/core/CodegenGuard.h"
 
+#include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/IR/CFG.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/Module.h"
@@ -432,6 +434,295 @@ void defineUndefCooperativeMatrices(llvm::Module& m) {
 #endif
 }
 
+// A type with every bfloat in it (scalar, vector, array, literal struct, buffer handle) as i16; the type itself when
+// it holds none, nullptr when it holds one the rewrite cannot remap (a named struct).
+llvm::Type* bf16AsInt(llvm::Type* t) {
+    llvm::LLVMContext& ctx = t->getContext();
+    if (t->isBFloatTy()) return llvm::Type::getInt16Ty(ctx);
+    if (auto* v = llvm::dyn_cast<llvm::FixedVectorType>(t)) {
+        llvm::Type* e = bf16AsInt(v->getElementType());
+        if (e == nullptr) return nullptr;
+        return e == v->getElementType() ? t : llvm::FixedVectorType::get(e, v->getNumElements());
+    }
+    if (auto* a = llvm::dyn_cast<llvm::ArrayType>(t)) {
+        llvm::Type* e = bf16AsInt(a->getElementType());
+        if (e == nullptr) return nullptr;
+        return e == a->getElementType() ? t : llvm::ArrayType::get(e, a->getNumElements());
+    }
+    if (auto* s = llvm::dyn_cast<llvm::StructType>(t)) {
+        llvm::SmallVector<llvm::Type*, 8> el;
+        bool changed = false;
+        for (llvm::Type* e : s->elements()) {
+            llvm::Type* r = bf16AsInt(e);
+            if (r == nullptr) return nullptr;
+            changed = changed || r != e;
+            el.push_back(r);
+        }
+        if (!changed) return t;
+        if (!s->isLiteral()) return nullptr;
+        return llvm::StructType::get(ctx, el, s->isPacked());
+    }
+    if (auto* te = llvm::dyn_cast<llvm::TargetExtType>(t)) {
+        llvm::SmallVector<llvm::Type*, 4> ps;
+        bool changed = false;
+        for (llvm::Type* p : te->type_params()) {
+            llvm::Type* r = bf16AsInt(p);
+            if (r == nullptr) return nullptr;
+            changed = changed || r != p;
+            ps.push_back(r);
+        }
+        if (!changed) return t;
+        llvm::SmallVector<unsigned, 4> is(te->int_params().begin(), te->int_params().end());
+        return llvm::TargetExtType::get(ctx, te->getName(), ps, is);
+    }
+    return t;
+}
+
+bool holdsBf16(llvm::Type* t) { return bf16AsInt(t) != t; }
+
+// Whether the bf16 rewrite handles `inst`: every bfloat it produces, reads or addresses is of a kind it remaps.
+bool bf16Rewritable(llvm::Instruction& inst) {
+    bool touches = holdsBf16(inst.getType());
+    for (llvm::Value* op : inst.operands())
+        if (holdsBf16(op->getType())) touches = true;
+    if (auto* g = llvm::dyn_cast<llvm::GetElementPtrInst>(&inst))
+        touches = touches || holdsBf16(g->getSourceElementType());
+    if (auto* al = llvm::dyn_cast<llvm::AllocaInst>(&inst))
+        touches = touches || holdsBf16(al->getAllocatedType());
+    if (!touches) return true;
+    if (bf16AsInt(inst.getType()) == nullptr) return false;
+    switch (inst.getOpcode()) {
+    case llvm::Instruction::Load:
+    case llvm::Instruction::Store:
+    case llvm::Instruction::GetElementPtr:
+    case llvm::Instruction::Alloca:
+    case llvm::Instruction::FPExt:
+    case llvm::Instruction::FCmp:
+    case llvm::Instruction::BitCast:
+    case llvm::Instruction::PHI:
+    case llvm::Instruction::Select:
+    case llvm::Instruction::ExtractElement:
+    case llvm::Instruction::InsertElement:
+    case llvm::Instruction::ShuffleVector:
+    case llvm::Instruction::Freeze:
+        return true;
+    case llvm::Instruction::Call: {
+        auto* ii = llvm::dyn_cast<llvm::IntrinsicInst>(&inst);
+        if (ii == nullptr) return false;
+        llvm::Intrinsic::ID id = ii->getIntrinsicID();
+        return id == llvm::Intrinsic::spv_resource_handlefrombinding
+            || id == llvm::Intrinsic::spv_resource_getpointer;
+    }
+    default:
+        return false;
+    }
+}
+
+// RADV advertises no VK_KHR_shader_bfloat16 (gfx1151, Mesa 26.2.6), so bfloat16 is stored and moved as i16 and widened
+// explicitly (zext, shl 16, bitcast); a module with a bfloat use outside the handled kinds is left unchanged.
+bool lowerBf16Storage(llvm::Module& m) {
+    bool any = false;
+    for (auto& g : m.globals()) {
+        if (holdsBf16(g.getValueType())) {
+            if (bf16AsInt(g.getValueType()) == nullptr) return false;
+            if (g.hasInitializer() && !llvm::isa<llvm::UndefValue>(g.getInitializer())
+                && !g.getInitializer()->isNullValue())
+                return false;
+            any = true;
+        }
+    }
+    for (auto& f : m) {
+        if (f.isDeclaration()) continue;
+        for (llvm::Argument& arg : f.args())
+            if (holdsBf16(arg.getType())) return false;
+        if (holdsBf16(f.getReturnType())) return false;
+        for (auto& bb : f)
+            for (auto& inst : bb) {
+                if (!bf16Rewritable(inst)) return false;
+                if (holdsBf16(inst.getType())) any = true;
+                for (llvm::Value* op : inst.operands())
+                    if (holdsBf16(op->getType())) any = true;
+            }
+    }
+    if (!any) return false;
+
+    llvm::SmallVector<llvm::GlobalVariable*, 4> oldGlobals;
+    for (auto& g : m.globals())
+        if (holdsBf16(g.getValueType())) oldGlobals.push_back(&g);
+    for (llvm::GlobalVariable* g : oldGlobals) {
+        llvm::Type* nt = bf16AsInt(g->getValueType());
+        llvm::Constant* init = nullptr;
+        if (g->hasInitializer())
+            init = llvm::isa<llvm::PoisonValue>(g->getInitializer()) ? llvm::PoisonValue::get(nt)
+                : llvm::isa<llvm::UndefValue>(g->getInitializer()) ? llvm::UndefValue::get(nt)
+                : llvm::Constant::getNullValue(nt);
+        auto* ng = new llvm::GlobalVariable(m, nt, g->isConstant(), g->getLinkage(), init, g->getName() + ".i16",
+                                            g, g->getThreadLocalMode(), g->getAddressSpace(),
+                                            g->isExternallyInitialized());
+        ng->setAlignment(g->getAlign());
+        g->replaceAllUsesWith(ng);
+        std::string name = g->getName().str();
+        g->eraseFromParent();
+        ng->setName(name);
+    }
+
+    for (auto& f : m) {
+        if (f.isDeclaration()) continue;
+        llvm::DenseMap<llvm::Value*, llvm::Value*> map;
+        llvm::SmallVector<llvm::Instruction*, 32> dead;
+        llvm::SmallVector<llvm::PHINode*, 8> phis;
+        auto get = [&](llvm::Value* v) -> llvm::Value* {
+            if (!holdsBf16(v->getType())) return v;
+            auto it = map.find(v);
+            if (it != map.end()) return it->second;
+            llvm::Type* nt = bf16AsInt(v->getType());
+            if (llvm::isa<llvm::PoisonValue>(v)) return llvm::PoisonValue::get(nt);
+            if (llvm::isa<llvm::UndefValue>(v)) return llvm::UndefValue::get(nt);
+            if (auto* c = llvm::dyn_cast<llvm::Constant>(v)) {
+                if (c->isNullValue()) return llvm::Constant::getNullValue(nt);
+                return llvm::ConstantExpr::getBitCast(c, nt);
+            }
+            return nullptr;
+        };
+        auto widen = [&](llvm::IRBuilder<>& b, llvm::Value* bits, llvm::Type* to) -> llvm::Value* {
+            llvm::Type* i32 = b.getInt32Ty();
+            llvm::Type* f32 = b.getFloatTy();
+            if (auto* v = llvm::dyn_cast<llvm::FixedVectorType>(bits->getType())) {
+                i32 = llvm::FixedVectorType::get(i32, v->getNumElements());
+                f32 = llvm::FixedVectorType::get(f32, v->getNumElements());
+            }
+            llvm::Value* w = b.CreateBitCast(b.CreateShl(b.CreateZExt(bits, i32, "bf16.z"), 16, "bf16.s"), f32,
+                                             "bf16.f");
+            return to == f32 ? w : b.CreateFPExt(w, to, "bf16.d");
+        };
+        llvm::ReversePostOrderTraversal<llvm::Function*> rpot(&f);
+        for (llvm::BasicBlock* bb : rpot)
+            for (llvm::PHINode& p : bb->phis())
+                if (holdsBf16(p.getType())) {
+                    llvm::PHINode* np = llvm::PHINode::Create(bf16AsInt(p.getType()), p.getNumIncomingValues(),
+                                                              p.getName() + ".i", p.getIterator());
+                    map[&p] = np;
+                    phis.push_back(&p);
+                    dead.push_back(&p);
+                }
+        for (llvm::BasicBlock* bb : rpot) {
+            for (llvm::Instruction& inst : llvm::make_early_inc_range(*bb)) {
+                if (llvm::isa<llvm::PHINode>(inst)) continue;
+                llvm::IRBuilder<> b(&inst);
+                llvm::Value* rep = nullptr;
+                llvm::Value* mapped = nullptr;
+                if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(&inst)) {
+                    if (!holdsBf16(ld->getType())) continue;
+                    llvm::LoadInst* n = b.CreateAlignedLoad(bf16AsInt(ld->getType()), ld->getPointerOperand(),
+                                                            ld->getAlign(), ld->isVolatile(), ld->getName());
+                    n->setOrdering(ld->getOrdering());
+                    n->setSyncScopeID(ld->getSyncScopeID());
+                    mapped = n;
+                } else if (auto* st = llvm::dyn_cast<llvm::StoreInst>(&inst)) {
+                    if (!holdsBf16(st->getValueOperand()->getType())) continue;
+                    llvm::StoreInst* n = b.CreateAlignedStore(get(st->getValueOperand()), st->getPointerOperand(),
+                                                              st->getAlign(), st->isVolatile());
+                    n->setOrdering(st->getOrdering());
+                    n->setSyncScopeID(st->getSyncScopeID());
+                    dead.push_back(st);
+                    continue;
+                } else if (auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(&inst)) {
+                    if (!holdsBf16(gep->getSourceElementType())) continue;
+                    llvm::SmallVector<llvm::Value*, 4> idx(gep->indices());
+                    auto* n = llvm::GetElementPtrInst::Create(bf16AsInt(gep->getSourceElementType()),
+                                                              gep->getPointerOperand(), idx, gep->getName(),
+                                                              gep->getIterator());
+                    n->setNoWrapFlags(gep->getNoWrapFlags());
+                    rep = n;
+                } else if (auto* al = llvm::dyn_cast<llvm::AllocaInst>(&inst)) {
+                    if (!holdsBf16(al->getAllocatedType())) continue;
+                    auto* n = new llvm::AllocaInst(bf16AsInt(al->getAllocatedType()), al->getAddressSpace(),
+                                                   al->getArraySize(), al->getAlign(), al->getName(),
+                                                   al->getIterator());
+                    rep = n;
+                } else if (inst.getOpcode() == llvm::Instruction::FPExt) {
+                    if (!holdsBf16(inst.getOperand(0)->getType())) continue;
+                    rep = widen(b, get(inst.getOperand(0)), inst.getType());
+                } else if (auto* fc = llvm::dyn_cast<llvm::FCmpInst>(&inst)) {
+                    if (!holdsBf16(fc->getOperand(0)->getType())) continue;
+                    llvm::Type* ft = b.getFloatTy();
+                    if (auto* v = llvm::dyn_cast<llvm::FixedVectorType>(fc->getOperand(0)->getType()))
+                        ft = llvm::FixedVectorType::get(ft, v->getNumElements());
+                    rep = b.CreateFCmp(fc->getPredicate(), widen(b, get(fc->getOperand(0)), ft),
+                                       widen(b, get(fc->getOperand(1)), ft), fc->getName());
+                } else if (inst.getOpcode() == llvm::Instruction::BitCast) {
+                    llvm::Value* src = inst.getOperand(0);
+                    bool srcBf = holdsBf16(src->getType());
+                    bool dstBf = holdsBf16(inst.getType());
+                    if (!srcBf && !dstBf) continue;
+                    llvm::Value* s = get(src);
+                    llvm::Type* to = dstBf ? bf16AsInt(inst.getType()) : inst.getType();
+                    llvm::Value* v = s->getType() == to ? s : b.CreateBitCast(s, to, inst.getName());
+                    if (dstBf) mapped = v; else rep = v;
+                } else if (auto* sel = llvm::dyn_cast<llvm::SelectInst>(&inst)) {
+                    if (!holdsBf16(sel->getType())) continue;
+                    mapped = b.CreateSelect(sel->getCondition(), get(sel->getTrueValue()), get(sel->getFalseValue()),
+                                            sel->getName());
+                } else if (auto* ee = llvm::dyn_cast<llvm::ExtractElementInst>(&inst)) {
+                    if (!holdsBf16(ee->getVectorOperandType())) continue;
+                    mapped = b.CreateExtractElement(get(ee->getVectorOperand()), ee->getIndexOperand(), ee->getName());
+                } else if (auto* ie = llvm::dyn_cast<llvm::InsertElementInst>(&inst)) {
+                    if (!holdsBf16(ie->getType())) continue;
+                    mapped = b.CreateInsertElement(get(ie->getOperand(0)), get(ie->getOperand(1)), ie->getOperand(2),
+                                                   ie->getName());
+                } else if (auto* sv = llvm::dyn_cast<llvm::ShuffleVectorInst>(&inst)) {
+                    if (!holdsBf16(sv->getType())) continue;
+                    mapped = b.CreateShuffleVector(get(sv->getOperand(0)), get(sv->getOperand(1)),
+                                                   sv->getShuffleMask(), sv->getName());
+                } else if (auto* fr = llvm::dyn_cast<llvm::FreezeInst>(&inst)) {
+                    if (!holdsBf16(fr->getType())) continue;
+                    mapped = b.CreateFreeze(get(fr->getOperand(0)), fr->getName());
+                } else if (auto* ii = llvm::dyn_cast<llvm::IntrinsicInst>(&inst)) {
+                    llvm::Intrinsic::ID id = ii->getIntrinsicID();
+                    if (id == llvm::Intrinsic::spv_resource_handlefrombinding && holdsBf16(ii->getType())) {
+                        llvm::Function* d = llvm::Intrinsic::getOrInsertDeclaration(
+                            &m, id, {bf16AsInt(ii->getType())});
+                        llvm::SmallVector<llvm::Value*, 5> args(ii->args());
+                        mapped = b.CreateCall(d, args, ii->getName());
+                    } else if (id == llvm::Intrinsic::spv_resource_getpointer
+                               && holdsBf16(ii->getArgOperand(0)->getType())) {
+                        llvm::Value* h = get(ii->getArgOperand(0));
+                        llvm::Function* d = llvm::Intrinsic::getOrInsertDeclaration(
+                            &m, id, {ii->getType(), h->getType(), ii->getArgOperand(1)->getType()});
+                        rep = b.CreateCall(d, {h, ii->getArgOperand(1)}, ii->getName());
+                    } else {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+                if (rep != nullptr) {
+                    inst.replaceAllUsesWith(rep);
+                    if (llvm::isa<llvm::Instruction>(rep) && !rep->hasName()) rep->takeName(&inst);
+                }
+                if (mapped != nullptr) map[&inst] = mapped;
+                dead.push_back(&inst);
+            }
+        }
+        for (llvm::PHINode* p : phis) {
+            auto* np = llvm::cast<llvm::PHINode>(map[p]);
+            for (unsigned i = 0; i < p->getNumIncomingValues(); ++i)
+                np->addIncoming(get(p->getIncomingValue(i)), p->getIncomingBlock(i));
+        }
+        for (llvm::Instruction* d : dead) d->dropAllReferences();
+        for (llvm::Instruction* d : dead) {
+            if (!d->use_empty()) d->replaceAllUsesWith(llvm::PoisonValue::get(d->getType()));
+            d->eraseFromParent();
+        }
+    }
+    for (llvm::Function& f : llvm::make_early_inc_range(m))
+        if (f.isDeclaration() && f.use_empty() && f.isIntrinsic()
+            && (holdsBf16(f.getReturnType()) || std::any_of(f.arg_begin(), f.arg_end(),
+                    [](llvm::Argument& a) { return holdsBf16(a.getType()); })))
+            f.eraseFromParent();
+    return true;
+}
+
 // Runs the codegen pipeline into an in-memory buffer, as SPIR-V text for Assembly or
 // binary for Object. False on failure, with an LLVM fatal error's reason in `failure`.
 // On vulkan the driver compiles the SPIR-V, and it fuses a multiply into an add on its
@@ -646,6 +937,7 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
         llvm::convertUsersOfConstantsToInstructions(globals);
     }
 
+    lowerBf16Storage(m);
     markUncontractedArithmetic(m);
 
     // CAJETA_XPU_DUMP_BC=<dir>: the post-structurize, pre-codegen bitcode, so a legalizer
