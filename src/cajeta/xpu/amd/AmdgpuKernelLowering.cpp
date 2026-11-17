@@ -441,16 +441,17 @@ public:
     }
 
     // @Occupancy(maxWaves = N), once the body has settled the kernel's wave: a
-    // @Wave(width = 64) pin makes it wave64; everything else here is wave32,
-    // the device libraries' setting (oclc_wavefrontsize64_off) and what the
-    // WMMA and distributed-tile pins force.
+    // pin decides it (@Wave, or the WMMA and distributed-tile pins), and an
+    // unpinned kernel runs at the native width, which is 64 when the bundle holds
+    // a CDNA arch (CDNA has no wave32) and 32 on RDNA.
     void finishOccupancy(llvm::Function* fn, const XpuKernelAttr& attr) override {
         if (attr.maxThreads() || !attr.maxWaves()) return;
-        unsigned wave = 32;
+        unsigned wave = anyCdna_ ? 64 : 32;
         if (fn->hasFnAttribute("target-features")) {
             const std::string f =
                 fn->getFnAttribute("target-features").getValueAsString().str();
             if (f.find("+wavefrontsize64") != std::string::npos) wave = 64;
+            else if (f.find("+wavefrontsize32") != std::string::npos) wave = 32;
         }
         fn->addFnAttr("amdgpu-flat-work-group-size",
                       "1," + std::to_string(*attr.maxThreadsAt(wave)));

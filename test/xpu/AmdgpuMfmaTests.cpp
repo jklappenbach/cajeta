@@ -254,3 +254,25 @@ TEST(AmdgpuMfma, aUint8MmaOnGfx942IsRefusedByName) {
     EXPECT_FALSE(l.ok) << l.ptx;
     EXPECT_NE(l.why.find("signed only"), std::string::npos) << l.why;
 }
+
+// @Occupancy(maxWaves = N) sizes the work group in waves of the kernel's own width.
+// An unpinned kernel on CDNA runs at 64, so 8 waves is 512 threads there, and still
+// 256 on RDNA. It used to read the wave only off a +wavefrontsize64 pin and answer
+// 256 on gfx942, which refuses a 512-thread launch.
+TEST(AmdgpuMfma, occupancyInWavesFollowsTheNativeWidth) {
+    const std::string src =
+        "package test;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.Occupancy;\n"
+        "public final class D {\n"
+        "    @Kernel @Occupancy(maxWaves = 8)\n"
+        "    public static void k(KernelBuffer<float32> c) { c[0] = 1.0f; }\n"
+        "    public static int32 run() { return 1; }\n"
+        "}\n";
+    auto cdna = lowerForAmdgpu(src, "k", "test.D", "gfx942", "mfma");
+    ASSERT_TRUE(cdna.ok) << cdna.why;
+    EXPECT_NE(cdna.ir.find("\"amdgpu-flat-work-group-size\"=\"1,512\""), std::string::npos) << cdna.ir;
+    auto rdna = lowerForAmdgpu(src, "k", "test.D", "gfx1151", "mfma");
+    ASSERT_TRUE(rdna.ok) << rdna.why;
+    EXPECT_NE(rdna.ir.find("\"amdgpu-flat-work-group-size\"=\"1,256\""), std::string::npos) << rdna.ir;
+}
