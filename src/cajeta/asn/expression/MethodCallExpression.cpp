@@ -1858,6 +1858,16 @@ namespace cajeta {
             }
         }
 
+        if (methodCallName == "waveWidth" && parameters.empty()
+                && children.size() == 1) {
+            if (auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(children[0])) {
+                if (findKernelByBareName(module, recvId->getTextValue())) {
+                    resolvedType = CajetaType::of("int32");
+                    return;
+                }
+            }
+        }
+
         if (methodCallName == "stream" && parameters.empty()
                 && !children.empty()) {
             auto recvExpr = std::dynamic_pointer_cast<Expression>(children.front());
@@ -1986,6 +1996,31 @@ namespace cajeta {
                         /*thisInstance=*/nullptr, module);
                     resolvedType = kmClass;
                     return record;
+                }
+            }
+        }
+
+        // ----- datacenter-gpus 3.2.0: `k.waveWidth()` on a bare @Kernel name -----
+        // The width k's device code was built at on the active backend, from its
+        // manifest, or 0 when none is loaded. A template kernel is asked by its bare
+        // name and answers for its instantiations, which share their @Wave and so
+        // their width.
+        if (methodCallName == "waveWidth" && parameters.empty()
+                && children.size() == 1 && explicitMethodTypeArgs.empty()) {
+            if (auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(children[0])) {
+                const std::string kernelName = recvId->getTextValue();
+                if (MethodPtr kernel = findKernelByBareName(module, kernelName)) {
+                    llvm::Type* i32 = llvm::Type::getInt32Ty(llvmCtx);
+                    auto* ft = llvm::FunctionType::get(
+                        i32, {llvm::PointerType::get(llvmCtx, 0), i32}, false);
+                    auto fn = module->getLlvmModule()->getOrInsertFunction(
+                        "__cajeta_xpu_kernel_wave_width", ft);
+                    llvm::Value* name = builder->CreateGlobalString(
+                        kernelName, "xpu.wave.name");
+                    llvm::Value* isTemplate = llvm::ConstantInt::get(
+                        i32, kernel->isMethodTemplate() ? 1 : 0);
+                    resolvedType = CajetaType::of("int32");
+                    return builder->CreateCall(fn, {name, isTemplate}, "xpu.wave");
                 }
             }
         }

@@ -247,6 +247,8 @@ void __cajeta_xpu_register_kernel_manifest(const char* kernelName,
 /* The active backend's arch-matched manifest JSON for `nameArr` (a cajeta int8[],
  * payload at +8, NOT NUL-terminated), as a fresh int8[] the caller owns or NULL. */
 void* __cajeta_xpu_kernel_manifest_json(void* nameArr, int64_t len);
+// The wave width `name` was built at on the active backend, or 0 (`k.waveWidth()`).
+int32_t __cajeta_xpu_kernel_wave_width(const char* name, int32_t isTemplate);
 
 /* Bumped by every manifest registration, so a parsed-manifest cache knows when to refill. */
 int64_t __cajeta_xpu_kernel_manifest_generation(void);

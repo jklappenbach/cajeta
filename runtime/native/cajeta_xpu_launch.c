@@ -1795,6 +1795,54 @@ int32_t __cajeta_xpu_kernel_off_target(void* nameArr, int64_t len) {
     return caj_xpu_is_off_target(name, cajeta_xpu_active_backend());
 }
 
+// The wave width `name` was built at on the active backend, from its manifest, or 0
+// when that backend registered no device code for it (`k.waveWidth()`, datacenter-gpus
+// 3.2.0). A template kernel is asked by its bare name: its instantiations register as
+// `name_<types>` and share one @Wave, so the first loaded one answers. On cpu a kernel
+// registers once per ISA level, and the level it resolved to is the one that runs.
+int32_t __cajeta_xpu_kernel_wave_width(const char* name, int32_t isTemplate) {
+    if (!name) return 0;
+    int backend = cajeta_xpu_active_backend();
+    if (backend < 0) return 0;
+    size_t n = strlen(name);
+    char chosen[sizeof(g_xpu_manifests[0].name)];
+    chosen[0] = 0;
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    for (int i = 0; i < g_xpu_manifest_count; i++) {
+        struct cajeta_xpu_manifest* e = &g_xpu_manifests[i];
+        if (e->backend != backend || !e->json) continue;
+        int exact = strncmp(e->name, name, sizeof(e->name)) == 0;
+        int inst = isTemplate && strncmp(e->name, name, n) == 0 && e->name[n] == '_';
+        if (exact || (inst && !chosen[0])) {
+            memcpy(chosen, e->name, sizeof(chosen));
+            chosen[sizeof(chosen) - 1] = 0;
+            if (exact) break;
+        }
+    }
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
+    if (!chosen[0]) return 0;
+    const char* lvl = backend == 3
+        ? __cajeta_xpu_cpu_level_name(__cajeta_xpu_cpu_kernel_level(chosen)) : NULL;
+    int w = 0, found = 0;
+    const char* key = "\"waveWidth\":";
+    size_t kl = strlen(key);
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    for (int pass = 0; pass < 2 && !found; pass++) {
+        for (int i = 0; i < g_xpu_manifest_count && !found; i++) {
+            struct cajeta_xpu_manifest* e = &g_xpu_manifests[i];
+            if (e->backend != backend || !e->json ||
+                strncmp(e->name, chosen, sizeof(e->name)) != 0) continue;
+            // First pass: the resolved cpu level only. Second: any copy.
+            if (pass == 0 && lvl && strncmp(e->arch, lvl, sizeof(e->arch)) != 0) continue;
+            for (uint64_t j = 0; j + kl < e->len; j++)
+                if (memcmp(e->json + j, key, kl) == 0) { w = atoi(e->json + j + kl); break; }
+            found = 1;
+        }
+    }
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
+    return w;
+}
+
 // The active backend's off-target kernels: a count, and the i-th name into an int8[]
 // (payload at +8), 0 bytes past the end.
 int32_t __cajeta_xpu_off_target_count(void) {
