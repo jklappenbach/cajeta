@@ -1,7 +1,7 @@
 # xpu-buffer-host-memory: whole-buffer transfers check the host array; cpu buffers give their pages back
 
 > Status: **active**, approved by Julian 2026-11-16 ("Close 8.1.4, fix in cajeta"). Plan:
-> [xpu-buffer-host-memory](../agents/xpu-buffer-host-memory-plan.md). Found in cajeta-llm 15.2.21.8.1.4.
+> [xpu-buffer-host-memory](../../agents/archive/xpu-buffer-host-memory-plan.md). Found in cajeta-llm 15.2.21.8.1.4.
 
 ## 1. Definition
 
