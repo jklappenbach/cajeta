@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 extern "C" {
 void __cajeta_xpu_register_backend(int32_t id);
@@ -21,6 +22,10 @@ int32_t __cajeta_xpu_active_backend_id(void);
 int64_t __cajeta_xpu_buffer_alloc(void* self, uint64_t byteCount, int32_t kind);
 void __cajeta_xpu_buffer_free(void* self, int64_t handle, int32_t kind);
 void __cajeta_xpu_cpu_set_hugepages(int32_t on);
+void __cajeta_xpu_cpu_set_mmap_min(int64_t bytes);
+int64_t __cajeta_xpu_buffer_cache_bytes(void);
+void __cajeta_xpu_buffer_cache_flush(void);
+void __cajeta_xpu_buffer_cache_set_limit(int64_t bytes);
 }
 
 namespace {
@@ -51,6 +56,36 @@ int thpEligible(uint64_t addr) {
         }
         int v = 0;
         if (inside && std::sscanf(line, "THPeligible: %d", &v) == 1) { got = v; break; }
+    }
+    std::fclose(f);
+    return got;
+}
+
+// Resident kB of this process, from /proc/self/statm; -1 when unreadable.
+long rssKb() {
+    FILE* f = std::fopen("/proc/self/statm", "r");
+    if (!f) return -1;
+    long size = 0, res = 0;
+    int got = std::fscanf(f, "%ld %ld", &size, &res);
+    std::fclose(f);
+    return got == 2 ? res * 4 : -1;
+}
+
+// The name of the /proc/self/maps mapping holding `addr` ("" for an anonymous one), or "?" when none holds it.
+std::string mappingOf(uint64_t addr) {
+    FILE* f = std::fopen("/proc/self/maps", "r");
+    if (!f) return "?";
+    char line[512];
+    std::string got = "?";
+    while (std::fgets(line, sizeof line, f)) {
+        unsigned long lo = 0, hi = 0;
+        int off = 0;
+        if (std::sscanf(line, "%lx-%lx %*s %*s %*s %*s %n", &lo, &hi, &off) >= 2 && addr >= lo && addr < hi) {
+            std::string rest(line + off);
+            while (!rest.empty() && (rest.back() == '\n' || rest.back() == ' ')) rest.pop_back();
+            got = rest;
+            break;
+        }
     }
     std::fclose(f);
     return got;
@@ -148,5 +183,96 @@ TEST(XpuCpuBufferAlign, aLargeBufferIsHugePageEligibleAfterTheMmapThresholdRises
         EXPECT_EQ(thpEligible((uint64_t) h + n / 2), 1) << n << " bytes at " << std::hex << h;
         __cajeta_xpu_buffer_free(nullptr, h, kKindDevice);
     }
+#endif
+}
+
+// xpu-buffer-host-memory 2.2: with the cache off, freed buffers of 1 MB or more give their pages back, so RSS
+// follows the buffers alive. Eight written 8 MB buffers, the bottom seven freed: glibc's heap keeps them resident under the top one
+// once a freed 16 MB mapping has raised its mmap threshold (it rises only for frees of 32 MB or less).
+TEST(XpuCpuBufferAlign, freedLargeBuffersGiveTheirPagesBack) {
+#if !defined(__linux__)
+    GTEST_SKIP() << "measured through /proc";
+#else
+    if (!forceCpuBackend()) GTEST_SKIP() << "cpu backend not selectable in this process";
+    __cajeta_xpu_cpu_set_hugepages(0);
+    __cajeta_xpu_buffer_cache_set_limit(0);
+    void* big = std::malloc(16u << 20);
+    std::memset(big, 1, 4096);
+    std::free(big);
+    const uint64_t n = 8u << 20;
+    int64_t h[8];
+    for (int i = 0; i < 8; i++) {
+        h[i] = __cajeta_xpu_buffer_alloc(nullptr, n, kKindDevice);
+        ASSERT_NE(h[i], 0);
+        EXPECT_EQ(h[i] % 64, 0);
+        std::memset((void*) (intptr_t) h[i], 1, n);
+    }
+    long before = rssKb();
+    for (int i = 0; i < 7; i++) __cajeta_xpu_buffer_free(nullptr, h[i], kKindDevice);
+    long after = rssKb();
+    __cajeta_xpu_buffer_free(nullptr, h[7], kKindDevice);
+    __cajeta_xpu_buffer_cache_set_limit(-2);
+    __cajeta_xpu_cpu_set_hugepages(1);
+    ASSERT_GT(before, 0);
+    EXPECT_GE(before - after, 50L * 1024) << "rss " << before << " kB to " << after << " kB";
+#endif
+}
+
+// xpu-buffer-host-memory 2.2: a buffer under the threshold still comes from malloc's heap.
+TEST(XpuCpuBufferAlign, aSmallBufferStillComesFromMalloc) {
+#if !defined(__linux__)
+    GTEST_SKIP() << "read through /proc";
+#else
+    if (!forceCpuBackend()) GTEST_SKIP() << "cpu backend not selectable in this process";
+    int64_t h = __cajeta_xpu_buffer_alloc(nullptr, 64u << 10, kKindDevice);
+    ASSERT_NE(h, 0);
+    EXPECT_EQ(h % 64, 0);
+    std::memset((void*) (intptr_t) h, 1, 64u << 10);
+    EXPECT_EQ(mappingOf((uint64_t) h), "[heap]");
+    __cajeta_xpu_buffer_free(nullptr, h, kKindDevice);
+#endif
+}
+
+// xpu-buffer-host-memory 2.3: a freed mapped block serves the next allocation of its size, so a loop does not fault
+// its pages in again.
+TEST(XpuCpuBufferAlign, aFreedLargeBufferServesTheNextOfItsSize) {
+#if !defined(__linux__)
+    GTEST_SKIP() << "mapped buffers are Linux's";
+#else
+    if (!forceCpuBackend()) GTEST_SKIP() << "cpu backend not selectable in this process";
+    __cajeta_xpu_buffer_cache_flush();
+    int64_t a = __cajeta_xpu_buffer_alloc(nullptr, 4u << 20, kKindDevice);
+    ASSERT_NE(a, 0);
+    __cajeta_xpu_buffer_free(nullptr, a, kKindDevice);
+    int64_t b = __cajeta_xpu_buffer_alloc(nullptr, 4u << 20, kKindDevice);
+    EXPECT_EQ(a, b);
+    __cajeta_xpu_buffer_free(nullptr, b, kKindDevice);
+    __cajeta_xpu_buffer_cache_flush();
+#endif
+}
+
+// xpu-buffer-host-memory 2.3: the cpu cache keeps at most 64 MB, so a burst of frees past it goes back to the OS.
+TEST(XpuCpuBufferAlign, theCpuCacheKeepsAtMostItsCap) {
+#if !defined(__linux__)
+    GTEST_SKIP() << "measured through /proc";
+#else
+    if (!forceCpuBackend()) GTEST_SKIP() << "cpu backend not selectable in this process";
+    __cajeta_xpu_cpu_set_hugepages(0);
+    __cajeta_xpu_buffer_cache_flush();
+    const uint64_t n = 8u << 20;
+    int64_t h[16];
+    for (int i = 0; i < 16; i++) {
+        h[i] = __cajeta_xpu_buffer_alloc(nullptr, n, kKindDevice);
+        ASSERT_NE(h[i], 0);
+        std::memset((void*) (intptr_t) h[i], 1, n);
+    }
+    long before = rssKb();
+    for (int i = 0; i < 16; i++) __cajeta_xpu_buffer_free(nullptr, h[i], kKindDevice);
+    long after = rssKb();
+    int64_t kept = __cajeta_xpu_buffer_cache_bytes();
+    __cajeta_xpu_buffer_cache_flush();
+    __cajeta_xpu_cpu_set_hugepages(1);
+    EXPECT_LE(kept, 64LL << 20);
+    EXPECT_GE(before - after, 60L * 1024) << "rss " << before << " kB to " << after << " kB, cache " << kept;
 #endif
 }

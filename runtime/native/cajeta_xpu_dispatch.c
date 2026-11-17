@@ -2265,9 +2265,11 @@ int64_t __cajeta_xpu_stream_sync_count(void) {
 // an op that returns a fresh tensor does not pay the driver's allocate and free
 // (0.7 ms of a 0.75 ms elementwise op on gfx1151). Every free is ordered after
 // the stream that used the buffer synced (XPU-K02), so a cached block is idle
-// when it is reused. Pinned and unified kinds, cpu and vulkan go to the backend.
+// when it is reused. On cpu it keeps only the mapped blocks, so a loop reuses one
+// without faulting it in again and a burst of frees past the cap goes back to the
+// OS. Pinned and unified kinds and vulkan go to the backend.
 // CAJETA_XPU_ALLOC_CACHE=0 turns it off; CAJETA_XPU_ALLOC_CACHE_MB caps it
-// (default 2048); a backend allocation that fails flushes the cache and retries.
+// (default 2048, 64 on cpu); a backend allocation that fails flushes the cache and retries.
 static pthread_mutex_t g_xpu_bcache_lock = PTHREAD_MUTEX_INITIALIZER;
 static int64_t g_xpu_buffer_raw_allocs;      // backend allocations (the misses)
 static int g_xpu_bcache_mode = -1;           // -1 unread env, 0 off, 1 on
@@ -2289,14 +2291,23 @@ static int caj_bcache_on(void) {
 static int64_t caj_bcache_limit(void) {
     if (g_xpu_bcache_limit == -2) {
         const char* e = getenv("CAJETA_XPU_ALLOC_CACHE_MB");
-        long long mb = (e && *e) ? strtoll(e, NULL, 10) : 2048;
+        long long dflt = cajeta_xpu_active_backend() == CAJ_XPU_CPU ? 64 : 2048;
+        long long mb = (e && *e) ? strtoll(e, NULL, 10) : dflt;
         g_xpu_bcache_limit = mb < 0 ? -1 : mb * 1048576LL;
     }
     return g_xpu_bcache_limit;
 }
 static int caj_bcache_backend(void) {
     int be = cajeta_xpu_active_backend();
-    return be == CAJ_XPU_HIP || be == CAJ_XPU_CUDA;
+    return be == CAJ_XPU_HIP || be == CAJ_XPU_CUDA || be == CAJ_XPU_CPU;
+}
+static int64_t caj_cpu_mmap_min(void);
+// Every device-kind block on hip and cuda; on cpu only the mapped ones (xpu-buffer-host-memory 2).
+static int caj_bcache_wants(uint64_t bytes) {
+    if (!caj_bcache_backend()) return 0;
+    if (cajeta_xpu_active_backend() != CAJ_XPU_CPU) return 1;
+    int64_t mm = caj_cpu_mmap_min();
+    return mm > 0 && (int64_t) bytes >= mm;
 }
 static uint64_t caj_bcache_round(uint64_t bytes) {
     uint64_t step = bytes < 1048576u ? 512u : 2097152u;
@@ -2415,7 +2426,7 @@ void __cajeta_xpu_buffer_cache_set_limit(int64_t bytes) {
 int64_t __cajeta_xpu_buffer_alloc(void* self, uint64_t byteCount, int32_t kind) {
     (void) self;
     int64_t h = 0;
-    if (byteCount && kind == CAJ_MEMKIND_DEVICE && caj_bcache_backend() && caj_bcache_on()) {
+    if (byteCount && kind == CAJ_MEMKIND_DEVICE && caj_bcache_wants(byteCount) && caj_bcache_on()) {
         uint64_t cls = caj_bcache_round(byteCount);
         pthread_mutex_lock(&g_xpu_bcache_lock);
         h = caj_bcache_take(cls);
@@ -2454,6 +2465,24 @@ static int32_t caj_cpu_hugepages(void) {
     }
     return g_cpu_hugepages;
 }
+// cpu buffers of CAJETA_XPU_CPU_MMAP_MB or more (default 1; 0 off) are mapped on their own, so a free gives the
+// pages back; smaller ones come from malloc. Either way a header just below the buffer says which.
+static int64_t g_cpu_mmap_min = -1;
+static int64_t caj_cpu_mmap_min(void) {
+    if (g_cpu_mmap_min < 0) {
+        const char* e = getenv("CAJETA_XPU_CPU_MMAP_MB");
+        long long mb = (e && *e) ? strtoll(e, NULL, 10) : 1;
+        g_cpu_mmap_min = mb <= 0 ? 0 : (int64_t) mb * 1048576LL;
+    }
+    return g_cpu_mmap_min;
+}
+/** Bytes at or above which a cpu buffer is mapped on its own; 0 maps none. Applies to buffers allocated after. */
+void __cajeta_xpu_cpu_set_mmap_min(int64_t bytes) {
+    g_cpu_mmap_min = bytes < 0 ? 0 : bytes;
+}
+#define CAJ_CPU_HDR_MALLOC 0x63616a6dull
+#define CAJ_CPU_HDR_MMAP 0x63616a70ull
+struct caj_cpu_hdr { uint64_t magic; uint64_t span; };
 // cpu "device" memory on a 64-byte boundary, so a 512-bit load never splits a cache line; from 2 MiB on Linux its
 // whole pages are advised for huge pages (a 2 MiB start for every slab measured slower, so only the advice).
 static void* caj_cpu_buffer_alloc(size_t n) {
@@ -2461,17 +2490,34 @@ static void* caj_cpu_buffer_alloc(size_t n) {
 #ifdef _WIN32
     return _aligned_malloc(n, 64);
 #else
-    void* p = NULL;
+    char* p = NULL;
 #if defined(__linux__)
-    if (posix_memalign(&p, 64, n) != 0) return NULL;
+    int64_t mm = caj_cpu_mmap_min();
+    if (mm > 0 && (int64_t) n >= mm) {
+        size_t span = (n + 4096u + 4095u) & ~(size_t) 4095u;
+        void* q = mmap(NULL, span, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (q == MAP_FAILED) return NULL;
+        p = (char*) q + 4096;
+        struct caj_cpu_hdr* h = (struct caj_cpu_hdr*) (p - sizeof(struct caj_cpu_hdr));
+        h->magic = CAJ_CPU_HDR_MMAP;
+        h->span = (uint64_t) span;
+    } else
+#endif
+    {
+        void* raw = NULL;
+        if (posix_memalign(&raw, 64, n + 64) != 0) return NULL;
+        p = (char*) raw + 64;
+        struct caj_cpu_hdr* h = (struct caj_cpu_hdr*) (p - sizeof(struct caj_cpu_hdr));
+        h->magic = CAJ_CPU_HDR_MALLOC;
+        h->span = 0;
+    }
+#if defined(__linux__)
     if (n >= (size_t) 2097152 && caj_cpu_hugepages()) {
         uintptr_t lo = ((uintptr_t) p + 4095u) & ~(uintptr_t) 4095u;
         uintptr_t hi = ((uintptr_t) p + n) & ~(uintptr_t) 4095u;
         if (hi > lo) madvise((void*) lo, hi - lo, MADV_HUGEPAGE);
     }
-    return p;
 #endif
-    if (posix_memalign(&p, 64, n) != 0) return NULL;
     return p;
 #endif
 }
@@ -2486,7 +2532,15 @@ static void caj_cpu_buffer_free(void* p) {
 #ifdef _WIN32
     _aligned_free(p);
 #else
-    free(p);
+    if (!p) return;
+#if defined(__linux__)
+    struct caj_cpu_hdr* h = (struct caj_cpu_hdr*) ((char*) p - sizeof(struct caj_cpu_hdr));
+    if (h->magic == CAJ_CPU_HDR_MMAP) {
+        munmap((char*) p - 4096, (size_t) h->span);
+        return;
+    }
+#endif
+    free((char*) p - 64);
 #endif
 }
 
