@@ -1,6 +1,6 @@
 # datacenter-gpus — CDNA3 (MI300) and Hopper (H100) matrix cores
 
-> Status: **draft**, written with Julian 2026-11-17 (cajeta-ml-gpu 23.2.9;
+> Status: **active**, approved by Julian 2026-11-17; written with him that day (cajeta-ml-gpu 23.2.9;
 > decisions below). Plan: [datacenter-gpus](../agents/datacenter-gpus-plan.md).
 
 ## 1. Definition
