@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 #include "cajeta/xpu/amd/AmdgpuBackend.h"
+#include "../PortableEnv.h"   // setenv/unsetenv and cajeta_getpid on MinGW
 
 #include <cstdlib>
 #include <filesystem>
@@ -26,7 +27,7 @@ struct FakeRocm {
     std::string oldPath;
     bool hadOld = false;
     explicit FakeRocm(const std::string& tag) {
-        root = fs::temp_directory_path() / ("cajeta-rocm-" + tag + "-" + std::to_string(::getpid()));
+        root = fs::temp_directory_path() / ("cajeta-rocm-" + tag + "-" + std::to_string(cajeta_getpid()));
         fs::remove_all(root);
         fs::create_directories(root);
         if (const char* o = std::getenv("ROCM_PATH")) { oldPath = o; hadOld = true; }
@@ -44,13 +45,20 @@ struct FakeRocm {
     }
 };
 
+// The search builds its paths with '/', so compare the directory, not the spelling
+// (a Windows temp path is spelled with '\\').
+void expectSameDir(const std::string& want, const std::string& got) {
+    ASSERT_FALSE(got.empty()) << "no bitcode directory found; wanted " << want;
+    EXPECT_TRUE(fs::equivalent(fs::path(want), fs::path(got))) << want << " vs " << got;
+}
+
 } // namespace
 
 // ROCm 7.2's device-libs package: the bitcode under the bundled clang's resource dir.
 TEST(AmdgpuRocmBitcode, theClangResourceLayoutIsFound) {
     FakeRocm r("clang");
     std::string want = r.add("lib/llvm/lib/clang/22/lib/amdgcn/bitcode");
-    EXPECT_EQ(want, cajeta::xpu::amd::findRocmBitcodeDir());
+    expectSameDir(want, cajeta::xpu::amd::findRocmBitcodeDir());
 }
 
 // With two clang versions installed, the newer one's bitcode is taken.
@@ -58,7 +66,7 @@ TEST(AmdgpuRocmBitcode, theNewestClangResourceDirWins) {
     FakeRocm r("two");
     r.add("lib/llvm/lib/clang/9/lib/amdgcn/bitcode");
     std::string want = r.add("lib/llvm/lib/clang/22/lib/amdgcn/bitcode");
-    EXPECT_EQ(want, cajeta::xpu::amd::findRocmBitcodeDir());
+    expectSameDir(want, cajeta::xpu::amd::findRocmBitcodeDir());
 }
 
 // The classic layout is still found first.
@@ -66,5 +74,5 @@ TEST(AmdgpuRocmBitcode, theClassicLayoutIsStillFound) {
     FakeRocm r("classic");
     std::string want = r.add("amdgcn/bitcode");
     r.add("lib/llvm/lib/clang/22/lib/amdgcn/bitcode");
-    EXPECT_EQ(want, cajeta::xpu::amd::findRocmBitcodeDir());
+    expectSameDir(want, cajeta::xpu::amd::findRocmBitcodeDir());
 }
