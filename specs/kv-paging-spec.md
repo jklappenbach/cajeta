@@ -1,6 +1,6 @@
 # kv-paging: tiered KV pages with the sequence as the unit of residency
 
-> Status: **draft**, opened 2026-11-16 at Julian's request ("a paging system that supports a variety of
+> Status: **active**, approved by Julian 2026-11-16; plan [kv-paging](../agents/kv-paging-plan.md). Opened 2026-11-16 at Julian's request ("a paging system that supports a variety of
 > different strategies"; the refinement to units agreed the same evening). Extends cajeta-llm spec §6
 > (cache, scheduler, store), which was written before KV lived on the device. Absorbs cajeta-llm plan
 > 15.2.21.8.1.5.
