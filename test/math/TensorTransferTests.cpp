@@ -99,3 +99,52 @@ TEST(TensorTransferTests, bridgeMovesAViewInOneTransfer) {
         "}\n";
     EXPECT_EQ(runOnCpu(src), 0);
 }
+
+// xpu-buffer-host-memory 1.1 — a whole-buffer transfer refuses a host array shorter than the buffer and moves
+// nothing; a longer one moves the buffer's elements as before.
+TEST(TensorTransferTests, aWholeBufferTransferRefusesAShortHostArray) {
+    std::string src = std::string(PRE) +
+        "import cajeta.error.RecoverableException;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "public final class D {\n"
+        "    static int32 refused(KernelBuffer<float32> b, float32[] h, int32 which) {\n"
+        "        KernelStream s #= KernelStream.current();\n"
+        "        try {\n"
+        "            if (which == 0) { b.download(h); }\n"
+        "            if (which == 1) { b.upload(h); }\n"
+        "            if (which == 2) { b.downloadAsync(h, s); s.sync(); }\n"
+        "            if (which == 3) { b.uploadAsync(h, s); s.sync(); }\n"
+        "        } catch (RecoverableException e) {\n"
+        "            return 1;\n"
+        "        }\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        float32[] full = heap float32[8];\n"
+        "        int32 i = 0;\n"
+        "        while (i < 8) { full[i] = (float32) i + 1.0f; i = i + 1; }\n"
+        "        KernelBuffer<float32> b = heap KernelBuffer<float32>(8);\n"
+        "        b.upload(full);\n"
+        "        int32 w = 0;\n"
+        "        while (w < 4) {\n"
+        "            float32[] shortH = heap float32[4];\n"
+        "            shortH[3] = 77.0f;\n"
+        "            if (D.refused(b, shortH, w) != 1) { return 10 + w; }\n"
+        "            if (shortH[0] != 0.0f || shortH[3] != 77.0f) { return 20 + w; }\n"
+        "            w = w + 1;\n"
+        "        }\n"
+        "        float32[] back = heap float32[8];\n"
+        "        b.download(back);\n"
+        "        if (back[7] != 8.0f) { return 2; }\n"
+        "        float32[] wide = heap float32[12];\n"
+        "        wide[11] = 55.0f;\n"
+        "        b.download(wide);\n"
+        "        if (wide[0] != 1.0f || wide[7] != 8.0f || wide[8] != 0.0f || wide[11] != 55.0f) { return 3; }\n"
+        "        b.upload(wide);\n"
+        "        b.download(back);\n"
+        "        if (back[0] != 1.0f || back[7] != 8.0f) { return 4; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runOnCpu(src), 0);
+}

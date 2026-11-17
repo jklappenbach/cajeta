@@ -1,5 +1,8 @@
 package cajeta.xpu;
 
+import cajeta.lang.String;
+import cajeta.error.RecoverableException;
+
 /**
  * KernelBuffer<T> — unified handle to device memory.
  *
@@ -224,7 +227,17 @@ public final class KernelBuffer<T> {
      * element count must equal `length()`. Issued on the default stream;
      * for stream-ordered uploads, see the vendor namespace.
      */
+    /** Throws when `host` holds fewer elements than this buffer, before a whole-buffer transfer moves any. */
+    void needHost(T[] host, String what) {
+        if ((uint64) host.count() < this.elementCount) {
+            throw heap RecoverableException("KernelBuffer." + what + ": the host array holds " + host.count()
+                + " elements and the buffer " + this.elementCount);
+        }
+        return;
+    }
+
     public void upload(T[] host) {
+        this.needHost(host, "upload");
         uint64 bytes = this.elementCount * elementBytes();
         int64 h = this.deviceHandle;
         this.deviceUpload(h, host, bytes);
@@ -287,6 +300,7 @@ public final class KernelBuffer<T> {
     private void deviceDownloadTo(int64 handle, T[] host, uint64 hostByteOffset, uint64 byteCount);
 
     public void download(T[] host) {
+        this.needHost(host, "download");
         uint64 bytes = this.elementCount * elementBytes();
         int64 h = this.deviceHandle;
         this.deviceDownload(h, host, bytes);
@@ -315,6 +329,7 @@ public final class KernelBuffer<T> {
      * synchronously (semantically identical — done by the time sync returns).
      */
     public void uploadAsync(T[] host, KernelStream stream) {
+        this.needHost(host, "uploadAsync");
         uint64 bytes = this.elementCount * elementBytes();
         // Bind the param's field to a local before passing it (reading a
         // class-typed param's field inline as a call arg lowers to null — the
@@ -328,6 +343,7 @@ public final class KernelBuffer<T> {
      * enqueued on `stream`, completing by the next `stream.sync()`.
      */
     public void downloadAsync(T[] host, KernelStream stream) {
+        this.needHost(host, "downloadAsync");
         uint64 bytes = this.elementCount * elementBytes();
         int64 sh = stream.handle;   // see uploadAsync: bind before passing
         this.deviceDownloadAsync(this.deviceHandle, host, bytes, sh);
