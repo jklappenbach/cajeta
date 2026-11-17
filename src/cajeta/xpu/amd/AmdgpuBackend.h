@@ -32,6 +32,12 @@ namespace amd {
     // AMDGCN assembly text, or empty; `deviceModule` must already be configured.
     std::string emitIsa(llvm::Module& deviceModule, llvm::TargetMachine& tm);
 
+    // The arch's native wavefront: 64 on CDNA and GCN (gfx9xx and older), 32 on
+    // RDNA (gfx10xx and later), which also runs 64 when a kernel pins it.
+    unsigned nativeWaveWidth(const std::string& arch);
+    // Links the ROCm device libraries `m` calls into (ocml, ockl) with the oclc
+    // controls for tm's arch, its wave width included; a no-op when none is called.
+    void linkAmdDeviceLibsIfNeeded(llvm::Module& m, llvm::TargetMachine& tm);
     // $ROCM_PATH/llvm/bin, then /opt/rocm/llvm/bin, then PATH; empty when absent.
     std::string findLld();
 

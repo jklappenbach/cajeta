@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **CDNA builds link the wave-64 device libraries, and DeviceProfile knows gfx942.** The amdgpu backend linked `oclc_wavefrontsize64_off` for every arch, so on a CDNA part such as MI300 (gfx942), whose waves are always 64 wide, device-library code that reads the wave width took its wave-32 arm. The control now follows the arch's native wave width, 64 on gfx9xx and older and 32 on RDNA. gfx942 also has its own DeviceProfile row (wave 64, 64 KB of LDS a CU, one CU a multiprocessor), and an arch the table has no facts for is still refused rather than given another part's numbers (`AmdgpuWave64DeviceLibTests`, datacenter-gpus Unit 1).
+
 - **The amdgpu backend finds ROCm 7.2's device libraries.** ROCm 7.2's rocm-device-libs package puts ocml.bc and ockl.bc under `lib/llvm/lib/clang/<N>/lib/amdgcn/bitcode`, a layout the backend did not search, and a build that finds no device bitcode leaves `Math.sin`, `cos`, `exp` and `sqrt` as external calls in device code. Those calls' frames read as spills, and such a kernel falls back to the host stub. On a box with no ROCm, offline gfx1151 builds of cajeta-llm spilled `attnFlashPrefillF16` (144 bytes), `attnFlashPrefillTile` (48) and `qkPrep` (80, at 47 VGPRs), and all four flash-attention spills go once the bitcode is found. The newest clang resource directory under `ROCM_PATH` or `/opt/rocm` is now probed after the existing layouts (`AmdgpuRocmBitcodeTests`).
 
 ## 0.53.9 (2026-11-16)

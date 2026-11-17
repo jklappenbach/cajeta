@@ -131,6 +131,17 @@ static bool referencesDeviceLib(llvm::Module& m, const char* prefix) {
     return false;
 }
 
+} // namespace
+
+unsigned nativeWaveWidth(const std::string& arch) {
+    // "gfx" then the generation, then two digits of stepping: gfx942, gfx90a, gfx1151.
+    std::string t = arch.rfind("gfx", 0) == 0 ? arch.substr(3) : arch;
+    t = t.substr(0, t.find(':'));
+    if (t.size() < 3) return 32;
+    int major = std::atoi(t.substr(0, t.size() - 2).c_str());
+    return major > 0 && major < 10 ? 64 : 32;
+}
+
 /// Links only the ROCm device libraries this kernel needs; uninstalled bitcode
 /// leaves the declaration unresolved and the kernel falls back to the host stub.
 void linkAmdDeviceLibsIfNeeded(llvm::Module& m, llvm::TargetMachine& tm) {
@@ -157,12 +168,16 @@ void linkAmdDeviceLibsIfNeeded(llvm::Module& m, llvm::TargetMachine& tm) {
                                  "oclc_unsafe_math_off",
                                  "oclc_correctly_rounded_sqrt_on",
                                  "oclc_daz_opt_off",
-                                 "oclc_wavefrontsize64_off"}) {
+                                 nativeWaveWidth(gfx) == 64
+                                     ? "oclc_wavefrontsize64_on"
+                                     : "oclc_wavefrontsize64_off"}) {
             std::string p = dir + "/" + ctrl + ".bc";
             if (llvm::sys::fs::exists(p)) linkRocmBitcode(m, p);
         }
     }
 }
+
+namespace {
 
 /// Runs the IR pipeline before ISA emission, device libraries linked first.
 void optimizeDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {

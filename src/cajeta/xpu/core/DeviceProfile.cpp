@@ -29,9 +29,13 @@ namespace {
         unsigned    cuPerMultiprocessor;   // physical CUs per driver multiprocessor
     };
 
-    constexpr std::array<ArchRow, 2> kArchTable = {{
+    // gfx942 is CDNA3 (MI300): wave 64, one CU per multiprocessor (no WGP), 64 KB of
+    // LDS per CU that one workgroup may take whole, 8 waves per SIMD, and 512
+    // unified VGPRs (VGPR + AGPR) a lane on each of 4 SIMDs.
+    constexpr std::array<ArchRow, 3> kArchTable = {{
         {"gfx1151", 32, 1024, 196608, 64, 131072, 65536, 32, 4, 2},
         {"gfx1100", 32, 1024, 196608, 64, 131072, 65536, 32, 4, 2},
+        {"gfx942",  64, 1024, 131072, 32,  65536, 65536, 32, 4, 1},
     }};
 
     // The leading arch token, dropping any ":feature" suffix the driver appends.
