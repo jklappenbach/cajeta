@@ -144,3 +144,15 @@ public class N {
     }
     EXPECT_NE(err.find("helper"), std::string::npos) << err;
 }
+
+
+// A wave-generic kernel divides by Wave.width(), so on nvptx, where every warp is 32,
+// the width must be the constant 32 from the start. A %WARP_SZ read folds only late in
+// the NVPTX backend: the optimizer saw a runtime value, simplified t / width differently,
+// and gemm256 at f16 spilled 8 bytes where it spilled 4, 5% slower on the 4090
+// (1868 against 1773 us at n4096, interleaved). The check is on the device IR.
+TEST(XpuKernelWaveWidth, waveWidthIsTheConstant32OnNvptx) {
+    auto l = cajeta::xpu::probe::lowerForNvptx(kSource, "plain", "test.W", "sm_89", "wavewidth");
+    ASSERT_TRUE(l.ok) << l.why;
+    EXPECT_EQ(l.ir.find("llvm.nvvm.read.ptx.sreg.warpsize"), std::string::npos) << l.ir;
+}

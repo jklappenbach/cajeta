@@ -246,8 +246,12 @@ public:
     bool pinWaveWidth(llvm::Function* /*fn*/, unsigned width) override { return width == 32; }
 
     // Wave ops: NVIDIA warps are 32 wide; shuffle + ballot are hardware.
+    // Every NVIDIA warp is 32 lanes, so the width is the constant from the start. A
+    // %WARP_SZ read folds only late in the backend, after the optimizer has simplified a
+    // wave-generic kernel's t / width as a runtime division (gemm256 spilled more, 5%).
     llvm::Value* waveWidth(llvm::IRBuilderBase& b, llvm::Module& m) override {
-        return readSreg(b, m, llvm::Intrinsic::nvvm_read_ptx_sreg_warpsize);
+        (void) m;
+        return b.getInt32(32);
     }
     llvm::Value* waveShuffle(llvm::IRBuilderBase& b, llvm::Module& m,
                              llvm::Value* value, llvm::Value* srcLane) override {
