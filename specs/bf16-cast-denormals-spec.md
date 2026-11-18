@@ -35,7 +35,13 @@ Decisions (Julian, 2026-11-18, reviewed interactively):
    rounding gets wrong, and the fix covers float64 only if they fail.
 5. Performance is read and reported, not gated: cajeta-llm's cpu-leg bf16 timings
    before and after, on proton. A large regression comes back to Julian.
-6. One late IR pass, just before x86 instruction selection, on every path.
+6. One late IR pass, just before x86 instruction selection, on every path (chosen over
+   fixing each emission site, which leaves library bitcode from older compilers wrong
+   until each library is rebuilt, and over turning AVX512-BF16 off, which would take the
+   fast convert from `@FastMath`). An IR pass cannot see a conversion LLVM inserts
+   during instruction selection, such as bf16 arithmetic computed in float32 and
+   rounded back. A test covers that case, and if it fails, AVX512-BF16 is turned off
+   for code that is not `@FastMath` as well.
 7. Phoenix checks the assembly at `-mcpu=znver5` and the values at its own CPU; proton
    runs the value tests where the instruction exists.
 8. It ships in coop-converting-store's release (that plan's Unit 4).
