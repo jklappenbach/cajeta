@@ -5698,6 +5698,9 @@ private:
             return slot.software ? lowerCoopMatrixMethodSoftware(recv, "store", mc)
                                  : lowerCoopMatrixMethod(recv, "store", mc);
         if (slot.software) return lowerCoopMatrixMethodSoftware(recv, name, mc);
+        if (storeAsTy && target.coopMatrixElementCount(slot.matrixType) == 0 &&
+            target.coopMatrixStagedElements())
+            return lowerStagedStoreAs(slot, args, storeAsTy);
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         if (name == "load" || name == "store" || storeAsTy) {
             if (args.size() != 4)
@@ -7477,6 +7480,49 @@ private:
                                                   s.rows, s.cols, s.use);
         builder.CreateStore(frag, s.alloca);
         target.subgroupBarrier(builder, mod);
+    }
+
+    // acc.storeAs<U> on a native tile with no lane map (vulkan; coop-converting-store
+    // decision 3): this lane's elements come out of the subgroup's staging tile, and each
+    // is converted as the scalar cast does and stored at its cell. The cell's pointer is
+    // taken from the buffer's root, since a GEP off a tile pointer does not step on spirv.
+    template <typename Args>
+    llvm::Value* lowerStagedStoreAs(const CoopMatrixSlot& slot, const Args& args,
+                                    llvm::Type* u) {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+        const unsigned W = target.stagedElementWaveWidth();
+        const unsigned cells = slot.rows * slot.cols;
+        if (cells == 0 || cells % W != 0)
+            unsupported("CooperativeMatrix.storeAs: a " + std::to_string(slot.rows) + "x" +
+                        std::to_string(slot.cols) + " tile does not divide over " +
+                        std::to_string(W) + " lanes");
+        llvm::Value* base = nullptr;
+        llvm::Type* bElem = nullptr;
+        if (!resolveBufferBase(args[0].expression, base, bElem))
+            unsupported("CooperativeMatrix.storeAs: argument must be a Buffer kernel "
+                        "parameter or a Shared tile");
+        llvm::Value* offset = coerceTo(lowerExpr(args[1].expression), i32);
+        llvm::Value* layout = coerceTo(lowerExpr(args[2].expression), i32);
+        llvm::Value* stride = coerceTo(lowerExpr(args[3].expression), i32);
+        llvm::Value* lanes = stagedLanes(slot);
+        llvm::Value* lane = builder.CreateZExtOrTrunc(target.waveLaneId(builder, mod), i32);
+        llvm::Value* rowMajor = builder.CreateICmpEQ(layout, builder.getInt32(0));
+        for (unsigned e = 0; e < cells / W; ++e) {
+            llvm::Value* cell = builder.CreateAdd(builder.getInt32(e * W), lane, "sa.cell");
+            llvm::Value* r = builder.CreateUDiv(cell, builder.getInt32(slot.cols), "sa.row");
+            llvm::Value* c = builder.CreateURem(cell, builder.getInt32(slot.cols), "sa.col");
+            llvm::Value* at = builder.CreateSelect(
+                rowMajor, builder.CreateAdd(builder.CreateMul(r, stride), c),
+                builder.CreateAdd(builder.CreateMul(c, stride), r));
+            llvm::Value* idx = maybeSwizzle(
+                base, builder.CreateZExt(builder.CreateAdd(offset, at), i64));
+            builder.CreateStore(
+                builder.CreateFPTrunc(builder.CreateExtractElement(lanes, (uint64_t) e), u,
+                                      "sa.cvt"),
+                target.bufferElementPtr(builder, mod, base, bElem, idx));
+        }
+        return llvm::ConstantInt::get(i32, 0);
     }
 
     // elements/row/col/get/set on a native tile with no lane map: lane L's element e is cell

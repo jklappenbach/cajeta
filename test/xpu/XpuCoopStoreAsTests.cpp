@@ -15,6 +15,17 @@
 #include "XpuDeviceTestUtil.h"
 #include "XpuRefusalProbe.h"
 #include "cajeta/xpu/XpuTarget.h"
+#include "cajeta/xpu/vulkan/SpirvBackend.h"
+#include "cajeta/xpu/vulkan/SpirvKernelLowering.h"
+#include "cajeta/xpu/vulkan/VulkanDriver.h"
+
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
+#include "llvm/Support/Program.h"
+
+#include <filesystem>
+#include <fstream>
+#include <optional>
 
 #include <string>
 #include <vector>
@@ -43,21 +54,21 @@ import cajeta.xpu.KernelThread;
 import cajeta.xpu.Shared;
 import cajeta.xpu.XpuLaunchException;
 public class S {
-    @Kernel
+    @Kernel @Occupancy(maxThreads = 32)
     public static void f16Row(KernelBuffer<float16> y, KernelBuffer<float32> a,
                               uint32 off, uint32 stride) {
         CooperativeMatrix<float32,16,16,2> acc;
         acc.load(a, 0, 0, 16);
         acc.storeAs<float16>(y, off, 0, stride);
     }
-    @Kernel
+    @Kernel @Occupancy(maxThreads = 32)
     public static void f16Col(KernelBuffer<float16> y, KernelBuffer<float32> a,
                               uint32 off, uint32 stride) {
         CooperativeMatrix<float32,16,16,2> acc;
         acc.load(a, 0, 0, 16);
         acc.storeAs<float16>(y, off, 1, stride);
     }
-    @Kernel
+    @Kernel @Occupancy(maxThreads = 32)
     public static void f16Shared(KernelBuffer<float16> y, KernelBuffer<float32> a,
                                  uint32 off, uint32 stride) {
         Shared<float16> t = shared float16[300];
@@ -70,21 +81,21 @@ public class S {
         Barrier.workgroup();
         for (uint32 k = g; k < 300; k = k + 32) { y[k] = t[k]; }
     }
-    @Kernel
+    @Kernel @Occupancy(maxThreads = 32)
     public static void bf16Row(KernelBuffer<bfloat16> y, KernelBuffer<float32> a,
                                uint32 off, uint32 stride) {
         CooperativeMatrix<float32,16,16,2> acc;
         acc.load(a, 0, 0, 16);
         acc.storeAs<bfloat16>(y, off, 0, stride);
     }
-    @Kernel
+    @Kernel @Occupancy(maxThreads = 32)
     public static void bf16Col(KernelBuffer<bfloat16> y, KernelBuffer<float32> a,
                                uint32 off, uint32 stride) {
         CooperativeMatrix<float32,16,16,2> acc;
         acc.load(a, 0, 0, 16);
         acc.storeAs<bfloat16>(y, off, 1, stride);
     }
-    @Kernel
+    @Kernel @Occupancy(maxThreads = 32)
     public static void bf16Shared(KernelBuffer<bfloat16> y, KernelBuffer<float32> a,
                                   uint32 off, uint32 stride) {
         Shared<bfloat16> t = shared bfloat16[300];
@@ -98,7 +109,7 @@ public class S {
         for (uint32 k = g; k < 300; k = k + 32) { y[k] = t[k]; }
     }
     // Row-major into Shared at the tile's start: the aligned forms on nvptx.
-    @Kernel
+    @Kernel @Occupancy(maxThreads = 32)
     public static void f16SharedRow(KernelBuffer<float16> y, KernelBuffer<float32> a,
                                     uint32 off, uint32 stride) {
         Shared<float16> t = shared float16[300];
@@ -111,7 +122,7 @@ public class S {
         Barrier.workgroup();
         for (uint32 k = g; k < 300; k = k + 32) { y[k] = t[k]; }
     }
-    @Kernel
+    @Kernel @Occupancy(maxThreads = 32)
     public static void bf16SharedRow(KernelBuffer<bfloat16> y, KernelBuffer<float32> a,
                                      uint32 off, uint32 stride) {
         Shared<bfloat16> t = shared bfloat16[300];
@@ -125,7 +136,7 @@ public class S {
         for (uint32 k = g; k < 300; k = k + 32) { y[k] = t[k]; }
     }
     // storeAs at the accumulator's own type is a plain store.
-    @Kernel
+    @Kernel @Occupancy(maxThreads = 32)
     public static void f32Row(KernelBuffer<float32> y, KernelBuffer<float32> a,
                               uint32 off, uint32 stride) {
         CooperativeMatrix<float32,16,16,2> acc;
@@ -396,6 +407,16 @@ TEST(XpuCoopStoreAsDeviceTests, everyCellConvertsAsTheScalarCastOnNvptx) {
     everyCellConverts(cajeta::xpu::Backend::Nvptx, "nvptx");
 }
 
+// Vulkan goes through the per-subgroup staging tile (decision 3). A device without
+// cooperative matrices refuses the module, so the test runs where it has them
+// (proton's RADV).
+TEST(XpuCoopStoreAsDeviceTests, everyCellConvertsAsTheScalarCastOnVulkan) {
+    if (!cajeta::xpu::test::vulkanAvailable()) GTEST_SKIP() << "no Vulkan device";
+    if (!cajeta::xpu::vulkan::VulkanDriver::coopMatrixAvailable())
+        GTEST_SKIP() << "the Vulkan device has no cooperative matrices";
+    everyCellConverts(cajeta::xpu::Backend::Spirv, "vulkan");
+}
+
 TEST(XpuCoopStoreAsDeviceTests, everyCellConvertsAsTheScalarCastOnAmdgpu) {
     if (!cajeta::xpu::test::hipAvailable()) GTEST_SKIP() << "no HIP device";
     everyCellConverts(cajeta::xpu::Backend::Amdgpu, "amdgpu");
@@ -447,5 +468,52 @@ TEST(XpuCoopStoreAs, nvptxEmitsTheConvertingStores) {
         for (const char* p : w.ptx)
             EXPECT_NE(l.ptx.find(p), std::string::npos) << w.kernel << " lacks " << p << "\n"
                                                          << l.ptx;
+    }
+}
+
+// spirv-val on a SPIR-V binary: nullopt when the tool is not installed.
+std::optional<bool> spirvValid(const std::vector<uint8_t>& spirv, const std::string& tag) {
+    auto tool = llvm::sys::findProgramByName("spirv-val");
+    if (!tool) return std::nullopt;
+    auto path = std::filesystem::temp_directory_path() / ("cajeta_storeas_" + tag + ".spv");
+    {
+        std::ofstream out(path, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(spirv.data()), (std::streamsize) spirv.size());
+    }
+    std::string file = path.string();
+    llvm::SmallVector<llvm::StringRef, 4> args = {*tool, "--target-env", "vulkan1.3", file};
+    int rc = llvm::sys::ExecuteAndWait(*tool, args);
+    std::filesystem::remove(path);
+    return rc == 0;
+}
+
+// Unit 3 (spec §2.3): every kernel lowers for vulkan through the staging tile, with
+// no refusal, and the module passes spirv-val.
+TEST(XpuCoopStoreAs, vulkanLowersThroughTheStagingTileAndValidates) {
+    using namespace cajeta::xpu::vulkan;
+    cajeta::Compiler compiler;
+    auto module = cajeta::xpu::probe::compileForInspection(compiler, kSource, "test.S",
+                                                           "storeas_spv");
+    auto klass = module->getStructures()["test.S"];
+    ASSERT_TRUE(klass);
+    auto tm = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    for (const char* k : kKernels) {
+        auto m = cajeta::xpu::probe::findMethod(klass, k);
+        ASSERT_TRUE(m) << k;
+        llvm::LLVMContext ctx;
+        llvm::Module dev(std::string("storeas_") + k, ctx);
+        configureDeviceModule(dev, *tm);
+        std::string why;
+        try {
+            lowerKernel(m, dev);
+        } catch (cajeta::Exception& e) {
+            why = e.getMessage();
+        } catch (const std::exception& e) { why = e.what(); }
+        ASSERT_TRUE(why.empty()) << k << " refused on vulkan: " << why;
+        std::vector<uint8_t> spirv = emitSpirv(dev, *tm);
+        ASSERT_FALSE(spirv.empty()) << k;
+        // Without spirv-val (Phoenix) the lowering is still checked; proton validates.
+        if (auto valid = spirvValid(spirv, k)) EXPECT_TRUE(*valid) << "spirv-val rejected " << k;
     }
 }
