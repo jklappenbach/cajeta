@@ -585,7 +585,8 @@ public:
     // registers to 130 on sm_89. The manifest records that the kernel has the form.
     void notePlacementFallback(llvm::IRBuilderBase& b, llvm::Module& m, const char* what) {
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
-        cajeta::xpu::recordNativeOp(b, std::string(what) + ".misaligned", "per-element");
+        cajeta::xpu::recordNativeOp(b, std::string(what) + ".misaligned",
+                                    "software-tile.per-element");
         auto* flag = m.getGlobalVariable("cajeta_placement_taken");
         if (!flag) {
             flag = new llvm::GlobalVariable(m, i32, false, llvm::GlobalValue::ExternalLinkage,
