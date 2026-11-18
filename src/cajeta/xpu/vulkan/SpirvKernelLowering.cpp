@@ -825,6 +825,10 @@ public:
     }
 #endif
 
+    // A distributed portable tile at the width the runtime pins every pipeline to.
+    unsigned distributedCoopMatrixWaveWidth(uint32_t /*cols*/) override { return 32; }
+    bool distributeReplicablePortableTiles() const override { return true; }
+
     llvm::Value* subgroupIndex(llvm::IRBuilderBase& b, llvm::Module& m) override {
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::spv_subgroup_id);
@@ -1485,6 +1489,8 @@ public:
 
     bool coopMatrixStagedElements() const override { return false; }
     bool coopMatrixEpilogueSupported() const override { return false; }
+    unsigned distributedCoopMatrixWaveWidth(uint32_t /*cols*/) override { return 0; }
+    bool distributeReplicablePortableTiles() const override { return false; }
     bool coopMatrixFromWordsSupported() const override { return false; }
 
     llvm::Function* createKernel(llvm::Module& m, const std::string& kname,
