@@ -14,9 +14,18 @@
 #include "XpuDeviceTestUtil.h"
 #include "cajeta/xpu/XpuTarget.h"
 
+#include "../PortableEnv.h"
+
+#include <array>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <random>
 #include <string>
 
 using cajeta_test::CajetaJit;
+namespace fs = std::filesystem;
 
 namespace {
 
@@ -304,4 +313,101 @@ TEST(XpuCoopUnaligned, nvptxKeepsTheWmmaFormsBehindTheGuard) {
         ASSERT_TRUE(l.ok) << w.kernel << ": " << l.why;
         EXPECT_NE(l.ptx.find(w.ptx), std::string::npos) << w.kernel << " lacks " << w.ptx;
     }
+}
+
+namespace {
+
+// CAJETA_XPU_NVPTX_PLACEMENT=per-element for one scope (gpu-kernel-parity §10.4).
+struct ForcePerElement {
+    ForcePerElement() { setenv("CAJETA_XPU_NVPTX_PLACEMENT", "per-element", 1); }
+    ~ForcePerElement() { unsetenv("CAJETA_XPU_NVPTX_PLACEMENT"); }
+};
+
+std::string compilerPath() {
+    const char* root = std::getenv("CAJETA_SOURCE_ROOT");
+    return std::string(root && *root ? root : ".") + "/build/src/cajeta";
+}
+
+// stdout and stderr of `cmd`.
+std::string run(const std::string& cmd) {
+    std::string out;
+    FILE* p = popen(cajeta_shell(cmd + " 2>&1").c_str(), "r");
+    if (!p) return out;
+    std::array<char, 512> buf;
+    while (fgets(buf.data(), (int) buf.size(), p)) out += buf.data();
+    pclose(p);
+    return out;
+}
+
+} // namespace
+
+// The per-element form can be forced on any machine, and the forced form has no
+// wmma load or store left in it (the multiply stays).
+TEST(XpuCoopUnaligned, theForcedPerElementFormHasNoWmmaLoadOrStore) {
+    using namespace cajeta::xpu::probe;
+    ForcePerElement force;
+    for (const char* k : {"f32Store", "f32Load", "f16A", "s8A"}) {
+        Lowered l = lowerForNvptx(kSource, k, "test.U");
+        ASSERT_TRUE(l.ok) << k << ": " << l.why;
+        EXPECT_EQ(l.ptx.find("wmma.load"), std::string::npos) << k;
+        EXPECT_EQ(l.ptx.find("wmma.store"), std::string::npos) << k;
+    }
+}
+
+TEST(XpuCoopUnalignedDeviceTests, theForcedPerElementFormIsRightOnNvptx) {
+    if (!cajeta::xpu::test::cudaAvailable()) GTEST_SKIP() << "no CUDA device";
+    ForcePerElement force;
+    everyPlacementIsRight(cajeta::xpu::Backend::Nvptx, "nvptx, forced per element");
+}
+
+// gpu-kernel-parity §10.5: a kernel whose per-element form ran is named at exit, and
+// one that stayed on wmma is not. Run as its own executable, since the report is the
+// program's exit.
+TEST(XpuCoopUnalignedDeviceTests, aKernelThatTookThePerElementFormIsNamedAtExit) {
+    if (!cajeta::xpu::test::cudaAvailable()) GTEST_SKIP() << "no CUDA device";
+    const char* src = R"CJ(
+package probe;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+public class P {
+    @Kernel @Occupancy(maxThreads = 32)
+    public static void misStore(KernelBuffer<float32> y, KernelBuffer<float32> a, uint32 off, uint32 stride) {
+        CooperativeMatrix<float32,16,16,2> acc;
+        acc.load(a, 0, 0, 16);
+        acc.store(y, off, 0, stride);
+    }
+    @Kernel @Occupancy(maxThreads = 32)
+    public static void wellStore(KernelBuffer<float32> y, KernelBuffer<float32> a, uint32 off, uint32 stride) {
+        CooperativeMatrix<float32,16,16,2> acc;
+        acc.load(a, 0, 0, 16);
+        acc.store(y, off, 0, stride);
+    }
+    public static int32 main() {
+        KernelBuffer<float32> a = heap KernelBuffer<float32>(256);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>(600);
+        KernelStream s #= KernelStream.current();
+        misStore.launch(s, grid: [1], block: [32])(y, a, 1, 18);
+        wellStore.launch(s, grid: [1], block: [32])(y, a, 0, 16);
+        s.sync();
+        return 0;
+    }
+}
+)CJ";
+    static std::mt19937_64 rng(std::random_device{}());
+    fs::path base = fs::temp_directory_path() / ("cajeta_placement_" + std::to_string(rng()));
+    fs::create_directories(base / "src" / "probe");
+    fs::create_directories(base / "out");
+    std::ofstream(base / "src" / "probe" / "P.cajeta") << src;
+    const std::string exe = (base / "out" / "p").string();
+    std::string built = run("\"" + compilerPath() + "\" --emit=exe --xpu-backend=nvptx -o \"" + exe +
+                            "\" probe.P.main \"" + (base / "src").string() + "\" \"" +
+                            (base / "out").string() + "\"");
+    ASSERT_TRUE(fs::exists(exe)) << built;
+    std::string out = run("\"" + exe + "\"");
+    std::error_code ec;
+    fs::remove_all(base, ec);
+    EXPECT_NE(out.find("[placement]"), std::string::npos) << out;
+    EXPECT_NE(out.find("misStore"), std::string::npos) << out;
+    EXPECT_EQ(out.find("wellStore"), std::string::npos) << out;
 }

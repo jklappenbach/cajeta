@@ -239,8 +239,22 @@ static void cajeta_xpu_launch_cuda_optix(struct cajeta_optix_rq* rq, void* argv,
                 rq->name, rc);
 }
 
-// CUDA launch: pick the OptiX or software path from the AS argument's impl, load the
-// module lazily, apply spec overrides, translate kernargs, launch, then free them.
+// gpu-kernel-parity §10.5: a slow form never runs silently. At exit, every CUDA
+// kernel whose per-element placement form ran (a native tile off wmma's alignment,
+// coop-converting-store spec 2.5) is named once. The flag costs nothing per launch;
+// it is read by a handler on the runtime's own exit chain, which the program and the
+// JIT harness fire before the driver goes (libc atexit dangles in a JIT'd run).
+void __cajeta_atexit_push(void (*fn)(void*), void* arg);
+static void cajeta_xpu_report_placement(void* arg) {
+    struct cajeta_xpu_module* m = (struct cajeta_xpu_module*) arg;
+    int32_t v = 0;
+    if (m->placeState == 2 && g_xpu_cuda.cuMemcpyDtoH
+            && g_xpu_cuda.cuMemcpyDtoH(&v, m->placeG, sizeof v) == 0 && v)
+        fprintf(stderr, "cajeta: note: [placement] %s: a load or store of a tile off "
+                        "wmma's alignment took the per-element form (each lane's run "
+                        "must be aligned; coop-converting-store spec 2.5)\n", m->name);
+}
+
 static void cajeta_xpu_launch_cuda(const char* kernelName,
                                    int32_t gridX, int32_t gridY, int32_t gridZ,
                                    int32_t blockX, int32_t blockY, int32_t blockZ,
@@ -406,6 +420,19 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
                 g_xpu_cuda.cuMemcpyHtoD(g, specValues,
                                         want <= gbytes ? want : gbytes);
             }
+        }
+    }
+    // A kernel whose native loads or stores may take the per-element placement form
+    // carries a flag the form sets; it is found once per module and read at exit.
+    if (mod && e->placeState == 0 && g_xpu_cuda.cuModuleGetGlobal) {
+        cajeta_cudeviceptr g; size_t gbytes;
+        if (g_xpu_cuda.cuModuleGetGlobal(&g, &gbytes, mod, "cajeta_placement_taken") == 0
+                && gbytes >= sizeof(int32_t)) {
+            e->placeG = g;
+            e->placeState = 2;
+            __cajeta_atexit_push(cajeta_xpu_report_placement, e);
+        } else {
+            e->placeState = 1;
         }
     }
     // A kernel built with checked `align:` statements carries a fault record:
@@ -1389,6 +1416,7 @@ static void cajeta_xpu_register_module_impl(const char* kernelName,
         e->function = NULL;
         e->specState = 0;
         e->lastSpecCount = -1;
+        e->placeState = 0;
     }
     g_xpu_registry_gen++;
     pthread_mutex_unlock(&g_xpu_cuda_lock);

@@ -18,6 +18,10 @@ struct cajeta_xpu_module {
     // kernel-load-alignment Unit 5): 0 not asked, 1 none, 2 at alignFaultG.
     int alignState;
     cajeta_cudeviceptr alignFaultG;
+    // The module's per-element placement flag (an nvptx tile off wmma's alignment,
+    // coop-converting-store spec 2.5): 0 not asked, 1 none, 2 at placeG.
+    int placeState;
+    cajeta_cudeviceptr placeG;
 };
 // An overflow is reported at registration (cajeta_xpu_register_module_impl).
 #define CAJETA_XPU_MAX_MODULES 1024

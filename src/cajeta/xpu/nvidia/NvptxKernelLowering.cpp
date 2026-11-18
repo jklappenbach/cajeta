@@ -19,6 +19,7 @@
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 
+#include <cstdlib>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -541,6 +542,7 @@ public:
         llvm::BasicBlock* fastEnd = b.GetInsertBlock();
         b.CreateBr(done);
         b.SetInsertPoint(gather);
+        notePlacementFallback(b, m, "load");
         llvm::Value* slow = nvGatherFragment(b, m, ptr, stride, lay, matrixType, use);
         llvm::BasicBlock* slowEnd = b.GetInsertBlock();
         b.CreateBr(done);
@@ -566,9 +568,37 @@ public:
     static unsigned nvRunBytes(llvm::Type* matrixType, uint32_t use) {
         return use == 2 && nvElemBytes(matrixType) == 4 ? 8 : 4;
     }
+    // gpu-kernel-parity §10.4: CAJETA_XPU_NVPTX_PLACEMENT=per-element forces every
+    // native load and store onto the per-element form at compile time, so any machine
+    // tests it.
+    static bool nvPlacementForced() {
+        const char* e = std::getenv("CAJETA_XPU_NVPTX_PLACEMENT");
+        return e && std::string(e) == "per-element";
+    }
+    // `cond`, or false when the per-element form is forced.
+    static llvm::Value* nvPlacementOk(llvm::IRBuilderBase& b, llvm::Value* cond) {
+        return nvPlacementForced() ? (llvm::Value*) b.getFalse() : cond;
+    }
+    // gpu-kernel-parity §10.5: a per-element form that runs sets the module's
+    // `cajeta_placement_taken` (one kernel a device module), and the runtime names the
+    // kernel at exit. A plain store and no call: a vprintf here took gemm128 from 128
+    // registers to 130 on sm_89. The manifest records that the kernel has the form.
+    void notePlacementFallback(llvm::IRBuilderBase& b, llvm::Module& m, const char* what) {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        cajeta::xpu::recordNativeOp(b, std::string(what) + ".misaligned", "per-element");
+        auto* flag = m.getGlobalVariable("cajeta_placement_taken");
+        if (!flag) {
+            flag = new llvm::GlobalVariable(m, i32, false, llvm::GlobalValue::ExternalLinkage,
+                                            llvm::ConstantInt::get(i32, 0),
+                                            "cajeta_placement_taken", nullptr,
+                                            llvm::GlobalValue::NotThreadLocal, 1);
+        }
+        b.CreateStore(llvm::ConstantInt::get(i32, 1), flag);
+    }
     static llvm::Value* nvRunAligned(llvm::IRBuilderBase& b, llvm::Value* ptr,
                                      llvm::Value* stride, llvm::Type* matrixType,
                                      uint32_t use) {
+        if (nvPlacementForced()) return b.getFalse();
         llvm::Type* i64 = llvm::Type::getInt64Ty(b.getContext());
         const uint64_t run = nvRunBytes(matrixType, use);
         llvm::Value* pitch = b.CreateMul(b.CreateZExt(stride, i64),
@@ -707,6 +737,7 @@ public:
         b.CreateCall(f, args);
         b.CreateBr(done);
         b.SetInsertPoint(scatter);
+        notePlacementFallback(b, m, "store");
         llvm::Type* scalar = dFrag->getElementType(0);
         for (unsigned k = 0; k < dFrag->getNumElements(); ++k) {
             llvm::Value* row = nullptr;
@@ -771,7 +802,8 @@ public:
             llvm::BasicBlock* next = llvm::BasicBlock::Create(ctx, "sa.next", fn, elem);
             // The f16 accumulator's run is a 4-byte pair (spec §2.5): a 4-byte aligned
             // tile and an even stride.
-            b.CreateCondBr(b.CreateAnd(isZero(addr, 3), isZero(stride, 1)), wmma, next);
+            b.CreateCondBr(nvPlacementOk(b, b.CreateAnd(isZero(addr, 3), isZero(stride, 1))),
+                           wmma, next);
             b.SetInsertPoint(wmma);
             const llvm::Intrinsic::ID sid = lay == 1
                 ? llvm::Intrinsic::nvvm_wmma_m16n16k16_store_d_f16_col_stride
@@ -786,7 +818,8 @@ public:
         }
         if (lay == 0 && !u->isHalfTy()) {
             llvm::BasicBlock* pairs = llvm::BasicBlock::Create(ctx, "sa.pairs", fn, elem);
-            b.CreateCondBr(b.CreateAnd(isZero(addr, 3), isZero(stride, 1)), pairs, elem);
+            b.CreateCondBr(nvPlacementOk(b, b.CreateAnd(isZero(addr, 3), isZero(stride, 1))),
+                           pairs, elem);
             b.SetInsertPoint(pairs);
             for (unsigned k = 0; k < 4; ++k) {
                 llvm::Value* row = nullptr;
@@ -802,6 +835,8 @@ public:
             b.CreateBr(elem);
         }
         b.SetInsertPoint(elem);
+        // A column-major bf16 store has no faster form, so per element is not a fallback.
+        if (u->isHalfTy() || lay == 0) notePlacementFallback(b, m, "storeAs");
         LoweringTarget::coopMatrixStoreAs(b, m, ptr, matrixVal, u, layout, stride, rows, cols,
                                           use, matrixType, swz, blk);
         b.CreateBr(done);
