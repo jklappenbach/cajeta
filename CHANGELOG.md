@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.53.11 (2026-11-18)
+
+- **Cooperative-matrix element access, `fromWords` and the GEMM epilogues run on Vulkan.** `elements`, `row`, `col`, `get` and `set` on a native SPIR-V tile were refused, because SPV_KHR_cooperative_matrix gives no lane-to-element map. They now go through a per-subgroup staging tile in workgroup memory, with the same map as amdgpu's wave32 fragment (lane L holds column L mod 16, element e is row 2e + L/16), ordered by a subgroup-scope barrier. `fromWords` stages each lane's column and reloads it, as nvptx does. `scaledAccumInto`, `rank1Accum`, `scaledAccumInto2` and `scaledAccumI32`, including their `WaveVector.ofLane` forms, keep the tiles native instead of demoting the kernel to the portable tile, and the integer form matches `amdgcn.mul.i24` bit for bit. So the flash-attention prefill tiles and the int8 GEMM tiles that ran only on hip build for Vulkan from the same source. On gfx1151 with RADV, cajeta-llm's Gemma 3 4B Q4_K_M prefill went from 1625 to 2542 tok/s at 512 tokens and from 995 to 2737 at 1536 (`XpuFragmentElement`, `SpirvStagedElementTests`, `XpuCoopFromWordsTests`, `XpuCoopEpilogueTests`; spirv-kernel-parity Units 3 and 4).
+
+- **A `@Device` helper may take a `Shared<T>` on Vulkan.** It was refused there ("a Shared<T> parameter has no pointer form"). Helpers are inlined before SPIR-V codegen, so the panel is the caller's workgroup array, and two call sites with different arrays each use their own (`SpirvSharedHelperParamTests`).
+
+- **A cast of more than four lanes builds for Vulkan.** `Vector<int8,16>.widenLo()` and the conversions on the 8-lane result stopped LLVM's SPIR-V legalizer (`G_CONCAT_VECTORS`), so the kernel had no Vulkan device code. Casts wider than four lanes now reach codegen as four-lane casts, as phis and float arithmetic already did (`SpirvWideVectorCastTests`).
+
+- **A tile live across an early return is valid SPIR-V.** SPIR-V codegen's structurizer merged it with an `OpUndef` of another type, which spirv-val rejects, and RADV segfaulted creating the pipeline. The undef now carries the tile's own type (`XpuVulkanEmitTests.aTileLiveAcrossAnEarlyReturnMergesWithItsOwnType`).
+
+- **A build that holds kernels ends with a count.** After the gate's notes, `cajeta: note: [xpu-kernel-holds] <backend>: N held (<item>: n, ...)` sums the `@Unlowered` holds per backend and tracking item, so a hold is never only a note in the middle of the log (`XpuKernelGate.aBuildWithAHeldKernelEndsWithTheHoldCount`).
+
 - **`Vector.bitcastF16()` and `bitcastI16()` reinterpret 16-bit lanes.** `bitcastF16` reads int16 or uint16 lanes as binary16 bits and `bitcastI16` reads float16 lanes back as int16, without converting, on the host, inside kernels and in the reference interpreter, beside `bitcastF32`/`bitcastI32`. It makes the cheap int8 to f16 widen possible: `((x ^ 0x80) | 0x6400).bitcastF16()` is 1152 + x exactly, so one packed subtract gives x, where `widenLo().toF32().toF16()` took a conversion a lane each way. A receiver of another width is refused (`VectorHalfConvert`, `XpuReferenceInterpreter.halfBitcastsMatchTheCpuBackend`; cajeta-llm 15.2.21.4.3.8.8).
 
 ## 0.53.10 (2026-11-17)
