@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.53.10 (2026-11-17)
+
+- **`Wave.width()` is the constant 32 on nvptx.** It read the warp-size register, which folds to 32 only late in the NVPTX backend, so a kernel that divides by the width was optimized as if it were a runtime value. A wave-generic gemm256 at f16 on the 4090 spilled more and ran 5% slower than its wave-32-pinned form; with the constant it runs at 1738 us against 1768 at n4096.
+
+- **`@Occupancy(maxWaves = N)` counts in the kernel's own wave on CDNA.** An unpinned kernel on gfx942 runs 64 lanes wide, and the work-group ceiling was computed in 32-lane waves, so an 8-wave kernel was capped at 256 threads and its 512-thread launch would be refused.
+
+- **Large cpu buffers go back to the OS when freed.** cpu `KernelBuffer` memory came from `posix_memalign`, and freed blocks of up to 32 MB stayed resident in glibc's heap. Buffers of 1 MB or more (`CAJETA_XPU_CPU_MMAP_MB`) are now mapped and unmapped on free, behind a reuse cache capped at 64 MB (`CAJETA_XPU_ALLOC_CACHE_MB`). Gemma 3 4B on cpu at 4 x 32k peaks at 3.71 GB, down from 3.87, and a 32 MB alloc-and-free loop takes 1.03 ms, down from 2.36.
+
+- **Whole-buffer transfers refuse a host array that is too short.** `upload(T[])`, `download(T[])` and their async forms moved the buffer's full length whatever the array held, reading or writing past a short array's end. They now throw `RecoverableException` naming both counts and move nothing. A longer array still moves the buffer's elements.
+
+- **bfloat16 runs on Vulkan drivers without bf16 support.** RADV on gfx1151 advertises no `VK_KHR_shader_bfloat16`, yet every bf16 kernel's SPIR-V declared the bf16 type. bf16 storage and arithmetic now reach SPIR-V as 16-bit integers with explicit widening, and vulkan matches the cpu backend bit for bit.
+
 - **`k.waveWidth()` tells a launcher the width its kernel was built at.** On a bare `@Kernel` name in its class, `k.waveWidth()` returns the wave width k's device code was built at on the active backend, read from the kernel manifest, or 0 when no device code is loaded. A launcher that works in waves sizes its block from it (`block: [8 * w]`) and stays right where the native width is not 32, as on CDNA's 64. A template kernel is asked by its bare name and answers for its instantiations, which share their `@Wave` (`XpuKernelWaveWidthTests`, datacenter-gpus Unit 3).
 
 - **CooperativeMatrix runs on CDNA3's matrix cores.** On gfx942 (MI300) a 16x16 tile at f16, bf16 or int8 now lowers to MFMA (`v_mfma_f32_16x16x16_f16`, `_bf16`, `v_mfma_i32_16x16x32_i8`) over its 64-lane fragment map, so the same kernel source that runs WMMA on RDNA runs MFMA on CDNA. Before, every matrix-core kernel compiled to no kernel at all on gfx942, without a diagnostic, because it was pinned to wave 32 and CDNA has no wave 32. A `@Wave(width = 32)` kernel on CDNA is now refused by name, portable tiles are laid out for 64 lanes there, a bundle that mixes RDNA and CDNA lowers its tiles portably, and a uint8 mma is refused on CDNA, whose int8 MFMA is signed only. 120 of the kernel package's 126 kernels build for gfx942 (`AmdgpuMfmaTests`, datacenter-gpus Unit 2).
