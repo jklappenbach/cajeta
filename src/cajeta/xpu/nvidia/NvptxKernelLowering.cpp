@@ -566,6 +566,92 @@ public:
         b.CreateCall(f, args);
     }
 
+    // acc.storeAs<U> (coop-converting-store spec §2.2). wmma has one converting
+    // form: the f32 accumulator's eight registers narrow in place to the f16
+    // accumulator's four f16x2 registers (element 2p and 2p+1 into register p),
+    // and wmma.store.d.f16 stores them. wmma needs a 32-byte aligned tile and a
+    // stride of a whole number of 16-byte rows, which a run-time offset cannot
+    // promise, so the form is chosen per store by a branch that every lane of
+    // the warp takes alike (the pointer and stride are uniform):
+    //   - f16, aligned: wmma.store.d.f16;
+    //   - row-major with an even stride and a 4-byte aligned tile: elements 2k
+    //     and 2k+1 sit in adjacent columns of one row (the map's j&1), so each
+    //     pair is one cvt.rn.{f16,bf16}x2.f32 and one 4-byte store;
+    //   - anything else: the per-element default.
+    // bf16 has no wmma store, so it starts at the second form.
+    void coopMatrixStoreAs(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
+                           llvm::Value* matrixVal, llvm::Type* u, llvm::Value* layout,
+                           llvm::Value* stride, uint32_t rows, uint32_t cols,
+                           uint32_t use, llvm::Type* matrixType, uint32_t swz,
+                           LdsBlockPad blk) override {
+        auto* dFrag = llvm::dyn_cast<llvm::StructType>(matrixType);
+        if (swz || blk.period || !dFrag || fragCount(matrixType) != 8 ||
+            !dFrag->getElementType(0)->isFloatTy() || rows != 16 || cols != 16 || use != 2) {
+            LoweringTarget::coopMatrixStoreAs(b, m, ptr, matrixVal, u, layout, stride, rows,
+                                              cols, use, matrixType, swz, blk);
+            return;
+        }
+        const uint32_t lay = constLayout(layout, "storeAs");
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+        llvm::Function* fn = b.GetInsertBlock()->getParent();
+        llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx, "sa.done", fn);
+        llvm::BasicBlock* elem = llvm::BasicBlock::Create(ctx, "sa.elem", fn);
+        llvm::Value* addr = b.CreatePtrToInt(ptr, i64, "sa.addr");
+        auto narrowPair = [&](unsigned k) {
+            llvm::Value* v = llvm::PoisonValue::get(llvm::FixedVectorType::get(u, 2));
+            v = b.CreateInsertElement(
+                v, b.CreateFPTrunc(b.CreateExtractValue(matrixVal, 2 * k), u), (uint64_t) 0);
+            return b.CreateInsertElement(
+                v, b.CreateFPTrunc(b.CreateExtractValue(matrixVal, 2 * k + 1), u),
+                (uint64_t) 1, "sa.pair");
+        };
+        auto isZero = [&](llvm::Value* x, uint64_t mask) {
+            return b.CreateICmpEQ(b.CreateAnd(x, llvm::ConstantInt::get(x->getType(), mask)),
+                                  llvm::ConstantInt::get(x->getType(), 0));
+        };
+        if (u->isHalfTy()) {
+            llvm::BasicBlock* wmma = llvm::BasicBlock::Create(ctx, "sa.wmma", fn, elem);
+            llvm::BasicBlock* next = llvm::BasicBlock::Create(ctx, "sa.next", fn, elem);
+            // 32-byte tile, stride a multiple of eight halves.
+            b.CreateCondBr(b.CreateAnd(isZero(addr, 31), isZero(stride, 7)), wmma, next);
+            b.SetInsertPoint(wmma);
+            const llvm::Intrinsic::ID sid = lay == 1
+                ? llvm::Intrinsic::nvvm_wmma_m16n16k16_store_d_f16_col_stride
+                : llvm::Intrinsic::nvvm_wmma_m16n16k16_store_d_f16_row_stride;
+            cajeta::xpu::recordNativeOp(b, "storeAs", cajeta::xpu::nativeInstructionName(sid));
+            std::vector<llvm::Value*> args{ptr};
+            for (unsigned k = 0; k < 4; ++k) args.push_back(narrowPair(k));
+            args.push_back(stride);
+            b.CreateCall(nvDecl(m, sid, ptr->getType()), args);
+            b.CreateBr(done);
+            b.SetInsertPoint(next);
+        }
+        if (lay == 0) {
+            llvm::BasicBlock* pairs = llvm::BasicBlock::Create(ctx, "sa.pairs", fn, elem);
+            b.CreateCondBr(b.CreateAnd(isZero(addr, 3), isZero(stride, 1)), pairs, elem);
+            b.SetInsertPoint(pairs);
+            for (unsigned k = 0; k < 4; ++k) {
+                llvm::Value* row = nullptr;
+                llvm::Value* col = nullptr;
+                coopMatrixElementCell(b, m, llvm::ConstantInt::get(i32, 2 * k), rows, cols,
+                                      use, matrixType, row, col);
+                llvm::Value* idx = b.CreateZExt(b.CreateAdd(b.CreateMul(row, stride), col), i64);
+                b.CreateAlignedStore(narrowPair(k), b.CreateGEP(u, ptr, idx, "sa.pp"),
+                                     llvm::Align(4));
+            }
+            b.CreateBr(done);
+        } else {
+            b.CreateBr(elem);
+        }
+        b.SetInsertPoint(elem);
+        LoweringTarget::coopMatrixStoreAs(b, m, ptr, matrixVal, u, layout, stride, rows, cols,
+                                          use, matrixType, swz, blk);
+        b.CreateBr(done);
+        b.SetInsertPoint(done);
+    }
+
     llvm::Value* coopMatrixMulAdd(llvm::IRBuilderBase& b, llvm::Module& m,
                                   llvm::Value* a, llvm::Value* bMat,
                                   llvm::Value* c, llvm::Type* /*matrixType*/,

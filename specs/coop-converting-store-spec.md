@@ -66,11 +66,20 @@ bfloat16 has no `wmma.store.d` form. It goes through the accumulator's element m
 (the one the nvptx epilogues use), packing two column-adjacent elements into one 4-byte
 store (`cvt.rn.bf16x2.f32`).
 
+wmma needs a 32-byte aligned tile and a stride of whole 16-byte rows, and a tile's
+offset is usually known only at run time. (Unit 1 measured it: a plain float32 `store`
+at offset 11 and stride 17 put all 256 cells in the wrong place on the 4090.) So the form
+is chosen per store by a branch on the pointer and stride, which every lane of the warp
+takes alike. An aligned float16 tile takes `wmma.store.d.f16`. A row-major tile with an
+even stride on a 4-byte boundary takes the packed pairs, at either type. Anything else
+takes the per-element store, so every placement stays correct.
+
 Use cases:
-1. On sm_89, `gemm128Out16` stores with `wmma.store.d...f16` and has no `st.global.b16`
-   in its interior. Its registers stay at 128 or fewer with no spill.
+1. On sm_89, `gemm128Out16`'s interior tiles are aligned, so they store with
+   `wmma.store.d...f16` and run no `st.global.b16`. Its registers stay at 128 or fewer
+   with no spill.
 2. The device value test on the 4090 covers row- and column-major, an odd stride and a
-   shared destination, at both types.
+   shared destination, at both types, and reaches all three forms.
 
 ### 2.3 Native on vulkan
 

@@ -26,7 +26,13 @@ namespace {
 // The kernels take the layout as a constant (the native stores need one) and the
 // offset and stride at run time. `which` picks the kernel: 0 row-major global,
 // 1 column-major global, 2 a Shared tile (column-major, offset 3, stride 17, for
-// float16; row-major, offset 5, stride 17, for bfloat16) copied out to global.
+// float16; row-major, offset 5, stride 17, for bfloat16) copied out to global,
+// 3 a row-major Shared tile at offset 0, stride 16.
+//
+// On nvptx the placement picks the form (spec §2.2): an aligned tile takes
+// wmma.store.d.f16, a row-major tile with an even stride at a 4-byte boundary the
+// packed pairs, and anything else the per-element store. The configurations below
+// reach all three.
 const char* kSource = R"CJ(
 package test;
 import cajeta.xpu.Barrier;
@@ -88,6 +94,33 @@ public class S {
         CooperativeMatrix<float32,16,16,2> acc;
         acc.load(a, 0, 0, 16);
         acc.storeAs<bfloat16>(t, 5, 0, 17);
+        Barrier.workgroup();
+        for (uint32 k = g; k < 300; k = k + 32) { y[k] = t[k]; }
+    }
+    // Row-major into Shared at the tile's start: the aligned forms on nvptx.
+    @Kernel
+    public static void f16SharedRow(KernelBuffer<float16> y, KernelBuffer<float32> a,
+                                    uint32 off, uint32 stride) {
+        Shared<float16> t = shared float16[300];
+        uint32 g = KernelThread.x();
+        for (uint32 k = g; k < 300; k = k + 32) { t[k] = (float16) (-7.0f); }
+        Barrier.workgroup();
+        CooperativeMatrix<float32,16,16,2> acc;
+        acc.load(a, 0, 0, 16);
+        acc.storeAs<float16>(t, 0, 0, 16);
+        Barrier.workgroup();
+        for (uint32 k = g; k < 300; k = k + 32) { y[k] = t[k]; }
+    }
+    @Kernel
+    public static void bf16SharedRow(KernelBuffer<bfloat16> y, KernelBuffer<float32> a,
+                                     uint32 off, uint32 stride) {
+        Shared<bfloat16> t = shared bfloat16[300];
+        uint32 g = KernelThread.x();
+        for (uint32 k = g; k < 300; k = k + 32) { t[k] = (bfloat16) (-7.0f); }
+        Barrier.workgroup();
+        CooperativeMatrix<float32,16,16,2> acc;
+        acc.load(a, 0, 0, 16);
+        acc.storeAs<bfloat16>(t, 0, 0, 16);
         Barrier.workgroup();
         for (uint32 k = g; k < 300; k = k + 32) { y[k] = t[k]; }
     }
@@ -169,6 +202,10 @@ public class S {
             layout = 1; off = 3; stride = 17;
             f16Shared.launch(s, grid: [1], block: [32])(y, a, off, stride);
         }
+        if (which == 3) {
+            off = 0; stride = 16;
+            f16SharedRow.launch(s, grid: [1], block: [32])(y, a, off, stride);
+        }
         s.sync();
         y.download(y0);
         float32[] got = heap float32[300];
@@ -203,6 +240,10 @@ public class S {
         if (which == 2) {
             off = 5; stride = 17;
             bf16Shared.launch(s, grid: [1], block: [32])(y, a, off, stride);
+        }
+        if (which == 3) {
+            off = 0; stride = 16;
+            bf16SharedRow.launch(s, grid: [1], block: [32])(y, a, off, stride);
         }
         s.sync();
         y.download(y0);
@@ -243,16 +284,18 @@ public class S {
 }
 )CJ";
 
-const char* kKernels[] = {"f16Row", "f16Col", "f16Shared", "bf16Row", "bf16Col", "bf16Shared",
-                          "f32Row"};
+const char* kKernels[] = {"f16Row", "f16Col", "f16Shared", "f16SharedRow", "bf16Row",
+                          "bf16Col", "bf16Shared", "bf16SharedRow", "f32Row"};
 
 struct Config { int which; unsigned off, stride; const char* what; };
 const Config kConfigs[] = {
     {0, 0, 16, "row-major, packed"},
     {0, 11, 17, "row-major, offset 11, odd stride 17"},
+    {0, 2, 18, "row-major, offset 2, stride 18"},
     {1, 0, 16, "column-major, packed"},
     {1, 5, 17, "column-major, offset 5, odd stride 17"},
-    {2, 0, 0, "a Shared tile"},
+    {2, 0, 0, "a Shared tile at an odd stride"},
+    {3, 0, 0, "a row-major Shared tile"},
 };
 
 void everyCellConverts(cajeta::xpu::Backend be, const char* name) {
@@ -386,3 +429,23 @@ TEST(XpuCoopStoreAs, lowersOnNvptxAndBothAmdFamilies) {
     }
 }
 
+// Unit 2 (spec §2.2): nvptx has the three forms in the code, and the float16 one
+// is wmma's converting store at both layouts and into Shared.
+TEST(XpuCoopStoreAs, nvptxEmitsTheConvertingStores) {
+    using namespace cajeta::xpu::probe;
+    struct Want { const char* kernel; std::vector<const char*> ptx; };
+    const Want wants[] = {
+        {"f16Row", {"wmma.store.d.sync.aligned.row.m16n16k16.global.f16", "cvt.rn.f16x2.f32",
+                    "st.global.b32"}},
+        {"f16Col", {"wmma.store.d.sync.aligned.col.m16n16k16.global.f16"}},
+        {"f16SharedRow", {"wmma.store.d.sync.aligned.row.m16n16k16.shared.f16"}},
+        {"bf16Row", {"cvt.rn.bf16x2.f32", "st.global.b32"}},
+    };
+    for (const Want& w : wants) {
+        Lowered l = lowerForNvptx(kSource, w.kernel, "test.S");
+        ASSERT_TRUE(l.ok) << w.kernel << ": " << l.why;
+        for (const char* p : w.ptx)
+            EXPECT_NE(l.ptx.find(p), std::string::npos) << w.kernel << " lacks " << p << "\n"
+                                                         << l.ptx;
+    }
+}
