@@ -748,6 +748,10 @@ namespace xpu {
             return false;
         }
 
+        // Whether this target builds a fallback rung beside the native kernel (vulkan's "$pt"),
+        // whose portable tiles are not a demotion of the kernel and print no tier note.
+        virtual bool fallbackRung() const { return false; }
+
         // Whether a native tile whose fragment has no lane map serves per-element access by
         // staging through workgroup memory, at stagedElementWaveWidth() lanes a subgroup.
         virtual bool coopMatrixStagedElements() const { return false; }

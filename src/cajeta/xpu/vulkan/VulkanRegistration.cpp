@@ -95,9 +95,11 @@ namespace vulkan {
 
         // Emits one SPIR-V variant of `method`; `registerKparams` is true only
         // for the primary variant, since the variants share that metadata.
+        bool lastDeclaresCoop = false;   // the last native module's OpCapability CooperativeMatrixKHR
         auto emitVariant = [&](const MethodPtr& method, const std::string& regName,
                                bool software, bool registerKparams,
-                               unsigned virtualWave = 0, unsigned virtualSubgroup = 0) -> bool {
+                               unsigned virtualWave = 0, unsigned virtualSubgroup = 0,
+                               bool portableTiles = false) -> bool {
             if (unloweredHoldsBeforeLowering(*method, "vulkan")) {
                 if (virtualSubgroup) noteVirtualSkipped(regName, "held before lowering");
                 else reportUnloweredKernel(*method, regName, "vulkan",
@@ -113,13 +115,14 @@ namespace vulkan {
             try {
                 kfn = virtualSubgroup
                     ? lowerVirtualKernel(method, devMod, *tm, regName, virtualWave, virtualSubgroup)
+                    : portableTiles ? lowerKernelPortableTiles(method, devMod, regName)
                     : lowerKernel(method, devMod, software, regName);
             } catch (cajeta::Exception& ex) {
                 // A contradicted @Access is the author's error, never a skip.
                 if (ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_CONTRADICTED"
                         || ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_UNKNOWN") throw;
                 // XPU-N01: no device code, so a launch would find no kernel.
-                if (virtualSubgroup) noteVirtualSkipped(regName, ex.getMessage());
+                if (virtualSubgroup || portableTiles) noteVirtualSkipped(regName, ex.getMessage());
                 else reportUnloweredKernel(*method, regName, "vulkan", ex.getMessage());
                 return false;
             }
@@ -130,7 +133,7 @@ namespace vulkan {
             std::string codegenFailure;
             std::vector<uint8_t> spirv = emitSpirv(devMod, *tm, &codegenFailure);
             if (spirv.empty()) {
-                if (!codegenFailure.empty() && virtualSubgroup)
+                if (!codegenFailure.empty() && (virtualSubgroup || portableTiles))
                     noteVirtualSkipped(regName, "LLVM SPIR-V codegen: " + codegenFailure);
                 else if (!codegenFailure.empty())
                     reportUnloweredKernel(*method, regName, "vulkan",
@@ -138,6 +141,20 @@ namespace vulkan {
                 return false;
             }
 
+            if (!virtualSubgroup && !portableTiles && !software) {
+                constexpr uint32_t kOpCapability = 17, kCapCooperativeMatrixKHR = 6022;
+                lastDeclaresCoop = false;
+                const uint32_t* w = reinterpret_cast<const uint32_t*>(spirv.data());
+                const size_t nw = spirv.size() / 4;
+                for (size_t i = 5; i < nw;) {
+                    const uint32_t wc = w[i] >> 16, op = w[i] & 0xFFFFu;
+                    if (wc == 0) break;
+                    if (op == kOpCapability && wc == 2 && w[i + 1] == kCapCooperativeMatrixKHR)
+                        lastDeclaresCoop = true;
+                    if (op == 54) break;   // OpFunction: the capabilities are all above it
+                    i += wc;
+                }
+            }
             // Pipeline statistics are a driver fact; the footprint holds the declared wave width and
             // the static workgroup bytes, which the runtime checks against the device's limit.
             std::optional<KernelManifest> manifest;
@@ -240,6 +257,11 @@ namespace vulkan {
                 continue;
             noteKernelLowered(*method, entryName, "vulkan");
             ++emitted;
+            // A kernel on native cooperative matrices also gets a "<name>$pt" variant on the
+            // portable tile, which a device without them launches instead.
+            if (lastDeclaresCoop)
+                emitVariant(method, entryName + "$pt", /*software=*/false,
+                            /*registerKparams=*/false, 0, 0, /*portableTiles=*/true);
             // A ray-query kernel also gets a "<name>$sw" software-BVH variant.
             if (usesRayQuery(method))
                 emitVariant(method, entryName + "$sw", /*software=*/true,

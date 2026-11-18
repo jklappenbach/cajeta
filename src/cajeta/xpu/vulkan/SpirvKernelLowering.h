@@ -31,6 +31,11 @@ namespace vulkan {
                                 bool softwareRayQuery = false,
                                 const std::string& entryName = "");
 
+    // Lower `method` with every cooperative-matrix tile on the portable tier, for the
+    // "<name>$pt" variant a device without cooperative matrices launches.
+    llvm::Function* lowerKernelPortableTiles(const MethodPtr& method, llvm::Module& deviceModule,
+                                             const std::string& entryName);
+
     // Lower a @Vertex/@Fragment stage into `deviceModule`, returning the `void main()` entry
     // for `stage`: params become Input interface variables and the return an Output one.
     // `entryName` overrides the entry symbol. Throws XPU-N01 on an unsupported construct.

@@ -902,6 +902,24 @@ static int caj_vk_has_fault_binding(const void* spirv, uint64_t len, uint32_t bi
 // The runtime's own fault-record buffer for Vulkan, made once, host-mapped.
 static int64_t g_vk_align_fault;
 
+// True the first time `kernel` is named by a rung note in this process.
+static int cajeta_xpu_first_rung_note(const char* kernel) {
+    static char seen[64][128];
+    static int nseen = 0;
+    static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    int first = 1;
+    pthread_mutex_lock(&mu);
+    for (int i = 0; i < nseen; ++i)
+        if (strncmp(seen[i], kernel, sizeof(seen[i]) - 1) == 0) { first = 0; break; }
+    if (first && nseen < 64) {
+        strncpy(seen[nseen], kernel, sizeof(seen[nseen]) - 1);
+        seen[nseen][sizeof(seen[nseen]) - 1] = '\0';
+        ++nseen;
+    }
+    pthread_mutex_unlock(&mu);
+    return first;
+}
+
 // The subgroup width a virtual wave of `w` runs over: 2w when the device can pin it (one lane
 // per invocation), else the widest it can pin below `w`, else the width it always runs.
 static uint32_t caj_vk_virtual_width(uint32_t w) {
@@ -964,6 +982,32 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
                 "cajeta.xpu: no registered SPIR-V kernel '%s' to launch\n",
                 launchName);
         return;
+    }
+    // A device without a capability the module declares launches the "<name>$pt" variant, the
+    // same kernel on the portable tile, when the compiler built one; the switch is named once.
+    char ptName[160];
+    {
+        const char* capName = NULL;
+        if (__cajeta_xpu_vk_spv_missing_capability((const uint32_t*) spirv, (size_t) (len / 4),
+                                                   g_xpu_vk.caps, &capName)) {
+            snprintf(ptName, sizeof(ptName), "%s$pt", launchName);
+            pthread_mutex_lock(&g_xpu_cuda_lock);
+            struct cajeta_xpu_module* pe = cajeta_xpu_find_module(ptName, CAJ_XPU_VULKAN);
+            pthread_mutex_unlock(&g_xpu_cuda_lock);
+            const char* lacked = capName;
+            const char* ptLacks = NULL;
+            if (pe && pe->image && pe->len >= 4
+                    && !__cajeta_xpu_vk_spv_missing_capability((const uint32_t*) pe->image,
+                                                               (size_t) (pe->len / 4), g_xpu_vk.caps,
+                                                               &ptLacks)) {
+                if (cajeta_xpu_first_rung_note(launchName))
+                    fprintf(stderr, "cajeta: note: [xpu-rung] %s runs on the portable tile: this "
+                            "device has not enabled %s\n", launchName, lacked ? lacked : "a capability it declares");
+                launchName = ptName;
+                spirv = pe->image;
+                len = pe->len;
+            }
+        }
     }
     int declaredWave = caj_record_wave(kernelName, CAJ_XPU_VULKAN);
     char virtualName[160];

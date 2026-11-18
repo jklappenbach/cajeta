@@ -476,8 +476,31 @@ report.
 | memory, L2, discrete or integrated | `memoryBytes()`, `freeMemoryBytes()` (live), `vramBytes()`, `l2CacheBytes()`, `integrated()` |
 | clocks and bandwidth | `clockKHz()`, `memoryClockKHz()`, `memoryBusWidthBits()`, `peakBandwidthGBps()` |
 | identity and neighbours | `uuid()`, `driverVersion()`, `foreignLoadPercent()` |
-| capabilities | `supports(Capability)`: `RayQueryNative`, `RayQueryRtCore`, `CoopMatrixBf16F32Acc`, `AtomicInt64` |
+| capabilities | `supports(Capability)`, from the driver: see the table below |
 | the registry | `kernelAvailable(name)`, `kernelUsable(name)`, `kernelUnusableReason(name)`, `registeredKernelCount()`, `registeredKernel(i)`, `kernelLaunchCount(name)`, `launchFailures()`, `checkLaunch()` |
+
+`Device.supports(Capability)` answers for the active device. A program reads it after its
+first device touch (a launch or an allocation): before that no backend is active and every
+answer is no.
+
+| Capability | Meaning | vulkan | hip | cuda | cpu |
+|---|---|---|---|---|---|
+| `RayQueryNative` | hardware inline ray query | the ray-query extensions | no | no | no |
+| `RayQueryRtCore` | pipeline ray query on RT cores | no | no | OptiX, opt-in | no |
+| `CoopMatrixBf16F32Acc` | a bf16 x bf16 -> f32 tile can be launched (native or not) | no | gfx11, gfx12 | sm_80+ | yes |
+| `AtomicInt64` | 64-bit buffer atomics | the device's int64-atomics feature | yes | yes | yes |
+| `CoopMatrixF16F32Acc` | a native f16 x f16 -> f32 16x16 matrix unit | a 16x16x16 subgroup config the driver lists | RDNA3+, CDNA with matrix cores | sm_70+ | no |
+| `CoopMatrixInt8Int32Acc` | a native int8 x int8 -> int32 16x16 matrix unit | as above | as above | sm_72+ | no |
+| `CoopMatrixBf16F32AccNative` | a native bf16 x bf16 -> f32 16x16 matrix unit | as above | as above | sm_80+ | no |
+| `Float64` | f64 arithmetic in kernels | `shaderFloat64` | yes | yes | yes |
+| `Float16Arithmetic` | f16 arithmetic in the device's own instructions | `shaderFloat16` | yes | sm_53+ | no |
+| `IntegerDot4x8` | an accelerated 4 x 8-bit packed signed dot product | the integer dot product properties | RDNA3+, CDNA with matrix cores | sm_61+ | no |
+| `SubgroupWidth32` | kernels can run at a 32-lane wave | the subgroup size range, or the default | not gfx9 | yes | yes |
+| `SubgroupWidth64` | kernels can run at a 64-lane wave | as above | yes | no | yes |
+
+On proton (gfx1151, RADV, 2026-11-18) vulkan answers yes to everything but
+`CoopMatrixBf16F32AccNative` and the two ray-query capabilities, and hip answers yes to
+all the matrix, arithmetic and width rows (`XpuCapabilityCatalogTests`).
 
 The per-block shared limit is the load-bearing one. An RTX 4090 holds 100 KB
 a multiprocessor and caps a block at 48 KB unless the launch opts in to

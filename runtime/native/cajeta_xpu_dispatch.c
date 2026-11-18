@@ -1197,6 +1197,33 @@ int64_t __cajeta_xpu_device_free_memory_bytes(void) {
 
 extern int cajeta_xpu_optix_available(void);
 
+// The CUDA device's compute capability as major * 10 + minor, 0 when unknown.
+static int cajeta_xpu_cuda_cc(void) {
+    int major = 0, minor = 0;
+    if (!g_xpu_cuda.cuDeviceGetAttribute) return 0;
+    if (g_xpu_cuda.cuDeviceGetAttribute(&major, 75, g_xpu_cuda.device) != 0) return 0;
+    g_xpu_cuda.cuDeviceGetAttribute(&minor, 76, g_xpu_cuda.device);
+    return major * 10 + minor;
+}
+
+// 1 for RDNA3 or newer (gfx11xx, gfx12xx), 2 for a CDNA part with matrix cores
+// (gfx908, gfx90a, gfx94x, gfx95x), 0 otherwise.
+static int cajeta_xpu_hip_matrix_family(void) {
+    char arch[64];
+    if (!cajeta_xpu_hip_gfx_arch(arch, sizeof(arch))) return 0;
+    if (strncmp(arch, "gfx11", 5) == 0 || strncmp(arch, "gfx12", 5) == 0) return 1;
+    if (strncmp(arch, "gfx908", 6) == 0 || strncmp(arch, "gfx90a", 6) == 0
+            || strncmp(arch, "gfx94", 5) == 0 || strncmp(arch, "gfx95", 5) == 0) return 2;
+    return 0;
+}
+
+// 1 when the HIP device is a gfx9 (wave64-only) part.
+static int cajeta_xpu_hip_wave64_only(void) {
+    char arch[64];
+    if (!cajeta_xpu_hip_gfx_arch(arch, sizeof(arch))) return 0;
+    return strncmp(arch, "gfx9", 4) == 0 ? 1 : 0;
+}
+
 // Device.supports(Capability) — does the active device advertise `cap` natively?
 // `cap` is the Capability.cajeta ordinal; append cases, never renumber.
 int32_t __cajeta_xpu_device_supports(int32_t cap) {
@@ -1249,6 +1276,92 @@ int32_t __cajeta_xpu_device_supports(int32_t cap) {
 #else
                     return 0;
 #endif
+                default:
+                    return 0;
+            }
+        case 4:  // CoopMatrixF16F32Acc — a native f16 x f16 -> f32 16x16 matrix unit
+        case 5:  // CoopMatrixInt8Int32Acc — a native int8 x int8 -> int32 16x16 matrix unit
+        case 6:  // CoopMatrixBf16F32AccNative — a native bf16 x bf16 -> f32 16x16 matrix unit
+            switch (be) {
+                case CAJ_XPU_VULKAN:
+#if defined(CAJETA_RT_HAS_VULKAN)
+                    return (g_xpu_vk.coopCfg & (cap == 4 ? 1u : cap == 5 ? 2u : 4u)) ? 1 : 0;
+#else
+                    return 0;
+#endif
+                case CAJ_XPU_HIP:
+                    return cajeta_xpu_hip_matrix_family() != 0 ? 1 : 0;
+                case CAJ_XPU_CUDA: {
+                    int cc = cajeta_xpu_cuda_cc();
+                    return cc >= (cap == 4 ? 70 : cap == 5 ? 72 : 80) ? 1 : 0;
+                }
+                default:
+                    return 0;
+            }
+        case 7:  // Float64 — f64 arithmetic in kernels
+            switch (be) {
+                case CAJ_XPU_VULKAN:
+#if defined(CAJETA_RT_HAS_VULKAN)
+                    return g_xpu_vk.float64 ? 1 : 0;
+#else
+                    return 0;
+#endif
+                case CAJ_XPU_CPU:
+                case CAJ_XPU_CUDA:
+                case CAJ_XPU_HIP:
+                    return 1;
+                default:
+                    return 0;
+            }
+        case 8:  // Float16Arithmetic — f16 arithmetic in the device's own instructions
+            switch (be) {
+                case CAJ_XPU_VULKAN:
+#if defined(CAJETA_RT_HAS_VULKAN)
+                    return g_xpu_vk.float16Arith ? 1 : 0;
+#else
+                    return 0;
+#endif
+                case CAJ_XPU_HIP:
+                    return 1;
+                case CAJ_XPU_CUDA:
+                    return cajeta_xpu_cuda_cc() >= 53 ? 1 : 0;
+                default:
+                    return 0;
+            }
+        case 9:  // IntegerDot4x8 — an accelerated 4 x 8-bit packed signed dot product
+            switch (be) {
+                case CAJ_XPU_VULKAN:
+#if defined(CAJETA_RT_HAS_VULKAN)
+                    return g_xpu_vk.intDot4x8 ? 1 : 0;
+#else
+                    return 0;
+#endif
+                case CAJ_XPU_HIP:
+                    return cajeta_xpu_hip_matrix_family() != 0 ? 1 : 0;
+                case CAJ_XPU_CUDA:
+                    return cajeta_xpu_cuda_cc() >= 61 ? 1 : 0;
+                default:
+                    return 0;
+            }
+        case 10: // SubgroupWidth32 — kernels can run at a 32-lane wave
+        case 11: // SubgroupWidth64 — kernels can run at a 64-lane wave
+            switch (be) {
+                case CAJ_XPU_VULKAN: {
+#if defined(CAJETA_RT_HAS_VULKAN)
+                    uint32_t w = cap == 10 ? 32u : 64u;
+                    if (g_xpu_vk.sizeCtlFeature && g_xpu_vk.minSubgroupSize <= w
+                            && g_xpu_vk.maxSubgroupSize >= w) return 1;
+                    return g_xpu_vk.defaultSubgroupSize == w ? 1 : 0;
+#else
+                    return 0;
+#endif
+                }
+                case CAJ_XPU_HIP:
+                    return (cap == 11 || !cajeta_xpu_hip_wave64_only()) ? 1 : 0;
+                case CAJ_XPU_CUDA:
+                    return cap == 10 ? 1 : 0;
+                case CAJ_XPU_CPU:
+                    return 1;
                 default:
                     return 0;
             }

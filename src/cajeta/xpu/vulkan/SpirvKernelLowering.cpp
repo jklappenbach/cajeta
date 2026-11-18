@@ -1487,10 +1487,15 @@ class SpirvVirtualTarget : public SpirvTarget {
 public:
     SpirvVirtualTarget(unsigned w, unsigned s) : w_(w), s_(s), c_(w / s), narrow_(s > w) {}
 
+    // A native SPIR-V tile spans the real subgroup, not the virtual wave, so every tile here
+    // is the portable one, spread across the virtual wave.
     bool coopMatrixStagedElements() const override { return false; }
     bool coopMatrixEpilogueSupported() const override { return false; }
-    unsigned distributedCoopMatrixWaveWidth(uint32_t /*cols*/) override { return 0; }
-    bool distributeReplicablePortableTiles() const override { return false; }
+    ImplTier coopMatrixTier(llvm::Type*, uint32_t, uint32_t, uint32_t) override {
+        return ImplTier::Portable;
+    }
+    unsigned distributedCoopMatrixWaveWidth(uint32_t /*cols*/) override { return w_; }
+    bool distributeReplicablePortableTiles() const override { return true; }
     bool coopMatrixFromWordsSupported() const override { return false; }
 
     llvm::Function* createKernel(llvm::Module& m, const std::string& kname,
@@ -1657,6 +1662,25 @@ private:
     llvm::Argument* slot_ = nullptr;
 };
 } // namespace
+
+// The "<name>$pt" target: every cooperative-matrix tile is the portable one, spread across the
+// subgroup, so the module needs no CooperativeMatrixKHR capability.
+class SpirvPortableTileTarget : public SpirvTarget {
+public:
+    bool fallbackRung() const override { return true; }
+    ImplTier coopMatrixTier(llvm::Type*, uint32_t, uint32_t, uint32_t) override {
+        return ImplTier::Portable;
+    }
+    bool coopMatrixStagedElements() const override { return false; }
+    bool coopMatrixEpilogueSupported() const override { return false; }
+    bool coopMatrixFromWordsSupported() const override { return false; }
+};
+
+llvm::Function* lowerKernelPortableTiles(const MethodPtr& method, llvm::Module& deviceModule,
+                                         const std::string& entryName) {
+    SpirvPortableTileTarget target;
+    return cajeta::xpu::lowerKernel(method, deviceModule, target, entryName);
+}
 
 llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
                             bool softwareRayQuery, const std::string& entryName) {

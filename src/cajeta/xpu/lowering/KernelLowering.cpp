@@ -5069,6 +5069,7 @@ private:
         std::string dt = deviceScalarName(elem);
         std::string key = dt + ":" + std::to_string(rows) + "x" +
                           std::to_string(cols) + "@" + target.name();
+        if (target.fallbackRung()) return;
         if (!notedCoopTiers.insert(key).second) return;
         if (forced) {
             std::cerr << "note: [mma-tiering] CooperativeMatrix<" << dt << ","
