@@ -194,6 +194,61 @@ static void splitWidePhis(llvm::Module& m) {
     }
 }
 
+// Joins four-lane `parts` (the last may be narrower) into one vector of `n` lanes of `vt`.
+static llvm::Value* joinQuads(llvm::IRBuilderBase& b, llvm::FixedVectorType* vt,
+                              llvm::ArrayRef<llvm::Value*> parts, unsigned n) {
+    llvm::Value* whole = llvm::PoisonValue::get(vt);
+    for (unsigned q = 0, at = 0; q < parts.size(); ++q, at += 4) {
+        const unsigned w = std::min(4u, n - at);
+        llvm::SmallVector<int, 16> grow(n, -1);
+        for (unsigned l = 0; l < w; ++l) grow[at + l] = (int) l;
+        llvm::Value* wide = b.CreateShuffleVector(parts[q], grow, "wcast.wide");
+        llvm::SmallVector<int, 16> merge(n);
+        for (unsigned l = 0; l < n; ++l)
+            merge[l] = (l >= at && l < at + w) ? (int) (n + l) : (int) l;
+        whole = b.CreateShuffleVector(whole, wide, merge, "wcast.join");
+    }
+    return whole;
+}
+
+// Splits every lane-preserving cast of more than four lanes (sext, zext, trunc, the float
+// and int conversions) into four-lane casts, which the legalizer can select.
+static void splitWideCasts(llvm::Module& m) {
+    for (llvm::Function& f : m) {
+        llvm::SmallVector<llvm::CastInst*, 16> wide;
+        for (llvm::BasicBlock& bb : f)
+            for (llvm::Instruction& i : bb) {
+                auto* c = llvm::dyn_cast<llvm::CastInst>(&i);
+                if (c == nullptr || c->getOpcode() == llvm::Instruction::BitCast
+                    || c->getOpcode() == llvm::Instruction::AddrSpaceCast)
+                    continue;
+                auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(c->getType());
+                auto* st = llvm::dyn_cast<llvm::FixedVectorType>(c->getSrcTy());
+                if (vt && st && vt->getNumElements() > 4
+                    && st->getNumElements() == vt->getNumElements())
+                    wide.push_back(c);
+            }
+        for (llvm::CastInst* c : wide) {
+            auto* vt = llvm::cast<llvm::FixedVectorType>(c->getType());
+            const unsigned n = vt->getNumElements();
+            llvm::IRBuilder<> b(c);
+            llvm::SmallVector<llvm::Value*, 4> parts;
+            for (unsigned at = 0; at < n; at += 4) {
+                const unsigned w = std::min(4u, n - at);
+                llvm::SmallVector<int, 4> mask;
+                for (unsigned l = 0; l < w; ++l) mask.push_back((int) (at + l));
+                llvm::Value* x = b.CreateShuffleVector(c->getOperand(0), mask, "wcast.part");
+                llvm::Value* p = b.CreateCast(c->getOpcode(), x,
+                    llvm::FixedVectorType::get(vt->getElementType(), w), c->getName());
+                if (auto* pi = llvm::dyn_cast<llvm::Instruction>(p)) pi->copyIRFlags(c);
+                parts.push_back(p);
+            }
+            c->replaceAllUsesWith(joinQuads(b, vt, parts, n));
+            c->eraseFromParent();
+        }
+    }
+}
+
 // GLSL Round leaves the direction at .5 to the driver: llvm.round becomes trunc plus a
 // half-away step, exact for every finite float, so Vulkan rounds as the other backends do.
 void expandRoundHalfAway(llvm::Module& m) {
@@ -928,6 +983,7 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
     expandBf16Narrowing(m);
     expandRoundHalfAway(m);
     splitWidePhis(m);
+    splitWideCasts(m);
 
     // SPIRVLegalizePointerCast crashes on an address that is a constant-expression GEP, a
     // shared array read at a constant index, so every such address becomes an instruction.
