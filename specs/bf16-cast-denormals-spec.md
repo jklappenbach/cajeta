@@ -25,7 +25,20 @@ Phoenix has no AVX512-BF16, so LLVM's generic expansion runs there and is correc
 result of the cast depends on the build machine's CPU, which the language never allows,
 and the coop-converting-store bf16 value tests compute their host oracle with this cast.
 
-Decision (Julian, 2026-11-18): fix it now, under this spec.
+Decisions (Julian, 2026-11-18, reviewed interactively):
+
+1. Fix it now, under this spec.
+2. The narrowing is integer round-to-nearest-even on every CPU, the GPUs' sequence. No
+   hardware convert with a denormal fixup: one form, one test.
+3. `@FastMath` code may keep the hardware convert, as the XPU contract lets it flush.
+4. float64 to bf16 is measured first: Unit 1's tests carry float64 cases that a double
+   rounding gets wrong, and the fix covers float64 only if they fail.
+5. Performance is read and reported, not gated: cajeta-llm's cpu-leg bf16 timings
+   before and after, on proton. A large regression comes back to Julian.
+6. One late IR pass, just before x86 instruction selection, on every path.
+7. Phoenix checks the assembly at `-mcpu=znver5` and the values at its own CPU; proton
+   runs the value tests where the instruction exists.
+8. It ships in coop-converting-store's release (that plan's Unit 4).
 
 ## 2. Features
 
@@ -37,8 +50,9 @@ sequence the GPU backends already emit:
 `(bits + 0x7FFF + ((bits >> 16) & 1)) >> 16`, and a NaN gives its top half with the
 quiet bit set. The rewrite runs late, so every source is covered: the language cast,
 `Vector.toBF16`, the stdlib, and a coop tile's narrowing store. A `@FastMath` kernel
-may keep the hardware convert. A wider source (`float64`) narrows through the same
-rule, never by a double rounding.
+may keep the hardware convert (decision 3). A `float64` source is measured first
+(decision 4): if LLVM narrows it through float32 and rounds twice, it narrows once,
+by the same rule.
 
 Use cases:
 1. On proton, `(bfloat16) x` on the host and in a cpu kernel gives 0x0001, 0x8001 and
@@ -46,5 +60,6 @@ Use cases:
 2. Values that round, overflow to infinity, are NaN, or are zero keep the results they
    have today on every CPU.
 3. coop-converting-store's bfloat16 value tests pass on proton.
-4. A cpu kernel that narrows to bf16 in a hot loop costs no more than a few integer
-   instructions a lane. The cajeta-llm cpu leg's timings are read before and after.
+4. A cpu kernel that narrows to bf16 in a hot loop costs a few integer instructions a
+   lane. The cajeta-llm cpu leg's bf16 timings are read before and after and reported
+   (decision 5).
