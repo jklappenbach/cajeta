@@ -40,10 +40,10 @@ namespace {
 // float16; row-major, offset 5, stride 17, for bfloat16) copied out to global,
 // 3 a row-major Shared tile at offset 0, stride 16.
 //
-// On nvptx the placement picks the form (spec §2.2): an aligned tile takes
-// wmma.store.d.f16, a row-major tile with an even stride at a 4-byte boundary the
-// packed pairs, and anything else the per-element store. The configurations below
-// reach all three.
+// On nvptx the placement picks the form (spec §2.2, §2.5): a float16 tile on a
+// 4-byte boundary with an even stride takes wmma.store.d.f16, a row-major bfloat16
+// tile there the packed pairs, and anything else the per-element store. The
+// configurations below reach all three.
 const char* kSource = R"CJ(
 package test;
 import cajeta.xpu.Barrier;
@@ -450,14 +450,14 @@ TEST(XpuCoopStoreAs, lowersOnNvptxAndBothAmdFamilies) {
     }
 }
 
-// Unit 2 (spec §2.2): nvptx has the three forms in the code, and the float16 one
-// is wmma's converting store at both layouts and into Shared.
+// Unit 2 (spec §2.2): nvptx has its converting forms in the code: wmma's
+// converting store for float16 at both layouts and into Shared, and the packed
+// pairs for bfloat16.
 TEST(XpuCoopStoreAs, nvptxEmitsTheConvertingStores) {
     using namespace cajeta::xpu::probe;
     struct Want { const char* kernel; std::vector<const char*> ptx; };
     const Want wants[] = {
-        {"f16Row", {"wmma.store.d.sync.aligned.row.m16n16k16.global.f16", "cvt.rn.f16x2.f32",
-                    "st.global.b32"}},
+        {"f16Row", {"wmma.store.d.sync.aligned.row.m16n16k16.global.f16", "cvt.rn.f16x2.f32"}},
         {"f16Col", {"wmma.store.d.sync.aligned.col.m16n16k16.global.f16"}},
         {"f16SharedRow", {"wmma.store.d.sync.aligned.row.m16n16k16.shared.f16"}},
         {"bf16Row", {"cvt.rn.bf16x2.f32", "st.global.b32"}},
