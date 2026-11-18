@@ -211,6 +211,41 @@ static llvm::Value* joinQuads(llvm::IRBuilderBase& b, llvm::FixedVectorType* vt,
     return whole;
 }
 
+// Booleans in a storage buffer are bytes (SPIR-V forbids OpTypeBool there): an i1 load
+// becomes a byte load and a compare, an i1 store a widened byte store.
+static void widenBooleanStorage(llvm::Module& m) {
+    constexpr unsigned kStorageBufferAS = 11;
+    for (llvm::Function& f : m) {
+        llvm::SmallVector<llvm::Instruction*, 16> work;
+        for (llvm::BasicBlock& bb : f)
+            for (llvm::Instruction& i : bb) {
+                if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(&i)) {
+                    if (ld->getType()->isIntegerTy(1)
+                        && ld->getPointerAddressSpace() == kStorageBufferAS)
+                        work.push_back(ld);
+                } else if (auto* st = llvm::dyn_cast<llvm::StoreInst>(&i)) {
+                    if (st->getValueOperand()->getType()->isIntegerTy(1)
+                        && st->getPointerAddressSpace() == kStorageBufferAS)
+                        work.push_back(st);
+                }
+            }
+        for (llvm::Instruction* i : work) {
+            llvm::IRBuilder<> b(i);
+            llvm::Type* i8 = b.getInt8Ty();
+            if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(i)) {
+                auto* nl = b.CreateAlignedLoad(i8, ld->getPointerOperand(), ld->getAlign(),
+                                               ld->isVolatile(), ld->getName() + ".byte");
+                ld->replaceAllUsesWith(b.CreateICmpNE(nl, b.getInt8(0), ld->getName()));
+            } else {
+                auto* st = llvm::cast<llvm::StoreInst>(i);
+                b.CreateAlignedStore(b.CreateZExt(st->getValueOperand(), i8), st->getPointerOperand(),
+                                     st->getAlign(), st->isVolatile());
+            }
+            i->eraseFromParent();
+        }
+    }
+}
+
 // Splits every lane-preserving cast of more than four lanes (sext, zext, trunc, the float
 // and int conversions) into four-lane casts, which the legalizer can select.
 static void splitWideCasts(llvm::Module& m) {
@@ -984,6 +1019,7 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
     expandRoundHalfAway(m);
     splitWidePhis(m);
     splitWideCasts(m);
+    widenBooleanStorage(m);
 
     // SPIRVLegalizePointerCast crashes on an address that is a constant-expression GEP, a
     // shared array read at a constant index, so every such address becomes an instruction.

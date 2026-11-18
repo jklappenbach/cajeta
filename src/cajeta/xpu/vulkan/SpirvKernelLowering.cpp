@@ -63,9 +63,10 @@ constexpr unsigned kMaxBindlessBuffers = 16;
 #endif
 
 // The target("spirv.VulkanBuffer", [0 x elemTy], StorageBuffer, writable) handle
-// type handlefrombinding returns for a (RW)StructuredBuffer<elemTy>.
+// type handlefrombinding returns for a (RW)StructuredBuffer<elemTy>; a boolean buffer holds bytes.
 llvm::TargetExtType* vkBufferType(llvm::LLVMContext& ctx, llvm::Type* elemTy,
                                   bool writable) {
+    if (elemTy->isIntegerTy(1)) elemTy = llvm::Type::getInt8Ty(ctx);
     llvm::Type* runtimeArr = llvm::ArrayType::get(elemTy, 0);
     return llvm::TargetExtType::get(ctx, "spirv.VulkanBuffer", {runtimeArr},
                                     {kStorageBufferSC, writable ? 1u : 0u});
