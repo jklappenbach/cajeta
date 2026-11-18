@@ -5968,6 +5968,27 @@ namespace cajeta {
                     return vecops::bitcastLanes(*builder, self,
                         llvm::Type::getInt32Ty(builder->getContext()));
                 }
+                if (methodCallName == "bitcastF16" || methodCallName == "bitcastI16") {
+                    bool toF = methodCallName == "bitcastF16";
+                    auto* svt =
+                        llvm::cast<llvm::FixedVectorType>(self->getType());
+                    llvm::Type* et = svt->getElementType();
+                    bool ok = toF ? (!isFloat && et->getIntegerBitWidth() == 16)
+                                  : et->isHalfTy();
+                    if (!parameters.empty() || !ok) {
+                        throw Exception(toF
+                            ? "Vector.bitcastF16 takes no arguments and a "
+                              "16-bit-integer-element receiver"
+                            : "Vector.bitcastI16 takes no arguments and a "
+                              "float16-element receiver",
+                            "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    resolvedType = CajetaVector::getOrCreate(module,
+                        CajetaType::of(toF ? "float16" : "int16"), vecT->getLanes());
+                    return vecops::bitcastLanes(*builder, self, toF
+                        ? llvm::Type::getHalfTy(builder->getContext())
+                        : llvm::Type::getInt16Ty(builder->getContext()));
+                }
                 if (methodCallName == "compressStore") {
                     if (parameters.size() != 2) {
                         throw Exception(

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **`Vector.bitcastF16()` and `bitcastI16()` reinterpret 16-bit lanes.** `bitcastF16` reads int16 or uint16 lanes as binary16 bits and `bitcastI16` reads float16 lanes back as int16, without converting, on the host, inside kernels and in the reference interpreter, beside `bitcastF32`/`bitcastI32`. It makes the cheap int8 to f16 widen possible: `((x ^ 0x80) | 0x6400).bitcastF16()` is 1152 + x exactly, so one packed subtract gives x, where `widenLo().toF32().toF16()` took a conversion a lane each way. A receiver of another width is refused (`VectorHalfConvert`, `XpuReferenceInterpreter.halfBitcastsMatchTheCpuBackend`; cajeta-llm 15.2.21.4.3.8.8).
+
 ## 0.53.10 (2026-11-17)
 
 - **`Wave.width()` is the constant 32 on nvptx.** It read the warp-size register, which folds to 32 only late in the NVPTX backend, so a kernel that divides by the width was optimized as if it were a runtime value. A wave-generic gemm256 at f16 on the 4090 spilled more and ran 5% slower than its wave-32-pinned form; with the constant it runs at 1738 us against 1768 at n4096.

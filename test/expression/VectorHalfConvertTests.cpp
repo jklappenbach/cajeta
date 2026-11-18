@@ -141,3 +141,75 @@ TEST(VectorHalfConvert, f32ReceiverStillRejectedByToF32) {
     // for that reason rather than for the behaviour it claims to check.
     EXPECT_ANY_THROW(runI32(src));
 }
+
+// cajeta-llm 15.2.21.4.3.8.8.1: `bitcastF16` reads 16-bit integer lanes as binary16 bits and
+// `bitcastI16` reads them back, without converting; 0x3C00 is 1.0, 0xC000 is -2.0, 0x6405 is 1029.
+TEST(VectorHalfConvert, bitcastF16ReinterpretsSixteenBitLanesAndBitcastI16ReadsThemBack) {
+    const std::string src =
+        "package test;\n"
+        "public class D {\n"
+        "    public static int32 run() {\n"
+        "        int16[] a #= heap int16[4];\n"
+        "        a[0] = (int16) 15360;\n"
+        "        a[1] = (int16) -16384;\n"
+        "        a[2] = (int16) 25605;\n"
+        "        a[3] = (int16) 0;\n"
+        "        Vector<int16,4> v = a.vload<4>(0L);\n"
+        "        Vector<float16,4> h = v.bitcastF16();\n"
+        "        Vector<float32,4> f = h.toF32();\n"
+        "        if (f[0] != 1.0f) { return 100; }\n"
+        "        if (f[1] != -2.0f) { return 101; }\n"
+        "        if (f[2] != 1029.0f) { return 102; }\n"
+        "        if (f[3] != 0.0f) { return 103; }\n"
+        "        Vector<int16,4> back = h.bitcastI16();\n"
+        "        if (back[1] != (int16) -16384) { return 104; }\n"
+        "        if (back[2] != (int16) 25605) { return 105; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// The consumer: an int8 lane x as f16 by bits, `(x ^ 0x80) | 0x6400` is 1024 + 128 + x exactly,
+// so one subtract of 1152 gives x for every byte.
+TEST(VectorHalfConvert, theInt8ToHalfMagicIsExactForEveryByte) {
+    const std::string src =
+        "package test;\n"
+        "public class D {\n"
+        "    public static int32 run() {\n"
+        "        int8[] a #= heap int8[256];\n"
+        "        int32 i = 0;\n"
+        "        while (i < 256) { a[i] = (int8) (i - 128); i = i + 1; }\n"
+        "        int64 o = 0L;\n"
+        "        while (o < 256L) {\n"
+        "            Vector<int8,16> v = a.vload<16>(o);\n"
+        "            Vector<uint8,16> u = (v ^ -128).asUnsigned();\n"
+        "            Vector<uint16,8> lo = u.widenLo() | 25600;\n"
+        "            Vector<float32,8> f = lo.asSigned().bitcastF16().toF32();\n"
+        "            int32 k = 0;\n"
+        "            while (k < 8) {\n"
+        "                if (f[k] - 1152.0f != (float32) a[o + (int64) k]) { return 1000 + (int32) o + k; }\n"
+        "                k = k + 1;\n"
+        "            }\n"
+        "            o = o + 16L;\n"
+        "        }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// A 32-bit receiver is not 16 bits wide and is refused, not truncated.
+TEST(VectorHalfConvert, bitcastF16RejectsAThirtyTwoBitReceiver) {
+    const std::string src =
+        "package test;\n"
+        "public class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] a #= heap int32[4];\n"
+        "        Vector<int32,4> v = a.vload<4>(0L);\n"
+        "        Vector<float16,4> h = v.bitcastF16();\n"
+        "        return (int32) h.toF32()[0];\n"
+        "    }\n"
+        "}\n";
+    EXPECT_ANY_THROW(runI32(src));
+}

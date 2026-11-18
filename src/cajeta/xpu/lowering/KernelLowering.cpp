@@ -2656,7 +2656,7 @@ private:
             || n == "toF64" || n == "toI8"
             || n == "asUnsigned" || n == "asSigned"
             || n == "asWords" || n == "asBytes" || n == "dotSum"
-            || n == "lut4";
+            || n == "lut4" || n == "bitcastF16" || n == "bitcastI16";
     }
     unsigned syntheticRecvSeq = 0;
 
@@ -3190,6 +3190,19 @@ private:
                             "float-element receiver");
             return vecops::convertFpLanes(builder, self,
                 llvm::Type::getBFloatTy(builder.getContext()));
+        }
+        if (name == "bitcastF16" || name == "bitcastI16") {
+            bool toF = name == "bitcastF16";
+            llvm::Type* et = vt->getElementType();
+            bool ok = toF ? (!isFloat && et->getIntegerBitWidth() == 16) : et->isHalfTy();
+            if (!ok || !args.empty())
+                unsupported(toF ? "Vector.bitcastF16 takes no arguments and a "
+                                  "16-bit-integer-element receiver"
+                                : "Vector.bitcastI16 takes no arguments and a "
+                                  "float16-element receiver");
+            return vecops::bitcastLanes(builder, self, toF
+                ? llvm::Type::getHalfTy(builder.getContext())
+                : llvm::Type::getInt16Ty(builder.getContext()));
         }
         if (name == "toI32") {
             if (!isFloat || !args.empty())

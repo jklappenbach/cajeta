@@ -764,6 +764,33 @@ TEST(XpuReferenceInterpreter, halfDotSumMatchesTheCpuBackend) {
     EXPECT_EQ(compareOn<float>(p, ins, 0, shape(1, G)), "");
 }
 
+// cajeta-llm 15.2.21.4.3.8.8.1: `bitcastF16` and `bitcastI16` reinterpret lanes on both sides; the int8 to f16
+// magic (`(x ^ 0x80) | 0x6400`, less 1152) is exact.
+TEST(XpuReferenceInterpreter, halfBitcastsMatchTheCpuBackend) {
+    Pair p(R"CJ(
+    @Kernel
+    public static void refHalfBits(KernelBuffer<float32> out, KernelBuffer<int32> back, KernelBuffer<int8> q) {
+        uint32 g = KernelThread.globalIdX();
+        int64 o = (int64) g * 16L;
+        Vector<int8,16> v = q.vload<16>(o);
+        Vector<uint8,16> u = (v ^ -128).asUnsigned();
+        Vector<uint16,8> lo = u.widenLo() | 25600;
+        Vector<float16,8> h = lo.asSigned().bitcastF16();
+        Vector<float32,8> f = h.toF32();
+        out[g] = f[0] + f[3] * 0.5f + f[7] - 2304.0f;
+        Vector<int16,8> b = h.bitcastI16();
+        back[g] = (int32) b[0] + (int32) b[5];
+    }
+)CJ", "refHalfBits");
+    const uint32_t G = 16;
+    std::vector<int8_t> q(G * 16);
+    for (uint32_t i = 0; i < G * 16; ++i) q[i] = (int8_t) (i * 37 - 100);
+    std::vector<In> ins = {buffer(std::vector<float>(G)), buffer(std::vector<int32_t>(G)), buffer(q)};
+    // Bound: 0 ulp; every value is a small integer.
+    EXPECT_EQ(compareOn<float>(p, ins, 0, shape(1, G)), "");
+    EXPECT_EQ(compareOn<int32_t>(p, ins, 1, shape(1, G)), "");
+}
+
 TEST(XpuReferenceInterpreter, mathMatchesTheCpuBackendWithinItsBound) {
     Pair p(R"CJ(
     @Kernel

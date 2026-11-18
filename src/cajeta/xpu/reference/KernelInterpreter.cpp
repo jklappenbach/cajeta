@@ -716,7 +716,7 @@ const std::set<std::string>& vectorMethods() {
     static const std::set<std::string> s = {
         "dotAccum", "dot", "dotSum", "asUnsigned", "asSigned", "asWords", "asBytes",
         "widenLo", "widenHi", "narrow", "toF32", "toF16", "toBF16", "toI32",
-        "toF64", "toI8", "bitcastF32", "bitcastI32", "lut4",
+        "toF64", "toI8", "bitcastF32", "bitcastI32", "bitcastF16", "bitcastI16", "lut4",
     };
     return s;
 }
@@ -762,6 +762,7 @@ const std::map<LocalKind, std::set<std::string>>& memberBuiltins() {
         {LocalKind::Vector, {"dotAccum", "dot", "dotSum", "asUnsigned", "asSigned", "asWords",
                              "asBytes", "widenLo", "widenHi", "narrow", "toF32", "toF16",
                              "toBF16", "toI32", "toF64", "toI8", "bitcastF32", "bitcastI32",
+                             "bitcastF16", "bitcastI16",
                              "lut4"}},
         {LocalKind::Tile, {"splat", "load", "store", "mma", "addScaledPow2", "fromWords", "scaledAccumInto",
                            "scaledAccumInto2", "rank1Accum", "scaledAccumI32",
@@ -2433,6 +2434,19 @@ private:
                 }
             }
             return toF ? vec({Prim::F32, true}, out) : vec({Prim::I32, true}, out);
+        }
+        if (nm == "bitcastF16" || nm == "bitcastI16") {
+            bool toF = nm == "bitcastF16";
+            if (toF ? (isFloat(et.prim) || w != 16) : et.prim != Prim::F16) return bad("on these lanes");
+            std::vector<Val> out;
+            for (auto& l : self.lanes) {
+                if (toF) {
+                    out.push_back(mkFloat(Prim::F16, halfToFloat((uint16_t) l.i)));
+                } else {
+                    out.push_back(mkInt({Prim::I16, true}, (int16_t) floatToHalf((float) l.f)));
+                }
+            }
+            return toF ? vec({Prim::F16, true}, out) : vec({Prim::I16, true}, out);
         }
         if (nm == "lut4") {
             if (w != 8 || a.size() != 1 || a[0].k != Val::Vector || a[0].lanes.size() != 16
