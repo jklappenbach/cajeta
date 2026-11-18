@@ -113,7 +113,7 @@ answers for them.
 | `Workgroup.reduce(GroupOp, v)`, `Workgroup.scan(GroupOp, v)` | barrier collectives across every wave of the workgroup, with no wave width or count in the source; partials combine from wave 0 upward, so the result is deterministic at a given width |
 | `Vector<T, N>`, `vload<N>`, `vstore`, `prefetch`, `asWords`, `asBytes`, `lut4` | wide loads and stores; an aligned byte-vector load lowers to a word load |
 | `dotSum`, `dotAccum` | the integer dot products (`dp4a` and its equivalents); `dotSum` on float16 pairs (`v_dot2_f32_f16` where the AMD arch has it, two fmas elsewhere) |
-| `CooperativeMatrix<T, 16, 16, Use>`, `load`, `store`, `mma`, `fromWords`, `splat`, `TileOps.scaledAccumI32`, `rank1Accum`, `scaledAccumInto(2)` | the matrix fragments and their epilogues (§3.3) |
+| `CooperativeMatrix<T, 16, 16, Use>`, `load`, `store`, `storeAs<U>`, `mma`, `fromWords`, `splat`, `TileOps.scaledAccumI32`, `rank1Accum`, `scaledAccumInto(2)` | the matrix fragments and their epilogues (§3.3) |
 | `Tile<T, Rows, Cols>`, `Group.mac` | the role-free fragment form; roles inferred from position |
 
 **Load alignment.** A `vload<N>` or `vstore` of N elements wants one wide
@@ -281,6 +281,17 @@ sized from the kernel's `@Occupancy(maxThreads)`, without which the kernel is
 refused (XPU-N04). The kernel source stays one. The cost is confined to the
 backend with no cheaper form, and it is a cost a kernel on a hot path
 measures before accepting.
+
+`acc.storeAs<U>(dst, offset, layout, stride)` stores a float32 accumulator
+at float16 or bfloat16, converting each element as the scalar cast `(U) x`
+does. A kernel that writes a 16-bit result calls it in place of a loop over
+`get`, `row` and `col`, so the backend can use its converting store where it
+has one. It takes `store`'s arguments, and `storeAs<float32>` is `store`. On
+the software tiles and wherever a backend has no converting store, it
+converts and stores each element through the lane-to-element map. Any other
+`U`, an operand fragment, or an accumulator of another type is refused by
+name, and the reference interpreter defines it for the conformance corpus
+(coop-converting-store). It is never slower than the loop it replaces.
 
 ### 3.4 Occupancy: the block the kernel is budgeted for
 

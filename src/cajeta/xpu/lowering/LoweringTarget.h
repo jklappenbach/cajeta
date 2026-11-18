@@ -630,6 +630,20 @@ namespace xpu {
             uint32_t rows, uint32_t cols, uint32_t use,
             uint32_t swizzleStride = 0, LdsBlockPad blockPad = {});
 
+        // acc.storeAs<U>(dst, layout, stride) (coop-converting-store spec §2.1):
+        // store the float32 accumulator `matrixVal` to `ptr` (a U pointer at the
+        // tile's first cell) with each element converted to `u` (float16 or
+        // bfloat16) as the scalar cast does. The default converts and stores per
+        // element through the lane-to-element map (coopMatrixElementCell); a
+        // backend with no map refuses by name, and so does a swizzled or
+        // block-padded destination.
+        virtual void coopMatrixStoreAs(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
+            llvm::Value* matrixVal, llvm::Type* u, llvm::Value* layout,
+            llvm::Value* stride, uint32_t rows, uint32_t cols, uint32_t use,
+            llvm::Type* matrixType, uint32_t swizzleStride = 0,
+            LdsBlockPad blockPad = {});
+
         // c.mma(a, b) → a*b+c. `signFlags` (A 0x1, B 0x2, C 0x4, Result 0x8) carries
         // the multiply's signedness as DATA — int types are signless in LLVM/SPIR-V.
         // `aLayout`/`bLayout` are the layouts the A and B fragments were

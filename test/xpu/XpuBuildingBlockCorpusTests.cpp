@@ -36,7 +36,8 @@ using cajeta_test::findKernel;
 namespace {
 
 const char* kKernels[] = {"bbFragment", "bbElements", "bbDot", "bbPermute",
-                          "bbWave", "bbConvert", "bbAsyncCopy", "bbSwizzled", "bbQuad"};
+                          "bbWave", "bbConvert", "bbAsyncCopy", "bbSwizzled", "bbQuad",
+                          "bbStoreAs"};
 
 const char* kSource = R"CJ(
 package test;
@@ -79,6 +80,16 @@ public class M {
             acc.set(i, acc.get(i) * 2.0f + (float32) (r * 16 + c));
         }
         acc.store(y, 0, 0, 16);
+    }
+    // An accumulator stored at 16 bits: column-major float16 at an odd stride,
+    // row-major bfloat16 at an offset.
+    @Kernel
+    public static void bbStoreAs(KernelBuffer<float16> h, KernelBuffer<bfloat16> bf,
+                                 KernelBuffer<float32> a) {
+        CooperativeMatrix<float32,16,16,2> acc;
+        acc.load(a, 0, 0, 16);
+        acc.storeAs<float16>(h, 3, 1, 17);
+        acc.storeAs<bfloat16>(bf, 5, 0, 17);
     }
     // Integer multiply-add over packed bytes.
     @Kernel
@@ -209,6 +220,8 @@ public class M {
         KernelBuffer<int64> wide = heap KernelBuffer<int64>(32);
         KernelBuffer<int8> narrow = heap KernelBuffer<int8>(128);
         KernelBuffer<float64> dbl = heap KernelBuffer<float64>(128);
+        KernelBuffer<float16> h300 = heap KernelBuffer<float16>(300);
+        KernelBuffer<bfloat16> b300 = heap KernelBuffer<bfloat16>(300);
         KernelStream s #= KernelStream.current();
         bbFragment.launch(s, grid: [1], block: [32])(fc, fa, fb);
         s.sync();
@@ -227,6 +240,8 @@ public class M {
         bbSwizzled.launch(s, grid: [1], block: [32])(uo, uy);
         s.sync();
         bbQuad.launch(s, grid: [1], block: [32])(uo, ux);
+        s.sync();
+        bbStoreAs.launch(s, grid: [1], block: [32])(h300, b300, fa);
         s.sync();
         return 1;
     }
@@ -258,7 +273,7 @@ void everyBlockPassesOn(cajeta::xpu::Backend be, const char* backend) {
     std::vector<cajeta::MethodPtr> kernels;
     for (const char* n : kKernels)
         if (auto k = findKernel(module, "test.M", n)) kernels.push_back(k);
-    ASSERT_EQ(kernels.size(), 9u);
+    ASSERT_EQ(kernels.size(), 10u);
     ref::CorpusRun run = ref::runCorpus(kernels, dir.string(), "");
     std::map<std::string, std::string> outcome;
     for (auto& r : run.results) {
