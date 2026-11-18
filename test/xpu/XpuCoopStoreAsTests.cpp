@@ -496,11 +496,14 @@ TEST(XpuCoopStoreAs, vulkanLowersThroughTheStagingTileAndValidates) {
                                                            "storeas_spv");
     auto klass = module->getStructures()["test.S"];
     ASSERT_TRUE(klass);
-    auto tm = createSpirvTargetMachine("vulkan1.3");
-    ASSERT_NE(tm, nullptr);
     for (const char* k : kKernels) {
         auto m = cajeta::xpu::probe::findMethod(klass, k);
         ASSERT_TRUE(m) << k;
+        // One target machine a kernel, as VulkanRegistration builds them: the SPIR-V
+        // backend keeps state in the machine, and reusing one across modules failed
+        // instruction selection about 1 run in 10 (`cannot select: G_ADD ...:iid`).
+        auto tm = createSpirvTargetMachine("vulkan1.3");
+        ASSERT_NE(tm, nullptr);
         llvm::LLVMContext ctx;
         llvm::Module dev(std::string("storeas_") + k, ctx);
         configureDeviceModule(dev, *tm);
@@ -511,8 +514,9 @@ TEST(XpuCoopStoreAs, vulkanLowersThroughTheStagingTileAndValidates) {
             why = e.getMessage();
         } catch (const std::exception& e) { why = e.what(); }
         ASSERT_TRUE(why.empty()) << k << " refused on vulkan: " << why;
-        std::vector<uint8_t> spirv = emitSpirv(dev, *tm);
-        ASSERT_FALSE(spirv.empty()) << k;
+        std::string failure;
+        std::vector<uint8_t> spirv = emitSpirv(dev, *tm, &failure);
+        ASSERT_FALSE(spirv.empty()) << k << ": " << failure;
         // Without spirv-val (Phoenix) the lowering is still checked; proton validates.
         if (auto valid = spirvValid(spirv, k)) EXPECT_TRUE(*valid) << "spirv-val rejected " << k;
     }
