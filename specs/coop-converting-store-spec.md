@@ -33,6 +33,13 @@ Decisions (Julian, 2026-11-18):
 2. The first cut is native on nvptx and vulkan. amdgpu (WMMA and MFMA), cpu and the
    portable tile lower it correctly as per-element converts. Faster forms there come
    later, where measured.
+3. (2026-11-18, after Unit 2) Vulkan lowers through the per-subgroup staging tile that
+   spirv-kernel-parity 3 gave native SPIR-V tiles, per element, at both types. The
+   fork has no cooperative-matrix convert intrinsic, so `OpFConvert` waits until
+   proton's RADV rows show the staging costs.
+4. (2026-11-18) Plain `store` and `load` on nvptx get the same run-time alignment
+   branch as `storeAs`: wmma on a 32-byte tile with 16-byte rows, per element otherwise.
+   They put every cell in the wrong place off that alignment, with no diagnostic.
 
 ## 2. Features
 
@@ -81,15 +88,30 @@ Use cases:
 2. The device value test on the 4090 covers row- and column-major, an odd stride and a
    shared destination, at both types, and reaches all three forms.
 
-### 2.3 Native on vulkan
+### 2.3 On vulkan
 
-The accumulator converts with `OpFConvert` to a float16 accumulator cooperative matrix
-and stores with `OpCooperativeMatrixStoreKHR`. bfloat16 lowers per element (bf16
-cooperative matrices are not native on RADV).
+The accumulator goes through the per-subgroup staging tile in workgroup memory, and
+each lane converts and stores the elements the staged map gives it, at float16 and
+bfloat16 alike (decision 3). A native `OpFConvert` to a float16 cooperative matrix
+followed by `OpCooperativeMatrixStoreKHR` needs a fork intrinsic and comes later, where
+measured.
 
 Use cases:
 1. The SPIR-V passes spirv-val, and the vulkan backend matches cpu bit for bit on
    proton's RADV.
+
+### 2.5 Aligned native loads and stores on nvptx
+
+A native `store` or `load` of a 16x16 fragment uses wmma when its tile starts on a
+32-byte boundary and its stride is a whole number of 16-byte rows, and goes per element
+through the lane-to-element map otherwise. The branch is uniform across the warp
+(decision 4).
+
+Use cases:
+1. A float32 `store` at offset 11, stride 17 writes every cell where the reference
+   interpreter does, on the 4090; at offset 0, stride 16 it is one `wmma.store.d`.
+2. A `load` at an unaligned offset reads every cell the interpreter reads.
+3. The aligned GEMMs keep their registers and their wmma loads and stores.
 
 ### 2.4 The 16-bit-output GEMM kernels use it
 
