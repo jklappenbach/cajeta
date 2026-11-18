@@ -734,6 +734,19 @@ namespace xpu {
             return false;
         }
 
+        // Whether a native tile whose fragment has no lane map serves per-element access by
+        // staging through workgroup memory, at stagedElementWaveWidth() lanes a subgroup.
+        virtual bool coopMatrixStagedElements() const { return false; }
+        virtual unsigned stagedElementWaveWidth() const { return 32; }
+
+        // The calling invocation's subgroup index within its workgroup, i32.
+        virtual llvm::Value* subgroupIndex(llvm::IRBuilderBase& b, llvm::Module& m);
+
+        // A control barrier with workgroup-memory ordering at subgroup scope.
+        virtual void subgroupBarrier(llvm::IRBuilderBase& b, llvm::Module& m) {
+            workgroupBarrier(b, m);
+        }
+
         // Called once on the kernel the first time a NATIVE coop-matrix tile is
         // allocated: a backend with ABI requirements (AMD WMMA is wave32) sets them.
         virtual void prepareNativeCoopMatrix(llvm::Function* /*fn*/) {}

@@ -168,9 +168,8 @@ TEST(XpuFragmentElement, lowersOnTheNativeTierOfNvptxAndAmdgpu) {
 }
 
 // The SPIR-V cooperative matrix has no documented lane-to-element map, so the
-// backend refuses by name rather than guess one.
-TEST(XpuFragmentElement, isRefusedByNameOnVulkan) {
-    std::string err = probeOn(cajeta::xpu::Backend::Spirv);
-    EXPECT_TRUE(cajeta_test::loweringRefused(err)) << err;
-    EXPECT_NE(err.find("lane-to-element"), std::string::npos) << err;
+// access is staged through workgroup memory (spirv-kernel-parity 3.1.1).
+TEST(XpuFragmentElement, everyElementIsVisitedAtItsRowAndColumnOnVulkan) {
+    if (!cajeta::xpu::test::vulkanAvailable()) GTEST_SKIP() << "no Vulkan device";
+    checkEveryCell(cajeta::xpu::Backend::Spirv, "vulkan");
 }

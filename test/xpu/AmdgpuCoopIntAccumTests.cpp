@@ -145,28 +145,15 @@ TEST(AmdgpuCoopIntAccumTests, intAccumVerbsLowerNativelyOnAmdgpu) {
            "means it demoted:\n" << err;
 }
 
-// A backend without native epilogue support (SPIR-V) demotes the tiles, and
-// the replicated software tile then REJECTS the kernel by name rather than
-// taking the calling work-item's factor for all sixteen columns, which would
-// be a plausible wrong answer.
-//
-// The anchor moved off the literal "NATIVE-ONLY" when the contract was
-// restated in tile coordinates: that word named a TIER, when the real line
-// is whether a backend has a wave to distribute the per-lane slices across.
-// NVPTX has one and supports these verbs, which "native-only" could not
-// express. What the refusal must still do is state the contract and name the
-// spelling that works.
-TEST(AmdgpuCoopIntAccumTests, intAccumVerbsRejectLoudlyOffNative) {
+// Vulkan keeps the tiles native and stages the verbs through workgroup memory
+// (spirv-kernel-parity 4); XpuCoopEpilogueTests checks the values on the device.
+TEST(AmdgpuCoopIntAccumTests, intAccumVerbsLowerNativelyOnVulkan) {
     std::string err;
     EXPECT_EQ(runI32On(cajeta::xpu::Backend::Spirv, kIntAccumSrc, &err), 1);
-    EXPECT_NE(err.find("[xpu-kernel-skipped]"), std::string::npos)
-        << "off-native the integer verbs must SKIP the kernel loudly:\n"
-        << err;
-    EXPECT_NE(err.find("native-only"), std::string::npos)
-        << "the skip must state the contract it could not meet — a per-lane "
-           "column factor needs a wave:\n" << err;
-    EXPECT_NE(err.find("WaveVector.ofSlice"), std::string::npos)
-        << "the skip must name the spelling that works here:\n" << err;
+    EXPECT_FALSE(cajeta_test::loweringRefused(err))
+        << "the integer verbs stage through workgroup memory on vulkan:\n" << err;
+    EXPECT_EQ(err.find("[mma-epilogue]"), std::string::npos)
+        << "the tile must stay native on vulkan:\n" << err;
 }
 
 // The whole point of the verb: the fold must be the FULL-rate 24-bit

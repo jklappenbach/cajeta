@@ -1103,6 +1103,45 @@ TEST(XpuVulkanEmitTests, aConditionallyLoadedCooperativeMatrixMergesWithItsOwnTy
     }
 }
 
+// A tile loaded on one branch that returns early on another: codegen's own
+// structurizer merges it across the exit with an OpUndef it types as ulong, after
+// every IR undef is gone (cajeta-llm's int8 tiles once they lowered on vulkan,
+// spirv-kernel-parity Unit 4). The word stream retypes that undef.
+TEST(XpuVulkanEmitTests, aTileLiveAcrossAnEarlyReturnMergesWithItsOwnType) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.CooperativeMatrix;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void early(KernelBuffer<float32> y, KernelBuffer<float32> a,\n"
+        "                             uint32 n) {\n"
+        "        CooperativeMatrix<float32,16,16,2> acc;\n"
+        "        acc.splat(0.0f);\n"
+        "        if (n > 0) {\n"
+        "            acc.load(a, 0, 0, 16);\n"
+        "            if (n > 5) { return; }\n"
+        "        }\n"
+        "        acc.store(y, 0, 0, 16);\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "early");
+    ASSERT_NE(k, nullptr);
+    auto tm = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_coopmat_early", ctx);
+    configureDeviceModule(dev, *tm);
+    lowerKernel(k, dev);
+    std::vector<uint8_t> spirv = emitSpirv(dev, *tm);
+    ASSERT_FALSE(spirv.empty());
+    auto valid = validateSpirv(spirv);
+    if (!valid) GTEST_SKIP() << "spirv-val not installed";
+    EXPECT_TRUE(*valid) << "spirv-val rejected the early-return cooperative-matrix module";
+}
+
 namespace {
 // Every OpAccessChain / OpInBoundsAccessChain that carries no index. A GEP the
 // backend lowered from a derived Workgroup pointer lost its index this way.

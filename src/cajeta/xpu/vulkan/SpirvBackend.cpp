@@ -1027,6 +1027,94 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
     return true;
 }
 
+// Gives every OpPhi incoming that is an OpUndef of another type an OpUndef of the phi's own
+// type: codegen's structurizer merges tiles across edges where they are undefined and types
+// the undef as ulong. True if anything changed.
+static bool retypePhiUndefs(std::vector<uint8_t>& bytes) {
+    if (bytes.size() < 20 || (bytes.size() % 4) != 0) return false;
+    std::vector<uint32_t> w(bytes.size() / 4);
+    std::memcpy(w.data(), bytes.data(), bytes.size());
+    if (w[0] != 0x07230203u) return false;
+    constexpr uint32_t kOpUndef = 1, kOpFunction = 54, kOpPhi = 245;
+    std::map<uint32_t, uint32_t> undefType;
+    size_t firstFunction = 0;
+    std::vector<size_t> phis;
+    for (size_t i = 5; i < w.size();) {
+        uint32_t wc = w[i] >> 16, op = w[i] & 0xFFFFu;
+        if (wc == 0 || i + wc > w.size()) return false;
+        if (op == kOpUndef && wc == 3) undefType[w[i + 2]] = w[i + 1];
+        if (op == kOpFunction && firstFunction == 0) firstFunction = i;
+        if (op == kOpPhi) phis.push_back(i);
+        i += wc;
+    }
+    if (firstFunction == 0) return false;
+    std::map<uint32_t, uint32_t> undefOf;
+    std::vector<uint32_t> added;
+    for (size_t i : phis) {
+        const uint32_t wc = w[i] >> 16, ty = w[i + 1];
+        for (size_t k = i + 3; k + 1 < i + wc; k += 2) {
+            auto u = undefType.find(w[k]);
+            if (u == undefType.end() || u->second == ty) continue;
+            auto have = undefOf.find(ty);
+            if (have == undefOf.end()) {
+                const uint32_t id = w[3]++;
+                have = undefOf.insert({ty, id}).first;
+                added.insert(added.end(), {(3u << 16) | kOpUndef, ty, id});
+            }
+            w[k] = have->second;
+        }
+    }
+    if (added.empty()) return false;
+    w.insert(w.begin() + firstFunction, added.begin(), added.end());
+    bytes.resize(w.size() * 4);
+    std::memcpy(bytes.data(), w.data(), bytes.size());
+    return true;
+}
+
+// Narrows every OpControlBarrier whose memory scope is Device (only subgroupBarrier emits
+// one) to Subgroup execution and memory scope. True if anything changed.
+static bool scopeSubgroupBarriers(std::vector<uint8_t>& bytes) {
+    if (bytes.size() < 20 || (bytes.size() % 4) != 0) return false;
+    std::vector<uint32_t> w(bytes.size() / 4);
+    std::memcpy(w.data(), bytes.data(), bytes.size());
+    if (w[0] != 0x07230203u) return false;
+    constexpr uint32_t kOpConstant = 43, kOpControlBarrier = 224;
+    constexpr uint32_t kScopeDevice = 1, kScopeSubgroup = 3;
+    std::map<uint32_t, size_t> constAt;
+    std::map<uint32_t, uint32_t> constValue, constType;
+    std::vector<size_t> barriers;
+    for (size_t i = 5; i < w.size();) {
+        uint32_t wc = w[i] >> 16, op = w[i] & 0xFFFFu;
+        if (wc == 0 || i + wc > w.size()) return false;
+        if (op == kOpConstant && wc == 4) {
+            constAt[w[i + 2]] = i;
+            constValue[w[i + 2]] = w[i + 3];
+            constType[w[i + 2]] = w[i + 1];
+        } else if (op == kOpControlBarrier && wc == 4) {
+            barriers.push_back(i);
+        }
+        i += wc;
+    }
+    std::vector<size_t> narrow;
+    uint32_t deviceId = 0;
+    for (size_t i : barriers) {
+        auto v = constValue.find(w[i + 2]);
+        if (v != constValue.end() && v->second == kScopeDevice) {
+            narrow.push_back(i);
+            deviceId = w[i + 2];
+        }
+    }
+    if (narrow.empty()) return false;
+    uint32_t newId = w[3];
+    w[3] = newId + 1;
+    for (size_t i : narrow) { w[i + 1] = newId; w[i + 2] = newId; }
+    uint32_t c[4] = {(4u << 16) | kOpConstant, constType[deviceId], newId, kScopeSubgroup};
+    w.insert(w.begin() + (constAt[deviceId] + 4), c, c + 4);
+    bytes.resize(w.size() * 4);
+    std::memcpy(bytes.data(), w.data(), bytes.size());
+    return true;
+}
+
 // Repoints every OpControlBarrier at one new WorkgroupMemory|AcquireRelease (0x108) uint
 // constant: LLVM 23 emits the SequentiallyConsistent semantics Vulkan forbids. A new
 // constant, since a user literal could share the existing one. True if anything changed.
@@ -1443,6 +1531,8 @@ std::vector<uint8_t> emitSpirv(llvm::Module& deviceModule,
     std::vector<uint8_t> spirv(buf.begin(), buf.end());
     // Each of these word-stream fixups is a no-op on a kernel that lacks its feature.
     decorateNoContraction(spirv);
+    retypePhiUndefs(spirv);
+    scopeSubgroupBarriers(spirv);
     fixupControlBarriers(spirv);
     injectWorkgroupSizeSpecConstant(spirv);
     injectDynamicSharedSpecConstant(spirv);

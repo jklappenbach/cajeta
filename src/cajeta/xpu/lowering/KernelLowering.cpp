@@ -5730,6 +5730,8 @@ private:
                             "stage the tile through Shared<T> with store and "
                             "read its elements there");
             };
+            if (n == 0 && target.coopMatrixStagedElements() && !slot.software)
+                return lowerStagedElement(name, args, slot, recv);
             if (n == 0) noMap();
             if (name == "elements") {
                 if (!args.empty())
@@ -5806,6 +5808,10 @@ private:
             llvm::Value* w[4];
             for (unsigned k = 0; k < 4; ++k)
                 w[k] = coerceTo(lowerExpr(args[k].expression), i32);
+            if (target.coopMatrixStagedElements()) {
+                stagedFromWords(slot, w);
+                return llvm::ConstantInt::get(i32, 0);
+            }
             llvm::Value* frag = target.coopMatrixFromWords(
                 builder, mod, w, slot.matrixType, slot.rows, slot.cols,
                 slot.use);
@@ -5881,14 +5887,16 @@ private:
                                     exprSigned(args[1].expression));
                 }
             }
-            llvm::Value* accVal =
-                builder.CreateLoad(slot.matrixType, slot.alloca, recv + ".val");
-            llvm::Value* iaccVal =
-                builder.CreateLoad(iacc.matrixType, iacc.alloca, "epi.iacc");
+            const bool staged = target.coopMatrixStagedElements();
+            llvm::Value* accVal = staged ? stagedLanes(slot)
+                : builder.CreateLoad(slot.matrixType, slot.alloca, recv + ".val");
+            llvm::Value* iaccVal = staged ? stagedLanes(iacc)
+                : builder.CreateLoad(iacc.matrixType, iacc.alloca, "epi.iacc");
             llvm::Value* v = target.coopMatrixScaledAccumI32(
                 builder, mod, accVal, iaccVal, colS, colSPtr, colSETy,
                 colSStride);
-            builder.CreateStore(v, iacc.alloca);
+            if (staged) stagedStoreLanes(iacc, v);
+            else builder.CreateStore(v, iacc.alloca);
             return llvm::ConstantInt::get(i32, 0);
         }
         if (name == "scaledAccumInto" || name == "rank1Accum" ||
@@ -5964,16 +5972,18 @@ private:
                                 "(or a slice of one)");
                 oneCol(ri + 3, hB, hE, hStride, gS);
             }
+            const bool staged = target.coopMatrixStagedElements();
             llvm::Value* accVal = nullptr;
             if (scaled)
-                accVal = builder.CreateLoad(slot.matrixType, slot.alloca,
-                                            recv + ".val");
-            llvm::Value* faccVal =
-                builder.CreateLoad(facc.matrixType, facc.alloca, "epi.facc");
+                accVal = staged ? stagedLanes(slot)
+                    : builder.CreateLoad(slot.matrixType, slot.alloca, recv + ".val");
+            llvm::Value* faccVal = staged ? stagedLanes(facc)
+                : builder.CreateLoad(facc.matrixType, facc.alloca, "epi.facc");
             llvm::Value* v = target.coopMatrixEpilogueAccum(
                 builder, mod, accVal, faccVal, rB, rE, cB,
                 cE ? cE : rE, gB, hB, cS, gS, cStride, hStride);
-            builder.CreateStore(v, facc.alloca);
+            if (staged) stagedStoreLanes(facc, v);
+            else builder.CreateStore(v, facc.alloca);
             return llvm::ConstantInt::get(i32, 0);
         }
         unsupported("CooperativeMatrix." + name + "()");
@@ -7244,10 +7254,6 @@ private:
                 takesFragment = true;
                 tys.push_back(llvm::PointerType::get(ctx, target.allocaAddressSpace()));
             } else if (p.isShared) {
-                if (target.descriptorBoundParams())
-                    unsupported("@Device helper '" + m->getName() + "': a Shared<T> "
-                                "parameter has no pointer form on the " +
-                                std::string(target.name()) + " backend");
                 tys.push_back(llvm::PointerType::get(ctx, kSharedAS));
             } else {
                 tys.push_back(p.isBuffer ? target.bufferParamType(mod, p.type)
@@ -7301,11 +7307,179 @@ private:
         sub.setParams(params);
         sub.setParamsAsArgs(true);   // helper params are plain fn args
         sub.setDeviceContext(owner, deviceFns);
+        sub.setBlockLimit(blockLimit_);
         if (takesFragment) sub.inheritCoopState(coopDistributeW, coopStraddleDemote);
         sub.lowerBody(m);
 
         (*deviceFns)[key] = hfn;
         return hfn;
+    }
+
+    // This kernel's per-subgroup staging tiles for `elemTy`, one 16 x 16 tile per subgroup
+    // the block limit allows, shared by every staged element access in the module.
+    llvm::GlobalVariable* stagingTiles(llvm::Type* elemTy, unsigned cells) {
+        std::string tag;
+        llvm::raw_string_ostream os(tag);
+        elemTy->print(os);
+        os.flush();
+        const std::string gname = "cajeta_cmstage_" + tag;
+        const uint64_t slots = (blockLimit_ + target.stagedElementWaveWidth() - 1)
+                               / target.stagedElementWaveWidth();
+        if (auto* gv = mod.getGlobalVariable(gname, true)) {
+            auto* at = llvm::cast<llvm::ArrayType>(gv->getValueType());
+            if (at->getNumElements() < slots * cells)
+                unsupported("CooperativeMatrix element staging: a " + std::to_string(cells) +
+                            "-cell tile needs more staging than the module's first one sized");
+            return gv;
+        }
+        auto* arrTy = llvm::ArrayType::get(elemTy, slots * cells);
+        auto* gv = new llvm::GlobalVariable(
+            mod, arrTy, false, llvm::GlobalValue::InternalLinkage,
+            llvm::UndefValue::get(arrTy), gname, nullptr,
+            llvm::GlobalValue::NotThreadLocal, kSharedAS);
+        gv->setAlignment(llvm::MaybeAlign(16));
+        return gv;
+    }
+
+    // The staging tile of `s` for this subgroup: its base element pointer and lane's first cell.
+    struct StagedTile { llvm::GlobalVariable* gv; llvm::Value* base; llvm::Value* tile;
+                        llvm::Value* lane; unsigned w, n; };
+    StagedTile stagedTile(llvm::Type* elemTy, unsigned cells, unsigned span) {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        StagedTile t;
+        t.w = target.stagedElementWaveWidth();
+        t.n = cells / t.w;
+        t.gv = stagingTiles(elemTy, span);
+        llvm::Value* sub = builder.CreateZExtOrTrunc(target.subgroupIndex(builder, mod), i32);
+        t.base = builder.CreateMul(sub, builder.getInt32(span), "cm.stage.base");
+        t.tile = builder.CreateInBoundsGEP(t.gv->getValueType(), t.gv,
+                                           {builder.getInt32(0), t.base}, "cm.stage");
+        t.lane = builder.CreateZExtOrTrunc(target.waveLaneId(builder, mod), i32);
+        return t;
+    }
+
+    llvm::Value* stagedCell(const StagedTile& t, llvm::Value* offset) {
+        return builder.CreateInBoundsGEP(t.gv->getValueType(), t.gv,
+            {builder.getInt32(0), builder.CreateAdd(t.base, offset)}, "cm.stage.cell");
+    }
+
+    // This lane's cells of native tile `s` (element e is cell e * W + lane), as a vector.
+    llvm::Value* stagedLanes(const CoopMatrixSlot& s) {
+        const unsigned cells = s.rows * s.cols;
+        StagedTile t = stagedTile(s.elemType, cells, cells);
+        llvm::Value* v = builder.CreateLoad(s.matrixType, s.alloca, "cm.stage.val");
+        target.coopMatrixStore(builder, mod, t.tile, v, builder.getInt32(0),
+                               builder.getInt32(s.cols), s.rows, s.cols, s.use);
+        target.subgroupBarrier(builder, mod);
+        llvm::Value* out = llvm::PoisonValue::get(llvm::FixedVectorType::get(s.elemType, t.n));
+        for (unsigned e = 0; e < t.n; ++e) {
+            llvm::Value* cell = builder.CreateAdd(builder.getInt32(e * t.w), t.lane);
+            out = builder.CreateInsertElement(
+                out, builder.CreateLoad(s.elemType, stagedCell(t, cell), "cm.lane"), e);
+        }
+        target.subgroupBarrier(builder, mod);
+        return out;
+    }
+
+    // Writes this lane's cells `vec` of native tile `s` and reloads the tile from them.
+    void stagedStoreLanes(const CoopMatrixSlot& s, llvm::Value* vec) {
+        const unsigned cells = s.rows * s.cols;
+        StagedTile t = stagedTile(s.elemType, cells, cells);
+        for (unsigned e = 0; e < t.n; ++e) {
+            llvm::Value* cell = builder.CreateAdd(builder.getInt32(e * t.w), t.lane);
+            builder.CreateStore(builder.CreateExtractElement(vec, e), stagedCell(t, cell));
+        }
+        target.subgroupBarrier(builder, mod);
+        llvm::Value* back = target.coopMatrixLoad(builder, mod, t.tile, builder.getInt32(0),
+                                                  builder.getInt32(s.cols), s.matrixType,
+                                                  s.rows, s.cols, s.use);
+        builder.CreateStore(back, s.alloca);
+        target.subgroupBarrier(builder, mod);
+    }
+
+    // fromWords through the staging tile: lane L's 16 bytes are column L mod 16, column-major
+    // with stride 16 (nvptx's placement); the half-wave duplicates land in a second, unread tile.
+    void stagedFromWords(const CoopMatrixSlot& s, llvm::Value* const w[4]) {
+        if (s.rows != 16 || s.cols != 16)
+            unsupported("CooperativeMatrix.fromWords: staging is established for the 16x16 "
+                        "int8 operand only");
+        llvm::Type* i8 = llvm::Type::getInt8Ty(ctx);
+        StagedTile t = stagedTile(i8, 256, 512);
+        llvm::Value* col = builder.CreateAnd(t.lane, builder.getInt32(15), "fw.col");
+        llvm::Value* half = builder.CreateLShr(t.lane, builder.getInt32(4), "fw.half");
+        llvm::Value* at = builder.CreateAdd(builder.CreateMul(half, builder.getInt32(256)),
+                                            builder.CreateMul(col, builder.getInt32(16)), "fw.at");
+        for (unsigned k = 0; k < 4; ++k)
+            for (unsigned j = 0; j < 4; ++j) {
+                llvm::Value* byte = builder.CreateTrunc(
+                    builder.CreateLShr(w[k], builder.getInt32(8 * j)), i8, "fw.byte");
+                builder.CreateStore(byte, stagedCell(t, builder.CreateAdd(
+                                                         at, builder.getInt32(4 * k + j))));
+            }
+        target.subgroupBarrier(builder, mod);
+        llvm::Value* frag = target.coopMatrixLoad(builder, mod, t.tile, builder.getInt32(1),
+                                                  builder.getInt32(16), s.matrixType,
+                                                  s.rows, s.cols, s.use);
+        builder.CreateStore(frag, s.alloca);
+        target.subgroupBarrier(builder, mod);
+    }
+
+    // elements/row/col/get/set on a native tile with no lane map: lane L's element e is cell
+    // e * W + L of the row-major tile, read and written through this subgroup's staging tile.
+    template <typename Args>
+    llvm::Value* lowerStagedElement(const std::string& name, const Args& args,
+                                    const CoopMatrixSlot& slot, const std::string& recv) {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        const unsigned W = target.stagedElementWaveWidth();
+        const unsigned cells = slot.rows * slot.cols;
+        if (cells == 0 || cells % W != 0)
+            unsupported("CooperativeMatrix." + name + ": a " + std::to_string(slot.rows) + "x" +
+                        std::to_string(slot.cols) + " tile does not divide over " +
+                        std::to_string(W) + " lanes");
+        if (name == "elements") {
+            if (!args.empty()) unsupported("CooperativeMatrix.elements takes no arguments");
+            return llvm::ConstantInt::get(i32, cells / W);
+        }
+        if (args.empty()) unsupported("CooperativeMatrix." + name + " expects (i, ...)");
+        llvm::Value* e = coerceTo(lowerExpr(args[0].expression), i32, false);
+        llvm::Value* lane = builder.CreateZExtOrTrunc(target.waveLaneId(builder, mod), i32);
+        llvm::Value* cell = builder.CreateAdd(builder.CreateMul(e, builder.getInt32(W)), lane,
+                                              "cm.cell");
+        if (name == "row") return builder.CreateUDiv(cell, builder.getInt32(slot.cols), "cm.row");
+        if (name == "col") return builder.CreateURem(cell, builder.getInt32(slot.cols), "cm.col");
+        llvm::Value* nv = nullptr;
+        if (name == "set") {
+            if (args.size() != 2) unsupported("CooperativeMatrix.set expects (i, value)");
+            nv = coerceTo(lowerExpr(args[1].expression), slot.elemType, slot.elemSigned);
+        }
+        llvm::GlobalVariable* gv = stagingTiles(slot.elemType, cells);
+        llvm::Type* arrTy = gv->getValueType();
+        llvm::Value* sub = builder.CreateZExtOrTrunc(target.subgroupIndex(builder, mod), i32);
+        llvm::Value* base = builder.CreateMul(sub, builder.getInt32(cells), "cm.stage.base");
+        llvm::Value* tilePtr = builder.CreateInBoundsGEP(arrTy, gv, {builder.getInt32(0), base},
+                                                         "cm.stage");
+        llvm::Value* cellPtr = builder.CreateInBoundsGEP(
+            arrTy, gv, {builder.getInt32(0), builder.CreateAdd(base, cell)}, "cm.stage.cell");
+        llvm::Value* rowMajor = builder.getInt32(0);
+        llvm::Value* stride = builder.getInt32(slot.cols);
+        llvm::Value* v = builder.CreateLoad(slot.matrixType, slot.alloca, recv + ".val");
+        target.coopMatrixStore(builder, mod, tilePtr, v, rowMajor, stride, slot.rows, slot.cols,
+                               slot.use);
+        target.subgroupBarrier(builder, mod);
+        if (name == "get") {
+            if (args.size() != 1) unsupported("CooperativeMatrix.get expects (i)");
+            llvm::Value* r = builder.CreateLoad(slot.elemType, cellPtr, "cm.get");
+            target.subgroupBarrier(builder, mod);
+            return r;
+        }
+        if (name != "set") unsupported("CooperativeMatrix." + name + "()");
+        builder.CreateStore(nv, cellPtr);
+        target.subgroupBarrier(builder, mod);
+        llvm::Value* back = target.coopMatrixLoad(builder, mod, tilePtr, rowMajor, stride,
+                                                  slot.matrixType, slot.rows, slot.cols, slot.use);
+        builder.CreateStore(back, slot.alloca);
+        target.subgroupBarrier(builder, mod);
+        return llvm::ConstantInt::get(i32, 0);
     }
 
     // A helper lowered for a caller's fragments takes the caller's tile tier
@@ -8885,6 +9059,10 @@ llvm::Type* LoweringTarget::coopMatrixType(llvm::Module& /*m*/, llvm::Type* /*el
                                            uint32_t /*rows*/, uint32_t /*cols*/,
                                            uint32_t /*use*/) {
     throw coopMatrixUnsupported(name());
+}
+
+llvm::Value* LoweringTarget::subgroupIndex(llvm::IRBuilderBase& b, llvm::Module& /*m*/) {
+    return b.getInt32(0);
 }
 
 unsigned LoweringTarget::coopMatrixElementCount(llvm::Type* matrixType) {

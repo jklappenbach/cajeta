@@ -12,6 +12,7 @@
 #include "../lowering/LoweringTarget.h"
 #include "cajeta/error/Exception.h"
 
+#include "llvm/IR/Operator.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
@@ -714,6 +715,129 @@ public:
         return ImplTier::Portable;
     }
 
+#if CAJETA_HAS_SPV_COOP_MATRIX
+    bool coopMatrixStagedElements() const override { return true; }
+    bool coopMatrixEpilogueSupported() const override { return true; }
+    bool coopMatrixFromWordsSupported() const override { return true; }
+    bool coopMatrixFromWordsIsLaneFragment() const override { return false; }
+
+    // ptr[idx] for a Shared vector or a slice of one, re-rooted on the workgroup array, since a
+    // pointer offset from a slice does not step on spirv.
+    static llvm::Value* sharedAt(llvm::IRBuilderBase& b, llvm::Value* ptr, llvm::Type* ety,
+                                 llvm::Value* idx) {
+        llvm::Type* i32 = b.getInt32Ty();
+        llvm::Value* off = b.CreateZExtOrTrunc(idx, i32);
+        llvm::Value* at = ptr;
+        while (auto* g = llvm::dyn_cast<llvm::GEPOperator>(at)) {
+            if (g->getNumIndices() == 1 && g->getSourceElementType() == ety) {
+                off = b.CreateAdd(off, b.CreateZExtOrTrunc(g->getOperand(1), i32));
+            } else if (g->getNumIndices() == 2 && g->getSourceElementType()->isArrayTy()) {
+                auto* z = llvm::dyn_cast<llvm::ConstantInt>(g->getOperand(1));
+                if (!z || !z->isZero()) break;
+                off = b.CreateAdd(off, b.CreateZExtOrTrunc(g->getOperand(2), i32));
+            } else {
+                break;
+            }
+            at = g->getPointerOperand();
+        }
+        if (auto* gv = llvm::dyn_cast<llvm::GlobalVariable>(at))
+            if (auto* arr = llvm::dyn_cast<llvm::ArrayType>(gv->getValueType()))
+                return b.CreateInBoundsGEP(arr, gv, {b.getInt32(0), off});
+        return b.CreateGEP(ety, ptr, idx);
+    }
+
+    // The float epilogue over the staged per-lane view, where lane L holds column L mod 16
+    // and element e is row 2e + L / 16 (amdgpu's wave32 accumulator map).
+    llvm::Value* coopMatrixEpilogueAccum(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* accVal,
+            llvm::Value* faccVal, llvm::Value* rowFPtr, llvm::Type* rowETy,
+            llvm::Value* colFPtr, llvm::Type* colETy, llvm::Value* rowGPtr = nullptr,
+            llvm::Value* colGPtr = nullptr, llvm::Value* colFScalar = nullptr,
+            llvm::Value* colGScalar = nullptr, llvm::Value* colFStride = nullptr,
+            llvm::Value* colGStride = nullptr) override {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::Type* f32 = llvm::Type::getFloatTy(m.getContext());
+        llvm::Value* lane = waveLaneId(b, m);
+        llvm::Value* col = b.CreateAnd(lane, llvm::ConstantInt::get(i32, 15));
+        llvm::Value* half = b.CreateLShr(lane, llvm::ConstantInt::get(i32, 4));
+        auto colIdx = [&](llvm::Value* stride) -> llvm::Value* {
+            if (!stride) return col;
+            if (auto* ci = llvm::dyn_cast<llvm::ConstantInt>(stride))
+                if (ci->isOne()) return col;
+            return b.CreateMul(col, stride, "epi.cstride");
+        };
+        llvm::Value* cv = colFScalar ? colFScalar
+            : b.CreateLoad(colETy, sharedAt(b, colFPtr, colETy, colIdx(colFStride)), "epi.cf");
+        llvm::Value* cgv = colGScalar;
+        if (!cgv && colGPtr)
+            cgv = b.CreateLoad(colETy, sharedAt(b, colGPtr, colETy, colIdx(colGStride)),
+                               "epi.cg");
+        const unsigned n = llvm::cast<llvm::FixedVectorType>(faccVal->getType())->getNumElements();
+        llvm::Value* out = faccVal;
+        for (unsigned e = 0; e < n; ++e) {
+            llvm::Value* row = b.CreateAdd(llvm::ConstantInt::get(i32, 2 * e), half, "epi.row");
+            llvm::Value* rv = b.CreateLoad(rowETy, sharedAt(b, rowFPtr, rowETy, row), "epi.rf");
+            llvm::Value* term = b.CreateFMul(rv, cv);
+            if (accVal) {
+                llvm::Value* av = b.CreateExtractElement(accVal, e);
+                if (av->getType()->isIntegerTy()) av = b.CreateSIToFP(av, f32);
+                term = b.CreateFMul(term, av);
+            }
+            if (rowGPtr) {
+                llvm::Value* rg = b.CreateLoad(rowETy, sharedAt(b, rowGPtr, rowETy, row), "epi.rg");
+                term = b.CreateFAdd(term, b.CreateFMul(rg, cgv));
+            }
+            llvm::Value* cur = b.CreateExtractElement(out, e);
+            out = b.CreateInsertElement(out, b.CreateFAdd(cur, term), e, "epi.facc");
+        }
+        return out;
+    }
+
+    // iacc[e] += mul24(acc[e], colS), the low 24 bits of each signed, as amdgcn.mul.i24.
+    llvm::Value* coopMatrixScaledAccumI32(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* accVal,
+            llvm::Value* iaccVal, llvm::Value* colS, llvm::Value* colSPtr = nullptr,
+            llvm::Type* colSETy = nullptr, llvm::Value* colSStride = nullptr) override {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        if (colSPtr) {
+            llvm::Value* idx = b.CreateAnd(waveLaneId(b, m), llvm::ConstantInt::get(i32, 15));
+            if (colSStride) {
+                auto* ci = llvm::dyn_cast<llvm::ConstantInt>(colSStride);
+                if (!ci || !ci->isOne()) idx = b.CreateMul(idx, colSStride, "i32epi.cstride");
+            }
+            colS = b.CreateLoad(colSETy, sharedAt(b, colSPtr, colSETy, idx), "i32epi.cs");
+        }
+        auto low24 = [&](llvm::Value* v) {
+            return b.CreateAShr(b.CreateShl(v, llvm::ConstantInt::get(i32, 8)),
+                                llvm::ConstantInt::get(i32, 8));
+        };
+        llvm::Value* s24 = low24(colS);
+        const unsigned n = llvm::cast<llvm::FixedVectorType>(iaccVal->getType())->getNumElements();
+        llvm::Value* out = iaccVal;
+        for (unsigned e = 0; e < n; ++e) {
+            llvm::Value* prod = b.CreateMul(low24(b.CreateExtractElement(accVal, e)), s24,
+                                            "epi.mul24");
+            llvm::Value* cur = b.CreateExtractElement(out, e);
+            out = b.CreateInsertElement(out, b.CreateAdd(cur, prod), e, "epi.iacc");
+        }
+        return out;
+    }
+#endif
+
+    llvm::Value* subgroupIndex(llvm::IRBuilderBase& b, llvm::Module& m) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_subgroup_id);
+        return b.CreateCall(f, {}, "subgroup.id");
+    }
+
+    // Emitted as the all-memory synced barrier, which nothing else here uses; the word
+    // stream narrows it to Subgroup scope (scopeSubgroupBarriers).
+    void subgroupBarrier(llvm::IRBuilderBase& b, llvm::Module& m) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_all_memory_barrier_with_group_sync);
+        b.CreateCall(f, {});
+    }
+
     // A CooperativeMatrix local is an alloca of the opaque tile type.
     llvm::Type* coopMatrixType(llvm::Module& m, llvm::Type* elem, uint32_t rows,
                                uint32_t cols, uint32_t use) override {
@@ -1357,6 +1481,10 @@ private:
 class SpirvVirtualTarget : public SpirvTarget {
 public:
     SpirvVirtualTarget(unsigned w, unsigned s) : w_(w), s_(s), c_(w / s), narrow_(s > w) {}
+
+    bool coopMatrixStagedElements() const override { return false; }
+    bool coopMatrixEpilogueSupported() const override { return false; }
+    bool coopMatrixFromWordsSupported() const override { return false; }
 
     llvm::Function* createKernel(llvm::Module& m, const std::string& kname,
                                  const std::vector<KernelParam>& params) override {

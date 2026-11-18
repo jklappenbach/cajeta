@@ -11,6 +11,7 @@
 #include "cajeta/type/CajetaClass.h"
 
 #include <algorithm>
+#include <map>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -101,6 +102,8 @@ std::string unboundedHeldBy(const Annotatable& kernel) {
     return ann->getString("tracked");
 }
 
+std::map<std::string, std::map<std::string, unsigned>> g_holds;
+
 void fail(const std::string& kernelName, const std::string& what) {
     ++g_errors;
     g_failures.push_back(kernelName + " (" + what + ")");
@@ -150,6 +153,7 @@ void clearKernelGateWarnsOverride() { g_override = -1; }
 void resetKernelGate() {
     g_errors = 0;
     g_failures.clear();
+    g_holds.clear();
 }
 
 unsigned kernelGateErrors() { return g_errors; }
@@ -167,6 +171,7 @@ void reportUnloweredKernel(const Method& kernel,
     if (!held.empty()) {
         gateRecord(kernel, "note", "xpu-kernel-skipped", kernelName, target,
                    head + " [tracked: " + held + "]");
+        ++g_holds[backend][held];
         return;
     }
     if (kernelGateWarns()) {
@@ -289,6 +294,17 @@ void noteKernelBounded(const Method& kernel,
 }
 
 void throwIfKernelGateFailed() {
+    for (const auto& [backend, items] : jsonProgressEnabled() ? decltype(g_holds){} : g_holds) {
+        unsigned total = 0;
+        std::string by;
+        for (const auto& [item, n] : items) {
+            total += n;
+            by += (by.empty() ? "" : ", ") + item + ": " + std::to_string(n);
+        }
+        fprintf(stderr, "cajeta: note: [xpu-kernel-holds] %s: %u held (%s)\n", backend.c_str(),
+                total, by.c_str());
+    }
+    g_holds.clear();
     if (g_errors == 0) return;
     std::string names;
     for (const auto& f : g_failures) {

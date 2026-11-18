@@ -25,6 +25,7 @@
 #include "cajeta/xpu/amd/AmdgpuBackend.h"
 #include "cajeta/xpu/amd/AmdgpuKernelLowering.h"
 #include "cajeta/xpu/amd/HipDriver.h"
+#include "cajeta/xpu/vulkan/VulkanDriver.h"
 
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
@@ -213,29 +214,55 @@ TEST(XpuCoopFromWordsTests, lowersNativelyOnAmdgpu) {
         << "int8 + fromWords is native on amdgpu:\n" << err;
 }
 
-// SPIR-V has no lowering that distributes the per-lane slices into a
-// fragment, so the kernel is REJECTED — loudly, and with the spelling that
-// does work on this backend.
-//
-// WHAT THESE TWO ASSERT, AND WHY IT CHANGED. They used to anchor on the
-// literal token "NATIVE-ONLY". That word named the old contract, which said
-// the words ARE this lane's fragment — AMD's layout written into a portable
-// API, and the shape of defect that broke eleven kernels on NVIDIA. The
-// contract now says lane L supplies the tile's row/column L mod 16 and each
-// backend distributes; NVPTX distributes through a shared slice and so
-// SUPPORTS the verb, which "native-only" never had a way to express. What
-// the refusal must still do is say WHY and say WHAT TO USE INSTEAD, so that
-// is what these assert now.
-TEST(XpuCoopFromWordsTests, rejectsLoudlyOnSpirv) {
+// Vulkan stages the per-lane slices through workgroup memory and reloads them
+// (spirv-kernel-parity 4.1.1): the same packed-nibble feed, every element, run
+// through the runtime so the subgroup width is the pinned 32.
+TEST(XpuCoopFromWordsTests, packedNibbleBFeedMatchesHostOnVulkan) {
+    using namespace cajeta::xpu::vulkan;
+    if (!VulkanDriver::available()) GTEST_SKIP() << "no Vulkan compute device available";
+    std::string src = kFromWordsSource;
+    const std::string trivial = "    public static int32 run() { return 1; }\n";
+    const std::string check =
+        "    public static int32 run() {\n"
+        "        int8[] ha = heap int8[256];\n"
+        "        int8[] hb = heap int8[128];\n"
+        "        int32[] hc = heap int32[256];\n"
+        "        for (int32 i = 0; i < 16; i = i + 1) {\n"
+        "            for (int32 k = 0; k < 16; k = k + 1) { ha[i * 16 + k] = (int8) ((i + 2 * k) % 5 - 2); }\n"
+        "        }\n"
+        "        for (int32 j = 0; j < 16; j = j + 1) {\n"
+        "            for (int32 t = 0; t < 8; t = t + 1) {\n"
+        "                int32 lo = (3 * (2 * t) + 5 * j) % 16;\n"
+        "                int32 hi = (3 * (2 * t + 1) + 5 * j) % 16;\n"
+        "                hb[j * 8 + t] = (int8) (lo | (hi << 4));\n"
+        "            }\n"
+        "        }\n"
+        "        KernelBuffer<int8> a = heap KernelBuffer<int8>(256);\n"
+        "        KernelBuffer<int8> b = heap KernelBuffer<int8>(128);\n"
+        "        KernelBuffer<int32> c = heap KernelBuffer<int32>(256);\n"
+        "        a.upload(ha);\n"
+        "        b.upload(hb);\n"
+        "        KernelStream s #= KernelStream.current();\n"
+        "        fw.launch(s, grid: [1], block: [32])(a, b, c);\n"
+        "        s.sync();\n"
+        "        c.download(hc);\n"
+        "        for (int32 i = 0; i < 16; i = i + 1) {\n"
+        "            for (int32 j = 0; j < 16; j = j + 1) {\n"
+        "                int32 want = 0;\n"
+        "                for (int32 k = 0; k < 16; k = k + 1) {\n"
+        "                    want = want + ((i + 2 * k) % 5 - 2) * ((3 * k + 5 * j) % 16 - 8);\n"
+        "                }\n"
+        "                if (hc[i * 16 + j] != want) { return 1000 + i * 16 + j; }\n"
+        "            }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n";
+    auto at = src.find(trivial);
+    ASSERT_NE(at, std::string::npos);
+    src.replace(at, trivial.size(), check);
+    src.replace(src.find("import cajeta.xpu.KernelThread;"), 0, "import cajeta.xpu.KernelStream;\n");
     std::string err;
-    EXPECT_EQ(runI32On(cajeta::xpu::Backend::Spirv, kFromWordsSource,
-                       &err), 1);
-    EXPECT_NE(err.find("[xpu-kernel-skipped]"), std::string::npos)
-        << "off-native fromWords must SKIP the kernel loudly:\n" << err;
-    EXPECT_NE(err.find("lane L supplies"), std::string::npos)
-        << "the skip must state the contract it could not meet:\n" << err;
-    EXPECT_NE(err.find("Shared<T>"), std::string::npos)
-        << "the skip must name the spelling that works here:\n" << err;
+    EXPECT_EQ(runI32On(cajeta::xpu::Backend::Spirv, src, &err), 777) << err;
 }
 
 // The cpu backend distributes the tile across its 32-lane software wave since
@@ -244,8 +271,8 @@ TEST(XpuCoopFromWordsTests, rejectsLoudlyOnSpirv) {
 // ...") is retired. Its mma sits inside `while (t < 8)`: that loop is
 // workgroup-uniform, so fission makes it scaffold, the work-item loop inside
 // is innermost and marked parallel, and LoopVectorize widens it -- the kernel
-// LOWERS. (SPIR-V above keeps its own loud refusal; a kernel whose wave op
-// is left scalar is refused by the gate, pinned in XpuCpuDistCoopVerb.)
+// LOWERS. (A kernel whose wave op is left scalar is refused by the gate, pinned in
+// XpuCpuDistCoopVerb.)
 TEST(XpuCoopFromWordsTests, lowersOnTheCpuDistributedTile) {
     std::string err;
     EXPECT_EQ(runI32On(cajeta::xpu::Backend::Cpu, kFromWordsSource,

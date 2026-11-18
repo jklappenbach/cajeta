@@ -175,7 +175,8 @@ TEST(XpuCoopAddScaled, keepsAVulkanKernelsMmaNative) {
         << "1 = native, 0 = demoted, -1 = no manifest, -2 = no mma entry:\n" << err;
 }
 
-TEST(XpuCoopAddScaled, anEpilogueVerbStillDemotesOnVulkan) {
+// spirv-kernel-parity 4: the epilogue verbs stage on vulkan, so the mma stays native.
+TEST(XpuCoopAddScaled, anEpilogueVerbKeepsTheMmaNativeOnVulkan) {
     CAJETA_SKIP_IF_NO_VULKAN();
     std::string k = MMA_KERNEL;
     const std::string from = "        acc.addScaledPow2(lo, -10);\n";
@@ -186,7 +187,8 @@ TEST(XpuCoopAddScaled, anEpilogueVerbStillDemotesOnVulkan) {
     std::string src = std::string(PRE) + "import cajeta.xpu.Shared;\n" +
                       "public final class D {\n" + KERNEL + k + RUN + "}\n";
     std::string err;
-    EXPECT_EQ(runOn(Backend::Spirv, src, "tierOfMma", &err), 0) << err;
+    EXPECT_EQ(runOn(Backend::Spirv, src, "tierOfMma", &err), 1)
+        << "1 = native, 0 = demoted:\n" << err;
 }
 
 TEST(XpuCoopAddScaled, aWrongShapeIsNamed) {

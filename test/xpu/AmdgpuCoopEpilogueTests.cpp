@@ -126,18 +126,14 @@ TEST(AmdgpuCoopEpilogueTests, verbsLowerNativelyOnAmdgpu) {
            "demoted:\n" << err;
 }
 
-// 2.1.2 (fires) — a backend whose native tier has NO epilogue lowering
-// (SPIR-V in v1) demotes the kernel's tiles to the portable tile and
-// SAYS SO, naming the epilogue op; the kernel still lowers.
-TEST(AmdgpuCoopEpilogueTests, spirvDemotesLoudlyWithTheVerbs) {
+// spirv-kernel-parity 4 — SPIR-V keeps the tiles native with the verbs and
+// stages them through workgroup memory: no demotion note, no skip.
+TEST(AmdgpuCoopEpilogueTests, spirvKeepsTheVerbsNative) {
     std::string err;
     EXPECT_EQ(runI32On(cajeta::xpu::Backend::Spirv, epiKernel(true), &err), 1);
-    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos)
-        << "demote means LOWER on the portable tile, never skip:\n" << err;
-    EXPECT_NE(err.find("[mma-epilogue]"), std::string::npos)
-        << "the demote must be announced by the epilogue note:\n" << err;
-    EXPECT_NE(err.find("scaledAccumInto"), std::string::npos)
-        << "the note must NAME the op that forced the demotion:\n" << err;
+    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos) << err;
+    EXPECT_EQ(err.find("[mma-epilogue]"), std::string::npos)
+        << "the verbs must not demote the tiles on vulkan:\n" << err;
 }
 
 // 10.12.31 — the scalar-column variants lower natively on amdgpu: no
@@ -153,31 +149,12 @@ TEST(AmdgpuCoopEpilogueTests, scalarColumnVerbsLowerNativelyOnAmdgpu) {
         << "int8+scalar epilogue is native on amdgpu:\n" << err;
 }
 
-// 10.12.31 — a backend without native epilogue support (SPIR-V) demotes
-// the tiles, and the replicated software tile then REJECTS the kernel by
-// name rather than taking the calling work-item's factor for all sixteen
-// columns, which would compile, run and be wrong.
-//
-// The anchor moved off the literal "NATIVE-ONLY" with the contract rewrite:
-// that word described the verb as belonging to one tier, when what is
-// actually true is that lane L supplies column L mod Cols and a tier with no
-// wave cannot reach the other lanes. NVPTX redistributes by shuffle and
-// supports the verb, so "native-only" was never the real line.
-TEST(AmdgpuCoopEpilogueTests, scalarColumnVerbsRejectLoudlyOffNative) {
+// spirv-kernel-parity 4 — the scalar-column verbs also stay native on SPIR-V.
+TEST(AmdgpuCoopEpilogueTests, scalarColumnVerbsLowerNativelyOnVulkan) {
     std::string err;
-    EXPECT_EQ(runI32On(cajeta::xpu::Backend::Spirv, scalarEpiKernel(),
-                       &err), 1);
-    EXPECT_NE(err.find("[xpu-kernel-skipped]"), std::string::npos)
-        << "off-native the scalar verbs must SKIP the kernel loudly:\n"
-        << err;
-    // Anchored on what the lowering ACTUALLY emits (KernelLowering.cpp:5293).
-    // A 2026-09-25 edit moved this anchor to "has no wave to distribute a
-    // per-lane value across", a wording no version of the source has ever
-    // emitted; origin's anchor is the true one and this merge keeps it.
-    EXPECT_NE(err.find("WaveVector.ofLane is native-only"), std::string::npos)
-        << "the skip must state the contract it could not meet:\n" << err;
-    EXPECT_NE(err.find("WaveVector.ofSlice"), std::string::npos)
-        << "the skip must name the spelling that works here:\n" << err;
+    EXPECT_EQ(runI32On(cajeta::xpu::Backend::Spirv, scalarEpiKernel(), &err), 1);
+    EXPECT_FALSE(cajeta_test::loweringRefused(err)) << err;
+    EXPECT_EQ(err.find("[mma-epilogue]"), std::string::npos) << err;
 }
 
 // 2.1.2 (does not fire) — the same kernel minus the verbs stays on the

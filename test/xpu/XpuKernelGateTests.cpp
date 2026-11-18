@@ -167,6 +167,20 @@ TEST(XpuKernelGate, aTrackedUnloweredKernelIsANoteNamingTheItem) {
     EXPECT_EQ(b.log.find("cajeta: error:"), std::string::npos) << b.log;
 }
 
+// spirv-kernel-parity 7.1.1: a build that holds kernels ends with a count per backend
+// and tracking item, so a hold is never only a note in the middle of the log.
+TEST(XpuKernelGate, aBuildWithAHeldKernelEndsWithTheHoldCount) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    Built b = build(program(TRACKED), "cpu");
+    EXPECT_EQ(b.rc, 0) << b.log;
+    const std::string line =
+        "cajeta: note: [xpu-kernel-holds] cpu: 1 held (xpu-kernel-adaptor 4.2.1: 1)";
+    auto at = b.log.find(line);
+    ASSERT_NE(at, std::string::npos) << b.log;
+    EXPECT_GT(at, b.log.find("[xpu-kernel-skipped] bad")) << "the count comes after the notes:\n"
+                                                          << b.log;
+}
+
 // STALE: a held kernel that lowers now fails until the declaration goes,
 // exactly as a tracked census skip that starts running does.
 TEST(XpuKernelGate, aStaleUnloweredDeclarationFailsTheBuild) {

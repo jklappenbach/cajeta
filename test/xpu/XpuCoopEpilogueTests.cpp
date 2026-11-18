@@ -15,6 +15,7 @@
 //
 
 #include <gtest/gtest.h>
+#include "XpuDeviceTestUtil.h"
 
 #include "../jit/JitTestHelper.h"
 #include "cajeta/xpu/XpuTarget.h"
@@ -175,6 +176,85 @@ TEST(XpuCoopEpilogueTests, verbsMatchScalarReferenceExactlyOnCpu) {
     EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos)
         << "the epilogue kernel must LOWER on the cpu software tile:\n"
         << err;
+}
+
+// The same three verbs on Vulkan's native tile, staged through workgroup
+// memory (spirv-kernel-parity 4.1): EXACT against the same reference.
+TEST(XpuCoopEpilogueTests, verbsMatchScalarReferenceExactlyOnVulkan) {
+    if (!cajeta::xpu::test::vulkanAvailable()) GTEST_SKIP() << "no Vulkan device";
+    std::string src = std::string(PRE) +
+        "public final class D {\n" + KERNEL + RUN + "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    testing::internal::CaptureStderr();
+    auto jit = CajetaJit::compile(src, "test.D", o);
+    auto fn = jit ? jit->lookup<int32_t (*)()>("run") : nullptr;
+    int32_t r = fn ? fn() : -2000;
+    std::string err = testing::internal::GetCapturedStderr();
+    EXPECT_EQ(r, 1) << "element " << (-r - 1) << " disagrees:\n" << err;
+    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos) << err;
+    EXPECT_EQ(err.find("[mma-epilogue]"), std::string::npos)
+        << "the verbs must stay on the native tile:\n" << err;
+}
+
+// scaledAccumI32 with a WaveVector.ofLane column on Vulkan: iacc[r][c] =
+// (A * B)[r][c] * (c + 1), every element.
+TEST(XpuCoopEpilogueTests, integerAccumulateWithALaneColumnMatchesOnVulkan) {
+    if (!cajeta::xpu::test::vulkanAvailable()) GTEST_SKIP() << "no Vulkan device";
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    @Kernel\n"
+        "    public static void k(KernelBuffer<int32> y, KernelBuffer<int8> a, KernelBuffer<int8> b) {\n"
+        "        CooperativeMatrix<int8,16,16,0> ma;\n"
+        "        CooperativeMatrix<int8,16,16,1> mb;\n"
+        "        CooperativeMatrix<int32,16,16,2> mc;\n"
+        "        CooperativeMatrix<int32,16,16,2> iacc;\n"
+        "        mc.splat(0);\n"
+        "        iacc.splat(0);\n"
+        "        ma.load(a, 0, 0, 16);\n"
+        "        mb.load(b, 0, 0, 16);\n"
+        "        mc.mma(ma, mb);\n"
+        "        int32 colS = (int32) (KernelThread.x() % 16) + 1;\n"
+        "        mc.scaledAccumI32(iacc, WaveVector.ofLane(colS));\n"
+        "        iacc.store(y, 0, 0, 16);\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int8[] ha = heap int8[256];\n"
+        "        int8[] hb = heap int8[256];\n"
+        "        int32[] hy = heap int32[256];\n"
+        "        for (int32 i = 0; i < 256; i = i + 1) {\n"
+        "            ha[i] = (int8) ((i * 5) % 17 - 8);\n"
+        "            hb[i] = (int8) ((i * 7) % 15 - 7);\n"
+        "        }\n"
+        "        KernelBuffer<int8> a = heap KernelBuffer<int8>(256);\n"
+        "        KernelBuffer<int8> b = heap KernelBuffer<int8>(256);\n"
+        "        KernelBuffer<int32> y = heap KernelBuffer<int32>(256);\n"
+        "        a.upload(ha);\n"
+        "        b.upload(hb);\n"
+        "        KernelStream s #= KernelStream.current();\n"
+        "        k.launch(s, grid: [1], block: [32])(y, a, b);\n"
+        "        s.sync();\n"
+        "        y.download(hy);\n"
+        "        for (int32 r = 0; r < 16; r = r + 1) {\n"
+        "            for (int32 c = 0; c < 16; c = c + 1) {\n"
+        "                int32 dot = 0;\n"
+        "                for (int32 t = 0; t < 16; t = t + 1) {\n"
+        "                    dot = dot + (int32) ha[r * 16 + t] * (int32) hb[t * 16 + c];\n"
+        "                }\n"
+        "                if (hy[r * 16 + c] != dot * (c + 1)) { return -(r * 16 + c + 1); }\n"
+        "            }\n"
+        "        }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    testing::internal::CaptureStderr();
+    auto jit = CajetaJit::compile(src, "test.D", o);
+    auto fn = jit ? jit->lookup<int32_t (*)()>("run") : nullptr;
+    int32_t r = fn ? fn() : -2000;
+    std::string err = testing::internal::GetCapturedStderr();
+    EXPECT_EQ(r, 1) << "element " << (-r - 1) << " disagrees:\n" << err;
 }
 
 // A WaveVector.ofLane column on the CPU tier. Until 4A.7.2 the replicated
