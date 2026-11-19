@@ -397,6 +397,22 @@ public final class Device {
         return Device.nativeLaunchCount(b, (int64) b.count());
     }
 
+    /**
+     * The kernel a compiler variant stands for (`gemm` for `gemm$pt` or `gemm$v8$pt`), or an
+     * empty string when `name` is not a variant. Pure: no device touch.
+     */
+    public static #String variantBase(String name) {
+        int8[] b #= name.toBytes();
+        int64 n = Device.nativeVariantBase(b, (int64) b.count());
+        if (n <= 0L) {
+            return "";
+        }
+        return name.substring(0, (int32) n);
+    }
+
+    @Native("__cajeta_xpu_variant_base")
+    private static int64 nativeVariantBase(int8[] name, int64 len);
+
     @Native("__cajeta_xpu_kernel_registry_count")
     private static int32 nativeRegistryCount();
 

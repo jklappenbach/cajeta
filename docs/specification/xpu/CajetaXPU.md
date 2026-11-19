@@ -477,7 +477,7 @@ report.
 | clocks and bandwidth | `clockKHz()`, `memoryClockKHz()`, `memoryBusWidthBits()`, `peakBandwidthGBps()` |
 | identity and neighbours | `uuid()`, `driverVersion()`, `foreignLoadPercent()` |
 | capabilities | `supports(Capability)`, from the driver: see the table below |
-| the registry | `kernelAvailable(name)`, `kernelUsable(name)`, `kernelUnusableReason(name)`, `registeredKernelCount()`, `registeredKernel(i)`, `kernelLaunchCount(name)`, `launchFailures()`, `checkLaunch()` |
+| the registry | `kernelAvailable(name)`, `kernelUsable(name)`, `kernelUnusableReason(name)`, `registeredKernelCount()`, `registeredKernel(i)`, `variantBase(name)`, `kernelLaunchCount(name)`, `launchFailures()`, `checkLaunch()` |
 
 `Device.supports(Capability)` answers for the active device. A program reads it after its
 first device touch (a launch or an allocation): before that no backend is active and every
@@ -668,8 +668,9 @@ run. An order-dependent red is an unwritten read.
 
 **Census.** A library's test run on a backend enumerates every registered
 kernel (`Device.registeredKernel`) and requires each to have been
-value-checked, or excused by name against a plan item. A kernel that ran is
-not thereby covered. The committed tables per backend are the record of what
+value-checked, or excused by name against a plan item. A compiler variant
+(`$vN`, `$sw`, `$pt`, `$d2`) is counted against the kernel that
+`Device.variantBase` names. A kernel that ran is not thereby covered. The committed tables per backend are the record of what
 each has proven.
 
 **A route change is gated by the answer alone.** Speed does not gate it. An inference

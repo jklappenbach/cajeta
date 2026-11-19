@@ -637,6 +637,35 @@ int64_t __cajeta_xpu_kernel_registry_name(int32_t index, void* outArr, int64_t c
     return (int64_t) len;
 }
 
+// Whether name[from, to) is a suffix the launcher appends: "sw", "pt", "d2" or "v<digits>".
+static int cajeta_xpu_variant_suffix(const char* name, int64_t from, int64_t to) {
+    int64_t n = to - from;
+    const char* s = name + from;
+    if (n == 2 && ((s[0] == 's' && s[1] == 'w') || (s[0] == 'p' && s[1] == 't')
+                   || (s[0] == 'd' && s[1] == '2'))) return 1;
+    if (n < 2 || s[0] != 'v') return 0;
+    for (int64_t i = 1; i < n; ++i) if (s[i] < '0' || s[i] > '9') return 0;
+    return 1;
+}
+
+// The length of a variant name's base (the text before its first "$"), or 0 when
+// `name` is not a variant: every "$" segment must be a launcher suffix. STATIC native.
+int64_t __cajeta_xpu_variant_base(void* nameArr, int64_t len) {
+    if (!nameArr || len <= 0) return 0;
+    const char* name = (const char*) nameArr + 8;
+    int64_t base = -1;
+    for (int64_t i = 0; i < len; ++i) if (name[i] == '$') { base = i; break; }
+    if (base < 1) return 0;
+    int64_t from = base + 1;
+    while (1) {
+        int64_t stop = from;
+        while (stop < len && name[stop] != '$') ++stop;
+        if (!cajeta_xpu_variant_suffix(name, from, stop)) return 0;
+        if (stop >= len) return base;
+        from = stop + 1;
+    }
+}
+
 // --- Backend dispatcher (cajeta-cpu.md Increment 4) -------------------------
 // A binary can bundle several backends; the first device touch selects and
 // caches the highest-priority BUNDLED and AVAILABLE one (the ids are that order).

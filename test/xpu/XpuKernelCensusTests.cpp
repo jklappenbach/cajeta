@@ -268,3 +268,44 @@ TEST(XpuKernelTargetsRuntime, theOffTargetKernelsAreListed) {
     ASSERT_NE(listed, nullptr);
     EXPECT_EQ(listed(), 1 | 2 | 4);
 }
+
+// gpu-kernel-parity 14.2.5: the runtime names a variant's base, so a census need
+// not know the compiler's suffixes. Every "$" segment must be a known variant.
+TEST(XpuKernelCensus, theRuntimeNamesAVariantsBase) {
+    const char* src =
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.xpu.Device;\n"
+        "public class VariantBase {\n"
+        "    static int32 is(String name, String want) {\n"
+        "        String got #= Device.variantBase(name);\n"
+        "        return got.equals(want) ? 1 : 0;\n"
+        "    }\n"
+        "    public static int32 bits() {\n"
+        "        int32 b = 0;\n"
+        "        b = b | VariantBase.is(\"gemm$pt\", \"gemm\");\n"
+        "        b = b | (VariantBase.is(\"gemm$d2\", \"gemm\") << 1);\n"
+        "        b = b | (VariantBase.is(\"trace$sw\", \"trace\") << 2);\n"
+        "        b = b | (VariantBase.is(\"scan$v16\", \"scan\") << 3);\n"
+        "        b = b | (VariantBase.is(\"scan$v8$pt\", \"scan\") << 4);\n"
+        "        b = b | (VariantBase.is(\"gemm\", \"\") << 5);\n"
+        "        b = b | (VariantBase.is(\"gemm$v\", \"\") << 6);\n"
+        "        b = b | (VariantBase.is(\"gemm$v8x\", \"\") << 7);\n"
+        "        b = b | (VariantBase.is(\"gemm$tile\", \"\") << 8);\n"
+        "        b = b | (VariantBase.is(\"$pt\", \"\") << 9);\n"
+        "        b = b | (VariantBase.is(\"gemm$pt$\", \"\") << 10);\n"
+        "        b = b | (VariantBase.is(\"gemm$pt$q\", \"\") << 11);\n"
+        "        return b;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.VariantBase", withBackend(cajeta::xpu::Backend::Cpu));
+    ASSERT_NE(jit, nullptr);
+    auto bits = jit->lookup<int32_t (*)()>("bits");
+    ASSERT_TRUE(bits);
+    const int32_t b = bits();
+    const char* cases[] = {"gemm$pt", "gemm$d2", "trace$sw", "scan$v16", "scan$v8$pt", "gemm",
+                           "gemm$v", "gemm$v8x", "gemm$tile", "$pt", "gemm$pt$", "gemm$pt$q"};
+    for (int i = 0; i < 12; ++i) {
+        EXPECT_TRUE(b & (1 << i)) << "Device.variantBase(\"" << cases[i] << "\") is wrong";
+    }
+}
