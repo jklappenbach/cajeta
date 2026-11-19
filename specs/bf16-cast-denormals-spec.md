@@ -1,6 +1,6 @@
 # bf16-cast-denormals — `(bfloat16) x` keeps subnormals on every x86 CPU
 
-> Status: **draft**, from Julian's decision 2026-11-18 ("fix now, own spec"), found by
+> Status: **active**, approved by Julian 2026-11-18 ("fix now, own spec"), found by
 > coop-converting-store's bfloat16 value tests on proton. Plan:
 > [bf16-cast-denormals](../agents/bf16-cast-denormals-plan.md).
 
