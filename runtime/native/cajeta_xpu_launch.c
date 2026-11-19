@@ -239,8 +239,22 @@ static void cajeta_xpu_launch_cuda_optix(struct cajeta_optix_rq* rq, void* argv,
                 rq->name, rc);
 }
 
-// CUDA launch: pick the OptiX or software path from the AS argument's impl, load the
-// module lazily, apply spec overrides, translate kernargs, launch, then free them.
+// gpu-kernel-parity §10.5: a slow form never runs silently. At exit, every CUDA
+// kernel whose per-element placement form ran (a native tile off wmma's alignment,
+// coop-converting-store spec 2.5) is named once. The flag costs nothing per launch;
+// it is read by a handler on the runtime's own exit chain, which the program and the
+// JIT harness fire before the driver goes (libc atexit dangles in a JIT'd run).
+void __cajeta_atexit_push(void (*fn)(void*), void* arg);
+static void cajeta_xpu_report_placement(void* arg) {
+    struct cajeta_xpu_module* m = (struct cajeta_xpu_module*) arg;
+    int32_t v = 0;
+    if (m->placeState == 2 && g_xpu_cuda.cuMemcpyDtoH
+            && g_xpu_cuda.cuMemcpyDtoH(&v, m->placeG, sizeof v) == 0 && v)
+        fprintf(stderr, "cajeta: note: [placement] %s: a load or store of a tile off "
+                        "wmma's alignment took the per-element form (each lane's run "
+                        "must be aligned; coop-converting-store spec 2.5)\n", m->name);
+}
+
 static void cajeta_xpu_launch_cuda(const char* kernelName,
                                    int32_t gridX, int32_t gridY, int32_t gridZ,
                                    int32_t blockX, int32_t blockY, int32_t blockZ,
@@ -406,6 +420,19 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
                 g_xpu_cuda.cuMemcpyHtoD(g, specValues,
                                         want <= gbytes ? want : gbytes);
             }
+        }
+    }
+    // A kernel whose native loads or stores may take the per-element placement form
+    // carries a flag the form sets; it is found once per module and read at exit.
+    if (mod && e->placeState == 0 && g_xpu_cuda.cuModuleGetGlobal) {
+        cajeta_cudeviceptr g; size_t gbytes;
+        if (g_xpu_cuda.cuModuleGetGlobal(&g, &gbytes, mod, "cajeta_placement_taken") == 0
+                && gbytes >= sizeof(int32_t)) {
+            e->placeG = g;
+            e->placeState = 2;
+            __cajeta_atexit_push(cajeta_xpu_report_placement, e);
+        } else {
+            e->placeState = 1;
         }
     }
     // A kernel built with checked `align:` statements carries a fault record:
@@ -875,6 +902,24 @@ static int caj_vk_has_fault_binding(const void* spirv, uint64_t len, uint32_t bi
 // The runtime's own fault-record buffer for Vulkan, made once, host-mapped.
 static int64_t g_vk_align_fault;
 
+// True the first time `kernel` is named by a rung note in this process.
+static int cajeta_xpu_first_rung_note(const char* kernel) {
+    static char seen[64][128];
+    static int nseen = 0;
+    static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    int first = 1;
+    pthread_mutex_lock(&mu);
+    for (int i = 0; i < nseen; ++i)
+        if (strncmp(seen[i], kernel, sizeof(seen[i]) - 1) == 0) { first = 0; break; }
+    if (first && nseen < 64) {
+        strncpy(seen[nseen], kernel, sizeof(seen[nseen]) - 1);
+        seen[nseen][sizeof(seen[nseen]) - 1] = '\0';
+        ++nseen;
+    }
+    pthread_mutex_unlock(&mu);
+    return first;
+}
+
 // The subgroup width a virtual wave of `w` runs over: 2w when the device can pin it (one lane
 // per invocation), else the widest it can pin below `w`, else the width it always runs.
 static uint32_t caj_vk_virtual_width(uint32_t w) {
@@ -961,6 +1006,61 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
             blockX /= (int32_t) c;
             declaredWave = 0;
             __atomic_store_n(&caj_vk_last_virtual, (int32_t) sg, __ATOMIC_RELEASE);
+        }
+    }
+    // A device without a capability the module declares launches the "<name>$pt" variant, the
+    // same kernel on the portable tile, when the compiler built one; the switch is named once.
+    char ptName[160];
+    if (__atomic_load_n(&caj_vk_last_virtual, __ATOMIC_ACQUIRE) == 0) {
+        const char* capName = NULL;
+        if (__cajeta_xpu_vk_spv_missing_capability((const uint32_t*) spirv, (size_t) (len / 4),
+                                                   g_xpu_vk.caps, &capName)) {
+            snprintf(ptName, sizeof(ptName), "%s$pt", launchName);
+            pthread_mutex_lock(&g_xpu_cuda_lock);
+            struct cajeta_xpu_module* pe = cajeta_xpu_find_module(ptName, CAJ_XPU_VULKAN);
+            pthread_mutex_unlock(&g_xpu_cuda_lock);
+            const char* lacked = capName;
+            const char* ptLacks = NULL;
+            if (pe && pe->image && pe->len >= 4
+                    && !__cajeta_xpu_vk_spv_missing_capability((const uint32_t*) pe->image,
+                                                               (size_t) (pe->len / 4), g_xpu_vk.caps,
+                                                               &ptLacks)) {
+                if (!caj_vk_wave_runnable(32u)) {
+                    cajeta_xpu_note_launch_refusal(launchName, CAJ_XPU_VULKAN);
+                    g_xpu_refusal_reason = 11;
+                    fprintf(stderr,
+                            "cajeta.xpu: [xpu-launch-refused] %s needs the portable tile, which lays "
+                            "the tile out over 32 lanes, and this Vulkan device runs subgroups of %u "
+                            "to %u lanes%s\n", launchName, g_xpu_vk.minSubgroupSize,
+                            g_xpu_vk.maxSubgroupSize, g_xpu_vk.sizeCtlFeature ? "" : " with no size control");
+                    return;
+                }
+                if (cajeta_xpu_first_rung_note(launchName))
+                    fprintf(stderr, "cajeta: note: [xpu-rung] %s runs on the portable tile: this "
+                            "device has not enabled %s\n", launchName, lacked ? lacked : "a capability it declares");
+                launchName = ptName;
+                spirv = pe->image;
+                len = pe->len;
+            }
+        }
+    }
+    // A device with the mixed-float dot launches the "<name>$d2" variant, whose f16 dotSum
+    // pairs are one OpFDot2MixAcc32VALVE each, when the compiler built one.
+    char d2Name[160];
+    if (__atomic_load_n(&caj_vk_last_virtual, __ATOMIC_ACQUIRE) == 0
+            && (g_xpu_vk.caps & CAJ_VK_CAP_MIXEDDOT) && launchName != ptName) {
+        snprintf(d2Name, sizeof(d2Name), "%s$d2", launchName);
+        pthread_mutex_lock(&g_xpu_cuda_lock);
+        struct cajeta_xpu_module* de = cajeta_xpu_find_module(d2Name, CAJ_XPU_VULKAN);
+        pthread_mutex_unlock(&g_xpu_cuda_lock);
+        const char* d2Lacks = NULL;
+        if (de && de->image && de->len >= 4
+                && !__cajeta_xpu_vk_spv_missing_capability((const uint32_t*) de->image,
+                                                           (size_t) (de->len / 4), g_xpu_vk.caps,
+                                                           &d2Lacks)) {
+            launchName = d2Name;
+            spirv = de->image;
+            len = de->len;
         }
     }
     if (declaredWave >= 2 && !caj_vk_wave_runnable((uint32_t) declaredWave)) {
@@ -1389,6 +1489,7 @@ static void cajeta_xpu_register_module_impl(const char* kernelName,
         e->function = NULL;
         e->specState = 0;
         e->lastSpecCount = -1;
+        e->placeState = 0;
     }
     g_xpu_registry_gen++;
     pthread_mutex_unlock(&g_xpu_cuda_lock);

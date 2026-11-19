@@ -30,10 +30,27 @@
 #define CAJ_VK_CAP_INT64_ATOMICS (1u << 7)
 #define CAJ_VK_CAP_RAYQUERY      (1u << 8)
 #define CAJ_VK_CAP_VMM           (1u << 9)
+#define CAJ_VK_CAP_MIXEDDOT      (1u << 10)
 
 // The first OpCapability in the module prologue of `w` that `have` lacks, or
 // 0; *name gets the capability's name. Capabilities the runtime does not
 // track pass, as does anything that is not a SPIR-V module.
+// Whether CAJETA_XPU_DENY (a comma list) names `cap`: the device is treated as lacking it, so
+// every kernel takes the rung it would take on a device without it.
+int cajeta_xpu_denied(const char* cap) {
+    const char* deny = getenv("CAJETA_XPU_DENY");
+    if (!deny || !*deny) return 0;
+    size_t n = strlen(cap);
+    for (const char* p = deny; *p;) {
+        const char* end = strchr(p, ',');
+        size_t len = end ? (size_t) (end - p) : strlen(p);
+        if (len == n && strncmp(p, cap, n) == 0) return 1;
+        if (!end) break;
+        p = end + 1;
+    }
+    return 0;
+}
+
 uint32_t __cajeta_xpu_vk_spv_missing_capability(const uint32_t* w, size_t nwords,
                                                 uint32_t have, const char** name) {
     static const struct { uint32_t cap; uint32_t bit; const char* name; } known[] = {
@@ -49,6 +66,7 @@ uint32_t __cajeta_xpu_vk_spv_missing_capability(const uint32_t* w, size_t nwords
         { 6,    CAJ_VK_CAP_INT64_ATOMICS, "Int64Atomics" },
         { 4472, CAJ_VK_CAP_RAYQUERY,      "RayQueryKHR" },
         { 5345, CAJ_VK_CAP_VMM,           "VulkanMemoryModel" },
+        { 6912, CAJ_VK_CAP_MIXEDDOT,      "DotProductFloat16AccFloat32VALVE" },
     };
     if (name) *name = NULL;
     if (!w || nwords < 6 || w[0] != 0x07230203u) return 0;
@@ -75,6 +93,18 @@ uint32_t __cajeta_xpu_vk_spv_missing_capability(const uint32_t* w, size_t nwords
 
 #if defined(CAJETA_RT_HAS_VULKAN)
 #include <vulkan/vulkan.h>
+
+// VK_VALVE_shader_mixed_float_dot_product, declared here for headers that predate it.
+typedef struct CajVkMixedDotFeatures {
+    VkStructureType sType;
+    void* pNext;
+    VkBool32 float16AccFloat32;
+    VkBool32 float16AccFloat16;
+    VkBool32 bfloat16Acc;
+    VkBool32 float8AccFloat32;
+} CajVkMixedDotFeatures;
+#define CAJ_VK_STYPE_MIXED_DOT ((VkStructureType) 1000673000)
+#define CAJ_VK_MIXED_DOT_EXT "VK_VALVE_shader_mixed_float_dot_product"
 
 struct cajeta_vk {
     int loaded;                  // 0 untried, 1 ready, -1 unavailable
@@ -161,6 +191,10 @@ struct cajeta_vk {
     // Ray query: extensions resolved and enabled only where supported, else 0.
     int rayQuery;                // 1 if AS/ray-query is usable on this device
     int atomicInt64;             // 1 if shaderBufferInt64Atomics is enabled
+    uint32_t coopCfg;            // CAJ_VK_COOP_*: 16x16x16 subgroup matrix configs the driver lists
+    int float64;                 // shaderFloat64
+    int float16Arith;            // shaderFloat16
+    int intDot4x8;               // a 4x8-bit packed signed dot product the device accelerates
     uint32_t caps;               // CAJ_VK_CAP_* bits enabled at vkCreateDevice
     int validationErrors;        // errors the validation layer reported so far
     int validationFatal;         // of those, the spirv-val ones (RADV crashes compiling such a module)
@@ -511,6 +545,7 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     // int64 ones back Buffer<T>.atomic* (NVIDIA faults with DEVICE_LOST without
     // them). Enabling an unsupported extension fails vkCreateDevice outright.
     int wantRayQuery = 0, wantAtomicFloat = 0, wantAtomicFloat2 = 0, wantCoopMat = 0;
+    int hasMixedDot = 0, wantMixedDot = 0;
     int wantAtomicInt64 = 0;
     int hasMaxReconv = 0, hasBf16 = 0, hasClock = 0, hasQuadCtl = 0, hasSgRotate = 0;
     int hasMemBudget = 0;
@@ -553,6 +588,7 @@ static int cajeta_xpu_vulkan_init_locked(void) {
                     else if (!strcmp(en, VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME)) hasAtomicFloat = 1;
                     else if (!strcmp(en, VK_EXT_SHADER_ATOMIC_FLOAT_2_EXTENSION_NAME)) hasAtomicFloat2 = 1;
                     else if (!strcmp(en, VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME)) hasAtomicInt64 = 1;
+                    else if (!strcmp(en, CAJ_VK_MIXED_DOT_EXT)) hasMixedDot = 1;
 #if defined(VK_KHR_cooperative_matrix)
                     else if (!strcmp(en, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME)) hasCoopMat = 1;
 #endif
@@ -639,6 +675,20 @@ static int cajeta_xpu_vulkan_init_locked(void) {
                     f2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2; f2.pNext = &qDot;
                     getFeatures2(g_xpu_vk.phys, &f2);
                     wantDot = qDot.shaderIntegerDotProduct ? 1 : 0;
+                    if (wantDot) {
+                        VkPhysicalDeviceShaderIntegerDotProductProperties dp;
+                        memset(&dp, 0, sizeof(dp));
+                        dp.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_PROPERTIES;
+                        VkPhysicalDeviceProperties2 dp2;
+                        memset(&dp2, 0, sizeof(dp2));
+                        dp2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+                        dp2.pNext = &dp;
+                        PFN_vkGetPhysicalDeviceProperties2 gdp =
+                            (PFN_vkGetPhysicalDeviceProperties2) g_xpu_vk.getInstanceProcAddr(
+                                g_xpu_vk.instance, "vkGetPhysicalDeviceProperties2");
+                        if (gdp) gdp(g_xpu_vk.phys, &dp2);
+                        g_xpu_vk.intDot4x8 = dp.integerDotProduct4x8BitPackedSignedAccelerated ? 1 : 0;
+                    }
                 }
 #endif
 
@@ -653,9 +703,54 @@ static int cajeta_xpu_vulkan_init_locked(void) {
                     cf2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
                     cf2.pNext = &cmf;
                     getFeatures2(g_xpu_vk.phys, &cf2);
-                    if (cmf.cooperativeMatrix) wantCoopMat = 1;
+                    if (cmf.cooperativeMatrix && !cajeta_xpu_denied("coopmatrix")) wantCoopMat = 1;
+                    PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR gcp =
+                        (PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR) g_xpu_vk.getInstanceProcAddr(
+                            g_xpu_vk.instance, "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR");
+                    uint32_t ncp = 0;
+                    if (wantCoopMat && gcp && gcp(g_xpu_vk.phys, &ncp, NULL) == VK_SUCCESS
+                            && ncp > 0 && ncp < 256) {
+                        VkCooperativeMatrixPropertiesKHR* cp = (VkCooperativeMatrixPropertiesKHR*) calloc(
+                            ncp, sizeof(VkCooperativeMatrixPropertiesKHR));
+                        if (cp) {
+                            for (uint32_t i = 0; i < ncp; ++i)
+                                cp[i].sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR;
+                            if (gcp(g_xpu_vk.phys, &ncp, cp) == VK_SUCCESS)
+                                for (uint32_t i = 0; i < ncp; ++i) {
+                                    const VkCooperativeMatrixPropertiesKHR* q = &cp[i];
+                                    if (q->MSize != 16 || q->NSize != 16 || q->KSize != 16
+                                            || q->scope != VK_SCOPE_SUBGROUP_KHR) continue;
+                                    if (q->AType == VK_COMPONENT_TYPE_FLOAT16_KHR && q->BType == VK_COMPONENT_TYPE_FLOAT16_KHR
+                                            && q->CType == VK_COMPONENT_TYPE_FLOAT32_KHR)
+                                        g_xpu_vk.coopCfg |= 1u;
+                                    if (q->AType == VK_COMPONENT_TYPE_SINT8_KHR && q->BType == VK_COMPONENT_TYPE_SINT8_KHR
+                                            && q->CType == VK_COMPONENT_TYPE_SINT32_KHR)
+                                        g_xpu_vk.coopCfg |= 2u;
+#if defined(VK_KHR_shader_bfloat16)
+                                    if (q->AType == VK_COMPONENT_TYPE_BFLOAT16_KHR && q->BType == VK_COMPONENT_TYPE_BFLOAT16_KHR
+                                            && q->CType == VK_COMPONENT_TYPE_FLOAT32_KHR)
+                                        g_xpu_vk.coopCfg |= 4u;
+#endif
+                                    if (q->AType == VK_COMPONENT_TYPE_FLOAT16_KHR && q->BType == VK_COMPONENT_TYPE_FLOAT16_KHR
+                                            && q->CType == VK_COMPONENT_TYPE_FLOAT16_KHR)
+                                        g_xpu_vk.coopCfg |= 8u;
+                                }
+                            free(cp);
+                        }
+                    }
                 }
 #endif
+                if (hasMixedDot) {
+                    CajVkMixedDotFeatures md;
+                    memset(&md, 0, sizeof(md));
+                    md.sType = CAJ_VK_STYPE_MIXED_DOT;
+                    VkPhysicalDeviceFeatures2 mf2;
+                    memset(&mf2, 0, sizeof(mf2));
+                    mf2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+                    mf2.pNext = &md;
+                    getFeatures2(g_xpu_vk.phys, &mf2);
+                    if (md.float16AccFloat32 && !cajeta_xpu_denied("mixeddot")) wantMixedDot = 1;
+                }
                 if (hasAtomicInt64) {
                     VkPhysicalDeviceShaderAtomicInt64Features ai64;
                     memset(&ai64, 0, sizeof(ai64));
@@ -749,6 +844,8 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         getFeatures2(g_xpu_vk.phys, &qf2);
         wantInt8 = qi8.shaderInt8 ? 1 : 0;
         wantFloat16 = qi8.shaderFloat16 ? 1 : 0;
+        g_xpu_vk.float16Arith = wantFloat16;
+        g_xpu_vk.float64 = qf2.features.shaderFloat64 ? 1 : 0;
         wantInt64 = qf2.features.shaderInt64 ? 1 : 0;
         wantInt16 = qf2.features.shaderInt16 ? 1 : 0;
 #if defined(VK_VERSION_1_3)
@@ -869,7 +966,7 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     dci.pQueueCreateInfos = &qci;
 
     // Each optional path is gated on its probe: an unsupported extension fails.
-    const char* devExts[20];
+    const char* devExts[24];
     uint32_t nDevExts = 0;
     VkPhysicalDeviceRayQueryFeaturesKHR enRqf;
     VkPhysicalDeviceAccelerationStructureFeaturesKHR enAsf;
@@ -995,6 +1092,15 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     }
 #endif
     if (wantPortSubset) devExts[nDevExts++] = "VK_KHR_portability_subset";
+    CajVkMixedDotFeatures enMd;
+    if (wantMixedDot) {
+        devExts[nDevExts++] = CAJ_VK_MIXED_DOT_EXT;
+        memset(&enMd, 0, sizeof(enMd));
+        enMd.sType = CAJ_VK_STYPE_MIXED_DOT;
+        enMd.float16AccFloat32 = VK_TRUE;
+        enMd.pNext = (void*) dci.pNext;
+        dci.pNext = &enMd;
+    }
 #if defined(VK_KHR_cooperative_matrix)
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR enCm;
     if (wantCoopMat) {
@@ -1081,6 +1187,7 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     if (qs16.storageBuffer16BitAccess || qs16.uniformAndStorageBuffer16BitAccess)
         g_xpu_vk.caps |= CAJ_VK_CAP_STORAGE16;
     if (wantCoopMat) g_xpu_vk.caps |= CAJ_VK_CAP_COOPMAT;
+    if (wantMixedDot) g_xpu_vk.caps |= CAJ_VK_CAP_MIXEDDOT;
     if (g_xpu_vk.atomicInt64) g_xpu_vk.caps |= CAJ_VK_CAP_INT64_ATOMICS;
     if (wantRayQuery) g_xpu_vk.caps |= CAJ_VK_CAP_RAYQUERY;
     if (wantVmm) g_xpu_vk.caps |= CAJ_VK_CAP_VMM;

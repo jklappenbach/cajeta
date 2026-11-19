@@ -11,6 +11,8 @@
 #include "../lowering/LoweringTarget.h"
 #include "../../error/Exception.h"
 
+#include "llvm/ADT/FloatingPointMode.h"
+#include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -44,6 +46,14 @@ public:
     explicit CpuTarget(std::shared_ptr<llvm::TargetMachine> tm = nullptr) : levelTm(std::move(tm)) {}
     const char* name() const override { return "cpu"; }
     bool fusesByDefault() const override { return false; }
+    // float32 denormals may flush; other types stay IEEE. LLVM 23 reads the
+    // `denormal_fpenv` attribute, not the old "denormal-fp-math-f32" string.
+    void markFastMathDenormals(llvm::Function* fn) override {
+        llvm::AttrBuilder ab(fn->getContext());
+        ab.addDenormalFPEnvAttr(llvm::DenormalFPEnv(llvm::DenormalMode::getIEEE(),
+                                                    llvm::DenormalMode::getPreserveSign()));
+        fn->addFnAttrs(ab);
+    }
     bool honorsStatedAlignment() const override { return false; }
     void prefetch(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* base,
                   llvm::Type* elemTy, llvm::Value* index) override {

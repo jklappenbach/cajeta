@@ -342,6 +342,7 @@ public:
             llvm::FastMathFlags fmf;
             fmf.setFast();   // contract + reassoc + arcp + afn + nnan/ninf/nsz
             builder.setFastMathFlags(fmf);
+            target.markFastMathDenormals(fn);
         } else if (method && target.fusesByDefault() && !isUnfused(*method)
                    && !(method->getParent() && isUnfused(*method->getParent()))) {
             // A GPU kernel's `a * b + c` may fuse to one fma, nothing else relaxed;
@@ -4827,6 +4828,7 @@ private:
         if (G == 0 || R % G != 0) return;
         if ((R * C) % W != 0) return;
         coopDistributeW = W;
+        fn->addFnAttr("cajeta.layout-wave", std::to_string(W));
         target.prepareDistributedCoopMatrix(fn, W);
     }
 
@@ -5069,6 +5071,7 @@ private:
         std::string dt = deviceScalarName(elem);
         std::string key = dt + ":" + std::to_string(rows) + "x" +
                           std::to_string(cols) + "@" + target.name();
+        if (target.fallbackRung()) return;
         if (!notedCoopTiers.insert(key).second) return;
         if (forced) {
             std::cerr << "note: [mma-tiering] CooperativeMatrix<" << dt << ","
@@ -5641,6 +5644,48 @@ private:
         return c;
     }
 
+    // The U of `acc.storeAs<U>(dst, ...)` (coop-converting-store spec §2.1),
+    // after the refusals: the fragment is a float32 accumulator and U is
+    // float16, bfloat16 or float32 (a plain store). U is the explicit type
+    // argument, or the destination's element type when it was inferred; the
+    // two must agree, since the lowering dispatches on the name and never
+    // reads the declared signature.
+    llvm::Type* storeAsElementType(const CoopMatrixSlot& slot,
+                                   const std::shared_ptr<MethodCallExpression>& mc) {
+        const std::string shape = "CooperativeMatrix<" + deviceScalarName(slot.elemType) +
+                                  "," + std::to_string(slot.rows) + "," +
+                                  std::to_string(slot.cols) + "," +
+                                  std::to_string(slot.use) + ">";
+        const auto& args = mc->getParameters();
+        if (args.size() != 4)
+            unsupported("CooperativeMatrix.storeAs expects (Buffer, offset, layout, stride)");
+        if (slot.use != 2)
+            unsupported("CooperativeMatrix.storeAs: a " + shape + " is an operand fragment; "
+                        "storeAs narrows a float32 accumulator (Use 2)");
+        if (!slot.elemType->isFloatTy())
+            unsupported("CooperativeMatrix.storeAs: a " + shape + " is not a float32 "
+                        "accumulator; storeAs narrows a float32 accumulator to float16 or "
+                        "bfloat16");
+        llvm::Type* dstTy = nullptr;
+        if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(args[0].expression)) {
+            auto be = bufferElems.find(id->getTextValue());
+            if (be != bufferElems.end()) dstTy = be->second;
+        }
+        const auto& targs = mc->getExplicitMethodTypeArgs();
+        if (targs.size() > 1)
+            unsupported("CooperativeMatrix.storeAs<U> takes one type argument");
+        llvm::Type* u = targs.empty() ? dstTy : deviceScalarType(targs[0], ctx);
+        std::string uName = targs.empty() ? (u ? deviceScalarName(u) : std::string("U"))
+                                          : targs[0]->toCanonical();
+        if (!u || !(u->isHalfTy() || u->isBFloatTy() || u->isFloatTy()))
+            unsupported("CooperativeMatrix.storeAs<" + uName + ">: U must be float16 or "
+                        "bfloat16 (or float32, which is a plain store)");
+        if (dstTy && dstTy != u)
+            unsupported("CooperativeMatrix.storeAs<" + uName + ">: the destination holds " +
+                        deviceScalarName(dstTy) + ", not " + uName);
+        return u;
+    }
+
     // CooperativeMatrix op dispatch: the slot alloca holds the opaque tile.
     // load/splat/mma write it; store/mma read it, through the backend seams.
     llvm::Value* lowerCoopMatrixMethod(
@@ -5648,9 +5693,19 @@ private:
             const std::shared_ptr<MethodCallExpression>& mc) {
         const auto& args = mc->getParameters();
         CoopMatrixSlot slot = coopMatrixSlots[recv];
+        // storeAs<U> on a tier whose store already converts each element to the
+        // buffer's type (the software and distributed tiles), or at the
+        // accumulator's own type, IS the store.
+        llvm::Type* storeAsTy = name == "storeAs" ? storeAsElementType(slot, mc) : nullptr;
+        if (storeAsTy && (slot.software || storeAsTy == slot.elemType))
+            return slot.software ? lowerCoopMatrixMethodSoftware(recv, "store", mc)
+                                 : lowerCoopMatrixMethod(recv, "store", mc);
         if (slot.software) return lowerCoopMatrixMethodSoftware(recv, name, mc);
+        if (storeAsTy && target.coopMatrixElementCount(slot.matrixType) == 0 &&
+            target.coopMatrixStagedElements())
+            return lowerStagedStoreAs(slot, args, storeAsTy);
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
-        if (name == "load" || name == "store") {
+        if (name == "load" || name == "store" || storeAsTy) {
             if (args.size() != 4)
                 unsupported("CooperativeMatrix." + name +
                             " expects (Buffer, offset, layout, stride)");
@@ -5687,6 +5742,12 @@ private:
                 if (auto* lc = llvm::dyn_cast<llvm::ConstantInt>(layout))
                     coopMatrixSlots[recv].layout =
                         (uint32_t) lc->getZExtValue();
+            } else if (storeAsTy) {
+                llvm::Value* v = builder.CreateLoad(slot.matrixType, slot.alloca,
+                                                    recv + ".val");
+                target.coopMatrixStoreAs(builder, mod, ptr, v, storeAsTy, layout, stride,
+                                         slot.rows, slot.cols, slot.use, slot.matrixType,
+                                         swz, blk);
             } else {
                 llvm::Value* v = builder.CreateLoad(slot.matrixType, slot.alloca,
                                                     recv + ".val");
@@ -7346,6 +7407,7 @@ private:
                         llvm::Value* lane; unsigned w, n; };
     StagedTile stagedTile(llvm::Type* elemTy, unsigned cells, unsigned span) {
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        fn->addFnAttr("cajeta.layout-wave", std::to_string(target.stagedElementWaveWidth()));
         StagedTile t;
         t.w = target.stagedElementWaveWidth();
         t.n = cells / t.w;
@@ -7424,6 +7486,49 @@ private:
         target.subgroupBarrier(builder, mod);
     }
 
+    // acc.storeAs<U> on a native tile with no lane map (vulkan; coop-converting-store
+    // decision 3): this lane's elements come out of the subgroup's staging tile, and each
+    // is converted as the scalar cast does and stored at its cell. The cell's pointer is
+    // taken from the buffer's root, since a GEP off a tile pointer does not step on spirv.
+    template <typename Args>
+    llvm::Value* lowerStagedStoreAs(const CoopMatrixSlot& slot, const Args& args,
+                                    llvm::Type* u) {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+        const unsigned W = target.stagedElementWaveWidth();
+        const unsigned cells = slot.rows * slot.cols;
+        if (cells == 0 || cells % W != 0)
+            unsupported("CooperativeMatrix.storeAs: a " + std::to_string(slot.rows) + "x" +
+                        std::to_string(slot.cols) + " tile does not divide over " +
+                        std::to_string(W) + " lanes");
+        llvm::Value* base = nullptr;
+        llvm::Type* bElem = nullptr;
+        if (!resolveBufferBase(args[0].expression, base, bElem))
+            unsupported("CooperativeMatrix.storeAs: argument must be a Buffer kernel "
+                        "parameter or a Shared tile");
+        llvm::Value* offset = coerceTo(lowerExpr(args[1].expression), i32);
+        llvm::Value* layout = coerceTo(lowerExpr(args[2].expression), i32);
+        llvm::Value* stride = coerceTo(lowerExpr(args[3].expression), i32);
+        llvm::Value* lanes = stagedLanes(slot);
+        llvm::Value* lane = builder.CreateZExtOrTrunc(target.waveLaneId(builder, mod), i32);
+        llvm::Value* rowMajor = builder.CreateICmpEQ(layout, builder.getInt32(0));
+        for (unsigned e = 0; e < cells / W; ++e) {
+            llvm::Value* cell = builder.CreateAdd(builder.getInt32(e * W), lane, "sa.cell");
+            llvm::Value* r = builder.CreateUDiv(cell, builder.getInt32(slot.cols), "sa.row");
+            llvm::Value* c = builder.CreateURem(cell, builder.getInt32(slot.cols), "sa.col");
+            llvm::Value* at = builder.CreateSelect(
+                rowMajor, builder.CreateAdd(builder.CreateMul(r, stride), c),
+                builder.CreateAdd(builder.CreateMul(c, stride), r));
+            llvm::Value* idx = maybeSwizzle(
+                base, builder.CreateZExt(builder.CreateAdd(offset, at), i64));
+            builder.CreateStore(
+                builder.CreateFPTrunc(builder.CreateExtractElement(lanes, (uint64_t) e), u,
+                                      "sa.cvt"),
+                target.bufferElementPtr(builder, mod, base, bElem, idx));
+        }
+        return llvm::ConstantInt::get(i32, 0);
+    }
+
     // elements/row/col/get/set on a native tile with no lane map: lane L's element e is cell
     // e * W + L of the row-major tile, read and written through this subgroup's staging tile.
     template <typename Args>
@@ -7431,6 +7536,7 @@ private:
                                     const CoopMatrixSlot& slot, const std::string& recv) {
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         const unsigned W = target.stagedElementWaveWidth();
+        fn->addFnAttr("cajeta.layout-wave", std::to_string(W));
         const unsigned cells = slot.rows * slot.cols;
         if (cells == 0 || cells % W != 0)
             unsupported("CooperativeMatrix." + name + ": a " + std::to_string(slot.rows) + "x" +
@@ -9123,6 +9229,46 @@ void LoweringTarget::coopMatrixStore(
     uint32_t /*rows*/, uint32_t /*cols*/, uint32_t /*use*/,
     uint32_t /*swizzleStride*/, LdsBlockPad /*blockPad*/) {
     throw coopMatrixUnsupported(name());
+}
+
+void LoweringTarget::coopMatrixStoreAs(
+    llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr, llvm::Value* matrixVal,
+    llvm::Type* u, llvm::Value* layout, llvm::Value* stride, uint32_t rows,
+    uint32_t cols, uint32_t use, llvm::Type* matrixType, uint32_t swizzleStride,
+    LdsBlockPad blockPad) {
+    const unsigned n = coopMatrixElementCount(matrixType);
+    llvm::Type* comp = nullptr;
+    if (auto* st = llvm::dyn_cast<llvm::StructType>(matrixType))
+        comp = st->getNumElements() ? st->getElementType(0) : nullptr;
+    else if (auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(matrixType))
+        comp = vt->getElementType();
+    if (n == 0 || !comp || !comp->isFloatTy())
+        unsupported("CooperativeMatrix.storeAs: the " + std::string(name()) +
+                    " fragment has no lane-to-element map to convert it through and no "
+                    "native converting store; store the float32 tile to a Shared<float32> "
+                    "and convert its elements there");
+    if (swizzleStride || blockPad.period)
+        unsupported("CooperativeMatrix.storeAs into a swizzled or block-padded tile on " +
+                    std::string(name()) + "; store to a plain Shared<U> or a KernelBuffer<U>");
+    llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+    llvm::Type* i64 = llvm::Type::getInt64Ty(m.getContext());
+    llvm::Value* rowMajor = b.CreateICmpEQ(layout, llvm::ConstantInt::get(i32, 0));
+    for (unsigned k = 0; k < n; ++k) {
+        llvm::Value* row = nullptr;
+        llvm::Value* col = nullptr;
+        if (!coopMatrixElementCell(b, m, llvm::ConstantInt::get(i32, k), rows, cols, use,
+                                   matrixType, row, col))
+            unsupported("CooperativeMatrix.storeAs: the " + std::string(name()) +
+                        " accumulator has no lane-to-element map");
+        llvm::Value* x = llvm::isa<llvm::StructType>(matrixType)
+            ? b.CreateExtractValue(matrixVal, k)
+            : b.CreateExtractElement(matrixVal, (uint64_t) k);
+        llvm::Value* idx = b.CreateSelect(
+            rowMajor, b.CreateAdd(b.CreateMul(row, stride), col),
+            b.CreateAdd(b.CreateMul(col, stride), row), "cm.sa.idx");
+        llvm::Value* at = b.CreateGEP(u, ptr, b.CreateZExt(idx, i64), "cm.sa.ptr");
+        b.CreateStore(b.CreateFPTrunc(x, u, "cm.sa.cvt"), at);
+    }
 }
 
 llvm::Value* LoweringTarget::coopMatrixMulAdd(

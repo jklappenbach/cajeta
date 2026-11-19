@@ -4,6 +4,7 @@
 #include "VulkanRegistration.h"
 #include "cajeta/xpu/core/KernelManifest.h"
 #include "cajeta/xpu/core/XpuKernelGate.h"
+#include <algorithm>
 #include <optional>
 #include "SpirvBackend.h"
 #include "SpirvKernelLowering.h"
@@ -31,6 +32,19 @@
 namespace cajeta {
 namespace xpu {
 namespace vulkan {
+
+// True when the module's prologue declares OpCapability `cap`.
+static bool spirvDeclaresCapability(const std::vector<uint8_t>& spirv, uint32_t cap) {
+    const uint32_t* w = reinterpret_cast<const uint32_t*>(spirv.data());
+    const size_t nw = spirv.size() / 4;
+    for (size_t i = 5; i < nw;) {
+        const uint32_t wc = w[i] >> 16, op = w[i] & 0xFFFFu;
+        if (wc == 0 || op == 54) break;
+        if (op == 17 && wc == 2 && w[i + 1] == cap) return true;
+        i += wc;
+    }
+    return false;
+}
 
     namespace {
         // The subgroup widths that get a virtual variant: 8 to 128, or CAJETA_XPU_VK_VIRTUAL, a
@@ -95,9 +109,13 @@ namespace vulkan {
 
         // Emits one SPIR-V variant of `method`; `registerKparams` is true only
         // for the primary variant, since the variants share that metadata.
+        bool lastDeclaresCoop = false;   // the last native module's OpCapability CooperativeMatrixKHR
+        unsigned lastLayoutWave = 0;     // the wave the last native module's tile layout assumes, 0 none
+        bool lastUsesFdot2 = false;      // the last native module has an f16 dotSum
         auto emitVariant = [&](const MethodPtr& method, const std::string& regName,
                                bool software, bool registerKparams,
-                               unsigned virtualWave = 0, unsigned virtualSubgroup = 0) -> bool {
+                               unsigned virtualWave = 0, unsigned virtualSubgroup = 0,
+                               bool portableTiles = false, bool mixedDot = false) -> bool {
             if (unloweredHoldsBeforeLowering(*method, "vulkan")) {
                 if (virtualSubgroup) noteVirtualSkipped(regName, "held before lowering");
                 else reportUnloweredKernel(*method, regName, "vulkan",
@@ -113,24 +131,38 @@ namespace vulkan {
             try {
                 kfn = virtualSubgroup
                     ? lowerVirtualKernel(method, devMod, *tm, regName, virtualWave, virtualSubgroup)
+                    : portableTiles ? lowerKernelPortableTiles(method, devMod, regName)
+                    : mixedDot ? lowerKernelMixedDot(method, devMod, regName)
                     : lowerKernel(method, devMod, software, regName);
             } catch (cajeta::Exception& ex) {
                 // A contradicted @Access is the author's error, never a skip.
                 if (ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_CONTRADICTED"
                         || ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_UNKNOWN") throw;
                 // XPU-N01: no device code, so a launch would find no kernel.
-                if (virtualSubgroup) noteVirtualSkipped(regName, ex.getMessage());
+                if (virtualSubgroup || portableTiles || mixedDot) noteVirtualSkipped(regName, ex.getMessage());
                 else reportUnloweredKernel(*method, regName, "vulkan", ex.getMessage());
                 return false;
             }
             if (!kfn) return false;
             // Access modes come off the lowered IR, before SPIR-V codegen.
             KernelAccessSummary access = classifyKernelAccess(*kfn, method);
+            if (!virtualSubgroup && !portableTiles && !software && !mixedDot) {
+                lastLayoutWave = 0;
+                lastUsesFdot2 = false;
+                for (llvm::Function& f : devMod)
+                    if (f.hasFnAttribute("cajeta.uses-fdot2")) lastUsesFdot2 = true;
+                for (llvm::Function& f : devMod)
+                    if (f.hasFnAttribute("cajeta.layout-wave")) {
+                        unsigned w = 0;
+                        f.getFnAttribute("cajeta.layout-wave").getValueAsString().getAsInteger(10, w);
+                        lastLayoutWave = std::max(lastLayoutWave, w);
+                    }
+            }
 
             std::string codegenFailure;
             std::vector<uint8_t> spirv = emitSpirv(devMod, *tm, &codegenFailure);
             if (spirv.empty()) {
-                if (!codegenFailure.empty() && virtualSubgroup)
+                if (!codegenFailure.empty() && (virtualSubgroup || portableTiles || mixedDot))
                     noteVirtualSkipped(regName, "LLVM SPIR-V codegen: " + codegenFailure);
                 else if (!codegenFailure.empty())
                     reportUnloweredKernel(*method, regName, "vulkan",
@@ -138,6 +170,24 @@ namespace vulkan {
                 return false;
             }
 
+            if (mixedDot && !spirvDeclaresCapability(spirv, 6912)) {
+                noteVirtualSkipped(regName, "no f16 dot pair reached the mixed-float dot");
+                return false;
+            }
+            if (!virtualSubgroup && !portableTiles && !software && !mixedDot) {
+                constexpr uint32_t kOpCapability = 17, kCapCooperativeMatrixKHR = 6022;
+                lastDeclaresCoop = false;
+                const uint32_t* w = reinterpret_cast<const uint32_t*>(spirv.data());
+                const size_t nw = spirv.size() / 4;
+                for (size_t i = 5; i < nw;) {
+                    const uint32_t wc = w[i] >> 16, op = w[i] & 0xFFFFu;
+                    if (wc == 0) break;
+                    if (op == kOpCapability && wc == 2 && w[i + 1] == kCapCooperativeMatrixKHR)
+                        lastDeclaresCoop = true;
+                    if (op == 54) break;   // OpFunction: the capabilities are all above it
+                    i += wc;
+                }
+            }
             // Pipeline statistics are a driver fact; the footprint holds the declared wave width and
             // the static workgroup bytes, which the runtime checks against the device's limit.
             std::optional<KernelManifest> manifest;
@@ -153,6 +203,8 @@ namespace vulkan {
                 applyNativeOps(m, kfn);
                 if (auto attr = XpuKernelAttr::from(*method); attr && attr->waveWidth())
                     m.waveWidth = (unsigned) *attr->waveWidth();
+                else if (lastLayoutWave)
+                    m.waveWidth = lastLayoutWave;
                 m.ldsStaticBytes = workgroupBytes(devMod);
                 applyCost(m, method);
                 manifest = std::move(m);
@@ -240,16 +292,30 @@ namespace vulkan {
                 continue;
             noteKernelLowered(*method, entryName, "vulkan");
             ++emitted;
+            // A kernel on native cooperative matrices also gets a "<name>$pt" variant on the
+            // portable tile, which a device without them launches instead.
+            if (lastDeclaresCoop)
+                emitVariant(method, entryName + "$pt", /*software=*/false,
+                            /*registerKparams=*/false, 0, 0, /*portableTiles=*/true);
+            // A kernel with an f16 dotSum also gets a "<name>$d2" variant on the mixed-float dot,
+            // which a device with VK_VALVE_shader_mixed_float_dot_product launches instead.
+            if (lastUsesFdot2)
+                emitVariant(method, entryName + "$d2", /*software=*/false,
+                            /*registerKparams=*/false, 0, 0, false, /*mixedDot=*/true);
             // A ray-query kernel also gets a "<name>$sw" software-BVH variant.
             if (usesRayQuery(method))
                 emitVariant(method, entryName + "$sw", /*software=*/true,
                             /*registerKparams=*/false);
+            unsigned vwave = 0;
             if (auto attr = XpuKernelAttr::from(*method); attr && attr->waveWidth())
+                vwave = (unsigned) *attr->waveWidth();
+            else
+                vwave = lastLayoutWave;
+            if (vwave)
                 for (unsigned s : virtualSubgroups())
-                    if (s != (unsigned) *attr->waveWidth() && s <= 2u * (unsigned) *attr->waveWidth())
+                    if (s != vwave && s <= 2u * vwave)
                         emitVariant(method, entryName + "$v" + std::to_string(s),
-                                    /*software=*/false, /*registerKparams=*/false,
-                                    (unsigned) *attr->waveWidth(), s);
+                                    /*software=*/false, /*registerKparams=*/false, vwave, s);
         }
         return emitted;
     }

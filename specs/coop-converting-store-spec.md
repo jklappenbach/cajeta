@@ -33,6 +33,14 @@ Decisions (Julian, 2026-11-18):
 2. The first cut is native on nvptx and vulkan. amdgpu (WMMA and MFMA), cpu and the
    portable tile lower it correctly as per-element converts. Faster forms there come
    later, where measured.
+3. (2026-11-18, after Unit 2) Vulkan lowers through the per-subgroup staging tile that
+   spirv-kernel-parity 3 gave native SPIR-V tiles, per element, at both types. The
+   fork has no cooperative-matrix convert intrinsic, so `OpFConvert` waits until
+   proton's RADV rows show the staging costs.
+4. (2026-11-18) Plain `store` and `load` on nvptx get the same run-time alignment
+   branch as `storeAs`: wmma where each lane's run is aligned, per element otherwise.
+   Off that alignment a tile faulted the context or put cells in the wrong place, with
+   no diagnostic.
 
 ## 2. Features
 
@@ -66,21 +74,56 @@ bfloat16 has no `wmma.store.d` form. It goes through the accumulator's element m
 (the one the nvptx epilogues use), packing two column-adjacent elements into one 4-byte
 store (`cvt.rn.bf16x2.f32`).
 
+wmma moves each lane's contiguous run as one access, so it needs the run aligned and the
+stride a multiple of it (§2.5 has the measured table), and a tile's offset is usually
+known only at run time. So the form is chosen per store by a branch on the pointer and
+stride, which every lane of the warp takes alike. A float16 tile on a 4-byte boundary
+with an even stride takes `wmma.store.d.f16`. A row-major bfloat16 tile there takes the
+packed pairs. Anything else takes the per-element store, so every placement stays
+correct.
+
 Use cases:
-1. On sm_89, `gemm128Out16` stores with `wmma.store.d...f16` and has no `st.global.b16`
-   in its interior. Its registers stay at 128 or fewer with no spill.
+1. On sm_89, `gemm128Out16`'s interior tiles are aligned, so they store with
+   `wmma.store.d...f16` and run no `st.global.b16`. Its registers stay at 128 or fewer
+   with no spill.
 2. The device value test on the 4090 covers row- and column-major, an odd stride and a
-   shared destination, at both types.
+   shared destination, at both types, and reaches all three forms.
 
-### 2.3 Native on vulkan
+### 2.3 On vulkan
 
-The accumulator converts with `OpFConvert` to a float16 accumulator cooperative matrix
-and stores with `OpCooperativeMatrixStoreKHR`. bfloat16 lowers per element (bf16
-cooperative matrices are not native on RADV).
+The accumulator goes through the per-subgroup staging tile in workgroup memory, and
+each lane converts and stores the elements the staged map gives it, at float16 and
+bfloat16 alike (decision 3). A native `OpFConvert` to a float16 cooperative matrix
+followed by `OpCooperativeMatrixStoreKHR` needs a fork intrinsic and comes later, where
+measured.
 
 Use cases:
 1. The SPIR-V passes spirv-val, and the vulkan backend matches cpu bit for bit on
    proton's RADV.
+
+### 2.5 Aligned native loads and stores on nvptx
+
+A native `store` or `load` of a 16x16 fragment uses wmma when each lane's contiguous run
+is aligned and the stride in bytes is a multiple of it, and goes per element through the
+lane-to-element map otherwise. The branch is uniform across the warp (decision 4).
+Measured on the 4090 (2026-11-18, one process a placement, NvptxOperandMapTests):
+
+| fragment | run | off the run's alignment | stride off its multiple |
+|---|---|---|---|
+| f32 / s32 accumulator | 8 bytes | faults | wrong cells, no error |
+| f16 accumulator, f16 and bf16 operands | 4 bytes | faults | wrong cells, no error |
+| row-major 8-bit A operand | 4 bytes | faults | faults |
+| row-major 8-bit B operand | 1 byte | correct | correct |
+
+The operand fragments' maps are measured too, and are the same for both load layouts,
+so an unaligned operand load gathers per lane with no shared memory.
+
+Use cases:
+1. A float32 `store` at offset 11, stride 17 or offset 1, stride 18 writes every cell
+   where the reference interpreter does, on the 4090; at offset 0, stride 16 it is one
+   `wmma.store.d`.
+2. A `load` at an unaligned offset reads every cell the interpreter reads.
+3. The aligned GEMMs keep their registers and their wmma loads and stores.
 
 ### 2.4 The 16-bit-output GEMM kernels use it
 

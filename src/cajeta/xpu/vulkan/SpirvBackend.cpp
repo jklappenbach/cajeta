@@ -38,6 +38,7 @@
 #include <functional>
 #include <cstring>
 #include <map>
+#include <set>
 #include <mutex>
 #include <vector>
 
@@ -209,6 +210,41 @@ static llvm::Value* joinQuads(llvm::IRBuilderBase& b, llvm::FixedVectorType* vt,
         whole = b.CreateShuffleVector(whole, wide, merge, "wcast.join");
     }
     return whole;
+}
+
+// Booleans in a storage buffer are bytes (SPIR-V forbids OpTypeBool there): an i1 load
+// becomes a byte load and a compare, an i1 store a widened byte store.
+static void widenBooleanStorage(llvm::Module& m) {
+    constexpr unsigned kStorageBufferAS = 11;
+    for (llvm::Function& f : m) {
+        llvm::SmallVector<llvm::Instruction*, 16> work;
+        for (llvm::BasicBlock& bb : f)
+            for (llvm::Instruction& i : bb) {
+                if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(&i)) {
+                    if (ld->getType()->isIntegerTy(1)
+                        && ld->getPointerAddressSpace() == kStorageBufferAS)
+                        work.push_back(ld);
+                } else if (auto* st = llvm::dyn_cast<llvm::StoreInst>(&i)) {
+                    if (st->getValueOperand()->getType()->isIntegerTy(1)
+                        && st->getPointerAddressSpace() == kStorageBufferAS)
+                        work.push_back(st);
+                }
+            }
+        for (llvm::Instruction* i : work) {
+            llvm::IRBuilder<> b(i);
+            llvm::Type* i8 = b.getInt8Ty();
+            if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(i)) {
+                auto* nl = b.CreateAlignedLoad(i8, ld->getPointerOperand(), ld->getAlign(),
+                                               ld->isVolatile(), ld->getName() + ".byte");
+                ld->replaceAllUsesWith(b.CreateICmpNE(nl, b.getInt8(0), ld->getName()));
+            } else {
+                auto* st = llvm::cast<llvm::StoreInst>(i);
+                b.CreateAlignedStore(b.CreateZExt(st->getValueOperand(), i8), st->getPointerOperand(),
+                                     st->getAlign(), st->isVolatile());
+            }
+            i->eraseFromParent();
+        }
+    }
 }
 
 // Splits every lane-preserving cast of more than four lanes (sext, zext, trunc, the float
@@ -984,6 +1020,7 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
     expandRoundHalfAway(m);
     splitWidePhis(m);
     splitWideCasts(m);
+    widenBooleanStorage(m);
 
     // SPIRVLegalizePointerCast crashes on an address that is a constant-expression GEP, a
     // shared array read at a constant index, so every such address becomes an instruction.
@@ -1068,6 +1105,70 @@ static bool retypePhiUndefs(std::vector<uint8_t>& bytes) {
     w.insert(w.begin() + firstFunction, added.begin(), added.end());
     bytes.resize(w.size() * 4);
     std::memcpy(bytes.data(), w.data(), bytes.size());
+    return true;
+}
+
+// Turns each OpFAdd of an accumulator and an OpFConvert of an f16 OpDot (the "$d2" lowering's
+// pattern) into OpFDot2MixAcc32VALVE, and declares the capability and extension it needs.
+// A module without the pattern is untouched. True if anything changed.
+static bool rewriteMixedDot(std::vector<uint8_t>& bytes) {
+    if (bytes.size() < 20 || (bytes.size() % 4) != 0) return false;
+    std::vector<uint32_t> w(bytes.size() / 4);
+    std::memcpy(w.data(), bytes.data(), bytes.size());
+    if (w[0] != 0x07230203u) return false;
+    constexpr uint32_t kOpCapability = 17, kOpTypeFloat = 22, kOpFConvert = 115, kOpFAdd = 129,
+                       kOpDot = 148, kOpFDot2MixAcc32VALVE = 6916, kCapDotF16AccF32 = 6912,
+                       kOpExtension = 10;
+    std::set<uint32_t> halfTypes;
+    std::map<uint32_t, std::pair<uint32_t, uint32_t>> dots;   // OpDot id -> its two vectors
+    std::map<uint32_t, uint32_t> converts;                    // OpFConvert id -> its source
+    std::vector<size_t> adds;
+    size_t lastCapability = 0;
+    for (size_t i = 5; i < w.size();) {
+        const uint32_t wc = w[i] >> 16, op = w[i] & 0xFFFFu;
+        if (wc == 0 || i + wc > w.size()) return false;
+        if (op == kOpCapability) lastCapability = i;
+        if (op == kOpTypeFloat && wc >= 3 && w[i + 2] == 16) halfTypes.insert(w[i + 1]);
+        if (op == kOpDot && wc == 5 && halfTypes.count(w[i + 1])) dots[w[i + 2]] = {w[i + 3], w[i + 4]};
+        if (op == kOpFConvert && wc == 4) converts[w[i + 2]] = w[i + 3];
+        if (op == kOpFAdd && wc == 5) adds.push_back(i);
+        i += wc;
+    }
+    if (dots.empty() || lastCapability == 0) return false;
+    std::map<size_t, std::vector<uint32_t>> replace;
+    for (size_t i : adds) {
+        const uint32_t x = w[i + 3], y = w[i + 4];
+        for (int side = 0; side < 2; ++side) {
+            const uint32_t conv = side == 0 ? y : x, acc = side == 0 ? x : y;
+            auto c = converts.find(conv);
+            if (c == converts.end()) continue;
+            auto d = dots.find(c->second);
+            if (d == dots.end()) continue;
+            replace[i] = {(6u << 16) | kOpFDot2MixAcc32VALVE, w[i + 1], w[i + 2],
+                          d->second.first, d->second.second, acc};
+            break;
+        }
+    }
+    if (replace.empty()) return false;
+    const std::string ext = "SPV_VALVE_mixed_float_dot_product";
+    std::vector<uint32_t> extWords((ext.size() + 4) / 4, 0u);
+    std::memcpy(extWords.data(), ext.data(), ext.size());
+    std::vector<uint32_t> out(w.begin(), w.begin() + 5);
+    for (size_t i = 5; i < w.size();) {
+        const uint32_t wc = w[i] >> 16;
+        auto r = replace.find(i);
+        if (r != replace.end()) out.insert(out.end(), r->second.begin(), r->second.end());
+        else out.insert(out.end(), w.begin() + i, w.begin() + i + wc);
+        if (i == lastCapability) {
+            out.push_back((2u << 16) | kOpCapability);
+            out.push_back(kCapDotF16AccF32);
+            out.push_back(((uint32_t) (1 + extWords.size()) << 16) | kOpExtension);
+            out.insert(out.end(), extWords.begin(), extWords.end());
+        }
+        i += wc;
+    }
+    bytes.resize(out.size() * 4);
+    std::memcpy(bytes.data(), out.data(), bytes.size());
     return true;
 }
 
@@ -1532,6 +1633,7 @@ std::vector<uint8_t> emitSpirv(llvm::Module& deviceModule,
     // Each of these word-stream fixups is a no-op on a kernel that lacks its feature.
     decorateNoContraction(spirv);
     retypePhiUndefs(spirv);
+    rewriteMixedDot(spirv);
     scopeSubgroupBarriers(spirv);
     fixupControlBarriers(spirv);
     injectWorkgroupSizeSpecConstant(spirv);

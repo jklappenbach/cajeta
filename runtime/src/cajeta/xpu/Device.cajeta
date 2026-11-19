@@ -572,6 +572,10 @@ public final class Device {
                           + ": element index " + index + " is not a multiple of it";
             throw heap XpuLaunchException(#broke);
         }
+        if (reason == 11) {
+            why = "this device has no matrix unit for the kernel's tile, and the portable "
+                + "tile lays it out over 32 lanes, wider than this device's subgroups";
+        }
         if (reason == 10) {
             why = "not a target: the kernel's @Kernel(targets) leave this backend out, "
                 + "so it was not built for it";

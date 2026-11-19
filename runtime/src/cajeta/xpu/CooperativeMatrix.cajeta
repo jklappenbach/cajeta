@@ -395,6 +395,27 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
     public final void store(Shared<T> dst, uint32 offset, uint32 layout, uint32 stride);
 
     /**
+     * Device-only intrinsic: store this float32 accumulator tile (`Use` 2) to a
+     * buffer of the narrower float type `U` (float16 or bfloat16), converting
+     * each element as the scalar cast `(U) x` does, which rounds to nearest
+     * even. It takes `store`'s arguments, and `store` keeps its meaning: same
+     * element type, no conversion. `storeAs<float32>` is `store`.
+     *
+     *     acc.storeAs<float16>(c, offset, 0, n);
+     *
+     * It costs what the element-wise loop over `get`/`row`/`col` costs at
+     * worst, and on nvptx and vulkan it is the hardware's converting store.
+     * Any other `U`, an operand fragment, or an accumulator of another type is
+     * refused by name.
+     */
+    @Intrinsic
+    public final void storeAs<U>(KernelBuffer<U> dst, uint32 offset, uint32 layout, uint32 stride);
+
+    /** `storeAs` to a workgroup-shared (`Shared<U>`) tile. */
+    @Intrinsic
+    public final void storeAs<U>(Shared<U> dst, uint32 offset, uint32 layout, uint32 stride);
+
+    /**
      * PER-ELEMENT ACCESS WITH THE LANE-TO-ELEMENT MAP (xpu-kernel-independence
      * §4.1). A fragment is spread across the wave in a layout the hardware
      * chooses; these five intrinsics let a kernel walk the elements THIS LANE

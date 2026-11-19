@@ -551,13 +551,13 @@ namespace {
         bool isAddressingCall(const std::shared_ptr<MethodCallExpression>& mc) {
             const std::string& nm = mc->getMethodCallName();
             return nm == "vload" || nm == "vstore" || nm == "prefetch" || nm.rfind("atomic", 0) == 0
-                || nm == "load" || nm == "store";
+                || nm == "load" || nm == "store" || nm == "storeAs";
         }
 
         // Whether argument `i` of an addressing call is an offset, stride or layout.
         bool addressArg(const std::shared_ptr<MethodCallExpression>& mc, size_t i) {
             const std::string& nm = mc->getMethodCallName();
-            if (nm == "load" || nm == "store") return i > 0;
+            if (nm == "load" || nm == "store" || nm == "storeAs") return i > 0;
             return i == 0;
         }
 
@@ -1059,7 +1059,7 @@ namespace {
                 return;
             }
             Ty recvTy = recv.empty() ? Ty() : tyOf(child(mc, 0));
-            if (recvTy.kind == Ty::Tile && (nm == "load" || nm == "store") && !ps.empty()) {
+            if (recvTy.kind == Ty::Tile && (nm == "load" || nm == "store" || nm == "storeAs") && !ps.empty()) {
                 Mult g = m.perGroup();
                 std::string target = bufferParam(ps[0].expression);
                 int64_t bytes = (int64_t) recvTy.rows * recvTy.cols * (target.empty() ? 0 : elemBytes(target));

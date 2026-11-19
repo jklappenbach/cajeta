@@ -764,7 +764,7 @@ const std::map<LocalKind, std::set<std::string>>& memberBuiltins() {
                              "toBF16", "toI32", "toF64", "toI8", "bitcastF32", "bitcastI32",
                              "bitcastF16", "bitcastI16",
                              "lut4"}},
-        {LocalKind::Tile, {"splat", "load", "store", "mma", "addScaledPow2", "fromWords", "scaledAccumInto",
+        {LocalKind::Tile, {"splat", "load", "store", "storeAs", "mma", "addScaledPow2", "fromWords", "scaledAccumInto",
                            "scaledAccumInto2", "rank1Accum", "scaledAccumI32",
                            "elements", "get", "set", "row", "col"}},
         {LocalKind::WaveVec, {}},
@@ -2822,11 +2822,21 @@ private:
             });
             return Val();
         }
-        if (nm == "load" || nm == "store") {
+        if (nm == "load" || nm == "store" || nm == "storeAs") {
             if (a.size() != 4 || a[0].k != Val::MemRef)
                 refuse("`" + nm + "` takes (buffer, offset, layout, stride) (" + where + ")");
             Mem& m = *a[0].mem;
-            if (!(m.elem == t.elem))
+            // storeAs<U> stores a float32 accumulator at U, each element as the
+            // scalar cast (U) x (coop-converting-store spec §2.1).
+            if (nm == "storeAs") {
+                if (t.use != 2 || t.elem.prim != Prim::F32)
+                    refuse("`storeAs` narrows a float32 accumulator, not a " + tyName(t.elem) +
+                           " Use " + std::to_string(t.use) + " tile (" + where + ")");
+                if (m.elem.prim != Prim::F16 && m.elem.prim != Prim::BF16 &&
+                    m.elem.prim != Prim::F32)
+                    refuse("`storeAs` into a " + tyName(m.elem) +
+                           " buffer: U is float16 or bfloat16 (" + where + ")");
+            } else if (!(m.elem == t.elem))
                 refuse("a " + tyName(t.elem) + " tile " + nm + " through a " + tyName(m.elem) +
                        " buffer (" + where + ")");
             uint64_t off = indexOf(a[1], where), layout = indexOf(a[2], where),
@@ -2836,12 +2846,13 @@ private:
             auto at = [&](uint32_t r, uint32_t c) {
                 return off + (layout == 0 ? (uint64_t) r * stride + c : (uint64_t) c * stride + r);
             };
-            if (nm == "store") {
+            if (nm == "store" || nm == "storeAs") {
                 const TileData& d = *t.data;
+                const Prim to = nm == "storeAs" ? m.elem.prim : t.elem.prim;
                 for (uint32_t r = 0; r < t.rows; ++r)
                     for (uint32_t c = 0; c < t.cols; ++c) {
                         size_t k = (size_t) r * t.cols + c;
-                        storeElem(m, at(r, c), fl ? mkFloat(t.elem.prim, d.f[k]) : mkInt(t.elem, d.i[k]),
+                        storeElem(m, at(r, c), fl ? mkFloat(to, d.f[k]) : mkInt(t.elem, d.i[k]),
                                   where);
                     }
                 return Val();

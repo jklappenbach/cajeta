@@ -43,7 +43,8 @@ namespace xpu {
     // path is the same invisible-absence failure as a vacuous pass. Recording the
     // choice makes it a fact the manifest states, not a note that scrolled past.
     struct KernelNativeOp {
-        std::string op;           // mma | load.a | load.b | load.c | store
+        std::string op;           // mma | load.a | load.b | load.c | store | storeAs,
+                                  // or <verb>.misaligned (coop-converting-store 2.5)
         std::string instruction;  // as above, never empty
         bool native() const { return instruction.rfind("software-tile", 0) != 0; }
     };

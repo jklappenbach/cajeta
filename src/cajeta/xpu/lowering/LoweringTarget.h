@@ -170,6 +170,12 @@ namespace xpu {
         // default. The cpu says false, so its results keep the per-op rounding.
         virtual bool fusesByDefault() const { return true; }
 
+        // A @FastMath kernel may flush float32 denormals; the backend states it on
+        // the function where its code generator reads it. The cpu marks the x86
+        // denormal mode, so LLVM may use the bf16 converts that flush
+        // (bf16-cast-denormals); the GPUs keep their modes.
+        virtual void markFastMathDenormals(llvm::Function* /*fn*/) {}
+
         // Device printf: `fmt` is an i8* constant format string, `args` the already
         // lowered scalars (no C varargs in the language). The default REJECTS.
         virtual void devicePrintf(llvm::IRBuilderBase& b, llvm::Module& m,
@@ -630,6 +636,20 @@ namespace xpu {
             uint32_t rows, uint32_t cols, uint32_t use,
             uint32_t swizzleStride = 0, LdsBlockPad blockPad = {});
 
+        // acc.storeAs<U>(dst, layout, stride) (coop-converting-store spec §2.1):
+        // store the float32 accumulator `matrixVal` to `ptr` (a U pointer at the
+        // tile's first cell) with each element converted to `u` (float16 or
+        // bfloat16) as the scalar cast does. The default converts and stores per
+        // element through the lane-to-element map (coopMatrixElementCell); a
+        // backend with no map refuses by name, and so does a swizzled or
+        // block-padded destination.
+        virtual void coopMatrixStoreAs(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
+            llvm::Value* matrixVal, llvm::Type* u, llvm::Value* layout,
+            llvm::Value* stride, uint32_t rows, uint32_t cols, uint32_t use,
+            llvm::Type* matrixType, uint32_t swizzleStride = 0,
+            LdsBlockPad blockPad = {});
+
         // c.mma(a, b) → a*b+c. `signFlags` (A 0x1, B 0x2, C 0x4, Result 0x8) carries
         // the multiply's signedness as DATA — int types are signless in LLVM/SPIR-V.
         // `aLayout`/`bLayout` are the layouts the A and B fragments were
@@ -733,6 +753,10 @@ namespace xpu {
             llvm::Value*& /*col*/) {
             return false;
         }
+
+        // Whether this target builds a fallback rung beside the native kernel (vulkan's "$pt"),
+        // whose portable tiles are not a demotion of the kernel and print no tier note.
+        virtual bool fallbackRung() const { return false; }
 
         // Whether a native tile whose fragment has no lane map serves per-element access by
         // staging through workgroup memory, at stagedElementWaveWidth() lanes a subgroup.
