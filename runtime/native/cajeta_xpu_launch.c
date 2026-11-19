@@ -1025,6 +1025,16 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
                     && !__cajeta_xpu_vk_spv_missing_capability((const uint32_t*) pe->image,
                                                                (size_t) (pe->len / 4), g_xpu_vk.caps,
                                                                &ptLacks)) {
+                if (!caj_vk_wave_runnable(32u)) {
+                    cajeta_xpu_note_launch_refusal(launchName, CAJ_XPU_VULKAN);
+                    g_xpu_refusal_reason = 11;
+                    fprintf(stderr,
+                            "cajeta.xpu: [xpu-launch-refused] %s needs the portable tile, which lays "
+                            "the tile out over 32 lanes, and this Vulkan device runs subgroups of %u "
+                            "to %u lanes%s\n", launchName, g_xpu_vk.minSubgroupSize,
+                            g_xpu_vk.maxSubgroupSize, g_xpu_vk.sizeCtlFeature ? "" : " with no size control");
+                    return;
+                }
                 if (cajeta_xpu_first_rung_note(launchName))
                     fprintf(stderr, "cajeta: note: [xpu-rung] %s runs on the portable tile: this "
                             "device has not enabled %s\n", launchName, lacked ? lacked : "a capability it declares");
@@ -1032,6 +1042,25 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
                 spirv = pe->image;
                 len = pe->len;
             }
+        }
+    }
+    // A device with the mixed-float dot launches the "<name>$d2" variant, whose f16 dotSum
+    // pairs are one OpFDot2MixAcc32VALVE each, when the compiler built one.
+    char d2Name[160];
+    if (__atomic_load_n(&caj_vk_last_virtual, __ATOMIC_ACQUIRE) == 0
+            && (g_xpu_vk.caps & CAJ_VK_CAP_MIXEDDOT) && launchName != ptName) {
+        snprintf(d2Name, sizeof(d2Name), "%s$d2", launchName);
+        pthread_mutex_lock(&g_xpu_cuda_lock);
+        struct cajeta_xpu_module* de = cajeta_xpu_find_module(d2Name, CAJ_XPU_VULKAN);
+        pthread_mutex_unlock(&g_xpu_cuda_lock);
+        const char* d2Lacks = NULL;
+        if (de && de->image && de->len >= 4
+                && !__cajeta_xpu_vk_spv_missing_capability((const uint32_t*) de->image,
+                                                           (size_t) (de->len / 4), g_xpu_vk.caps,
+                                                           &d2Lacks)) {
+            launchName = d2Name;
+            spirv = de->image;
+            len = de->len;
         }
     }
     if (declaredWave >= 2 && !caj_vk_wave_runnable((uint32_t) declaredWave)) {

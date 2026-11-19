@@ -1232,7 +1232,8 @@ int32_t __cajeta_xpu_device_supports(int32_t cap) {
     static const char* const kNames[] = {
         "rayquerynative", "rayqueryrtcore", "coopmatrixbf16f32acc", "atomicint64",
         "coopmatrixf16f32acc", "coopmatrixint8int32acc", "coopmatrixbf16f32accnative", "float64",
-        "float16arithmetic", "integerdot4x8", "subgroupwidth32", "subgroupwidth64"};
+        "float16arithmetic", "integerdot4x8", "subgroupwidth32", "subgroupwidth64",
+        "mixeddot"};
     if (cap >= 0 && cap < (int32_t) (sizeof(kNames) / sizeof(kNames[0])) && cajeta_xpu_denied(kNames[cap]))
         return 0;
     if ((cap == 2 || (cap >= 4 && cap <= 6)) && cajeta_xpu_denied("coopmatrix")) return 0;
@@ -1371,6 +1372,19 @@ int32_t __cajeta_xpu_device_supports(int32_t cap) {
                     return cap == 10 ? 1 : 0;
                 case CAJ_XPU_CPU:
                     return 1;
+                default:
+                    return 0;
+            }
+        case 12: // FloatDot2Mix — a 2-wide f16 dot accumulated in f32 in one instruction
+            switch (be) {
+                case CAJ_XPU_VULKAN:
+#if defined(CAJETA_RT_HAS_VULKAN)
+                    return (g_xpu_vk.caps & CAJ_VK_CAP_MIXEDDOT) ? 1 : 0;
+#else
+                    return 0;
+#endif
+                case CAJ_XPU_HIP:
+                    return cajeta_xpu_hip_matrix_family() != 0 ? 1 : 0;
                 default:
                     return 0;
             }

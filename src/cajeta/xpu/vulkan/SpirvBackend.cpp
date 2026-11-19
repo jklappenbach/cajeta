@@ -38,6 +38,7 @@
 #include <functional>
 #include <cstring>
 #include <map>
+#include <set>
 #include <mutex>
 #include <vector>
 
@@ -1107,6 +1108,70 @@ static bool retypePhiUndefs(std::vector<uint8_t>& bytes) {
     return true;
 }
 
+// Turns each OpFAdd of an accumulator and an OpFConvert of an f16 OpDot (the "$d2" lowering's
+// pattern) into OpFDot2MixAcc32VALVE, and declares the capability and extension it needs.
+// A module without the pattern is untouched. True if anything changed.
+static bool rewriteMixedDot(std::vector<uint8_t>& bytes) {
+    if (bytes.size() < 20 || (bytes.size() % 4) != 0) return false;
+    std::vector<uint32_t> w(bytes.size() / 4);
+    std::memcpy(w.data(), bytes.data(), bytes.size());
+    if (w[0] != 0x07230203u) return false;
+    constexpr uint32_t kOpCapability = 17, kOpTypeFloat = 22, kOpFConvert = 115, kOpFAdd = 129,
+                       kOpDot = 148, kOpFDot2MixAcc32VALVE = 6916, kCapDotF16AccF32 = 6912,
+                       kOpExtension = 10;
+    std::set<uint32_t> halfTypes;
+    std::map<uint32_t, std::pair<uint32_t, uint32_t>> dots;   // OpDot id -> its two vectors
+    std::map<uint32_t, uint32_t> converts;                    // OpFConvert id -> its source
+    std::vector<size_t> adds;
+    size_t lastCapability = 0;
+    for (size_t i = 5; i < w.size();) {
+        const uint32_t wc = w[i] >> 16, op = w[i] & 0xFFFFu;
+        if (wc == 0 || i + wc > w.size()) return false;
+        if (op == kOpCapability) lastCapability = i;
+        if (op == kOpTypeFloat && wc >= 3 && w[i + 2] == 16) halfTypes.insert(w[i + 1]);
+        if (op == kOpDot && wc == 5 && halfTypes.count(w[i + 1])) dots[w[i + 2]] = {w[i + 3], w[i + 4]};
+        if (op == kOpFConvert && wc == 4) converts[w[i + 2]] = w[i + 3];
+        if (op == kOpFAdd && wc == 5) adds.push_back(i);
+        i += wc;
+    }
+    if (dots.empty() || lastCapability == 0) return false;
+    std::map<size_t, std::vector<uint32_t>> replace;
+    for (size_t i : adds) {
+        const uint32_t x = w[i + 3], y = w[i + 4];
+        for (int side = 0; side < 2; ++side) {
+            const uint32_t conv = side == 0 ? y : x, acc = side == 0 ? x : y;
+            auto c = converts.find(conv);
+            if (c == converts.end()) continue;
+            auto d = dots.find(c->second);
+            if (d == dots.end()) continue;
+            replace[i] = {(6u << 16) | kOpFDot2MixAcc32VALVE, w[i + 1], w[i + 2],
+                          d->second.first, d->second.second, acc};
+            break;
+        }
+    }
+    if (replace.empty()) return false;
+    const std::string ext = "SPV_VALVE_mixed_float_dot_product";
+    std::vector<uint32_t> extWords((ext.size() + 4) / 4, 0u);
+    std::memcpy(extWords.data(), ext.data(), ext.size());
+    std::vector<uint32_t> out(w.begin(), w.begin() + 5);
+    for (size_t i = 5; i < w.size();) {
+        const uint32_t wc = w[i] >> 16;
+        auto r = replace.find(i);
+        if (r != replace.end()) out.insert(out.end(), r->second.begin(), r->second.end());
+        else out.insert(out.end(), w.begin() + i, w.begin() + i + wc);
+        if (i == lastCapability) {
+            out.push_back((2u << 16) | kOpCapability);
+            out.push_back(kCapDotF16AccF32);
+            out.push_back(((uint32_t) (1 + extWords.size()) << 16) | kOpExtension);
+            out.insert(out.end(), extWords.begin(), extWords.end());
+        }
+        i += wc;
+    }
+    bytes.resize(out.size() * 4);
+    std::memcpy(bytes.data(), out.data(), bytes.size());
+    return true;
+}
+
 // Narrows every OpControlBarrier whose memory scope is Device (only subgroupBarrier emits
 // one) to Subgroup execution and memory scope. True if anything changed.
 static bool scopeSubgroupBarriers(std::vector<uint8_t>& bytes) {
@@ -1568,6 +1633,7 @@ std::vector<uint8_t> emitSpirv(llvm::Module& deviceModule,
     // Each of these word-stream fixups is a no-op on a kernel that lacks its feature.
     decorateNoContraction(spirv);
     retypePhiUndefs(spirv);
+    rewriteMixedDot(spirv);
     scopeSubgroupBarriers(spirv);
     fixupControlBarriers(spirv);
     injectWorkgroupSizeSpecConstant(spirv);

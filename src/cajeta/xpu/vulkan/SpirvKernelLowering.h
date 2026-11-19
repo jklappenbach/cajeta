@@ -36,6 +36,11 @@ namespace vulkan {
     llvm::Function* lowerKernelPortableTiles(const MethodPtr& method, llvm::Module& deviceModule,
                                              const std::string& entryName);
 
+    // Lower `method` with every f16 dotSum pair on the mixed-float dot, for the "<name>$d2"
+    // variant a device with VK_VALVE_shader_mixed_float_dot_product launches.
+    llvm::Function* lowerKernelMixedDot(const MethodPtr& method, llvm::Module& deviceModule,
+                                        const std::string& entryName);
+
     // Lower a @Vertex/@Fragment stage into `deviceModule`, returning the `void main()` entry
     // for `stage`: params become Input interface variables and the return an Output one.
     // `entryName` overrides the entry symbol. Throws XPU-N01 on an unsupported construct.

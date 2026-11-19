@@ -829,6 +829,14 @@ public:
     unsigned distributedCoopMatrixWaveWidth(uint32_t /*cols*/) override { return 32; }
     bool distributeReplicablePortableTiles() const override { return true; }
 
+    // The portable two-FMA form; the kernel is marked so registration also builds its
+    // "<name>$d2" variant on the mixed-float dot.
+    llvm::Value* floatDot2x16(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* a,
+                              llvm::Value* c, llvm::Value* acc) override {
+        b.GetInsertBlock()->getParent()->addFnAttr("cajeta.uses-fdot2");
+        return LoweringTarget::floatDot2x16(b, m, a, c, acc);
+    }
+
     llvm::Value* subgroupIndex(llvm::IRBuilderBase& b, llvm::Module& m) override {
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::spv_subgroup_id);
@@ -1489,6 +1497,7 @@ public:
 
     // A native SPIR-V tile spans the real subgroup, not the virtual wave, so every tile here
     // is the portable one, spread across the virtual wave.
+    bool fallbackRung() const override { return true; }
     bool coopMatrixStagedElements() const override { return false; }
     bool coopMatrixEpilogueSupported() const override { return false; }
     ImplTier coopMatrixTier(llvm::Type*, uint32_t, uint32_t, uint32_t) override {
@@ -1675,6 +1684,27 @@ public:
     bool coopMatrixEpilogueSupported() const override { return false; }
     bool coopMatrixFromWordsSupported() const override { return false; }
 };
+
+// The "<name>$d2" target: each f16 pair of a dotSum is OpDot, widened and added to the f32
+// accumulator, the pattern the word stream turns into OpFDot2MixAcc32VALVE.
+class SpirvMixedDotTarget : public SpirvTarget {
+public:
+    bool fallbackRung() const override { return true; }
+    llvm::Value* floatDot2x16(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* a,
+                              llvm::Value* c, llvm::Value* acc) override {
+        llvm::Function* dot = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_fdot, {a->getType()});
+        llvm::Value* d = b.CreateCall(dot, {a, c}, "fdot2mix.dot");
+        llvm::Value* e = b.CreateFPExt(d, b.getFloatTy(), "fdot2mix.ext");
+        return b.CreateFAdd(acc, e, "fdot2mix");
+    }
+};
+
+llvm::Function* lowerKernelMixedDot(const MethodPtr& method, llvm::Module& deviceModule,
+                                    const std::string& entryName) {
+    SpirvMixedDotTarget target;
+    return cajeta::xpu::lowerKernel(method, deviceModule, target, entryName);
+}
 
 llvm::Function* lowerKernelPortableTiles(const MethodPtr& method, llvm::Module& deviceModule,
                                          const std::string& entryName) {

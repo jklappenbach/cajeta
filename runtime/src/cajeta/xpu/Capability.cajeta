@@ -51,7 +51,8 @@ public enum Capability {
     Float16Arithmetic,         // 8 — f16 arithmetic in the device's own instructions
     IntegerDot4x8,             // 9 — an accelerated 4 x 8-bit packed signed dot product
     SubgroupWidth32,           // 10 — kernels can run at a 32-lane wave
-    SubgroupWidth64;           // 11 — kernels can run at a 64-lane wave
+    SubgroupWidth64,           // 11 — kernels can run at a 64-lane wave
+    FloatDot2Mix;              // 12 — a 2-wide f16 dot accumulated in f32 in one instruction
 
     /** The name a diagnostic record or a route audit prints. */
     public #String toName() {
@@ -68,6 +69,7 @@ public enum Capability {
         if (this == Capability.Float16Arithmetic) { return "Float16Arithmetic"; }
         if (this == Capability.IntegerDot4x8) { return "IntegerDot4x8"; }
         if (this == Capability.SubgroupWidth32) { return "SubgroupWidth32"; }
-        return "SubgroupWidth64";
+        if (this == Capability.SubgroupWidth64) { return "SubgroupWidth64"; }
+        return "FloatDot2Mix";
     }
 }

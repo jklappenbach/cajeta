@@ -497,6 +497,7 @@ answer is no.
 | `IntegerDot4x8` | an accelerated 4 x 8-bit packed signed dot product | the integer dot product properties | RDNA3+, CDNA with matrix cores | sm_61+ | no |
 | `SubgroupWidth32` | kernels can run at a 32-lane wave | the subgroup size range, or the default | not gfx9 | yes | yes |
 | `SubgroupWidth64` | kernels can run at a 64-lane wave | as above | yes | no | yes |
+| `FloatDot2Mix` | a 2-wide f16 dot accumulated in f32 in one instruction | `VK_VALVE_shader_mixed_float_dot_product` | RDNA3+, CDNA with matrix cores | no | no |
 
 On proton (gfx1151, RADV, 2026-11-18) vulkan answers yes to everything but
 `CoopMatrixBf16F32AccNative` and the two ray-query capabilities, and hip answers yes to

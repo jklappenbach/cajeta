@@ -117,3 +117,57 @@ TEST(SpirvPortableTileTests, aBf16TileMatchesTheHostOnVulkan) {
     ASSERT_NE(run, nullptr);
     EXPECT_EQ(run(), 777) << "1000 + r*16 + c: the first wrong cell";
 }
+
+namespace {
+
+// A float32 accumulator that is only loaded and stored round-trips on vulkan. Its "$pt"
+// build spreads the tile over 32 lanes, so a coop-less device narrower than that refuses it
+// by name rather than computing it wrong (Phoenix's f32Row, on an llvmpipe without coop).
+const char* kLoadStoreSource = R"CJ(
+package test;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+public class LS {
+    @Kernel
+    public static void ls(KernelBuffer<float32> y, KernelBuffer<float32> a) {
+        CooperativeMatrix<float32,16,16,2> acc;
+        acc.load(a, 0, 0, 16);
+        acc.store(y, 0, 0, 16);
+    }
+    public static int32 run() {
+        float32[] h = heap float32[256];
+        float32[] g = heap float32[256];
+        for (int32 i = 0; i < 256; i = i + 1) { h[i] = (float32) (i * 3 - 100); g[i] = 0.0f; }
+        KernelBuffer<float32> a = heap KernelBuffer<float32>(256);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>(256);
+        a.upload(h);
+        y.upload(g);
+        KernelStream s #= KernelStream.current();
+        ls.launch(s, grid: [1], block: [32])(y, a);
+        s.sync();
+        y.download(g);
+        for (int32 i = 0; i < 256; i = i + 1) { if (g[i] != h[i]) { return 1000 + i; } }
+        return 777;
+    }
+}
+)CJ";
+
+} // namespace
+
+TEST(SpirvPortableTileTests, aLoadAndStoreTileRoundTripsOnVulkan) {
+    if (!cajeta::xpu::test::vulkanAvailable()) GTEST_SKIP() << "no Vulkan device";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(kLoadStoreSource, "test.LS", o);
+    ASSERT_NE(jit, nullptr);
+    auto run = jit->lookup<int (*)()>("run");
+    ASSERT_NE(run, nullptr);
+    testing::internal::CaptureStderr();
+    int got = run();
+    std::string err = testing::internal::GetCapturedStderr();
+    if (err.find("[xpu-launch-refused] ls needs the portable tile") != std::string::npos)
+        EXPECT_EQ(got, 1000) << "a refused launch wrote nothing";
+    else
+        EXPECT_EQ(got, 777) << "1000 + i: the first cell that did not round-trip\n" << err;
+}
