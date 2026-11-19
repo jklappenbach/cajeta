@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.54.1 (2026-11-19)
+
+- **Vulkan builds of large programs no longer crash the compiler.** A cooperative-matrix tile kernel's virtual-wave variant (`$v8`, `$v16`, new in 0.54.0) could leave a `@Device` helper that reads the lane holding a pointer into a function the build had already erased. A release compiler has no assertions to catch that, so it surfaced later as heap corruption or a segfault, depending on address layout: about 2 of 3 cajeta-llm Vulkan test builds crashed on 0.54.0. The variant's build now inlines every helper that reads the lane before it splits the kernel, and a variant that still has an outside use fails cleanly instead (`SpirvVirtualHelperLaneTests`, gpu-kernel-parity 18.3.3).
+
 ## 0.54.0 (2026-11-19)
 
 - **`acc.storeAs<U>(dst, offset, layout, stride)` stores a float32 accumulator at 16 bits.** A kernel that writes a float16 or bfloat16 result no longer walks the fragment with `get`, `row` and `col`: `storeAs` converts each element as the scalar cast `(U) x` does, rounding to nearest even, at either layout, at any stride, into a `KernelBuffer<U>` or a `Shared<U>`. `store` keeps its meaning, `storeAs<float32>` is `store`, and any other `U`, an operand fragment or an accumulator of another type is refused by name. On nvptx a float16 tile on a 4-byte boundary with an even stride is one `wmma.store.d.f16`, a row-major bfloat16 tile packs pairs into 4-byte stores, and anything else stores per element. On Vulkan it goes through the per-subgroup staging tile, and the reference interpreter defines it for the conformance corpus. gemm128's 16-bit-output member on the 4090 keeps 128 registers with no spill (`XpuCoopStoreAs`, coop-converting-store Units 1 to 3).
