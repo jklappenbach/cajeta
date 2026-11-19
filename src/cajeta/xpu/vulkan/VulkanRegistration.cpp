@@ -4,6 +4,7 @@
 #include "VulkanRegistration.h"
 #include "cajeta/xpu/core/KernelManifest.h"
 #include "cajeta/xpu/core/XpuKernelGate.h"
+#include <algorithm>
 #include <optional>
 #include "SpirvBackend.h"
 #include "SpirvKernelLowering.h"
@@ -96,6 +97,7 @@ namespace vulkan {
         // Emits one SPIR-V variant of `method`; `registerKparams` is true only
         // for the primary variant, since the variants share that metadata.
         bool lastDeclaresCoop = false;   // the last native module's OpCapability CooperativeMatrixKHR
+        unsigned lastLayoutWave = 0;     // the wave the last native module's tile layout assumes, 0 none
         auto emitVariant = [&](const MethodPtr& method, const std::string& regName,
                                bool software, bool registerKparams,
                                unsigned virtualWave = 0, unsigned virtualSubgroup = 0,
@@ -129,6 +131,15 @@ namespace vulkan {
             if (!kfn) return false;
             // Access modes come off the lowered IR, before SPIR-V codegen.
             KernelAccessSummary access = classifyKernelAccess(*kfn, method);
+            if (!virtualSubgroup && !portableTiles && !software) {
+                lastLayoutWave = 0;
+                for (llvm::Function& f : devMod)
+                    if (f.hasFnAttribute("cajeta.layout-wave")) {
+                        unsigned w = 0;
+                        f.getFnAttribute("cajeta.layout-wave").getValueAsString().getAsInteger(10, w);
+                        lastLayoutWave = std::max(lastLayoutWave, w);
+                    }
+            }
 
             std::string codegenFailure;
             std::vector<uint8_t> spirv = emitSpirv(devMod, *tm, &codegenFailure);
@@ -170,6 +181,8 @@ namespace vulkan {
                 applyNativeOps(m, kfn);
                 if (auto attr = XpuKernelAttr::from(*method); attr && attr->waveWidth())
                     m.waveWidth = (unsigned) *attr->waveWidth();
+                else if (lastLayoutWave)
+                    m.waveWidth = lastLayoutWave;
                 m.ldsStaticBytes = workgroupBytes(devMod);
                 applyCost(m, method);
                 manifest = std::move(m);
@@ -266,12 +279,16 @@ namespace vulkan {
             if (usesRayQuery(method))
                 emitVariant(method, entryName + "$sw", /*software=*/true,
                             /*registerKparams=*/false);
+            unsigned vwave = 0;
             if (auto attr = XpuKernelAttr::from(*method); attr && attr->waveWidth())
+                vwave = (unsigned) *attr->waveWidth();
+            else
+                vwave = lastLayoutWave;
+            if (vwave)
                 for (unsigned s : virtualSubgroups())
-                    if (s != (unsigned) *attr->waveWidth() && s <= 2u * (unsigned) *attr->waveWidth())
+                    if (s != vwave && s <= 2u * vwave)
                         emitVariant(method, entryName + "$v" + std::to_string(s),
-                                    /*software=*/false, /*registerKparams=*/false,
-                                    (unsigned) *attr->waveWidth(), s);
+                                    /*software=*/false, /*registerKparams=*/false, vwave, s);
         }
         return emitted;
     }

@@ -4827,6 +4827,7 @@ private:
         if (G == 0 || R % G != 0) return;
         if ((R * C) % W != 0) return;
         coopDistributeW = W;
+        fn->addFnAttr("cajeta.layout-wave", std::to_string(W));
         target.prepareDistributedCoopMatrix(fn, W);
     }
 
@@ -7405,6 +7406,7 @@ private:
                         llvm::Value* lane; unsigned w, n; };
     StagedTile stagedTile(llvm::Type* elemTy, unsigned cells, unsigned span) {
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        fn->addFnAttr("cajeta.layout-wave", std::to_string(target.stagedElementWaveWidth()));
         StagedTile t;
         t.w = target.stagedElementWaveWidth();
         t.n = cells / t.w;
@@ -7533,6 +7535,7 @@ private:
                                     const CoopMatrixSlot& slot, const std::string& recv) {
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         const unsigned W = target.stagedElementWaveWidth();
+        fn->addFnAttr("cajeta.layout-wave", std::to_string(W));
         const unsigned cells = slot.rows * slot.cols;
         if (cells == 0 || cells % W != 0)
             unsupported("CooperativeMatrix." + name + ": a " + std::to_string(slot.rows) + "x" +

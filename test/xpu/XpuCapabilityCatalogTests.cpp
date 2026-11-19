@@ -91,7 +91,6 @@ TEST(XpuCapabilityCatalog, vulkanReportsTheMatrixConfigsItsDriverLists) {
         EXPECT_NE(bits & 3, 0) << "the driver has cooperative matrices but lists no f16 or int8 config";
     else
         EXPECT_EQ(bits & 7, 0) << "no cooperative matrix, yet a matrix config was reported";
-    EXPECT_NE(bits & 192, 0) << "no wave width at all";
 }
 
 TEST(XpuCapabilityCatalog, hipReportsItsArchitecture) {

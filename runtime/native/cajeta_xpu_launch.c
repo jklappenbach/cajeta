@@ -983,32 +983,6 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
                 launchName);
         return;
     }
-    // A device without a capability the module declares launches the "<name>$pt" variant, the
-    // same kernel on the portable tile, when the compiler built one; the switch is named once.
-    char ptName[160];
-    {
-        const char* capName = NULL;
-        if (__cajeta_xpu_vk_spv_missing_capability((const uint32_t*) spirv, (size_t) (len / 4),
-                                                   g_xpu_vk.caps, &capName)) {
-            snprintf(ptName, sizeof(ptName), "%s$pt", launchName);
-            pthread_mutex_lock(&g_xpu_cuda_lock);
-            struct cajeta_xpu_module* pe = cajeta_xpu_find_module(ptName, CAJ_XPU_VULKAN);
-            pthread_mutex_unlock(&g_xpu_cuda_lock);
-            const char* lacked = capName;
-            const char* ptLacks = NULL;
-            if (pe && pe->image && pe->len >= 4
-                    && !__cajeta_xpu_vk_spv_missing_capability((const uint32_t*) pe->image,
-                                                               (size_t) (pe->len / 4), g_xpu_vk.caps,
-                                                               &ptLacks)) {
-                if (cajeta_xpu_first_rung_note(launchName))
-                    fprintf(stderr, "cajeta: note: [xpu-rung] %s runs on the portable tile: this "
-                            "device has not enabled %s\n", launchName, lacked ? lacked : "a capability it declares");
-                launchName = ptName;
-                spirv = pe->image;
-                len = pe->len;
-            }
-        }
-    }
     int declaredWave = caj_record_wave(kernelName, CAJ_XPU_VULKAN);
     char virtualName[160];
     __atomic_store_n(&caj_vk_last_virtual, 0, __ATOMIC_RELEASE);
@@ -1032,6 +1006,32 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
             blockX /= (int32_t) c;
             declaredWave = 0;
             __atomic_store_n(&caj_vk_last_virtual, (int32_t) sg, __ATOMIC_RELEASE);
+        }
+    }
+    // A device without a capability the module declares launches the "<name>$pt" variant, the
+    // same kernel on the portable tile, when the compiler built one; the switch is named once.
+    char ptName[160];
+    if (__atomic_load_n(&caj_vk_last_virtual, __ATOMIC_ACQUIRE) == 0) {
+        const char* capName = NULL;
+        if (__cajeta_xpu_vk_spv_missing_capability((const uint32_t*) spirv, (size_t) (len / 4),
+                                                   g_xpu_vk.caps, &capName)) {
+            snprintf(ptName, sizeof(ptName), "%s$pt", launchName);
+            pthread_mutex_lock(&g_xpu_cuda_lock);
+            struct cajeta_xpu_module* pe = cajeta_xpu_find_module(ptName, CAJ_XPU_VULKAN);
+            pthread_mutex_unlock(&g_xpu_cuda_lock);
+            const char* lacked = capName;
+            const char* ptLacks = NULL;
+            if (pe && pe->image && pe->len >= 4
+                    && !__cajeta_xpu_vk_spv_missing_capability((const uint32_t*) pe->image,
+                                                               (size_t) (pe->len / 4), g_xpu_vk.caps,
+                                                               &ptLacks)) {
+                if (cajeta_xpu_first_rung_note(launchName))
+                    fprintf(stderr, "cajeta: note: [xpu-rung] %s runs on the portable tile: this "
+                            "device has not enabled %s\n", launchName, lacked ? lacked : "a capability it declares");
+                launchName = ptName;
+                spirv = pe->image;
+                len = pe->len;
+            }
         }
     }
     if (declaredWave >= 2 && !caj_vk_wave_runnable((uint32_t) declaredWave)) {
