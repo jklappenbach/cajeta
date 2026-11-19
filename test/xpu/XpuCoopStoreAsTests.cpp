@@ -282,8 +282,12 @@ public class S {
         a.upload(h);
         y.upload(got);
         KernelStream s #= KernelStream.current();
-        f32Row.launch(s, grid: [1], block: [32])(y, a, off, stride);
-        s.sync();
+        // A device with no matrix unit whose subgroups can't run 32 lanes refuses
+        // the portable tile by name (gpu-kernel-parity reason 11): -2.
+        try {
+            f32Row.launch(s, grid: [1], block: [32])(y, a, off, stride);
+            s.sync();
+        } catch (XpuLaunchException e) { return -2; }
         y.download(got);
         float32[] want = heap float32[300];
         for (int32 k = 0; k < 300; k = k + 1) { want[k] = -7.0f; }
@@ -309,7 +313,8 @@ const Config kConfigs[] = {
     {3, 0, 0, "a row-major Shared tile"},
 };
 
-void everyCellConverts(cajeta::xpu::Backend be, const char* name) {
+void everyCellConverts(cajeta::xpu::Backend be, const char* name,
+                       bool f32Refused = false) {
     CajetaJit::Options o;
     o.xpuBackends = {be};
     auto jit = CajetaJit::compile(kSource, "test.S", o);
@@ -326,7 +331,9 @@ void everyCellConverts(cajeta::xpu::Backend be, const char* name) {
     // storeAs<float32> IS store, so it keeps store's placement contract: the
     // native wmma store on nvptx needs an aligned tile and a stride that is a
     // multiple of 16 bytes (offset 11 at stride 17 read back 256 wrong cells).
-    EXPECT_EQ(-1, f32(32, 16, 0.0f)) << name << " storeAs<float32>";
+    EXPECT_EQ(f32Refused ? -2 : -1, f32(32, 16, 0.0f))
+        << name << (f32Refused ? " storeAs<float32> should be refused by name"
+                               : " storeAs<float32>");
 }
 
 // Compile `src` for `be` and launch its `probe` under a catch, returning what the
@@ -408,13 +415,29 @@ TEST(XpuCoopStoreAsDeviceTests, everyCellConvertsAsTheScalarCastOnNvptx) {
 }
 
 // Vulkan goes through the per-subgroup staging tile (decision 3). A device without
-// cooperative matrices refuses the module, so the test runs where it has them
-// (proton's RADV).
+// cooperative matrices runs the kernel's portable variant instead (gpu-kernel-parity,
+// the `$pt` rung), which converts in the portable tile's store, and says so once.
 TEST(XpuCoopStoreAsDeviceTests, everyCellConvertsAsTheScalarCastOnVulkan) {
     if (!cajeta::xpu::test::vulkanAvailable()) GTEST_SKIP() << "no Vulkan device";
-    if (!cajeta::xpu::vulkan::VulkanDriver::coopMatrixAvailable())
-        GTEST_SKIP() << "the Vulkan device has no cooperative matrices";
-    everyCellConverts(cajeta::xpu::Backend::Spirv, "vulkan");
+    const bool native = cajeta::xpu::vulkan::VulkanDriver::coopMatrixAvailable();
+    // With no matrix unit, the float16 and bfloat16 kernels (staged element access)
+    // run their virtual-wave variants; the float32 kernel (load and store only) has
+    // only the 32-lane portable tile, which a narrower device refuses by name.
+    const bool narrow = !cajeta::xpu::vulkan::VulkanDriver::canRunSubgroupWidth(32);
+    const bool f32Refused = !native && narrow;
+    testing::internal::CaptureStderr();
+    everyCellConverts(cajeta::xpu::Backend::Spirv,
+                      native ? "vulkan" : narrow ? "vulkan, virtual wave" : "vulkan, portable rung",
+                      f32Refused);
+    std::string err = testing::internal::GetCapturedStderr();
+    if (f32Refused) {
+        EXPECT_NE(err.find("[xpu-launch-refused]"), std::string::npos) << err;
+        EXPECT_NE(err.find("f32Row"), std::string::npos) << err;
+    } else if (!native) {
+        EXPECT_NE(err.find("[xpu-rung]"), std::string::npos)
+            << "a device without cooperative matrices takes the portable rung by name:\n"
+            << err;
+    }
 }
 
 TEST(XpuCoopStoreAsDeviceTests, everyCellConvertsAsTheScalarCastOnAmdgpu) {
