@@ -969,6 +969,71 @@ llvm::Function* virtualWaveStub(llvm::Module& m, const char* name, llvm::Type* r
     return f;
 }
 
+// True when a value of `f` (an argument, block or instruction) is used outside `f`.
+static bool usedOutside(const llvm::Function& f) {
+    auto outside = [&](const llvm::Value& v) {
+        for (const llvm::User* u : v.users())
+            if (auto* i = llvm::dyn_cast<llvm::Instruction>(u))
+                if (i->getFunction() != &f) return true;
+        return false;
+    };
+    for (const llvm::Argument& a : f.args())
+        if (outside(a)) return true;
+    for (const llvm::BasicBlock& bb : f) {
+        if (outside(bb)) return true;
+        for (const llvm::Instruction& i : bb)
+            if (outside(i)) return true;
+    }
+    return false;
+}
+
+// True when `g`, or a function it calls, uses a value of `slot` (the virtual lane reads its argument).
+static bool readsSlot(const llvm::Function& g, const llvm::Function& slot,
+                      llvm::SmallPtrSetImpl<const llvm::Function*>& seen) {
+    if (&g == &slot || g.isDeclaration() || !seen.insert(&g).second) return false;
+    for (const llvm::BasicBlock& bb : g)
+        for (const llvm::Instruction& in : bb) {
+            for (const llvm::Value* op : in.operands()) {
+                if (auto* a = llvm::dyn_cast<llvm::Argument>(op); a && a->getParent() == &slot) return true;
+                if (auto* i = llvm::dyn_cast<llvm::Instruction>(op); i && i->getFunction() == &slot) return true;
+            }
+            if (auto* cl = llvm::dyn_cast<llvm::CallInst>(&in))
+                if (const llvm::Function* cf = cl->getCalledFunction())
+                    if (readsSlot(*cf, slot, seen)) return true;
+        }
+    return false;
+}
+
+// Inlines into `slot` every helper that reads its values, then erases those helpers once uncalled.
+static void inlineSlotReaders(llvm::Function& slot) {
+    auto reads = [&](const llvm::Function& g) {
+        llvm::SmallPtrSet<const llvm::Function*, 8> seen;
+        return readsSlot(g, slot, seen);
+    };
+    for (bool again = true; again;) {
+        again = false;
+        llvm::SmallVector<llvm::CallInst*, 8> calls;
+        for (llvm::BasicBlock& bb : slot)
+            for (llvm::Instruction& in : bb)
+                if (auto* cl = llvm::dyn_cast<llvm::CallInst>(&in))
+                    if (llvm::Function* cf = cl->getCalledFunction())
+                        if (reads(*cf)) calls.push_back(cl);
+        for (llvm::CallInst* cl : calls) {
+            llvm::InlineFunctionInfo ifi;
+            if (llvm::InlineFunction(*cl, ifi).isSuccess()) again = true;
+        }
+    }
+    llvm::Module& m = *slot.getParent();
+    for (bool again = true; again;) {
+        again = false;
+        for (llvm::Function& g : llvm::make_early_inc_range(m))
+            if (&g != &slot && g.use_empty() && reads(g)) {
+                g.eraseFromParent();
+                again = true;
+            }
+    }
+}
+
 llvm::Function* buildVirtualEntry(llvm::Function* slotFn, llvm::Module& m,
                                   llvm::TargetMachine& tm, const std::string& entryName,
                                   unsigned waveWidth, unsigned subgroup, std::string* whyNot) {
@@ -982,11 +1047,12 @@ llvm::Function* buildVirtualEntry(llvm::Function* slotFn, llvm::Module& m,
     const bool fission = cpu::usesBarrier(*slotFn) || reachesLoop(*slotFn, seen);
     if (fission) cpu::inlineAllocaTakingCallees(*slotFn);
     else inlineHelpers(*slotFn);
+    inlineSlotReaders(*slotFn);
     rematerializeInvariants(*slotFn);
     auto fail = [&](const std::string& why) -> llvm::Function* {
         *whyNot = why;
         entry->eraseFromParent();
-        if (slotFn->getParent()) slotFn->eraseFromParent();
+        if (slotFn->getParent() && !usedOutside(*slotFn)) slotFn->eraseFromParent();
         return nullptr;
     };
 
@@ -1014,6 +1080,7 @@ llvm::Function* buildVirtualEntry(llvm::Function* slotFn, llvm::Module& m,
             b.CreateCall(bar, {});
         }
         latches.assign(wi.begin(), wi.end());
+        if (usedOutside(*slotFn)) return fail("a helper still reads the slot function after fission");
         slotFn->eraseFromParent();
         inlineHelpers(*entry);
         std::string why;
@@ -1041,6 +1108,7 @@ llvm::Function* buildVirtualEntry(llvm::Function* slotFn, llvm::Module& m,
         llvm::InlineFunctionInfo ifi;
         if (!llvm::InlineFunction(*call, ifi).isSuccess())
             return fail("the per-slot body could not be inlined into the slot loop");
+        if (usedOutside(*slotFn)) return fail("a helper still reads the slot function after inlining");
         slotFn->eraseFromParent();
     }
     entry->setAttributes(llvm::AttributeList());
