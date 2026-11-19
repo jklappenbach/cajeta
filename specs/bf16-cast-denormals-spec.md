@@ -35,27 +35,38 @@ Decisions (Julian, 2026-11-18, reviewed interactively):
    rounding gets wrong, and the fix covers float64 only if they fail.
 5. Performance is read and reported, not gated: cajeta-llm's cpu-leg bf16 timings
    before and after, on proton. A large regression comes back to Julian.
-6. One late IR pass, just before x86 instruction selection, on every path (chosen over
-   fixing each emission site, which leaves library bitcode from older compilers wrong
-   until each library is rebuilt, and over turning AVX512-BF16 off, which would take the
-   fast convert from `@FastMath`). An IR pass cannot see a conversion LLVM inserts
-   during instruction selection, such as bf16 arithmetic computed in float32 and
-   rounded back. A test covers that case, and if it fails, AVX512-BF16 is turned off
-   for code that is not `@FastMath` as well.
-7. Phoenix checks the assembly at `-mcpu=znver5` and the values at its own CPU; proton
-   runs the value tests where the instruction exists.
+6. The fix is in the cajeta-llvm fork's x86 backend, released as r13. LLVM chooses
+   `vcvtneps2bf16` (and AVX-NE-CONVERT's form, which flushes the same way) in two
+   places, `LowerFP_ROUND` for vectors and `LowerFP_TO_BF16` for scalars, whenever the
+   CPU has the feature. Upstream treats the flush as intended: llvm-project PR #90425,
+   a `denormal-fp-math-bf16` setting, has been open since 2024. In the fork, both
+   places use the instruction only when flushing is allowed: the conversion carries
+   the approximate-functions (`afn`) flag, which `@FastMath` code sets, or the
+   function's float32 denormal mode is not IEEE. Otherwise they expand to the exact
+   integer form. Because LLVM's own bf16 arithmetic rounds back through the same
+   lowering, this covers conversions the compiler inserts during instruction
+   selection, on every path, including library bitcode at the consumer's build.
+   Chosen over a late IR pass and over fixing each emission site (both hook many
+   places and miss LLVM's own conversions), and over turning the CPU feature off
+   (which takes the fast convert from `@FastMath`). The cost is a fork release and a
+   full rebuild on every machine and CI image.
+7. The fork's own tests check the assembly (llc at an AVX512-BF16 CPU); Phoenix checks
+   cajeta's assembly at `-mcpu=znver5` and the values at its own CPU; proton runs the
+   value tests where the instruction exists.
 8. It ships in coop-converting-store's release (that plan's Unit 4).
 
 ## 2. Features
 
 ### 2.1 The cast is the same on every CPU
 
-Every `fptrunc float to bfloat`, scalar or vector, that a host or cpu-backend module
-holds when it reaches codegen becomes integer round-to-nearest-even, which is the
-sequence the GPU backends already emit:
+On x86, every float32-to-bf16 narrowing that reaches instruction selection, scalar or
+vector, whether written in the source or inserted by LLVM, becomes integer
+round-to-nearest-even unless flushing is allowed (decision 6). That is the sequence the
+GPU backends already emit:
 `(bits + 0x7FFF + ((bits >> 16) & 1)) >> 16`, and a NaN gives its top half with the
-quiet bit set. The rewrite runs late, so every source is covered: the language cast,
-`Vector.toBF16`, the stdlib, and a coop tile's narrowing store. A `@FastMath` kernel
+quiet bit set. It happens in LLVM's x86 backend, so every source is covered: the
+language cast, `Vector.toBF16`, the stdlib, a coop tile's narrowing store, and bf16
+arithmetic. A `@FastMath` kernel
 may keep the hardware convert (decision 3). A `float64` source is measured first
 (decision 4): if LLVM narrows it through float32 and rounds twice, it narrows once,
 by the same rule.
