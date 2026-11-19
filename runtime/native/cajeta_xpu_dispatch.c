@@ -1227,6 +1227,15 @@ static int cajeta_xpu_hip_wave64_only(void) {
 // Device.supports(Capability) — does the active device advertise `cap` natively?
 // `cap` is the Capability.cajeta ordinal; append cases, never renumber.
 int32_t __cajeta_xpu_device_supports(int32_t cap) {
+    // CAJETA_XPU_DENY names a capability in lower case ("float64"), or "coopmatrix" for every
+    // matrix one; a denied capability is absent here exactly as on a device without it.
+    static const char* const kNames[] = {
+        "rayquerynative", "rayqueryrtcore", "coopmatrixbf16f32acc", "atomicint64",
+        "coopmatrixf16f32acc", "coopmatrixint8int32acc", "coopmatrixbf16f32accnative", "float64",
+        "float16arithmetic", "integerdot4x8", "subgroupwidth32", "subgroupwidth64"};
+    if (cap >= 0 && cap < (int32_t) (sizeof(kNames) / sizeof(kNames[0])) && cajeta_xpu_denied(kNames[cap]))
+        return 0;
+    if ((cap == 2 || (cap >= 4 && cap <= 6)) && cajeta_xpu_denied("coopmatrix")) return 0;
     int be = cajeta_xpu_active_backend();
     switch (cap) {
         case 0:  // RayQueryNative — hardware INLINE ray query

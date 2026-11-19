@@ -12,6 +12,7 @@
 #include "../jit/JitTestHelper.h"
 #include "XpuDeviceTestUtil.h"
 #include "cajeta/xpu/XpuTarget.h"
+#include "cajeta/util/Environment.h"
 #include "cajeta/xpu/vulkan/VulkanDriver.h"
 
 #include <cstdio>
@@ -99,3 +100,18 @@ TEST(XpuCapabilityCatalog, hipReportsItsArchitecture) {
     ASSERT_GE(bits, 0);
     EXPECT_EQ(bits & (8 | 16 | 128), 8 | 16 | 128) << "every AMD GPU runs f64, f16 and wave 64";
 }
+
+// A capability named in CAJETA_XPU_DENY reads as absent, so one machine can run every
+// rung that keys off it (gpu-kernel-parity 14.1.1).
+TEST(XpuCapabilityCatalog, aDeniedCapabilityReadsAsAbsent) {
+    const char* old = std::getenv("CAJETA_XPU_DENY");
+    std::string keep = old ? old : "";
+    cajeta::util::setEnvVar("CAJETA_XPU_DENY", "float64,subgroupwidth64");
+    int bits = catalogOn(cajeta::xpu::Backend::Cpu, "cpu, float64 and subgroupwidth64 denied");
+    if (old) cajeta::util::setEnvVar("CAJETA_XPU_DENY", keep); else cajeta::util::unsetEnvVar("CAJETA_XPU_DENY");
+    ASSERT_GE(bits, 0);
+    EXPECT_EQ(bits & 8, 0) << "Float64 was denied";
+    EXPECT_EQ(bits & 128, 0) << "SubgroupWidth64 was denied";
+    EXPECT_EQ(bits & 64, 64) << "SubgroupWidth32 was not";
+}
+
