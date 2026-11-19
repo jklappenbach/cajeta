@@ -342,6 +342,7 @@ public:
             llvm::FastMathFlags fmf;
             fmf.setFast();   // contract + reassoc + arcp + afn + nnan/ninf/nsz
             builder.setFastMathFlags(fmf);
+            target.markFastMathDenormals(fn);
         } else if (method && target.fusesByDefault() && !isUnfused(*method)
                    && !(method->getParent() && isUnfused(*method->getParent()))) {
             // A GPU kernel's `a * b + c` may fuse to one fma, nothing else relaxed;

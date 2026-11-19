@@ -170,6 +170,12 @@ namespace xpu {
         // default. The cpu says false, so its results keep the per-op rounding.
         virtual bool fusesByDefault() const { return true; }
 
+        // A @FastMath kernel may flush float32 denormals; the backend states it on
+        // the function where its code generator reads it. The cpu marks the x86
+        // denormal mode, so LLVM may use the bf16 converts that flush
+        // (bf16-cast-denormals); the GPUs keep their modes.
+        virtual void markFastMathDenormals(llvm::Function* /*fn*/) {}
+
         // Device printf: `fmt` is an i8* constant format string, `args` the already
         // lowered scalars (no C varargs in the language). The default REJECTS.
         virtual void devicePrintf(llvm::IRBuilderBase& b, llvm::Module& m,

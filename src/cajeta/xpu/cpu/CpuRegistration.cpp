@@ -1490,6 +1490,10 @@ void foldWaveVariants(llvm::Function& f) {
             // fission wrappers become (6.4.12). CpuBackend.h says why.
             tuneKernelWrapper(*wrapper);
             stampLevel(wrapper);
+            // The kernel is inlined here, so the wrapper is where its float32 denormal mode
+            // must hold: a @FastMath kernel's lets x86 keep the bf16 convert.
+            if (linked->hasFnAttribute(llvm::Attribute::DenormalFPEnv))
+                wrapper->addFnAttr(linked->getFnAttribute(llvm::Attribute::DenormalFPEnv));
             // The trailing wrapper param is the dynamic shared byte count.
             llvm::Value* dynSharedBytes = wrapper->getArg(nReal + kNumBlockCoordParams);
 
@@ -1581,6 +1585,10 @@ void foldWaveVariants(llvm::Function& f) {
                                 hostModule);
                             tuneKernelWrapper(*wrapper);
                             stampLevel(wrapper);
+                            // The kernel is inlined here, so the wrapper is where its float32 denormal mode
+                            // must hold: a @FastMath kernel's lets x86 keep the bf16 convert.
+                            if (linked->hasFnAttribute(llvm::Attribute::DenormalFPEnv))
+                                wrapper->addFnAttr(linked->getFnAttribute(llvm::Attribute::DenormalFPEnv));
                             dynSharedBytes = wrapper->getArg(nReal + kNumBlockCoordParams);
                             ctaidX = wrapper->getArg(nReal + 0);
                             ctaidY = wrapper->getArg(nReal + 1);
