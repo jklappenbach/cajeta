@@ -2,7 +2,7 @@
 
 > Status: **active**, approved by Julian 2026-11-18 ("fix now, own spec"), found by
 > coop-converting-store's bfloat16 value tests on proton. Plan:
-> [bf16-cast-denormals](../agents/bf16-cast-denormals-plan.md).
+> [bf16-cast-denormals](../../agents/archive/bf16-cast-denormals-plan.md).
 
 ## 1. Definition
 
