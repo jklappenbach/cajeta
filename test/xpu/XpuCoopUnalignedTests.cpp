@@ -323,10 +323,19 @@ struct ForcePerElement {
     ~ForcePerElement() { unsetenv("CAJETA_XPU_NVPTX_PLACEMENT"); }
 };
 
-std::string compilerPath() {
+// The source root: CAJETA_SOURCE_ROOT, else the one this binary was built from, so
+// the test also runs from build/ (cajeta_tests.sh sets the variable).
+std::string sourceRoot() {
     const char* root = std::getenv("CAJETA_SOURCE_ROOT");
-    return std::string(root && *root ? root : ".") + "/build/src/cajeta";
+    if (root && *root) return root;
+#ifdef CAJETA_SOURCE_ROOT_DEFAULT
+    return CAJETA_SOURCE_ROOT_DEFAULT;
+#else
+    return ".";
+#endif
 }
+
+std::string compilerPath() { return sourceRoot() + "/build/src/cajeta"; }
 
 // stdout and stderr of `cmd`.
 std::string run(const std::string& cmd) {
