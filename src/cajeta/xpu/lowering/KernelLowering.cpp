@@ -9024,7 +9024,7 @@ llvm::Value* LoweringTarget::specConstantF32(llvm::IRBuilderBase& b,
 // Monotonic). Selects the native global FP atomic on AMDGPU/NVPTX and a
 // lock/cmpxchg on CPU. Vulkan overrides (Device scope + AcquireRelease default).
 llvm::Value* LoweringTarget::atomicFloatRMW(
-    llvm::IRBuilderBase& b, llvm::Module& /*m*/, AtomicFloatOp op,
+    llvm::IRBuilderBase& b, llvm::Module& m, AtomicFloatOp op,
     llvm::Value* ptr, llvm::Value* value, MemoryOrder order) {
     llvm::AtomicRMWInst::BinOp binop =
         op == AtomicFloatOp::Add ? llvm::AtomicRMWInst::FAdd
@@ -9032,7 +9032,8 @@ llvm::Value* LoweringTarget::atomicFloatRMW(
                                  : llvm::AtomicRMWInst::FMax;
     return b.CreateAtomicRMW(binop, ptr, value, llvm::MaybeAlign(),
                              toAtomicOrdering(order,
-                                              llvm::AtomicOrdering::Monotonic));
+                                              llvm::AtomicOrdering::Monotonic),
+                             bufferAtomicScope(m, ptr));
 }
 
 // Map an AtomicIntOp (+ signedness for min/max) to the LLVM atomicrmw BinOp. The
@@ -9055,27 +9056,35 @@ static llvm::AtomicRMWInst::BinOp atomicIntBinOp(
     return A::Add;  // unreachable
 }
 
-// Default integer atomic: a relaxed, system-scope atomicrmw (native on
+// The default atomic scope: system, which the cpu backend's single observer set
+// makes free. GPU backends override with their device and workgroup scopes.
+llvm::SyncScope::ID LoweringTarget::bufferAtomicScope(llvm::Module& /*m*/,
+                                                      llvm::Value* /*ptr*/) {
+    return llvm::SyncScope::System;
+}
+
+// Default integer atomic: a relaxed atomicrmw at bufferAtomicScope (native on
 // AMDGPU/NVPTX, locked on CPU). Vulkan overrides for Device scope + AcquireRelease.
 llvm::Value* LoweringTarget::atomicIntRMW(
-    llvm::IRBuilderBase& b, llvm::Module& /*m*/, AtomicIntOp op,
+    llvm::IRBuilderBase& b, llvm::Module& m, AtomicIntOp op,
     llvm::Value* ptr, llvm::Value* value, bool isSigned, MemoryOrder order) {
     return b.CreateAtomicRMW(atomicIntBinOp(op, isSigned), ptr, value,
                              llvm::MaybeAlign(),
                              toAtomicOrdering(order,
-                                              llvm::AtomicOrdering::Monotonic));
+                                              llvm::AtomicOrdering::Monotonic),
+                             bufferAtomicScope(m, ptr));
 }
 
 // Default compare-exchange: a cmpxchg at `order` (Default Ã¢ÂÂ relaxed); returns the
 // OLD value (element 0 of the {value, success} aggregate). Vulkan overrides scope.
 llvm::Value* LoweringTarget::atomicCompareExchange(
-    llvm::IRBuilderBase& b, llvm::Module& /*m*/, llvm::Value* ptr,
+    llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
     llvm::Value* expected, llvm::Value* desired, MemoryOrder order) {
     llvm::AtomicOrdering success =
         toAtomicOrdering(order, llvm::AtomicOrdering::Monotonic);
     llvm::Value* pair = b.CreateAtomicCmpXchg(
         ptr, expected, desired, llvm::MaybeAlign(),
-        success, casFailureOrdering(success));
+        success, casFailureOrdering(success), bufferAtomicScope(m, ptr));
     return b.CreateExtractValue(pair, 0, "atomic.cas.old");
 }
 

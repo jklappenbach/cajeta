@@ -84,6 +84,15 @@ public:
             llvm::Type::getInt32Ty(m.getContext()), 0)});
     }
 
+    // A KernelBuffer atomic reaches the device ("device"), a shared array's its
+    // workgroup ("block"), as CUDA and HIP scope atomicAdd. LLVM's default would be
+    // system scope, which on NVIDIA orders against the host as well and cost the
+    // look-back scan 2.5x. kernel-atomic-scope §2.1.
+    llvm::SyncScope::ID bufferAtomicScope(llvm::Module& m, llvm::Value* ptr) override {
+        const bool shared = ptr->getType()->getPointerAddressSpace() == 3;
+        return m.getContext().getOrInsertSyncScopeID(shared ? "block" : "device");
+    }
+
     void memoryFence(llvm::IRBuilderBase& b, llvm::Module& m, FenceScope scope,
                      MemoryOrder /*order*/ = MemoryOrder::Default) override {
         // membar has no weaker variant, so the order argument changes nothing.

@@ -132,6 +132,15 @@ public:
         acq->setMetadata(llvm::LLVMContext::MD_mmra, local);
     }
 
+    // A KernelBuffer atomic reaches the device ("agent"), a shared array's its
+    // workgroup ("workgroup"), as CUDA and HIP scope atomicAdd. LLVM's default would be
+    // system scope, which on NVIDIA orders against the host as well and cost the
+    // look-back scan 2.5x. kernel-atomic-scope §2.1.
+    llvm::SyncScope::ID bufferAtomicScope(llvm::Module& m, llvm::Value* ptr) override {
+        const bool shared = ptr->getType()->getPointerAddressSpace() == 3;
+        return m.getContext().getOrInsertSyncScopeID(shared ? "workgroup" : "agent");
+    }
+
     // A scoped fence at `order`, no s_barrier and so no rendezvous: the sync-scope name
     // sets the reach ("workgroup" vs "agent"), and Default/Relaxed becomes AcqRel.
     void memoryFence(llvm::IRBuilderBase& b, llvm::Module& m, FenceScope scope,

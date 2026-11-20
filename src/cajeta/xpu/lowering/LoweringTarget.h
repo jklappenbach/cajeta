@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/IR/LLVMContext.h"         // llvm::SyncScope (bufferAtomicScope)
 #include "llvm/Support/AtomicOrdering.h"   // llvm::AtomicOrdering (atomic/fence seams)
 
 namespace llvm {
@@ -498,9 +499,16 @@ namespace xpu {
         // table's high half, which makes the high permute and the half-select dead.
         static bool masksOffHighHalf(llvm::Value* indices);
 
+        // The sync scope of a KernelBuffer or shared-array atomic at `ptr`. The
+        // default is system scope (the cpu backend has one observer set). nvptx and
+        // amdgpu return their device scope, and their workgroup scope for shared
+        // storage (addrspace 3); Vulkan picks its own in its overrides.
+        // kernel-atomic-scope §2.1.
+        virtual llvm::SyncScope::ID bufferAtomicScope(llvm::Module& m, llvm::Value* ptr);
+
         // --- float atomics -----------------------------------------------------
         // `Buffer<float32>.atomic{Add,Min,Max}(i, v)` — an atomic RMW returning the
-        // OLD value. DEFAULT monotonic/system; Vulkan Device + AcquireRelease.
+        // OLD value. DEFAULT monotonic at bufferAtomicScope; Vulkan Device + AcquireRelease.
         enum class AtomicFloatOp { Add, Min, Max };
         virtual llvm::Value* atomicFloatRMW(
             llvm::IRBuilderBase& b, llvm::Module& m, AtomicFloatOp op,
@@ -509,7 +517,7 @@ namespace xpu {
 
         // --- integer atomics (core SPIR-V) ------------------------------------
         // `Buffer<int32|uint32>.atomic{Add,...,Exchange}(i, v)` — RMW returning the
-        // OLD value; `isSigned` picks S vs U min/max. DEFAULT monotonic/system.
+        // OLD value; `isSigned` picks S vs U min/max. DEFAULT monotonic at bufferAtomicScope.
         enum class AtomicIntOp { Add, Sub, Min, Max, And, Or, Xor, Exchange };
         virtual llvm::Value* atomicIntRMW(
             llvm::IRBuilderBase& b, llvm::Module& m, AtomicIntOp op,
