@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 0.54.2 (2026-11-20)
+
+- **Kernel atomics on NVIDIA and AMD reach the device, not the whole system.** Every `KernelBuffer` atomic on nvptx and amdgpu was emitted at LLVM's default system scope, so on cuda it was an `atom.*.sys`, ordered against the host and every peer device. That broke the atomics spec's own promise of device scope, which Vulkan already kept. A `KernelBuffer` atomic is now device-scoped (`.gpu` on NVIDIA, `agent` on AMD) and a `shared` array's atomic is workgroup-scoped, as CUDA's and HIP's `atomicAdd` are. On an RTX 4090 the decoupled look-back scan went from 1490 to 538 us, ahead of CUB's 594, and its look-back now costs nothing (`XpuAtomicScope`, kernel-atomic-scope 1).
+
+- **A kernel atomic can name its scope.** `MemoryScope { Workgroup, Device, System }` is an optional, compile-time-constant argument after the `MemoryOrder`: `flag.atomicExchange(0, 1, MemoryOrder.Release, MemoryScope.System)`. System scope is for a kernel that signals the host through a `Pinned` or `Unified` buffer while it is still running, and on the 4090 the host sees such a flag mid-launch. Vulkan has no wider shader scope than Device, so `System` lowers to Device there. A scope that is not a constant is refused by name (`XpuAtomicScope`, kernel-atomic-scope 2).
+
+- **Vulkan kernel buffers stay in device memory on a discrete GPU.** A buffer went to host-visible memory first, and on a card without Resizable BAR that heap is about 256 MB, so larger buffers fell back to system RAM over PCIe: the scan at 2^26 took 281 ms on an RTX 4090's Vulkan. A buffer that cannot get mappable device memory now takes unmapped device-local memory, written through staging, and the same scan takes 1.66 ms (gpu-kernel-parity 16.2.4.1).
+
+- **An aligned 32-bit `vload<4>` or `vstore` on Vulkan is one 16-byte access.** It was four 4-byte accesses, so a thread's 16 consecutive values scattered across the warp. With the alignment stated, the scan on the 4090's Vulkan went from 1659 to 865 us (gpu-kernel-parity 16.2.4.3).
+
+- **A Vulkan kernel declaring `@Occupancy(maxWaves = N)` stages N tiles.** Its per-subgroup staging held 32 tiles, one per subgroup of 1024 threads, so cajeta-llm's `MwTile_64_64` carried 80 KB of staging. Four of its tile kernels now fit and run (gpu-kernel-parity 16.2.3).
+
+- **Multi-block cpu kernel launches are back to their 0.53 cost.** The cpu pool's four per-launch words had no alignment of their own, so a larger static table in 0.54.0 moved them across two cache lines, and launches of more than one block ran 14 to 20% slower on Zen 5. They now share one 64-byte line wherever the struct lands.
+
+- **`Device.variantBase(name)` names the kernel a compiler variant stands for.** It returns `gemm` for `gemm$pt`, `gemm$d2` or `gemm$v8$pt`, and an empty string for a name that is not a variant, so a library's kernel census no longer parses the suffixes itself (gpu-kernel-parity 14.2.5).
+
 ## 0.54.1 (2026-11-19)
 
 - **Vulkan builds of large programs no longer crash the compiler.** A cooperative-matrix tile kernel's virtual-wave variant (`$v8`, `$v16`, new in 0.54.0) could leave a `@Device` helper that reads the lane holding a pointer into a function the build had already erased. A release compiler has no assertions to catch that, so it surfaced later as heap corruption or a segfault, depending on address layout: about 2 of 3 cajeta-llm Vulkan test builds crashed on 0.54.0. The variant's build now inlines every helper that reads the lane before it splits the kernel, and a variant that still has an outside use fails cleanly instead (`SpirvVirtualHelperLaneTests`, gpu-kernel-parity 18.3.3).
