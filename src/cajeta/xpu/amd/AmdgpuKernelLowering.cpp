@@ -136,8 +136,14 @@ public:
     // workgroup ("workgroup"), as CUDA and HIP scope atomicAdd. LLVM's default would be
     // system scope, which on NVIDIA orders against the host as well and cost the
     // look-back scan 2.5x. kernel-atomic-scope §2.1.
-    llvm::SyncScope::ID bufferAtomicScope(llvm::Module& m, llvm::Value* ptr) override {
-        const bool shared = ptr->getType()->getPointerAddressSpace() == 3;
+    // A named MemoryScope overrides it: System is LLVM's system scope, the one
+    // form that reaches the host mid-launch (§2.2).
+    llvm::SyncScope::ID bufferAtomicScope(llvm::Module& m, llvm::Value* ptr,
+                                          MemoryScope scope = MemoryScope::Default) override {
+        if (scope == MemoryScope::System) return llvm::SyncScope::System;
+        const bool shared = scope == MemoryScope::Workgroup ||
+                            (scope == MemoryScope::Default &&
+                             ptr->getType()->getPointerAddressSpace() == 3);
         return m.getContext().getOrInsertSyncScopeID(shared ? "workgroup" : "agent");
     }
 

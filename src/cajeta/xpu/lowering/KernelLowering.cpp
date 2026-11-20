@@ -4131,11 +4131,12 @@ private:
             const auto& args = mc->getParameters();
             const bool isCas = (name == "atomicCompareExchange");
             const size_t baseArgs = isCas ? 3 : 2;
-            const bool hasOrder = (args.size() == baseArgs + 1);
+            const bool hasScope = (args.size() == baseArgs + 2);
+            const bool hasOrder = (args.size() == baseArgs + 1) || hasScope;
             if (args.size() != baseArgs && !hasOrder)
                 unsupported("Buffer." + name +
-                            (isCas ? " expects (index, expected, desired[, order])"
-                                   : " expects (index, value[, order])"));
+                            (isCas ? " expects (index, expected, desired[, order[, scope]])"
+                                   : " expects (index, value[, order[, scope]])"));
             auto parseOrder = [&](const auto& e) -> LoweringTarget::MemoryOrder {
                 auto* ci = llvm::dyn_cast<llvm::ConstantInt>(lowerExpr(e));
                 if (!ci)
@@ -4148,6 +4149,18 @@ private:
             LoweringTarget::MemoryOrder order =
                 hasOrder ? parseOrder(args[baseArgs].expression)
                          : LoweringTarget::MemoryOrder::Default;
+            LoweringTarget::MemoryScope scope = LoweringTarget::MemoryScope::Default;
+            if (hasScope) {
+                auto* ci = llvm::dyn_cast<llvm::ConstantInt>(
+                    lowerExpr(args[baseArgs + 1].expression));
+                if (!ci)
+                    unsupported("Buffer." + name + ": the scope must be a compile-time "
+                                "MemoryScope constant (MemoryScope.Workgroup, .Device "
+                                "or .System)");
+                uint64_t k = ci->getZExtValue();
+                if (k > 2) unsupported("Buffer." + name + ": invalid MemoryScope value");
+                scope = static_cast<LoweringTarget::MemoryScope>((int) k);
+            }
             llvm::Type* elemTy = bufferElems[recv];
             const bool elemSigned =
                 bufferElemSigned.count(recv) ? bufferElemSigned[recv] : true;
@@ -4171,7 +4184,7 @@ private:
                 llvm::Value* desired =
                     coerceTo(lowerExpr(args[2].expression), elemTy);
                 return target.atomicCompareExchange(builder, mod, ptr, expected,
-                                                    desired, order);
+                                                    desired, order, scope);
             }
             llvm::Value* val = coerceTo(lowerExpr(args[1].expression), elemTy);
             if (elemIsFloat) {
@@ -4182,7 +4195,7 @@ private:
                       : name == "atomicMin" ? LoweringTarget::AtomicFloatOp::Min
                                             : LoweringTarget::AtomicFloatOp::Max;
                     return target.atomicFloatRMW(builder, mod, op, ptr, val,
-                                                 order);
+                                                 order, scope);
                 }
                 unsupported("Buffer." + name + " is not supported on float32 "
                             "buffers (float atomics: atomicAdd/atomicMin/"
@@ -4199,7 +4212,7 @@ private:
                   : name == "atomicXor"  ? LoweringTarget::AtomicIntOp::Xor
                                          : LoweringTarget::AtomicIntOp::Exchange;
                 return target.atomicIntRMW(builder, mod, op, ptr, val,
-                                           elemSigned, order);
+                                           elemSigned, order, scope);
             }
             unsupported("Buffer." + name + " requires a float32, int32/uint32, "
                         "or int64/uint64 buffer");
@@ -9025,7 +9038,7 @@ llvm::Value* LoweringTarget::specConstantF32(llvm::IRBuilderBase& b,
 // lock/cmpxchg on CPU. Vulkan overrides (Device scope + AcquireRelease default).
 llvm::Value* LoweringTarget::atomicFloatRMW(
     llvm::IRBuilderBase& b, llvm::Module& m, AtomicFloatOp op,
-    llvm::Value* ptr, llvm::Value* value, MemoryOrder order) {
+    llvm::Value* ptr, llvm::Value* value, MemoryOrder order, MemoryScope scope) {
     llvm::AtomicRMWInst::BinOp binop =
         op == AtomicFloatOp::Add ? llvm::AtomicRMWInst::FAdd
       : op == AtomicFloatOp::Min ? llvm::AtomicRMWInst::FMin
@@ -9033,7 +9046,7 @@ llvm::Value* LoweringTarget::atomicFloatRMW(
     return b.CreateAtomicRMW(binop, ptr, value, llvm::MaybeAlign(),
                              toAtomicOrdering(order,
                                               llvm::AtomicOrdering::Monotonic),
-                             bufferAtomicScope(m, ptr));
+                             bufferAtomicScope(m, ptr, scope));
 }
 
 // Map an AtomicIntOp (+ signedness for min/max) to the LLVM atomicrmw BinOp. The
@@ -9059,7 +9072,8 @@ static llvm::AtomicRMWInst::BinOp atomicIntBinOp(
 // The default atomic scope: system, which the cpu backend's single observer set
 // makes free. GPU backends override with their device and workgroup scopes.
 llvm::SyncScope::ID LoweringTarget::bufferAtomicScope(llvm::Module& /*m*/,
-                                                      llvm::Value* /*ptr*/) {
+                                                      llvm::Value* /*ptr*/,
+                                                      MemoryScope /*scope*/) {
     return llvm::SyncScope::System;
 }
 
@@ -9067,24 +9081,25 @@ llvm::SyncScope::ID LoweringTarget::bufferAtomicScope(llvm::Module& /*m*/,
 // AMDGPU/NVPTX, locked on CPU). Vulkan overrides for Device scope + AcquireRelease.
 llvm::Value* LoweringTarget::atomicIntRMW(
     llvm::IRBuilderBase& b, llvm::Module& m, AtomicIntOp op,
-    llvm::Value* ptr, llvm::Value* value, bool isSigned, MemoryOrder order) {
+    llvm::Value* ptr, llvm::Value* value, bool isSigned, MemoryOrder order,
+    MemoryScope scope) {
     return b.CreateAtomicRMW(atomicIntBinOp(op, isSigned), ptr, value,
                              llvm::MaybeAlign(),
                              toAtomicOrdering(order,
                                               llvm::AtomicOrdering::Monotonic),
-                             bufferAtomicScope(m, ptr));
+                             bufferAtomicScope(m, ptr, scope));
 }
 
 // Default compare-exchange: a cmpxchg at `order` (Default Ã¢ÂÂ relaxed); returns the
 // OLD value (element 0 of the {value, success} aggregate). Vulkan overrides scope.
 llvm::Value* LoweringTarget::atomicCompareExchange(
     llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
-    llvm::Value* expected, llvm::Value* desired, MemoryOrder order) {
+    llvm::Value* expected, llvm::Value* desired, MemoryOrder order, MemoryScope scope) {
     llvm::AtomicOrdering success =
         toAtomicOrdering(order, llvm::AtomicOrdering::Monotonic);
     llvm::Value* pair = b.CreateAtomicCmpXchg(
         ptr, expected, desired, llvm::MaybeAlign(),
-        success, casFailureOrdering(success), bufferAtomicScope(m, ptr));
+        success, casFailureOrdering(success), bufferAtomicScope(m, ptr, scope));
     return b.CreateExtractValue(pair, 0, "atomic.cas.old");
 }
 

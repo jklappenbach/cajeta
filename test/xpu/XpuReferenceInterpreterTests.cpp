@@ -44,6 +44,8 @@ import cajeta.xpu.Group;
 import cajeta.xpu.GroupOp;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelThread;
+import cajeta.xpu.MemoryOrder;
+import cajeta.xpu.MemoryScope;
 import cajeta.xpu.Shared;
 import cajeta.xpu.Wave;
 import cajeta.xpu.WaveVector;
@@ -872,6 +874,29 @@ TEST(XpuReferenceInterpreter, atomicsMatchTheCpuBackend) {
     // Integer atomics commute, so any order gives the same answer.
     EXPECT_EQ(compareOn<int32_t>(p, ins, 0, shape(2, 64)), "");
     EXPECT_EQ(compareOn<uint32_t>(p, ins, 1, shape(2, 64)), "");
+}
+
+// kernel-atomic-scope 2.1.3: the interpreter accepts a trailing MemoryScope, which
+// changes nothing for one work-item at a time.
+TEST(XpuReferenceInterpreter, scopedAtomicsMatchTheCpuBackend) {
+    Pair p(R"CJ(
+    @Kernel
+    public static void refScoped(KernelBuffer<int32> hist, KernelBuffer<int32> x) {
+        uint32 g = KernelThread.globalIdX();
+        int32 v = x[g];
+        hist.atomicAdd((uint32) (v & 7), 1, MemoryOrder.Relaxed, MemoryScope.Device);
+        hist.atomicMax(8, v, MemoryOrder.AcqRel, MemoryScope.System);
+        hist.atomicCompareExchange(9, 0, v, MemoryOrder.AcqRel, MemoryScope.Workgroup);
+    }
+)CJ", "refScoped");
+    const uint32_t N = 128;
+    std::vector<int32_t> x(N);
+    for (uint32_t i = 0; i < N; ++i) x[i] = (int32_t) (i * 2654435761u) >> 9;
+    std::vector<int32_t> hist(10, 0);
+    hist[8] = INT32_MIN;
+    std::vector<In> ins = {buffer(hist), buffer(x)};
+    // The compare-exchange's winner depends on order, so only the commuting cells.
+    EXPECT_EQ(compareOn<int32_t>(p, ins, 0, shape(1, 1)), "");
 }
 
 // Found by the interpreter (Unit 1): a lane of an unsigned vector local,

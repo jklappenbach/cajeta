@@ -355,3 +355,214 @@ TEST(XpuAtomicScopeDeviceTests, valuesHoldOnVulkan) {
     if (!cajeta::xpu::test::vulkanAvailable()) GTEST_SKIP() << "no Vulkan device";
     valuesHold(cajeta::xpu::Backend::Spirv, "vulkan", true);
 }
+
+// ---- Unit 2 (spec §2.2): a kernel names the scope --------------------------------
+
+namespace {
+
+// One kernel per scope, each with an ordered int add, a float add and a
+// compare-exchange at that scope, so the scope qualifier is printed on every form.
+std::string scopedSource(bool constant) {
+    std::string s = R"CJ(
+package test;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.MemoryOrder;
+import cajeta.xpu.MemoryScope;
+public class S {
+)CJ";
+    for (const char* sc : {"Workgroup", "Device", "System"}) {
+        s += std::string("    @Kernel\n    @Occupancy(maxThreads = 64)\n    public static void at") + sc +
+             "(KernelBuffer<int32> b, KernelBuffer<float32> f) {\n"
+             "        b.atomicAdd(0, 1, MemoryOrder.AcqRel, MemoryScope." + sc + ");\n"
+             "        f.atomicAdd(0, 1.0f, MemoryOrder.AcqRel, MemoryScope." + sc + ");\n"
+             "        b.atomicCompareExchange(1, 0, 1, MemoryOrder.AcqRel, MemoryScope." + sc + ");\n"
+             "    }\n";
+    }
+    if (!constant)
+        s += "    @Kernel\n    @Occupancy(maxThreads = 64)\n"
+             "    public static void notConstant(KernelBuffer<int32> b) {\n"
+             "        MemoryScope sc = MemoryScope.System;\n"
+             "        b.atomicAdd(0, 1, MemoryOrder.Relaxed, sc);\n"
+             "    }\n";
+    return s + "}\n";
+}
+
+} // namespace
+
+// plan 2.1.1: System is .sys, Workgroup .cta and Device .gpu on nvptx.
+TEST(XpuAtomicScope, nvptxHonoursANamedScope) {
+    using namespace cajeta::xpu::probe;
+    const std::string src = scopedSource(true);
+    const struct { const char* kernel; const char* want; } wants[] = {
+        {"atWorkgroup", ".cta"}, {"atDevice", ".gpu"}, {"atSystem", ".sys"}};
+    for (const auto& w : wants) {
+        Lowered l = lowerForNvptx(src, w.kernel, "test.S");
+        ASSERT_TRUE(l.ok) << w.kernel << ": " << l.why;
+        std::vector<std::string> atoms = ptxAtomics(l.ptx);
+        EXPECT_GE(atoms.size(), 3u) << w.kernel << "\n" << l.ptx;
+        for (const std::string& a : atoms)
+            EXPECT_NE(a.find(w.want), std::string::npos) << w.kernel << " wants " << w.want << ": " << a;
+    }
+}
+
+// plan 2.1.1: amdgpu's sync scopes, System being LLVM's default (no syncscope).
+TEST(XpuAtomicScope, amdgpuHonoursANamedScope) {
+    using namespace cajeta::xpu::probe;
+    const std::string src = scopedSource(true);
+    for (const char* arch : {"gfx1151", "gfx942"}) {
+        const struct { const char* kernel; const char* want; } wants[] = {
+            {"atWorkgroup", "syncscope(\"workgroup\")"}, {"atDevice", "syncscope(\"agent\")"},
+            {"atSystem", nullptr}};
+        for (const auto& w : wants) {
+            Lowered l = lowerForAmdgpu(src, w.kernel, "test.S", arch);
+            ASSERT_TRUE(l.ok) << w.kernel << " on " << arch << ": " << l.why;
+            std::vector<std::string> atoms = irAtomics(l.ir);
+            EXPECT_GE(atoms.size(), 2u) << w.kernel << " on " << arch << "\n" << l.ir;
+            for (const std::string& a : atoms) {
+                if (w.want)
+                    EXPECT_NE(a.find(w.want), std::string::npos) << w.kernel << " on " << arch << ": " << a;
+                else
+                    EXPECT_EQ(a.find("syncscope("), std::string::npos) << w.kernel << " on " << arch << ": " << a;
+            }
+        }
+    }
+}
+
+// plan 2.1.3: a scope that isn't a compile-time constant is refused, naming the method.
+TEST(XpuAtomicScope, aScopeThatIsNotAConstantIsRefusedByName) {
+    using namespace cajeta::xpu::probe;
+    Lowered l = lowerForNvptx(scopedSource(false), "notConstant", "test.S");
+    EXPECT_FALSE(l.ok);
+    EXPECT_NE(l.why.find("atomicAdd"), std::string::npos) << l.why;
+    EXPECT_NE(l.why.find("MemoryScope"), std::string::npos) << l.why;
+}
+
+namespace {
+
+// plan 2.1.2: the kernel publishes a pinned flag at system scope and the host sees
+// it while the launch is still running. (The reverse, a kernel spinning on a host
+// write to pinned memory, never saw it on Phoenix under WSL2, 2026-11-20.)
+// Also the scoped kernels' values on any backend.
+const char* kHandshakeSource = R"CJ(
+package test;
+import cajeta.time.Clock;
+import cajeta.xpu.Event;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.MemoryKind;
+import cajeta.xpu.MemoryOrder;
+import cajeta.xpu.MemoryScope;
+public class H {
+    // Publishes the flag at system scope, then stays running about a second of
+    // its own clock, so the host can see the flag while the launch is live.
+    @Kernel
+    @Occupancy(maxThreads = 32)
+    public static void signal(KernelBuffer<int32> ready, KernelBuffer<int64> out) {
+        if (KernelThread.globalIdX() == 0) {
+            ready.atomicExchange(0, 1, MemoryOrder.Release, MemoryScope.System);
+            uint64 t0 = KernelThread.clock();
+            uint64 now = t0;
+            while (now - t0 < 2000000000L) {
+                now = KernelThread.clock();
+            }
+            out[0] = (int64) (now - t0);
+        }
+    }
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void scoped(KernelBuffer<int32> b, KernelBuffer<float32> f) {
+        b.atomicAdd(0, 1, MemoryOrder.Relaxed, MemoryScope.Device);
+        b.atomicAdd(1, 1, MemoryOrder.AcqRel, MemoryScope.System);
+        b.atomicAdd(2, 1, MemoryOrder.Relaxed, MemoryScope.Workgroup);
+        f.atomicAdd(0, 1.0f, MemoryOrder.Relaxed, MemoryScope.System);
+    }
+
+    // 1 when the host saw the kernel's flag while the launch's event still read
+    // not-done; -1 when the flag never showed before the launch ended, -2 when it
+    // only showed after.
+    public static int32 handshake() {
+        // allocate(kind), not a (count, kind) constructor: none exists, and
+        // `KernelBuffer(1, MemoryKind.Pinned)` binds the (handle, count) form.
+        KernelBuffer<int32> ready = heap KernelBuffer<int32>(0, 1);
+        ready.allocate(MemoryKind.Pinned);
+        KernelBuffer<int64> out = heap KernelBuffer<int64>(1);
+        int32[] h = heap int32[1];
+        ready.hostStore(h);
+        KernelStream s #= KernelStream.current();
+        signal.launch(s, grid: [1], block: [32])(ready, out);
+        Event e #= Event.create();
+        e.recordOn(s);
+        int64 deadline = Clock.nanoTime() + 20000000000L;
+        int32 result = -1;
+        while (result == -1 && Clock.nanoTime() < deadline) {
+            boolean done = e.query();
+            ready.hostLoad(h);
+            if (h[0] == 1) {
+                result = done ? -2 : 1;
+            } else if (done) {
+                deadline = 0L;
+            }
+        }
+        s.sync();
+        return result;
+    }
+
+    // 1 when 64 x 256 adds at each scope all reach 16384.
+    public static int32 scopedValues() {
+        KernelBuffer<int32> b = heap KernelBuffer<int32>(3);
+        KernelBuffer<float32> f = heap KernelBuffer<float32>(1);
+        int32[] hb = heap int32[3];
+        float32[] hf = heap float32[1];
+        b.upload(hb);
+        f.upload(hf);
+        KernelStream s #= KernelStream.current();
+        scoped.launch(s, grid: [64], block: [256])(b, f);
+        s.sync();
+        b.download(hb);
+        f.download(hf);
+        if (hb[0] != 16384 || hb[1] != 16384) { return -1; }
+        if (hf[0] != 16384.0f) { return -3; }
+        return 1;
+    }
+}
+)CJ";
+
+int32_t runH(cajeta::xpu::Backend be, const char* fn) {
+    CajetaJit::Options o;
+    o.xpuBackends = {be};
+    auto jit = CajetaJit::compile(kHandshakeSource, "test.H", o);
+    if (!jit) return -100;
+    auto f = jit->lookup<int32_t (*)()>(fn);
+    return f ? f() : -101;
+}
+
+} // namespace
+
+// The workgroup-scoped counter (b[2]) is not checked across workgroups: 64 groups
+// each own their adds, and the sum is only promised at device scope or wider.
+TEST(XpuAtomicScope, scopedAtomicsKeepTheirValuesOnCpu) {
+    EXPECT_EQ(1, runH(cajeta::xpu::Backend::Cpu, "scopedValues"));
+}
+
+TEST(XpuAtomicScopeDeviceTests, scopedAtomicsKeepTheirValuesOnNvptx) {
+    if (!cajeta::xpu::test::cudaAvailable()) GTEST_SKIP() << "no CUDA device";
+    EXPECT_EQ(1, runH(cajeta::xpu::Backend::Nvptx, "scopedValues"));
+}
+
+TEST(XpuAtomicScopeDeviceTests, scopedAtomicsKeepTheirValuesOnAmdgpu) {
+    if (!cajeta::xpu::test::hipAvailable()) GTEST_SKIP() << "no HIP device";
+    EXPECT_EQ(1, runH(cajeta::xpu::Backend::Amdgpu, "scopedValues"));
+}
+
+// Vulkan has no shader scope wider than Device that drivers accept, so System
+// lowers to Device there (spec §2.2) and the kernel still runs.
+TEST(XpuAtomicScopeDeviceTests, scopedAtomicsKeepTheirValuesOnVulkan) {
+    if (!cajeta::xpu::test::vulkanAvailable()) GTEST_SKIP() << "no Vulkan device";
+    EXPECT_EQ(1, runH(cajeta::xpu::Backend::Spirv, "scopedValues"));
+}
+
+TEST(XpuAtomicScopeDeviceTests, aSystemScopedFlagReachesTheHostMidLaunchOnNvptx) {
+    if (!cajeta::xpu::test::cudaAvailable()) GTEST_SKIP() << "no CUDA device";
+    EXPECT_EQ(1, runH(cajeta::xpu::Backend::Nvptx, "handshake"));
+}

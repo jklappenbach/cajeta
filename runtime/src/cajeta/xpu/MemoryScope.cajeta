@@ -1,0 +1,34 @@
+package cajeta.xpu;
+
+/**
+ * The reach of a kernel-side atomic: which observers its ordering and its result are
+ * published to. An optional, **compile-time-constant** trailing argument after the
+ * atomic's {@link MemoryOrder}: `flag.atomicExchange(0, 1, MemoryOrder.Release,
+ * MemoryScope.System)`. Omitting it keeps the storage's own scope, which is the
+ * right one almost always: {@link #Device} for a {@link KernelBuffer}, {@link
+ * #Workgroup} for a `shared` array.
+ *
+ * Like {@link MemoryOrder}, the **ordinal is the contract**: the kernel lowerer maps
+ * it to an LLVM sync scope. Do not reorder.
+ *
+ * The scopes (narrowest → widest):
+ *   - {@link #Workgroup} — the work-items of one workgroup. For a buffer only one
+ *     workgroup touches.
+ *   - {@link #Device} — every work-item on the device. The default for a
+ *     `KernelBuffer` atomic, as CUDA's and HIP's `atomicAdd` are.
+ *   - {@link #System} — the host and every peer device as well. Needed in one case
+ *     only: a kernel that signals the host through a `MemoryKind.Pinned` or
+ *     `MemoryKind.Unified` buffer while it is still running. It is CUDA's
+ *     `atomicAdd_system`. A host that reads after `sync()` needs nothing more,
+ *     because the kernel boundary already publishes what the launch wrote.
+ *
+ * BACKENDS. nvptx emits `.cta`, `.gpu` and `.sys`, amdgpu the `workgroup`, `agent`
+ * and system sync scopes. Vulkan accepts no shader scope wider than Device, so
+ * there `System` lowers to Device. The cpu backend has one observer set, so the
+ * scope changes nothing there.
+ */
+public enum MemoryScope {
+    Workgroup, // 0
+    Device,    // 1
+    System     // 2
+}

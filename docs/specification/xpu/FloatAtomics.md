@@ -38,7 +38,7 @@ reductions and in ML for gradient accumulation and soft-assignment counts.
 | Backend | Lowering |
 |---|---|
 | **Vulkan** (RADV, etc.) | `OpAtomicFAddEXT` / `OpAtomicFMinEXT` / `OpAtomicFMaxEXT` under `SPV_EXT_shader_atomic_float_add` / `_min_max`, with **Device scope + AcquireRelease** memory order. |
-| **AMD / NVIDIA** | the native global FP atomic (`global_atomic_add_f32`, `red.add.f32`), relaxed system scope. |
+| **AMD / NVIDIA** | the native global FP atomic (`global_atomic_add_f32`, `red.add.f32`), relaxed, at device scope unless the kernel names a `MemoryScope` ([IntegerAtomics](IntegerAtomics.md#memory-scope-memoryscope)). |
 | **CPU** | `atomicrmw` — a lock/`cmpxchg` loop where the hardware lacks a native FP atomic. |
 
 The Vulkan memory model is stricter than the others. It rejects CrossDevice

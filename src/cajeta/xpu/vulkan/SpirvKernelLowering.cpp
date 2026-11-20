@@ -611,13 +611,15 @@ public:
     }
 
     // Atomic memory scope from the pointer's storage class: Workgroup for `shared`
-    // (addrspace 3), Device for a StorageBuffer. Vulkan rejects CrossDevice.
-    llvm::SyncScope::ID atomicScope(llvm::Module& m, llvm::Value* ptr) {
+    // (addrspace 3), Device for a StorageBuffer. Vulkan rejects CrossDevice, so a
+    // named MemoryScope.System lowers to Device (kernel-atomic-scope §2.2).
+    llvm::SyncScope::ID bufferAtomicScope(llvm::Module& m, llvm::Value* ptr,
+                                          MemoryScope scope = MemoryScope::Default) override {
         constexpr unsigned kSharedAS = 3;   // matches lowerSharedDecl's addrspace
-        const char* name =
-            ptr->getType()->getPointerAddressSpace() == kSharedAS ? "workgroup"
-                                                                  : "device";
-        return m.getContext().getOrInsertSyncScopeID(name);
+        const bool shared = scope == MemoryScope::Workgroup ||
+                            (scope == MemoryScope::Default &&
+                             ptr->getType()->getPointerAddressSpace() == kSharedAS);
+        return m.getContext().getOrInsertSyncScopeID(shared ? "workgroup" : "device");
     }
 
     // Vulkan clamp for a requested order: a device-scope atomic with Monotonic or
@@ -634,7 +636,8 @@ public:
     llvm::Value* atomicFloatRMW(llvm::IRBuilderBase& b, llvm::Module& m,
                                 AtomicFloatOp op, llvm::Value* ptr,
                                 llvm::Value* value,
-                                MemoryOrder order = MemoryOrder::Default) override {
+                                MemoryOrder order = MemoryOrder::Default,
+                                MemoryScope scope = MemoryScope::Default) override {
         llvm::AtomicRMWInst::BinOp binop =
             op == AtomicFloatOp::Add ? llvm::AtomicRMWInst::FAdd
           : op == AtomicFloatOp::Min ? llvm::AtomicRMWInst::FMin
@@ -643,14 +646,15 @@ public:
             binop, ptr, value, llvm::MaybeAlign(),
             vkClamp(toAtomicOrdering(order,
                                           llvm::AtomicOrdering::AcquireRelease)),
-            atomicScope(m, ptr));
+            bufferAtomicScope(m, ptr, scope));
     }
 
     // --- integer atomics (core SPIR-V): same memory-model constraint as floats --
     llvm::Value* atomicIntRMW(llvm::IRBuilderBase& b, llvm::Module& m,
                               AtomicIntOp op, llvm::Value* ptr,
                               llvm::Value* value, bool isSigned,
-                              MemoryOrder order = MemoryOrder::Default) override {
+                              MemoryOrder order = MemoryOrder::Default,
+                              MemoryScope scope = MemoryScope::Default) override {
         llvm::AtomicRMWInst::BinOp binop;
         switch (op) {
             case AtomicIntOp::Add:      binop = llvm::AtomicRMWInst::Add; break;
@@ -671,7 +675,7 @@ public:
             binop, ptr, value, llvm::MaybeAlign(),
             vkClamp(toAtomicOrdering(order,
                                         llvm::AtomicOrdering::AcquireRelease)),
-            atomicScope(m, ptr));
+            bufferAtomicScope(m, ptr, scope));
     }
 
     // Compare-exchange -> OpAtomicCompareExchange with the storage-matched scope:
@@ -679,13 +683,14 @@ public:
     llvm::Value* atomicCompareExchange(llvm::IRBuilderBase& b, llvm::Module& m,
                                        llvm::Value* ptr, llvm::Value* expected,
                                        llvm::Value* desired,
-                                       MemoryOrder order = MemoryOrder::Default)
+                                       MemoryOrder order = MemoryOrder::Default,
+                                       MemoryScope scope = MemoryScope::Default)
                                        override {
         llvm::AtomicOrdering success = vkClamp(
             toAtomicOrdering(order, llvm::AtomicOrdering::AcquireRelease));
         llvm::Value* pair = b.CreateAtomicCmpXchg(
             ptr, expected, desired, llvm::MaybeAlign(),
-            success, casFailureOrdering(success), atomicScope(m, ptr));
+            success, casFailureOrdering(success), bufferAtomicScope(m, ptr, scope));
         return b.CreateExtractValue(pair, 0, "atomic.cas.old");
     }
 
@@ -1161,7 +1166,7 @@ public:
         auto* cas = b.CreateAtomicCmpXchg(w0, llvm::ConstantInt::get(i32, 0),
                                           b.CreateTrunc(info, i32), llvm::MaybeAlign(4),
                                           success, casFailureOrdering(success),
-                                          atomicScope(m, w0));
+                                          bufferAtomicScope(m, w0));
         llvm::Value* won = b.CreateExtractValue(cas, 1);
         auto* firstBB = llvm::BasicBlock::Create(ctx, "align.first", f);
         auto* doneBB = llvm::BasicBlock::Create(ctx, "align.recorded", f);

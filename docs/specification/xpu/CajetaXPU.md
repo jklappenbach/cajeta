@@ -98,7 +98,10 @@ words or halves. Workgroup memory is declared inside the kernel,
 `Shared<T>`, `Constant`, `Private` and the layout types `Swizzled<T, S>` and
 `BlockPadded<T, Block, Pad>`, which degrade to the identity layout where a
 backend has no swizzle. `Barrier.workgroup()` synchronises a workgroup; `Barrier.shared()` is the same rendezvous ordering only workgroup-shared memory, so a global load issued before it stays in flight (on AMDGPU the fences carry the local address-space annotation; elsewhere it is `workgroup()`).
-Atomics carry a `MemoryOrder`. 64-bit integer atomics are native on CUDA, HIP
+Atomics carry a `MemoryOrder` and reach the device, or the workgroup for a `shared`
+array, unless a trailing `MemoryScope` asks for more. `MemoryScope.System` is for a
+kernel that signals the host through a pinned or unified buffer mid-launch
+([IntegerAtomics](IntegerAtomics.md)). 64-bit integer atomics are native on CUDA, HIP
 and the CPU backend and under `Int64Atomics` on Vulkan, and `Device.supports`
 answers for them.
 

@@ -55,13 +55,14 @@ uint32 old = slot.atomicCompareExchange(0, expected, desired);
 | Backend | Lowering |
 |---|---|
 | **Vulkan** (RADV) | core `OpAtomicIAdd/ISub/SMin/UMin/SMax/UMax/And/Or/Xor/Exchange/CompareExchange`, **Device** scope + **AcquireRelease** (the same memory-model constraint the float path hit — Vulkan rejects CrossDevice scope / SequentiallyConsistent). |
-| **AMD / NVIDIA** | native global `atomicrmw` / `cmpxchg` (the hardware atomic). |
+| **AMD / NVIDIA** | native global `atomicrmw` / `cmpxchg` (the hardware atomic) at device scope: `agent` on AMD, `.gpu` on NVIDIA. |
 | **CPU** | a lock-prefixed atomic / `cmpxchg`. |
 
 The op is just a generic LLVM `atomicrmw` (or `cmpxchg`). The SPIR-V backend
 picks the opcode from the BinOp, and `isSigned` selects `SMin/SMax` or
 `UMin/UMax`. It is lowered on a `LoweringTarget::atomicIntRMW` / `atomicCompareExchange`
-seam, whose default is monotonic system scope and which Vulkan overrides to Device + AcquireRelease.
+seam whose order defaults to monotonic and whose scope comes from
+`LoweringTarget::bufferAtomicScope`. Vulkan overrides both to Device + AcquireRelease.
 
 ## Shared-memory (LDS) atomics
 
@@ -79,8 +80,10 @@ The atomic's memory scope follows the pointer's storage. A `shared` array is
 Workgroup storage (LLVM addrspace 3), so its atomics emit at Workgroup scope
 (`ds_add_u32` on AMD; `OpAtomicIAdd` with Workgroup scope on Vulkan), while a
 global `KernelBuffer<T>` atomic stays at Device scope. The scope is derived from the
-pointer address space, so there is no separate API. This is device-verified on RADV and gfx1151
-(`Xpu*SharedDeviceTests.sharedAtomicCounterRunsOnDevice`).
+pointer address space, so the common case needs no argument. NVIDIA emits a shared
+atomic at `.cta` scope. This is device-verified on RADV and gfx1151
+(`Xpu*SharedDeviceTests.sharedAtomicCounterRunsOnDevice`). A kernel that needs a
+different reach names it with a `MemoryScope`, described below.
 
 ## Memory order (`MemoryOrder`)
 
@@ -107,6 +110,41 @@ the op). So the relaxed-atomic perf win lands on CPU/AMD/NVPTX while Vulkan
 stays correct. This is device-verified with a relaxed-atomic counter (exact count) on
 CPU, RADV and gfx1151, and emit-verified order→ordering on NVPTX. The same surface
 applies to the scoped memory fences (`Barrier.deviceMemory(MemoryOrder.Acquire)`).
+
+## Memory scope (`MemoryScope`)
+
+An atomic reaches the storage's own observers unless the kernel asks for more. A
+`KernelBuffer` atomic is device-scoped and a `shared` array's atomic is
+workgroup-scoped, which is what CUDA's and HIP's `atomicAdd` do. The scope is an
+optional, compile-time-constant argument after the `MemoryOrder`:
+
+```
+flag.atomicExchange(0, 1, MemoryOrder.Release, MemoryScope.System);
+```
+
+`MemoryScope` is `{ Workgroup, Device, System }`. System scope also orders the
+atomic against the host and every peer device, and it is needed in one case. A
+kernel that signals the host through a `MemoryKind.Pinned` or `MemoryKind.Unified`
+buffer while it is still running asks for `System`, the counterpart of CUDA's
+`atomicAdd_system`. A host that reads a result after `sync()` needs no scope at
+all, because the end of the launch already publishes everything it wrote.
+
+| Scope | NVIDIA | AMD | Vulkan | CPU |
+|---|---|---|---|---|
+| default, `KernelBuffer` | `.gpu` | `agent` | Device | one observer set |
+| default, `shared` array | `.cta` | `workgroup` | Workgroup | one observer set |
+| `MemoryScope.Workgroup` | `.cta` | `workgroup` | Workgroup | one observer set |
+| `MemoryScope.Device` | `.gpu` | `agent` | Device | one observer set |
+| `MemoryScope.System` | `.sys` | system | Device | one observer set |
+
+Vulkan accepts no shader scope wider than Device, so `System` lowers to Device
+there. A scope that is not a literal `MemoryScope.X` is a compile error that names
+the method.
+
+The default matters for speed on NVIDIA. Before device scope became the default,
+every cuda `KernelBuffer` atomic was system-scoped, and the bench's decoupled
+look-back scan ran at 1490 us on an RTX 4090. Device-scoped, it runs at 538 us,
+ahead of CUB's 594 (kernel-atomic-scope, 2026-11-20).
 
 > A shared atomic on element 0 surfaced another facet of the same upstream
 > `SPIRVLegalizePointerCast` gap as `atomicCompareExchange`. The element GEP folds

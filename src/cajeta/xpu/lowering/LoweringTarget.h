@@ -58,6 +58,11 @@ namespace xpu {
             Default = -1
         };
 
+        // User-selectable reach of a kernel atomic — ordinals MUST match
+        // cajeta.xpu.MemoryScope; `Default` keeps the storage's own scope (device
+        // for a KernelBuffer, workgroup for a shared array). kernel-atomic-scope §2.2.
+        enum class MemoryScope { Workgroup = 0, Device = 1, System = 2, Default = -1 };
+
         // Map a user MemoryOrder to an LLVM AtomicOrdering, `Default` falling back
         // to `fallback`. The CAS failure ordering is derived per LLVM's rule.
         static llvm::AtomicOrdering toAtomicOrdering(MemoryOrder o,
@@ -499,12 +504,14 @@ namespace xpu {
         // table's high half, which makes the high permute and the half-select dead.
         static bool masksOffHighHalf(llvm::Value* indices);
 
-        // The sync scope of a KernelBuffer or shared-array atomic at `ptr`. The
-        // default is system scope (the cpu backend has one observer set). nvptx and
-        // amdgpu return their device scope, and their workgroup scope for shared
-        // storage (addrspace 3); Vulkan picks its own in its overrides.
-        // kernel-atomic-scope §2.1.
-        virtual llvm::SyncScope::ID bufferAtomicScope(llvm::Module& m, llvm::Value* ptr);
+        // The sync scope of a KernelBuffer or shared-array atomic at `ptr`, at the
+        // scope the kernel named (`Default` when it named none). The default is
+        // system scope (the cpu backend has one observer set). nvptx and amdgpu
+        // return their device scope, and their workgroup scope for shared storage
+        // (addrspace 3); Vulkan has no shader scope wider than Device.
+        // kernel-atomic-scope §2.1, §2.2.
+        virtual llvm::SyncScope::ID bufferAtomicScope(llvm::Module& m, llvm::Value* ptr,
+                                                      MemoryScope scope = MemoryScope::Default);
 
         // --- float atomics -----------------------------------------------------
         // `Buffer<float32>.atomic{Add,Min,Max}(i, v)` — an atomic RMW returning the
@@ -513,7 +520,8 @@ namespace xpu {
         virtual llvm::Value* atomicFloatRMW(
             llvm::IRBuilderBase& b, llvm::Module& m, AtomicFloatOp op,
             llvm::Value* ptr, llvm::Value* value,
-            MemoryOrder order = MemoryOrder::Default);
+            MemoryOrder order = MemoryOrder::Default,
+            MemoryScope scope = MemoryScope::Default);
 
         // --- integer atomics (core SPIR-V) ------------------------------------
         // `Buffer<int32|uint32>.atomic{Add,...,Exchange}(i, v)` — RMW returning the
@@ -522,14 +530,16 @@ namespace xpu {
         virtual llvm::Value* atomicIntRMW(
             llvm::IRBuilderBase& b, llvm::Module& m, AtomicIntOp op,
             llvm::Value* ptr, llvm::Value* value, bool isSigned,
-            MemoryOrder order = MemoryOrder::Default);
+            MemoryOrder order = MemoryOrder::Default,
+            MemoryScope scope = MemoryScope::Default);
 
         // `atomicCompareExchange(i, expected, desired)`: set element `i` to
         // `desired` iff it equals `expected`, returning the OLD value.
         virtual llvm::Value* atomicCompareExchange(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
             llvm::Value* expected, llvm::Value* desired,
-            MemoryOrder order = MemoryOrder::Default);
+            MemoryOrder order = MemoryOrder::Default,
+            MemoryScope scope = MemoryScope::Default);
 
         // --- shader clock ------------------------------------------------------
         // `Thread.clock()` — a free-running 64-bit hardware counter for in-kernel
