@@ -1,6 +1,6 @@
 //
-// SpirvRelaxedAtomicTests — a Relaxed kernel atomic reaches Vulkan as memory semantics 0 under
-// CAJETA_XPU_VK_RELAXED, and as AcquireRelease without it (gpu-kernel-parity 16.2.4.3.2).
+// SpirvRelaxedAtomicTests — a Relaxed kernel atomic reaches Vulkan as memory semantics 0, and as
+// AcquireRelease under CAJETA_XPU_VK_RELAXED=0 (gpu-kernel-parity 16.2.4.3.2).
 //
 #include "gtest/gtest.h"
 
@@ -57,9 +57,9 @@ public class R {
 }
 )CJ";
 
-// CAJETA_XPU_VK_RELAXED for one scope.
+// The default for one scope (`on`), or CAJETA_XPU_VK_RELAXED=0.
 struct Relaxed {
-    explicit Relaxed(bool on) { if (on) setenv("CAJETA_XPU_VK_RELAXED", "1", 1); else unsetenv("CAJETA_XPU_VK_RELAXED"); }
+    explicit Relaxed(bool on) { if (on) unsetenv("CAJETA_XPU_VK_RELAXED"); else setenv("CAJETA_XPU_VK_RELAXED", "0", 1); }
     ~Relaxed() { unsetenv("CAJETA_XPU_VK_RELAXED"); }
 };
 
@@ -91,7 +91,7 @@ std::vector<uint32_t> atomicSemantics(std::string& failure) {
 
 } // namespace
 
-TEST(SpirvRelaxedAtomicTests, aRelaxedAtomicIsSemanticsZeroUnderTheSwitch) {
+TEST(SpirvRelaxedAtomicTests, aRelaxedAtomicIsSemanticsZero) {
     Relaxed on(true);
     std::string failure;
     auto sems = atomicSemantics(failure);
@@ -100,7 +100,7 @@ TEST(SpirvRelaxedAtomicTests, aRelaxedAtomicIsSemanticsZeroUnderTheSwitch) {
     EXPECT_EQ(sems[1] & 0x4u, 0x4u) << "the Release exchange keeps its order";
 }
 
-TEST(SpirvRelaxedAtomicTests, aRelaxedAtomicIsAcquireReleaseByDefault) {
+TEST(SpirvRelaxedAtomicTests, aRelaxedAtomicIsAcquireReleaseWhenTheSwitchIsOff) {
     Relaxed off(false);
     std::string failure;
     auto sems = atomicSemantics(failure);

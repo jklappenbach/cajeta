@@ -23,11 +23,10 @@ package cajeta.xpu;
  *   - {@link #SeqCst} — a single total order across all `SeqCst` ops. The strongest
  *     and most expensive.
  *
- * BACKENDS. CPU / AMD / NVPTX honour all five. Vulkan's memory model constrains
- * what `OpAtomic*`/`OpMemoryBarrier` accept: a device-scope atomic must carry
- * storage-class acquire/release semantics, so a `Relaxed` (or `SeqCst`) atomic is
- * raised to `AcqRel` to stay `spirv-val`-clean. This clamp applies to BOTH integer
- * and float atomics on Vulkan (see `vkClamp` in SpirvKernelLowering).
+ * BACKENDS. CPU / AMD / NVPTX / Vulkan honour `Relaxed`, `Acquire`, `Release` and
+ * `AcqRel`. Vulkan emits `Relaxed` as memory semantics 0 and raises `SeqCst` to
+ * `AcqRel`, which its memory model requires, for integer and float atomics alike
+ * (see `vkClamp` in SpirvKernelLowering).
  */
 public enum MemoryOrder {
     Relaxed,   // 0 — atomicity only, no ordering (monotonic)

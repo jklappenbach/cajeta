@@ -54,7 +54,7 @@ uint32 old = slot.atomicCompareExchange(0, expected, desired);
 
 | Backend | Lowering |
 |---|---|
-| **Vulkan** (RADV) | core `OpAtomicIAdd/ISub/SMin/UMin/SMax/UMax/And/Or/Xor/Exchange/CompareExchange`, **Device** scope + **AcquireRelease** (the same memory-model constraint the float path hit — Vulkan rejects CrossDevice scope / SequentiallyConsistent). |
+| **Vulkan** (RADV) | core `OpAtomicIAdd/ISub/SMin/UMin/SMax/UMax/And/Or/Xor/Exchange/CompareExchange`, **Device** scope; AcquireRelease unless `MemoryOrder.Relaxed` (semantics 0) is named. Vulkan rejects CrossDevice scope and SequentiallyConsistent, which raises to AcquireRelease. |
 | **AMD / NVIDIA** | native global `atomicrmw` / `cmpxchg` (the hardware atomic) at device scope: `agent` on AMD, `.gpu` on NVIDIA. |
 | **CPU** | a lock-prefixed atomic / `cmpxchg`. |
 
@@ -62,7 +62,7 @@ The op is just a generic LLVM `atomicrmw` (or `cmpxchg`). The SPIR-V backend
 picks the opcode from the BinOp, and `isSigned` selects `SMin/SMax` or
 `UMin/UMax`. It is lowered on a `LoweringTarget::atomicIntRMW` / `atomicCompareExchange`
 seam whose order defaults to monotonic and whose scope comes from
-`LoweringTarget::bufferAtomicScope`. Vulkan overrides both to Device + AcquireRelease.
+`LoweringTarget::bufferAtomicScope`. Vulkan overrides the default order to AcquireRelease and the scope to Device.
 
 ## Shared-memory (LDS) atomics
 
@@ -103,11 +103,12 @@ for pure counters, histograms and reductions where only the final value matters.
 It is the cheapest atomic, since atomicity still holds and only ordering is dropped.
 
 **Per-backend.** CPU / AMD / NVPTX honour all five orderings. For example, `Relaxed` becomes
-a `monotonic` atomicrmw, the native relaxed atomic. Vulkan clamps `Relaxed`
-and `SeqCst` up to `AcqRel`, because its memory model rejects a bare-relaxed device
-atomic (strict `spirv-val` requires storage-class acquire/release semantics on
-the op). So the relaxed-atomic perf win lands on CPU/AMD/NVPTX while Vulkan
-stays correct. This is device-verified with a relaxed-atomic counter (exact count) on
+a `monotonic` atomicrmw, the native relaxed atomic. On Vulkan `Relaxed` is memory
+semantics 0, and `SeqCst` raises to `AcqRel`. LLVM writes a monotonic atomic as its
+storage-class bits with no order, which `spirv-val` rejects, so the SPIR-V is
+rewritten to semantics 0 (`relaxStorageOnlyAtomicSemantics`). Until 2026-11-20
+Vulkan raised `Relaxed` to `AcqRel` too; on the RTX 4090 that cost the scan
+look-back 120 us of 860. `CAJETA_XPU_VK_RELAXED=0` at compile time restores it. This is device-verified with a relaxed-atomic counter (exact count) on
 CPU, RADV and gfx1151, and emit-verified order→ordering on NVPTX. The same surface
 applies to the scoped memory fences (`Barrier.deviceMemory(MemoryOrder.Acquire)`).
 
@@ -177,7 +178,7 @@ cast, and it is upstream-reportable.
 (index, value)` and `.atomicCompareExchange(index, expected, desired)` are
 device atomic read-modify-writes returning the old value. They lower to core
 `OpAtomicI*`/`OpAtomicCompareExchange` (no extension), at Device scope +
-AcquireRelease on Vulkan. They are device-verified bit-exact on CPU, RADV and gfx1151
+AcquireRelease on Vulkan unless `Relaxed` is named. They are device-verified bit-exact on CPU, RADV and gfx1151
 (`XpuAtomicDeviceTests.intAtomicsRunOn{Cpu,VulkanDevice,AmdDevice}`) and
 spirv-val-clean (`XpuVulkanEmitTests.lowersIntAtomicsToSpirv`). See
 [`FloatAtomics.md`](FloatAtomics.md) for the float reduction family.
