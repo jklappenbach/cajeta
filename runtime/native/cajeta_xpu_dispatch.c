@@ -2787,7 +2787,8 @@ void __cajeta_xpu_buffer_host_copy(void* self, int64_t handle, void* host,
         case CAJ_XPU_VULKAN:
             cajeta_xpu_vk_note_host_access(handle, dir != 0);   // order vs the open batch
             if (dir) {
-                hp = cajeta_xpu_vk_mapped(handle);   // WC writes stream fine
+                cajeta_xpu_vk_write(handle, hostArr, 0, byteCount);
+                return;
             } else {
                 // Reads through a write-combined mapping crawl: use staging.
                 cajeta_xpu_vk_read(handle, hostArr, byteCount);
@@ -2829,8 +2830,7 @@ void __cajeta_xpu_buffer_upload_async(void* self, int64_t handle, void* host,
             return;
         case CAJ_XPU_VULKAN: {
             cajeta_xpu_vk_note_host_access(handle, 1);   // order vs the open batch
-            void* m = cajeta_xpu_vk_mapped(handle);   // coherent map: immediate
-            if (m) memcpy(m, data, (size_t) byteCount);
+            cajeta_xpu_vk_write(handle, data, 0, byteCount);
             return;
         }
         case CAJ_XPU_CPU:
@@ -3361,8 +3361,7 @@ void __cajeta_xpu_buffer_upload_from(void* self, int64_t handle, void* host,
             return;
         case CAJ_XPU_VULKAN: {
             cajeta_xpu_vk_note_host_access(handle, 1);   // order vs the open batch
-            void* m = cajeta_xpu_vk_mapped(handle);   // host-coherent mapping
-            if (m) memcpy(m, data, (size_t) byteCount);
+            cajeta_xpu_vk_write(handle, data, 0, byteCount);
             return;
         }
         case CAJ_XPU_CPU:

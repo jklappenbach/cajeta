@@ -162,11 +162,7 @@ static int64_t caj_vk_accel_build_aabbs(const float* boxes, uint32_t count,
         const float* hdr = (const float*) (intptr_t) blob;
         uint64_t bytes = (uint64_t) caj_bvh_block_words(hdr) * 4u;
         int64_t buf = cajeta_xpu_vk_alloc(bytes);
-        if (buf) {
-            void* m = cajeta_xpu_vk_mapped(buf);
-            if (m) memcpy(m, hdr, (size_t) bytes);
-            else { cajeta_xpu_vk_free(buf); buf = 0; }
-        }
+        if (buf) cajeta_xpu_vk_write(buf, hdr, 0, bytes);
         free((void*) (intptr_t) blob);
         return buf;
     }
@@ -183,11 +179,7 @@ static int64_t caj_vk_accel_build_triangles(const float* verts, uint32_t triCoun
         const float* hdr = (const float*) (intptr_t) blob;
         uint64_t bytes = (uint64_t) caj_bvh_block_words(hdr) * 4u;
         int64_t buf = cajeta_xpu_vk_alloc(bytes);
-        if (buf) {
-            void* m = cajeta_xpu_vk_mapped(buf);
-            if (m) memcpy(m, hdr, (size_t) bytes);
-            else { cajeta_xpu_vk_free(buf); buf = 0; }
-        }
+        if (buf) cajeta_xpu_vk_write(buf, hdr, 0, bytes);
         free((void*) (intptr_t) blob);
         return buf;
     }

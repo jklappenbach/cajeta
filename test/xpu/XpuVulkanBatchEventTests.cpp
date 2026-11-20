@@ -139,6 +139,9 @@ const uint32_t kIters = 3000000u;   // a group of 20 takes well over 100 ms on g
 // the sync at the end is where B is waited for.
 TEST(XpuVulkanBatchEvent, aWaitedEventDoesNotLandTheBatch) {
     CAJETA_SKIP_IF_NO_VULKAN();
+    const char* unmapped = std::getenv("CAJETA_XPU_VK_UNMAPPED");
+    if (unmapped && *unmapped && std::string(unmapped) != "0")
+        GTEST_SKIP() << "an unmapped buffer's read queues behind group B (gpu-kernel-parity 16.2.4.2)";
     Prog p = compile();
     ASSERT_NE(p.run, nullptr);
     const int64_t r = p.run(0, kIters);

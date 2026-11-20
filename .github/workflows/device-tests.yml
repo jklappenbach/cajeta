@@ -253,7 +253,7 @@ jobs:
           sh bench/scanparts/run.sh ./build/src/cajeta vulkan
           echo "== where the buffers of 1 MB and up landed =="
           CAJETA_XPU_VK_ALLOC_LOG=1 CAJETA_XPU_BACKEND=vulkan bench/scanparts/out-vulkan/scan 2>&1 \
-            | grep 'B -> memory type' | awk '$2 >= 1048576' | sort | uniq -c
+            | grep 'B -> memory type' | awk '$3 >= 1048576' | sort | uniq -c
           echo "== host memory only (CAJETA_XPU_VK_NODEVLOCAL) =="
           CAJETA_XPU_VK_NODEVLOCAL=1 CAJETA_XPU_BACKEND=vulkan bench/scanparts/out-vulkan/scan
 

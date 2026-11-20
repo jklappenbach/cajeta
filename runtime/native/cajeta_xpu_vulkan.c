@@ -1453,13 +1453,41 @@ static void caj_vk_calibrate_now(int64_t hostNowNs) {
 #endif
 }
 
-// Allocate a mapped storage buffer; 1-based table handle, 0 on failure. `forStaging`
-// prefers HOST_CACHED memory, else DEVICE_LOCAL.
-static int64_t caj_vk_alloc_pref(uint64_t bytes, int forStaging) {
+#define CAJ_VK_BUF_KERNEL  0   // device-local when it can be, mapped only if that memory maps
+#define CAJ_VK_BUF_STAGING 1   // mapped, HOST_CACHED preferred
+#define CAJ_VK_BUF_MAPPED  2   // always mapped, device-local preferred
+#define CAJ_VK_BAR_MAX_BUFFER (1ull << 20)   // the largest kernel buffer a small BAR window takes
+
+// 1 when environment variable `name` is set to anything but "" or "0".
+static int caj_vk_env_on(const char* name) {
+    const char* v = getenv(name);
+    return v && *v && strcmp(v, "0") != 0;
+}
+
+// 1 when the mappable device-local heap is under half the largest device-local heap (no Resizable BAR).
+static int caj_vk_small_bar(void) {
+    static int s_small = -1;
+    if (s_small >= 0) return s_small;
+    if (caj_vk_env_on("CAJETA_XPU_VK_SMALL_BAR")) return s_small = 1;
+    VkDeviceSize bar = 0, vram = 0;
+    for (uint32_t i = 0; i < g_xpu_vk.memProps.memoryTypeCount; ++i) {
+        const VkMemoryPropertyFlags f = g_xpu_vk.memProps.memoryTypes[i].propertyFlags;
+        const VkDeviceSize h = g_xpu_vk.memProps.memoryHeaps[g_xpu_vk.memProps.memoryTypes[i].heapIndex].size;
+        if (!(f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) continue;
+        if (h > vram) vram = h;
+        if ((f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && h > bar) bar = h;
+    }
+    return s_small = bar < vram / 2;
+}
+
+// Allocate a storage buffer of `kind` (CAJ_VK_BUF_*); 1-based table handle, 0 on failure.
+static int64_t caj_vk_alloc_pref(uint64_t bytes, int kind) {
     if (bytes == 0) return 0;
-    static int s_devlocal = -1;
+    static int s_devlocal = -1, s_unmapped = -1;
     if (s_devlocal < 0)
         s_devlocal = getenv("CAJETA_XPU_VK_NODEVLOCAL") ? 0 : 1;
+    if (s_unmapped < 0)
+        s_unmapped = caj_vk_env_on("CAJETA_XPU_VK_UNMAPPED");
     VkBufferCreateInfo bci;
     memset(&bci, 0, sizeof(bci));
     bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -1477,12 +1505,16 @@ static int64_t caj_vk_alloc_pref(uint64_t bytes, int forStaging) {
     VkMemoryRequirements req;
     memset(&req, 0, sizeof(req));
     g_xpu_vk.vkGetBufferMemoryRequirements(g_xpu_vk.device, buf, &req);
-    VkMemoryPropertyFlags chain[3];
+    VkMemoryPropertyFlags chain[4];
     int nchain = 0;
-    if (!forStaging && s_devlocal)
+    const int skipBar = kind == CAJ_VK_BUF_KERNEL &&
+                        (s_unmapped || (bytes > CAJ_VK_BAR_MAX_BUFFER && caj_vk_small_bar()));
+    if (kind != CAJ_VK_BUF_STAGING && s_devlocal && !skipBar)
         chain[nchain++] = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    if (kind == CAJ_VK_BUF_KERNEL && s_devlocal)
+        chain[nchain++] = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     chain[nchain++] = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
                       VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
@@ -1510,17 +1542,20 @@ static int64_t caj_vk_alloc_pref(uint64_t bytes, int forStaging) {
         g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, buf, NULL);
         return 0;
     }
-    int hostCached =
-        (g_xpu_vk.memProps.memoryTypes[mtPicked].propertyFlags &
-         VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0;
+    const VkMemoryPropertyFlags pickedFlags =
+        g_xpu_vk.memProps.memoryTypes[mtPicked].propertyFlags;
+    int hostCached = (pickedFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0;
+    const int mappable = (pickedFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
     static int s_allocLog = -1;
     if (s_allocLog < 0) s_allocLog = getenv("CAJETA_XPU_VK_ALLOC_LOG") ? 1 : 0;
     if (s_allocLog) {
-        VkMemoryType t = g_xpu_vk.memProps.memoryTypes[mtPicked];
-        fprintf(stderr, "cajeta.xpu.vulkan: %llu B -> memory type %d (device-local %d, host-cached %d), "
-                "heap %u of %llu B\n", (unsigned long long) bytes, mtPicked,
-                (t.propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0, hostCached,
-                t.heapIndex, (unsigned long long) g_xpu_vk.memProps.memoryHeaps[t.heapIndex].size);
+        const uint32_t heap = g_xpu_vk.memProps.memoryTypes[mtPicked].heapIndex;
+        fprintf(stderr, "cajeta.xpu.vulkan: %s %llu B -> memory type %d (device-local %d, mapped %d, "
+                "host-cached %d), heap %u of %llu B\n",
+                kind == CAJ_VK_BUF_KERNEL ? "kernel" : kind == CAJ_VK_BUF_STAGING ? "staging" : "runtime",
+                (unsigned long long) bytes, mtPicked,
+                (pickedFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0, mappable, hostCached,
+                heap, (unsigned long long) g_xpu_vk.memProps.memoryHeaps[heap].size);
     }
     if (g_xpu_vk.vkBindBufferMemory(g_xpu_vk.device, buf, mem, 0) != VK_SUCCESS) {
         g_xpu_vk.vkFreeMemory(g_xpu_vk.device, mem, NULL);   // L5: don't leave a
@@ -1528,7 +1563,7 @@ static int64_t caj_vk_alloc_pref(uint64_t bytes, int forStaging) {
         return 0;
     }
     void* mapped = NULL;
-    if (g_xpu_vk.vkMapMemory(g_xpu_vk.device, mem, 0, VK_WHOLE_SIZE, 0, &mapped)
+    if (mappable && g_xpu_vk.vkMapMemory(g_xpu_vk.device, mem, 0, VK_WHOLE_SIZE, 0, &mapped)
             != VK_SUCCESS) {
         g_xpu_vk.vkFreeMemory(g_xpu_vk.device, mem, NULL);
         g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, buf, NULL);
@@ -1561,7 +1596,7 @@ static int64_t caj_vk_alloc_pref(uint64_t bytes, int forStaging) {
     return (int64_t) (slot + 1);
 }
 static int64_t cajeta_xpu_vk_alloc(uint64_t bytes) {
-    return caj_vk_alloc_pref(bytes, /*forStaging=*/0);
+    return caj_vk_alloc_pref(bytes, CAJ_VK_BUF_KERNEL);
 }
 
 // Buffer.slice: the handle is a table index, so the offset cannot be folded in.
@@ -1955,7 +1990,7 @@ static int64_t cajeta_xpu_vk_scalar_push(const void* p, uint32_t sz) {
     pthread_mutex_lock(&g_xpu_vk_submit_mu);
     if (!g_vk_scalar_arena.handle) {
         g_vk_scalar_arena.handle =
-            caj_vk_alloc_pref(CAJ_VK_SCALAR_ARENA_BYTES, 0);
+            caj_vk_alloc_pref(CAJ_VK_SCALAR_ARENA_BYTES, CAJ_VK_BUF_MAPPED);
         g_vk_scalar_arena.cur = 0;
         g_vk_scalar_arena.retired = 0;
     }
@@ -1973,6 +2008,93 @@ static int64_t cajeta_xpu_vk_scalar_push(const void* p, uint32_t sz) {
     }
     pthread_mutex_unlock(&g_xpu_vk_submit_mu);
     return v;
+}
+
+// Copy `bytes` between two buffers on the queue and wait for it, ordered after every
+// submitted dispatch; caller holds g_xpu_vk_submit_mu. 1 on success.
+static int caj_vk_copy_now(VkBuffer src, VkDeviceSize srcOff, VkBuffer dst, VkDeviceSize dstOff,
+                           VkDeviceSize bytes) {
+    VkCommandBufferAllocateInfo cbai;
+    memset(&cbai, 0, sizeof(cbai));
+    cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cbai.commandPool = g_xpu_vk.cmdPool;
+    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbai.commandBufferCount = 1;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    if (g_xpu_vk.vkAllocateCommandBuffers(g_xpu_vk.device, &cbai, &cmd) != VK_SUCCESS) return 0;
+    VkCommandBufferBeginInfo cbbi;
+    memset(&cbbi, 0, sizeof(cbbi));
+    cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    g_xpu_vk.vkBeginCommandBuffer(cmd, &cbbi);
+    VkMemoryBarrier mb;
+    memset(&mb, 0, sizeof(mb));
+    mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    mb.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                       VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_HOST_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+    g_xpu_vk.vkCmdPipelineBarrier(cmd,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_HOST_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+    VkBufferCopy region;
+    region.srcOffset = srcOff;
+    region.dstOffset = dstOff;
+    region.size = bytes;
+    g_xpu_vk.vkCmdCopyBuffer(cmd, src, dst, 1, &region);
+    mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                       VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_HOST_READ_BIT;
+    g_xpu_vk.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_HOST_BIT,
+        0, 1, &mb, 0, NULL, 0, NULL);
+    g_xpu_vk.vkEndCommandBuffer(cmd);
+    VkSubmitInfo si;
+    memset(&si, 0, sizeof(si));
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cmd;
+    int ok = 0;
+    if (g_xpu_vk.vkQueueSubmit(g_xpu_vk.queue, 1, &si, VK_NULL_HANDLE) == VK_SUCCESS) {
+        g_xpu_vk.vkQueueWaitIdle(g_xpu_vk.queue);
+        ok = 1;
+    }
+    g_xpu_vk.vkFreeCommandBuffers(g_xpu_vk.device, g_xpu_vk.cmdPool, 1, &cmd);
+    return ok;
+}
+
+// Write `bytes` from host memory at `byteOffset` into the buffer: a memcpy into a mapping,
+// else through persistent staging and a queue copy.
+static int64_t g_vk_write_staging = 0;
+static uint64_t g_vk_write_staging_size = 0;
+static void cajeta_xpu_vk_free_now(int64_t handle);
+static void cajeta_xpu_vk_write(int64_t handle, const void* src, uint64_t byteOffset, uint64_t bytes) {
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);
+    struct cajeta_vk_buf* r = cajeta_xpu_vk_rec(handle);
+    if (!r || !src || bytes == 0 || byteOffset >= r->size) {
+        pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+        return;
+    }
+    if (bytes > r->size - byteOffset) bytes = r->size - byteOffset;
+    if (r->mapped) {
+        memcpy((char*) r->mapped + byteOffset, src, (size_t) bytes);
+        pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+        return;
+    }
+    if (g_vk_write_staging_size < bytes) {
+        if (g_vk_write_staging) cajeta_xpu_vk_free_now(g_vk_write_staging);
+        g_vk_write_staging = caj_vk_alloc_pref(bytes, CAJ_VK_BUF_STAGING);
+        g_vk_write_staging_size = g_vk_write_staging ? bytes : 0;
+    }
+    struct cajeta_vk_buf* sb = g_vk_write_staging ? cajeta_xpu_vk_rec(g_vk_write_staging) : NULL;
+    r = cajeta_xpu_vk_rec(handle);
+    if (sb && sb->mapped && r) {
+        memcpy(sb->mapped, src, (size_t) bytes);
+        if (!caj_vk_copy_now(sb->buffer, 0, r->buffer, r->view_offset + byteOffset, bytes))
+            fprintf(stderr, "cajeta.xpu.vulkan: staged write of %llu B FAILED\n", (unsigned long long) bytes);
+    } else {
+        fprintf(stderr, "cajeta.xpu.vulkan: no staging for a %llu B write\n", (unsigned long long) bytes);
+    }
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
 }
 
 // Read `bytes` into host memory; a write-combined mapping reads at ~100 MB/s, so it
@@ -2005,58 +2127,12 @@ static void cajeta_xpu_vk_read(int64_t handle, void* dst, uint64_t bytes) {
     pthread_mutex_lock(&g_xpu_vk_submit_mu);
     if (g_vk_read_staging_size < bytes) {
         if (g_vk_read_staging) cajeta_xpu_vk_free_now(g_vk_read_staging);
-        g_vk_read_staging = caj_vk_alloc_pref(bytes, /*forStaging=*/1);
+        g_vk_read_staging = caj_vk_alloc_pref(bytes, CAJ_VK_BUF_STAGING);
         g_vk_read_staging_size = g_vk_read_staging ? bytes : 0;
     }
     struct cajeta_vk_buf* sb =
         g_vk_read_staging ? cajeta_xpu_vk_rec(g_vk_read_staging) : NULL;
-    int copied = 0;
-    if (sb) {
-        VkCommandBufferAllocateInfo cbai;
-        memset(&cbai, 0, sizeof(cbai));
-        cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        cbai.commandPool = g_xpu_vk.cmdPool;
-        cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        cbai.commandBufferCount = 1;
-        VkCommandBuffer cmd = VK_NULL_HANDLE;
-        if (g_xpu_vk.vkAllocateCommandBuffers(g_xpu_vk.device, &cbai, &cmd)
-                == VK_SUCCESS) {
-            VkCommandBufferBeginInfo cbbi;
-            memset(&cbbi, 0, sizeof(cbbi));
-            cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-            cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-            g_xpu_vk.vkBeginCommandBuffer(cmd, &cbbi);
-            VkMemoryBarrier mb;
-            memset(&mb, 0, sizeof(mb));
-            mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-            mb.srcAccessMask =
-                VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
-            mb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-            g_xpu_vk.vkCmdPipelineBarrier(
-                cmd,
-                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
-                    VK_PIPELINE_STAGE_TRANSFER_BIT,
-                VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
-            VkBufferCopy region;
-            region.srcOffset = r->view_offset;
-            region.dstOffset = 0;
-            region.size = bytes;
-            g_xpu_vk.vkCmdCopyBuffer(cmd, r->buffer, sb->buffer, 1, &region);
-            g_xpu_vk.vkEndCommandBuffer(cmd);
-            VkSubmitInfo si;
-            memset(&si, 0, sizeof(si));
-            si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-            si.commandBufferCount = 1;
-            si.pCommandBuffers = &cmd;
-            if (g_xpu_vk.vkQueueSubmit(g_xpu_vk.queue, 1, &si, VK_NULL_HANDLE)
-                    == VK_SUCCESS) {
-                g_xpu_vk.vkQueueWaitIdle(g_xpu_vk.queue);
-                copied = 1;
-            }
-            g_xpu_vk.vkFreeCommandBuffers(g_xpu_vk.device, g_xpu_vk.cmdPool,
-                                          1, &cmd);
-        }
-    }
+    int copied = sb && caj_vk_copy_now(r->buffer, r->view_offset, sb->buffer, 0, bytes);
     pthread_mutex_unlock(&g_xpu_vk_submit_mu);
     if (s_readLog) clock_gettime(CLOCK_MONOTONIC, &ts1);
     if (copied && sb->mapped)
@@ -2300,7 +2376,7 @@ static int cajeta_xpu_vk_tex_copy_region(struct cajeta_vk_tex* t, const float* s
         (size_t) lw * lh * ld * layers * cajeta_texfmt_channels(format);
     uint64_t bytes =
         (uint64_t) lw * lh * ld * layers * cajeta_texfmt_texel_bytes(format);
-    int64_t staging = cajeta_xpu_vk_alloc(bytes);   // host-visible+coherent
+    int64_t staging = caj_vk_alloc_pref(bytes, CAJ_VK_BUF_STAGING);
     if (!staging) return 0;
     void* m = cajeta_xpu_vk_mapped(staging);
     if (m) cajeta_texfmt_encode(m, src, texels, format);   // float memcpy / UNORM quantize
@@ -2425,7 +2501,7 @@ static void cajeta_xpu_vk_tex_download(int64_t handle, void* data,
     struct cajeta_vk_tex* t = cajeta_xpu_vk_tex_rec(handle);
     if (!t || !data || w != t->w || h != t->h) return;
     uint64_t bytes = (uint64_t) w * h * sizeof(float);
-    int64_t staging = caj_vk_alloc_pref(bytes, /*forStaging=*/1); // cached
+    int64_t staging = caj_vk_alloc_pref(bytes, CAJ_VK_BUF_STAGING); // cached
     if (!staging) return;
     struct cajeta_vk_buf* sb = cajeta_xpu_vk_rec(staging);
 
@@ -4693,6 +4769,9 @@ static int64_t cajeta_xpu_vk_scalar_push(const void* p, uint32_t sz) {
 }
 static void cajeta_xpu_vk_read(int64_t h, void* d, uint64_t b) {
     (void) h; (void) d; (void) b;
+}
+static void cajeta_xpu_vk_write(int64_t h, const void* s, uint64_t o, uint64_t b) {
+    (void) h; (void) s; (void) o; (void) b;
 }
 static void cajeta_xpu_vk_flush(void) {}
 static int64_t cajeta_xpu_vk_event_create(void) { return 1; }
