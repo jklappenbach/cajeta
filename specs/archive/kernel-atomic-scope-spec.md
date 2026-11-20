@@ -1,6 +1,6 @@
 # kernel-atomic-scope — kernel atomics are device-scoped unless a kernel asks for more
 
-Plan: [kernel-atomic-scope-plan](../agents/kernel-atomic-scope-plan.md).
+Plan: [kernel-atomic-scope-plan](../../agents/archive/kernel-atomic-scope-plan.md).
 Decided with Julian 2026-11-19: device scope by default, system scope as an explicit opt-in.
 
 ## 1. Definition
