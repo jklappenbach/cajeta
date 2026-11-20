@@ -39,10 +39,10 @@ public class Scan {
         Barrier.workgroup();
         uint32 tile = (uint32) bc[0];
         uint32 base = tile * 4096 + t * 16;
-        Vector<int32,4> q0 = x.vload<4>(base);
-        Vector<int32,4> q1 = x.vload<4>(base + 4);
-        Vector<int32,4> q2 = x.vload<4>(base + 8);
-        Vector<int32,4> q3 = x.vload<4>(base + 12);
+        Vector<int32,4> q0 = x.vload<4>(base, align: 16);
+        Vector<int32,4> q1 = x.vload<4>(base + 4, align: 16);
+        Vector<int32,4> q2 = x.vload<4>(base + 8, align: 16);
+        Vector<int32,4> q3 = x.vload<4>(base + 12, align: 16);
         int32 local = ((q0.x + q0.y) + (q0.z + q0.w)) + ((q1.x + q1.y) + (q1.z + q1.w))
                     + ((q2.x + q2.y) + (q2.z + q2.w)) + ((q3.x + q3.y) + (q3.z + q3.w));
         int32 before = 0;

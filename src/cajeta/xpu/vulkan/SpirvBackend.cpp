@@ -493,6 +493,116 @@ void maskProvenLaneIndices(llvm::Module& m) {
 // RADV faulted creating the pipeline (cajeta-llm 15.2.19.6.1). The path that reads
 // the undef never uses the value, so any matrix serves: a zero splat built once per
 // type at the top of the function.
+// One binding has one SPIR-V variable, so a buffer the lowering read both through its <4 x T> view
+// and as T takes one type: the view, with each T access a lane of it, when every T access is a
+// plain load or store; else T, with the view's accesses split back into lanes (16.2.4.3).
+void unifyWideBufferViews(llvm::Module& m) {
+    auto bindingOf = [](llvm::CallInst* c) -> int64_t {
+        auto* set = llvm::dyn_cast<llvm::ConstantInt>(c->getArgOperand(0));
+        auto* bind = llvm::dyn_cast<llvm::ConstantInt>(c->getArgOperand(1));
+        if (!set || !bind) return -1;
+        return (int64_t) (set->getZExtValue() << 32 | bind->getZExtValue());
+    };
+    auto runtimeElem = [](llvm::Type* t) -> llvm::Type* {
+        auto* tet = llvm::dyn_cast<llvm::TargetExtType>(t);
+        if (!tet || tet->getName() != "spirv.VulkanBuffer" || tet->getNumTypeParameters() < 1) return nullptr;
+        auto* arr = llvm::dyn_cast<llvm::ArrayType>(tet->getTypeParameter(0));
+        return arr ? arr->getElementType() : nullptr;
+    };
+    auto pointerUsers = [](llvm::Value* h, llvm::SmallVectorImpl<llvm::IntrinsicInst*>& out) {
+        for (llvm::User* u : h->users()) {
+            auto* gp = llvm::dyn_cast<llvm::IntrinsicInst>(u);
+            if (!gp || gp->getIntrinsicID() != llvm::Intrinsic::spv_resource_getpointer
+                    || gp->getArgOperand(0) != h)
+                return false;
+            out.push_back(gp);
+        }
+        return true;
+    };
+    auto plainAccess = [](llvm::IntrinsicInst* gp, llvm::Type* ty) {
+        for (llvm::User* u : gp->users()) {
+            if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(u)) {
+                if (ld->isVolatile() || ld->isAtomic() || ld->getType() != ty) return false;
+            } else if (auto* st = llvm::dyn_cast<llvm::StoreInst>(u)) {
+                if (st->isVolatile() || st->isAtomic() || st->getPointerOperand() != gp
+                        || st->getValueOperand()->getType() != ty)
+                    return false;
+            } else {
+                return false;
+            }
+        }
+        return true;
+    };
+    llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+    for (llvm::Function& f : m) {
+        if (f.isDeclaration()) continue;
+        std::map<int64_t, llvm::SmallVector<llvm::CallInst*, 2>> byBinding;
+        for (llvm::BasicBlock& bb : f)
+            for (llvm::Instruction& inst : bb)
+                if (auto* c = llvm::dyn_cast<llvm::CallInst>(&inst))
+                    if (c->getIntrinsicID() == llvm::Intrinsic::spv_resource_handlefrombinding
+                            && bindingOf(c) >= 0)
+                        byBinding[bindingOf(c)].push_back(c);
+        for (auto& [binding, calls] : byBinding) {
+            llvm::CallInst* view = nullptr;
+            llvm::CallInst* flat = nullptr;
+            for (llvm::CallInst* c : calls) {
+                llvm::Type* e = runtimeElem(c->getType());
+                if (!e) continue;
+                if (e->isVectorTy()) view = c; else flat = c;
+            }
+            if (!view || !flat) continue;
+            auto* vecTy = llvm::cast<llvm::FixedVectorType>(runtimeElem(view->getType()));
+            llvm::Type* elemTy = vecTy->getElementType();
+            llvm::SmallVector<llvm::IntrinsicInst*, 16> flatPtrs, viewPtrs;
+            bool movable = runtimeElem(flat->getType()) == elemTy && pointerUsers(flat, flatPtrs);
+            for (llvm::IntrinsicInst* gp : flatPtrs) movable = movable && plainAccess(gp, elemTy);
+            if (movable) {
+                for (llvm::IntrinsicInst* gp : flatPtrs) {
+                    llvm::IRBuilder<> b(gp);
+                    llvm::Value* idx = b.CreateZExtOrTrunc(gp->getArgOperand(1), i32);
+                    llvm::Function* decl = llvm::Intrinsic::getOrInsertDeclaration(
+                        &m, llvm::Intrinsic::spv_resource_getpointer, {gp->getType(), view->getType(), i32});
+                    llvm::Value* vp = b.CreateCall(decl, {view, b.CreateLShr(idx, b.getInt32(2))}, "vgp");
+                    llvm::Value* lane = b.CreateInBoundsGEP(vecTy, vp, {b.getInt32(0), b.CreateAnd(idx, b.getInt32(3))},
+                                                            "vlane");
+                    gp->replaceAllUsesWith(lane);
+                    gp->eraseFromParent();
+                }
+                if (flat->use_empty()) flat->eraseFromParent();
+                continue;
+            }
+            if (!pointerUsers(view, viewPtrs)) continue;   // left as is: spirv-val names it
+            for (llvm::IntrinsicInst* gp : viewPtrs) {
+                llvm::Value* vi = gp->getArgOperand(1);
+                for (llvm::User* u : llvm::make_early_inc_range(gp->users())) {
+                    auto* inst = llvm::cast<llvm::Instruction>(u);
+                    llvm::IRBuilder<> b(inst);
+                    llvm::Value* base = b.CreateShl(b.CreateZExtOrTrunc(vi, i32), b.getInt32(2));
+                    llvm::Function* decl = llvm::Intrinsic::getOrInsertDeclaration(
+                        &m, llvm::Intrinsic::spv_resource_getpointer, {gp->getType(), flat->getType(), i32});
+                    auto lanePtr = [&](unsigned j) {
+                        return b.CreateCall(decl, {flat, b.CreateAdd(base, b.getInt32(j))}, "lgp");
+                    };
+                    if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(inst)) {
+                        llvm::Value* v = llvm::PoisonValue::get(vecTy);
+                        for (unsigned j = 0; j < vecTy->getNumElements(); ++j)
+                            v = b.CreateInsertElement(v, b.CreateLoad(elemTy, lanePtr(j)), b.getInt32(j));
+                        ld->replaceAllUsesWith(v);
+                        ld->eraseFromParent();
+                    } else if (auto* st = llvm::dyn_cast<llvm::StoreInst>(inst)) {
+                        for (unsigned j = 0; j < vecTy->getNumElements(); ++j)
+                            b.CreateStore(b.CreateExtractElement(st->getValueOperand(), b.getInt32(j)), lanePtr(j));
+                        st->eraseFromParent();
+                    }
+                }
+                if (gp->use_empty()) gp->eraseFromParent();
+            }
+            if (view->use_empty()) view->eraseFromParent();
+        }
+    }
+}
+
 void defineUndefCooperativeMatrices(llvm::Module& m) {
 #if CAJETA_HAS_SPV_COOP_MATRIX
     for (llvm::Function& f : m) {
@@ -971,6 +1081,7 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
         return false;
     }
     maskProvenLaneIndices(m);
+    unifyWideBufferViews(m);
     defineUndefCooperativeMatrices(m);
 
     // FP narrowing canonicalizes fptrunc(op(fpext a, fpext b)) into direct bfloat

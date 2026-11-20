@@ -1120,11 +1120,41 @@ public:
         return index;
     }
 
+    // The <4 x T> view of a 32-bit buffer's own binding for a lane group stated 16-byte aligned, made
+    // once per kernel beside the handle; null when the access cannot take one.
+    static llvm::Value* wideView(llvm::Module& m, llvm::Value* base, llvm::Type* elemTy,
+                                 unsigned lanes, uint64_t statedAlign) {
+        if (statedAlign < 16 || lanes != 4 || !(elemTy->isIntegerTy(32) || elemTy->isFloatTy()))
+            return nullptr;
+        auto* call = llvm::dyn_cast<llvm::CallInst>(base);
+        if (!call || call->getIntrinsicID() != llvm::Intrinsic::spv_resource_handlefrombinding)
+            return nullptr;
+        auto* tet = llvm::cast<llvm::TargetExtType>(base->getType());
+        llvm::Type* viewTy = vkBufferType(m.getContext(), llvm::FixedVectorType::get(elemTy, 4),
+                                          tet->getIntParameter(1) != 0);
+        for (llvm::Instruction& i : *call->getParent()) {
+            auto* c = llvm::dyn_cast<llvm::CallInst>(&i);
+            if (c && c->getType() == viewTy && c->getIntrinsicID() == call->getIntrinsicID()
+                    && c->getArgOperand(1) == call->getArgOperand(1))
+                return c;
+        }
+        llvm::Function* hfb = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_resource_handlefrombinding, {viewTy});
+        llvm::IRBuilder<> vb(call->getNextNode());
+        llvm::SmallVector<llvm::Value*, 5> args(call->arg_begin(), call->arg_end());
+        return vb.CreateCall(hfb, args, call->getName() + ".v4");
+    }
+
     llvm::Value* vectorLoad(llvm::IRBuilderBase& b, llvm::Module& m,
                             llvm::Value* base, llvm::Type* elemTy,
                             unsigned lanes, llvm::Value* index,
                             uint64_t statedAlign) override {
         auto* vecTy = llvm::FixedVectorType::get(elemTy, lanes);
+        if (llvm::Value* view = wideView(m, base, elemTy, lanes, statedAlign)) {
+            index = maskStatedIndex(b, m, elemTy, index, statedAlign);
+            llvm::Value* vi = b.CreateLShr(b.CreateTrunc(index, b.getInt32Ty()), b.getInt32(2), "vidx");
+            return b.CreateAlignedLoad(vecTy, getElementPtr(b, m, view, vi), llvm::Align(16), "vl.wide");
+        }
         llvm::Value* vec = llvm::UndefValue::get(vecTy);
         index = maskStatedIndex(b, m, elemTy, laneIndexBase(b, base, index), statedAlign);
         llvm::Type* idxTy = index->getType();
@@ -1197,6 +1227,12 @@ public:
     void vectorStore(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* base,
                      llvm::Type* elemTy, unsigned lanes, llvm::Value* index,
                      llvm::Value* value, uint64_t statedAlign) override {
+        if (llvm::Value* view = wideView(m, base, elemTy, lanes, statedAlign)) {
+            index = maskStatedIndex(b, m, elemTy, index, statedAlign);
+            llvm::Value* vi = b.CreateLShr(b.CreateTrunc(index, b.getInt32Ty()), b.getInt32(2), "vidx");
+            b.CreateAlignedStore(value, getElementPtr(b, m, view, vi), llvm::Align(16));
+            return;
+        }
         index = maskStatedIndex(b, m, elemTy, laneIndexBase(b, base, index), statedAlign);
         llvm::Type* idxTy = index->getType();
         for (unsigned j = 0; j < lanes; ++j) {
