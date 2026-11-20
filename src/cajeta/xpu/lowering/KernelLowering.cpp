@@ -315,6 +315,8 @@ public:
     }
     // The most threads a launch of this kernel can have: sizes Workgroup.reduce's scratch.
     void setBlockLimit(unsigned n) { blockLimit_ = n; }
+    // The subgroups a block has when the kernel declares @Occupancy(maxWaves): sizes the staging tiles.
+    void setStagingSubgroups(unsigned n) { stagingSubgroups_ = n; }
     bool checkStatements_ = false;
     // The block every launch site passes (workgroup-reduce 6.8): workgroup size reads fold to it.
     void setPinnedBlock(const std::array<unsigned, 3>& b) {
@@ -562,6 +564,7 @@ private:
     bool usedWorkgroupScan_ = false;
     int loopDepth_ = 0;
     unsigned blockLimit_ = 1024;
+    unsigned stagingSubgroups_ = 0;
     std::optional<std::array<unsigned, 3>> pinnedBlock_;
 
     llvm::Value* groupDim(unsigned dim) {
@@ -7369,6 +7372,7 @@ private:
         sub.setParamsAsArgs(true);   // helper params are plain fn args
         sub.setDeviceContext(owner, deviceFns);
         sub.setBlockLimit(blockLimit_);
+        sub.setStagingSubgroups(stagingSubgroups_);
         if (takesFragment) sub.inheritCoopState(coopDistributeW, coopStraddleDemote);
         sub.lowerBody(m);
 
@@ -7376,16 +7380,16 @@ private:
         return hfn;
     }
 
-    // This kernel's per-subgroup staging tiles for `elemTy`, one 16 x 16 tile per subgroup
-    // the block limit allows, shared by every staged element access in the module.
+    // This kernel's per-subgroup staging tiles for `elemTy`, one 16 x 16 tile per declared wave or
+    // per subgroup the block limit allows, shared by every staged element access in the module.
     llvm::GlobalVariable* stagingTiles(llvm::Type* elemTy, unsigned cells) {
         std::string tag;
         llvm::raw_string_ostream os(tag);
         elemTy->print(os);
         os.flush();
         const std::string gname = "cajeta_cmstage_" + tag;
-        const uint64_t slots = (blockLimit_ + target.stagedElementWaveWidth() - 1)
-                               / target.stagedElementWaveWidth();
+        const uint64_t slots = stagingSubgroups_ ? stagingSubgroups_
+            : (blockLimit_ + target.stagedElementWaveWidth() - 1) / target.stagedElementWaveWidth();
         if (auto* gv = mod.getGlobalVariable(gname, true)) {
             auto* at = llvm::cast<llvm::ArrayType>(gv->getValueType());
             if (at->getNumElements() < slots * cells)
@@ -9901,6 +9905,8 @@ llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
     lowerer.setParams(std::move(params));
     if (auto attr = XpuKernelAttr::from(*method); attr && attr->maxThreads())
         lowerer.setBlockLimit(*attr->maxThreads());
+    if (auto attr = XpuKernelAttr::from(*method); attr && attr->maxWaves() && !attr->maxThreads())
+        lowerer.setStagingSubgroups(*attr->maxWaves());
     if (method->pinnedLaunchBlock()) lowerer.setPinnedBlock(*method->pinnedLaunchBlock());
     target.setPinnedBlock(method->pinnedLaunchBlock());
     struct PinReset {
