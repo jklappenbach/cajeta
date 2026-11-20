@@ -7,6 +7,7 @@
 #include "../jit/JitTestHelper.h"
 #include "KernelLoweringProbe.h"
 #include "XpuDeviceTestUtil.h"
+#include "../PortableEnv.h"
 #include "cajeta/xpu/XpuTarget.h"
 #include "cajeta/xpu/vulkan/SpirvBackend.h"
 #include "cajeta/xpu/vulkan/SpirvKernelLowering.h"
