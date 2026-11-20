@@ -1,0 +1,42 @@
+package bench;
+import cajeta.time.Clock;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+
+// The cost of one cpu-backend launch and sync: a trivial kernel, a thousand launches
+// a round, the best of five rounds, at sizes from one block (launch cost alone) to 262K.
+public class L {
+    @Kernel @Occupancy(maxThreads = 256)
+    public static void tiny(KernelBuffer<float32> y, KernelBuffer<float32> x, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) { y[i] = x[i] * 2.0f; }
+    }
+    static int64 per(uint32 n, int32 reps) {
+        float32[] h = heap float32[n];
+        KernelBuffer<float32> x = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) n);
+        x.upload(h);
+        KernelStream s #= KernelStream.current();
+        int32 w = 0;
+        while (w < 50) { tiny.launch(s, grid: [(n + 255) / 256], block: [256])(y, x, n); s.sync(); w = w + 1; }
+        int64 best = 0L;
+        int32 r = 0;
+        while (r < 5) {
+            int64 t0 = Clock.nanoTime();
+            int32 j = 0;
+            while (j < reps) { tiny.launch(s, grid: [(n + 255) / 256], block: [256])(y, x, n); s.sync(); j = j + 1; }
+            int64 dt = (Clock.nanoTime() - t0) / (int64) reps;
+            if (best == 0L || dt < best) { best = dt; }
+            r = r + 1;
+        }
+        return best;
+    }
+    public static int32 main() {
+        System.stdout.println("n=256 " + L.per(256, 1000) + " ns");
+        System.stdout.println("n=4096 " + L.per(4096, 1000) + " ns");
+        System.stdout.println("n=65536 " + L.per(65536, 1000) + " ns");
+        System.stdout.println("n=262144 " + L.per(262144, 1000) + " ns");
+        return 0;
+    }
+}
