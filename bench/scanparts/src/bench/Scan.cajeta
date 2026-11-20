@@ -1,0 +1,142 @@
+package bench;
+import cajeta.time.Clock;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Workgroup;
+import cajeta.xpu.Barrier;
+import cajeta.xpu.Shared;
+import cajeta.xpu.GroupOp;
+import cajeta.xpu.MemoryOrder;
+import cajeta.xpu.Vector;
+
+// The xpu/scan kernels with parts switched off by mode (bit 0: no look-back, bit 1: no tile scan), at
+// n = 2^26, best of 7; counter[1] totals the look-back's empty spins. Modes 1-3 are wrong on purpose.
+public class Scan {
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void scanReset(KernelBuffer<int32> flag, KernelBuffer<int32> counter, uint32 tiles) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < tiles) {
+            flag[i] = 0;
+        }
+        if (i == 0) {
+            counter[0] = 0;
+            counter[1] = 0;
+        }
+    }
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void scanLookback(KernelBuffer<int32> out, KernelBuffer<int32> x, KernelBuffer<int32> agg,
+                                    KernelBuffer<int32> inc, KernelBuffer<int32> flag, KernelBuffer<int32> counter,
+                                    uint32 mode) {
+        Shared<int32> bc = shared int32[2];
+        uint32 t = KernelThread.x();
+        if (t == 0) {
+            bc[0] = counter.atomicAdd(0, 1, MemoryOrder.Relaxed);
+        }
+        Barrier.workgroup();
+        uint32 tile = (uint32) bc[0];
+        uint32 base = tile * 4096 + t * 16;
+        Vector<int32,4> q0 = x.vload<4>(base);
+        Vector<int32,4> q1 = x.vload<4>(base + 4);
+        Vector<int32,4> q2 = x.vload<4>(base + 8);
+        Vector<int32,4> q3 = x.vload<4>(base + 12);
+        int32 local = ((q0.x + q0.y) + (q0.z + q0.w)) + ((q1.x + q1.y) + (q1.z + q1.w))
+                    + ((q2.x + q2.y) + (q2.z + q2.w)) + ((q3.x + q3.y) + (q3.z + q3.w));
+        int32 before = 0;
+        if ((mode & 2) == 0) { before = Workgroup.scan(GroupOp.Add, local); }
+        if (t == 255) {
+            int32 a = before + local;
+            agg.atomicExchange(tile, a, MemoryOrder.Relaxed);
+            flag.atomicExchange(tile, 1, MemoryOrder.Release);
+            bc[1] = a;
+        }
+        Barrier.workgroup();
+        if (t == 0) {
+            int32 run = 0;
+            uint32 spins = 0;
+            if (tile > 0 && (mode & 1) == 0) {
+                uint32 p = tile - 1;
+                boolean done = false;
+                while (!done) {
+                    int32 f = flag.atomicAdd(p, 0, MemoryOrder.Acquire);
+                    if (f == 2) {
+                        run = run + inc.atomicAdd(p, 0, MemoryOrder.Relaxed);
+                        done = true;
+                    } else if (f == 1) {
+                        run = run + agg.atomicAdd(p, 0, MemoryOrder.Relaxed);
+                        if (p == 0) {
+                            done = true;
+                        } else {
+                            p = p - 1;
+                        }
+                    } else {
+                        spins = spins + 1;
+                        if (spins > 1000000) {
+                            done = true;
+                        }
+                    }
+                }
+            }
+            if (spins > 0) { counter.atomicAdd(1, (int32) spins, MemoryOrder.Relaxed); }
+            inc.atomicExchange(tile, run + bc[1], MemoryOrder.Relaxed);
+            flag.atomicExchange(tile, 2, MemoryOrder.Release);
+            bc[0] = run;
+        }
+        Barrier.workgroup();
+        int32 r = bc[0] + before;
+        int32 r0 = r + q0.x; int32 r1 = r0 + q0.y; int32 r2 = r1 + q0.z; int32 r3 = r2 + q0.w;
+        out.vstore(base, heap Vector<int32,4>(r0, r1, r2, r3), align: 16);
+        int32 r4 = r3 + q1.x; int32 r5 = r4 + q1.y; int32 r6 = r5 + q1.z; int32 r7 = r6 + q1.w;
+        out.vstore(base + 4, heap Vector<int32,4>(r4, r5, r6, r7), align: 16);
+        int32 r8 = r7 + q2.x; int32 r9 = r8 + q2.y; int32 r10 = r9 + q2.z; int32 r11 = r10 + q2.w;
+        out.vstore(base + 8, heap Vector<int32,4>(r8, r9, r10, r11), align: 16);
+        int32 r12 = r11 + q3.x; int32 r13 = r12 + q3.y; int32 r14 = r13 + q3.z; int32 r15 = r14 + q3.w;
+        out.vstore(base + 12, heap Vector<int32,4>(r12, r13, r14, r15), align: 16);
+    }
+
+    public static int32 main() {
+        uint32 n = (uint32) 67108864;
+        uint32 tiles = n / 4096;
+        int32[] hx = heap int32[n];
+        int32[] ho = heap int32[n];
+        int32 i = 0;
+        while (i < (int32) n) { hx[i] = (i % 5) - 2; i = i + 1; }
+        KernelBuffer<int32> x = heap KernelBuffer<int32>((uint64) n);
+        KernelBuffer<int32> out = heap KernelBuffer<int32>((uint64) n);
+        KernelBuffer<int32> agg = heap KernelBuffer<int32>((uint64) tiles);
+        KernelBuffer<int32> inc = heap KernelBuffer<int32>((uint64) tiles);
+        KernelBuffer<int32> flag = heap KernelBuffer<int32>((uint64) tiles);
+        KernelBuffer<int32> counter = heap KernelBuffer<int32>((uint64) 4);
+        x.upload(hx);
+        KernelStream s #= KernelStream.current();
+        int32[] hc = heap int32[4];
+        uint32 mode = 0;
+        while (mode < 4) {
+        int64 best = 0L;
+        int32 r = 0;
+        while (r < 7) {
+            int64 t0 = Clock.nanoTime();
+            scanReset.launch(s, grid: [(tiles + 255) / 256], block: [256])(flag, counter, tiles);
+            scanLookback.launch(s, grid: [tiles], block: [256])(out, x, agg, inc, flag, counter, mode);
+            s.sync();
+            int64 dt = Clock.nanoTime() - t0;
+            if (best == 0L || dt < best) { best = dt; }
+            r = r + 1;
+        }
+        counter.download(hc);
+        out.download(ho);
+        int32 run = 0;
+        int32 bad = -1;
+        i = 0;
+        while (i < (int32) n) { run = run + hx[i]; if (ho[i] != run && bad < 0) { bad = i; } i = i + 1; }
+        System.stdout.println("mode " + mode + " (lookback " + ((mode & 1) == 0 ? "on" : "off") + ", tile scan "
+            + ((mode & 2) == 0 ? "on" : "off") + "): best " + (best / 1000L) + " us, empty spins last run "
+            + hc[1] + ", first wrong " + bad);
+        mode = mode + 1;
+        }
+        return 0;
+    }
+}
