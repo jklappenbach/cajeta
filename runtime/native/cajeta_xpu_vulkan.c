@@ -1513,6 +1513,15 @@ static int64_t caj_vk_alloc_pref(uint64_t bytes, int forStaging) {
     int hostCached =
         (g_xpu_vk.memProps.memoryTypes[mtPicked].propertyFlags &
          VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0;
+    static int s_allocLog = -1;
+    if (s_allocLog < 0) s_allocLog = getenv("CAJETA_XPU_VK_ALLOC_LOG") ? 1 : 0;
+    if (s_allocLog) {
+        VkMemoryType t = g_xpu_vk.memProps.memoryTypes[mtPicked];
+        fprintf(stderr, "cajeta.xpu.vulkan: %llu B -> memory type %d (device-local %d, host-cached %d), "
+                "heap %u of %llu B\n", (unsigned long long) bytes, mtPicked,
+                (t.propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0, hostCached,
+                t.heapIndex, (unsigned long long) g_xpu_vk.memProps.memoryHeaps[t.heapIndex].size);
+    }
     if (g_xpu_vk.vkBindBufferMemory(g_xpu_vk.device, buf, mem, 0) != VK_SUCCESS) {
         g_xpu_vk.vkFreeMemory(g_xpu_vk.device, mem, NULL);   // L5: don't leave a
         g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, buf, NULL);// live unbacked slot

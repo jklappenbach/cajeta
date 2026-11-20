@@ -38,6 +38,12 @@ on:
         description: 'gtest filter (device tests only by default)'
         required: false
         default: '*DeviceTests*'
+      bench:
+        description: 'A benchmark to run after the build (scanparts: the xpu scan on Vulkan, with and without device-local buffers)'
+        required: false
+        type: choice
+        options: [none, scanparts]
+        default: none
   schedule:
     # 01:00 UTC nightly = 21:00 America/New_York, which is where PHOENIX is.
     # Device runs are long (a 69-test Vulkan sweep took ~73 min on proton), so
@@ -238,6 +244,18 @@ jobs:
 
       - name: Smoke test
         run: ./build/src/cajeta --version
+
+      - name: Benchmark (scanparts on Vulkan)
+        if: ${{ inputs.bench == 'scanparts' }}
+        run: |
+          set -euo pipefail
+          echo "== device-local buffers allowed =="
+          sh bench/scanparts/run.sh ./build/src/cajeta vulkan
+          echo "== where the buffers of 1 MB and up landed =="
+          CAJETA_XPU_VK_ALLOC_LOG=1 CAJETA_XPU_BACKEND=vulkan bench/scanparts/out-vulkan/scan 2>&1 \
+            | grep 'B -> memory type' | awk '$2 >= 1048576' | sort | uniq -c
+          echo "== host memory only (CAJETA_XPU_VK_NODEVLOCAL) =="
+          CAJETA_XPU_VK_NODEVLOCAL=1 CAJETA_XPU_BACKEND=vulkan bench/scanparts/out-vulkan/scan
 
       # The real work. --gtest_brief is NOT used: it hides skips, and a skip is
       # precisely the outcome this workflow exists to make visible. Output is
