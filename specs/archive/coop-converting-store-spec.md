@@ -1,7 +1,7 @@
 # coop-converting-store — a float32 accumulator fragment stored at 16 bits
 
 > Status: **active**, written with and approved by Julian 2026-11-18 (cajeta-ml-gpu 23.2.20; decisions
-> below). Plan: [coop-converting-store](../agents/coop-converting-store-plan.md).
+> below). Plan: [coop-converting-store](../../agents/archive/coop-converting-store-plan.md).
 
 ## 1. Definition
 
