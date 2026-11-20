@@ -622,9 +622,12 @@ public:
         return m.getContext().getOrInsertSyncScopeID(shared ? "workgroup" : "device");
     }
 
-    // Vulkan clamp for a requested order: a device-scope atomic with Monotonic or
-    // SequentiallyConsistent semantics fails spirv-val, so both raise to AcquireRelease.
+    // Vulkan clamp for a requested order: SequentiallyConsistent raises to AcquireRelease, and so does
+    // Monotonic unless CAJETA_XPU_VK_RELAXED is set (then relaxStorageOnlyAtomicSemantics makes it 0).
     static llvm::AtomicOrdering vkClamp(llvm::AtomicOrdering o) {
+        const char* relaxed = std::getenv("CAJETA_XPU_VK_RELAXED");
+        if (o == llvm::AtomicOrdering::Monotonic && relaxed && *relaxed && std::strcmp(relaxed, "0") != 0)
+            return o;
         return (o == llvm::AtomicOrdering::Monotonic ||
                 o == llvm::AtomicOrdering::SequentiallyConsistent)
                    ? llvm::AtomicOrdering::AcquireRelease : o;

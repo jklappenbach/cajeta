@@ -1376,6 +1376,53 @@ bool fixupControlBarriers(std::vector<uint8_t>& bytes) {
     return true;
 }
 
+// Repoints each atomic's memory semantics that carry storage-class bits and no ordering (LLVM's
+// monotonic) at a new 0 constant, plain Relaxed, which is what Vulkan accepts. True if any changed.
+bool relaxStorageOnlyAtomicSemantics(std::vector<uint8_t>& bytes) {
+    if (bytes.size() < 20 || (bytes.size() % 4) != 0) return false;
+    std::vector<uint32_t> w(bytes.size() / 4);
+    std::memcpy(w.data(), bytes.data(), bytes.size());
+    if (w[0] != 0x07230203u) return false;
+    constexpr uint32_t kOpConstant = 43, kOrderBits = 0x1E, kStorageBits = 0x40 | 0x100 | 0x800 | 0x1000;
+    std::map<uint32_t, size_t> constAt;
+    std::map<uint32_t, uint32_t> constValue, constType;
+    std::vector<size_t> semOperands;
+    for (size_t i = 5; i < w.size();) {
+        const uint32_t wc = w[i] >> 16, op = w[i] & 0xFFFFu;
+        if (wc == 0 || i + wc > w.size()) return false;
+        if (op == kOpConstant && wc == 4) {
+            constAt[w[i + 2]] = i;
+            constType[w[i + 2]] = w[i + 1];
+            constValue[w[i + 2]] = w[i + 3];
+        } else if (op == 228 && wc >= 5) {                       // OpAtomicStore
+            semOperands.push_back(i + 3);
+        } else if ((op == 227 || op == 229 || (op >= 232 && op <= 242) || op == 5614 || op == 5615
+                    || op == 6035) && wc >= 6) {                 // loads and read-modify-writes
+            semOperands.push_back(i + 5);
+        } else if ((op == 230 || op == 231) && wc >= 7) {      // compare-exchange, both semantics
+            semOperands.push_back(i + 5);
+            semOperands.push_back(i + 6);
+        }
+        i += wc;
+    }
+    std::vector<size_t> fix;
+    for (size_t at : semOperands) {
+        auto v = constValue.find(w[at]);
+        if (v != constValue.end() && (v->second & kStorageBits) && !(v->second & kOrderBits)) fix.push_back(at);
+    }
+    if (fix.empty()) return false;
+    const size_t pos = constAt[w[fix[0]]];
+    const uint32_t type = constType[w[fix[0]]];
+    const uint32_t newId = w[3];
+    w[3] = newId + 1;
+    for (size_t at : fix) w[at] = newId;
+    const uint32_t zero[4] = {(4u << 16) | kOpConstant, type, newId, 0};
+    w.insert(w.begin() + (pos + 4), zero, zero + 4);
+    bytes.resize(w.size() * 4);
+    std::memcpy(bytes.data(), w.data(), bytes.size());
+    return true;
+}
+
 // Makes the workgroup size a spec constant the launch's `block` dims set at pipeline
 // creation, LLVM 23 having no IR path to a spec-constant LocalSizeId: three
 // OpSpecConstant uint plus a composite decorated BuiltIn WorkgroupSize override it.
@@ -1747,6 +1794,7 @@ std::vector<uint8_t> emitSpirv(llvm::Module& deviceModule,
     rewriteMixedDot(spirv);
     scopeSubgroupBarriers(spirv);
     fixupControlBarriers(spirv);
+    relaxStorageOnlyAtomicSemantics(spirv);
     injectWorkgroupSizeSpecConstant(spirv);
     injectDynamicSharedSpecConstant(spirv);
     injectUserSpecConstants(spirv);

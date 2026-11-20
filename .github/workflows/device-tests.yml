@@ -256,6 +256,15 @@ jobs:
             | grep 'B -> memory type' | awk '$3 >= 1048576' | sort | uniq -c
           echo "== host memory only (CAJETA_XPU_VK_NODEVLOCAL) =="
           CAJETA_XPU_VK_NODEVLOCAL=1 CAJETA_XPU_BACKEND=vulkan bench/scanparts/out-vulkan/scan
+          mkdir -p bench/scanparts/out-relaxed
+          CAJETA_XPU_VK_RELAXED=1 ./build/src/cajeta --emit=exe --release --xpu-backend=vulkan \
+            -o bench/scanparts/out-relaxed/scan bench.Scan.main bench/scanparts/src bench/scanparts/out-relaxed > /dev/null
+          for round in 1 2; do
+            echo "== round $round: Relaxed as AcquireRelease (default) =="
+            CAJETA_XPU_BACKEND=vulkan bench/scanparts/out-vulkan/scan
+            echo "== round $round: Relaxed as semantics 0 (CAJETA_XPU_VK_RELAXED) =="
+            CAJETA_XPU_BACKEND=vulkan bench/scanparts/out-relaxed/scan
+          done
 
       # The real work. --gtest_brief is NOT used: it hides skips, and a skip is
       # precisely the outcome this workflow exists to make visible. Output is
