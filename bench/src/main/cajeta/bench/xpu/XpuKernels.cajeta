@@ -212,6 +212,9 @@ public final class XpuKernels {
     // and out written once (the reduce-then-scan before 2026-11-09 read x twice
     // and ran three launches: 0.24x rocPRIM, cajeta-ml-gpu 18.2.2). The spin is
     // capped, so a fault ends the launch with a wrong result, not a hung GPU.
+    // The prefix goes out as four 16-byte stores a thread: sixteen scalar stores
+    // left lanes 64 B apart, and on cuda that is the bound once the look-back's
+    // atomics are device-scoped (560 us against 1225 on the 4090, 2026-11-19).
 
     @Kernel
     @Occupancy(maxThreads = 256)
@@ -283,22 +286,14 @@ public final class XpuKernels {
         }
         Barrier.workgroup();
         int32 r = bc[0] + before;
-        r = r + q0.x; out[base] = r;
-        r = r + q0.y; out[base + 1] = r;
-        r = r + q0.z; out[base + 2] = r;
-        r = r + q0.w; out[base + 3] = r;
-        r = r + q1.x; out[base + 4] = r;
-        r = r + q1.y; out[base + 5] = r;
-        r = r + q1.z; out[base + 6] = r;
-        r = r + q1.w; out[base + 7] = r;
-        r = r + q2.x; out[base + 8] = r;
-        r = r + q2.y; out[base + 9] = r;
-        r = r + q2.z; out[base + 10] = r;
-        r = r + q2.w; out[base + 11] = r;
-        r = r + q3.x; out[base + 12] = r;
-        r = r + q3.y; out[base + 13] = r;
-        r = r + q3.z; out[base + 14] = r;
-        r = r + q3.w; out[base + 15] = r;
+        int32 r0 = r + q0.x; int32 r1 = r0 + q0.y; int32 r2 = r1 + q0.z; int32 r3 = r2 + q0.w;
+        out.vstore(base, heap Vector<int32,4>(r0, r1, r2, r3), align: 16);
+        int32 r4 = r3 + q1.x; int32 r5 = r4 + q1.y; int32 r6 = r5 + q1.z; int32 r7 = r6 + q1.w;
+        out.vstore(base + 4, heap Vector<int32,4>(r4, r5, r6, r7), align: 16);
+        int32 r8 = r7 + q2.x; int32 r9 = r8 + q2.y; int32 r10 = r9 + q2.z; int32 r11 = r10 + q2.w;
+        out.vstore(base + 8, heap Vector<int32,4>(r8, r9, r10, r11), align: 16);
+        int32 r12 = r11 + q3.x; int32 r13 = r12 + q3.y; int32 r14 = r13 + q3.z; int32 r15 = r14 + q3.w;
+        out.vstore(base + 12, heap Vector<int32,4>(r12, r13, r14, r15), align: 16);
     }
 
     // n a multiple of 4096; agg, inc and flag hold n / 4096 slots, counter one.
