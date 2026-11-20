@@ -1,4 +1,5 @@
 #include <string.h>
+#include <stddef.h>
 // === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
 // --- registered kernel modules (device images keyed by entry name + backend) -
 // Each backend's ctor registers ITS image per @Kernel; backend -1 matches any requester.
@@ -1658,10 +1659,13 @@ static struct {
     pthread_cond_t  done_cv;                 // caller waits for the last chunk
     pthread_cond_t  up_cv;                   // ensure() waits for new workers to start
     int             running;                 // workers past their thread registration
-    uint64_t        generation;              // bumped per dispatch
-    uint64_t        claim;                   // generation:32 | njobs:9 | chunks left:23
-    int32_t         done;                    // chunks of this launch finished
-    int             shutdown;
+    // The words every launch touches, on one cache line wherever the struct lands.
+    struct {
+        _Alignas(64) uint64_t generation;    // bumped per dispatch
+        uint64_t        claim;               // generation:32 | njobs:9 | chunks left:23
+        int32_t         done;                // chunks of this launch finished
+        int             shutdown;
+    };
     // Per-worker generation baseline. A worker added mid-life must not treat the
     // generation already in flight as new work — it would run and decrement a
     // dispatch it was never counted in. ensure() seeds this to the live
@@ -1683,6 +1687,9 @@ static struct {
     .park_cv = PTHREAD_COND_INITIALIZER,
     .park_at = CAJETA_XPU_CPU_MAX_WORKERS,
 };
+_Static_assert(offsetof(__typeof__(g_caj_kpool), shutdown) / 64
+                   == offsetof(__typeof__(g_caj_kpool), generation) / 64,
+               "the pool's per-launch words must share one cache line");
 
 // Effective spin budgets, resolved once from the environment before any spin.
 static int caj_worker_spin = -1;
