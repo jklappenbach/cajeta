@@ -408,8 +408,9 @@ public class P {
     fs::create_directories(base / "src" / "probe");
     fs::create_directories(base / "out");
     std::ofstream(base / "src" / "probe" / "P.cajeta") << src;
-    const std::string exe = (base / "out" / "p").string();
-    std::string built = run("\"" + compilerPath() + "\" --emit=exe --xpu-backend=nvptx -o \"" + exe +
+    const std::string out_base = (base / "out" / "p").string();
+    const std::string exe = cajeta_exe_path(out_base).string();
+    std::string built = run("\"" + compilerPath() + "\" --emit=exe --xpu-backend=nvptx -o \"" + out_base +
                             "\" probe.P.main \"" + (base / "src").string() + "\" \"" +
                             (base / "out").string() + "\"");
     ASSERT_TRUE(fs::exists(exe)) << built;
