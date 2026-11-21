@@ -3910,19 +3910,38 @@ namespace cajeta {
     struct MethodEntry {
         MethodPtr method;
         int score;
-        MethodEntry(MethodPtr method) { this->method = method; score = 0; }
+        int enumDecays;
+        MethodEntry(MethodPtr method) { this->method = method; score = 0; enumDecays = 0; }
     };
 
     // The candidate in `canonical` whose labeled parameters accept `parameters` with
-    // the smallest cumulative rank widening; null when none of them does.
+    // the smallest cumulative rank widening; null when none of them does. An enum
+    // argument whose formal is not its own enum type decays to int32, and a candidate
+    // with fewer decays ranks first (enum-overload-ranking spec §2.1): the widening
+    // score is zero for every positional candidate, so without it a call such as
+    // `KernelBuffer(n, MemoryKind.Pinned)` bound whichever overload sorted first.
     MethodPtr CajetaClass::getClosestMethod(string methodName, vector<ParameterEntry> parameters, map<string, MethodPtr> canonical) {
         vector<MethodEntry> entries;
+        vector<CajetaTypePtr> argTypes;
+        for (auto& p : parameters)
+            if (p.label != "this") argTypes.push_back(p.type);
 
         for (auto& entry : canonical) {
             MethodPtr method = entry.second;
             map<string, FormalParameterPtr> methodParameters = method->getParameters();
             bool valid = true;
             MethodEntry methodEntry(method);
+            vector<FormalParameterPtr> formals;
+            for (auto& f : method->getParameterList())
+                if (f && f->getName() != "this") formals.push_back(f);
+            if (formals.size() == argTypes.size()) {
+                for (size_t i = 0; i < argTypes.size(); ++i) {
+                    const CajetaTypePtr& a = argTypes[i];
+                    if (!a || !(a->getTypeFlags() & ENUM_FLAG)) continue;
+                    CajetaTypePtr ft = formals[i]->getType();
+                    if (!ft || ft->toCanonical() != a->toCanonical()) ++methodEntry.enumDecays;
+                }
+            }
             for (auto& parameter : parameters) {
                 if (methodParameters.find(parameter.label) != methodParameters.end()) {
                     int score = methodParameters[parameter.label]->getType()->getRank() - parameter.type->getRank();
@@ -3941,7 +3960,10 @@ namespace cajeta {
         if (entries.empty()) {
             return nullptr;
         }
-        sort(entries.begin(), entries.end(), [](const MethodEntry& a, const MethodEntry& b) { return a.score < b.score; });
+        stable_sort(entries.begin(), entries.end(), [](const MethodEntry& a, const MethodEntry& b) {
+            if (a.enumDecays != b.enumDecays) return a.enumDecays < b.enumDecays;
+            return a.score < b.score;
+        });
         return entries[0].method;
     }
 

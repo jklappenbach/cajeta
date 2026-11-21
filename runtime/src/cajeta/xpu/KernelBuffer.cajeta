@@ -81,6 +81,25 @@ public final class KernelBuffer<T> {
     }
 
     /**
+     * RAII constructor with a chosen residency: allocate `elementCount` elements of
+     * `kind` (a {@link MemoryKind}), released by `~KernelBuffer()` as the one-argument
+     * form is. `Pinned` and `Unified` storage is host-accessible through
+     * {@link #hostStore}/{@link #hostLoad}:
+     *
+     *     KernelBuffer<int32> flag = heap KernelBuffer<int32>(1, MemoryKind.Pinned);
+     *
+     * Overload resolution ranks an exact enum argument above one that decays to
+     * int32, so this form never binds the `(int64 deviceHandle, uint64 elementCount)`
+     * one (enum-overload-ranking).
+     */
+    public KernelBuffer(uint64 elementCount, MemoryKind kind) {
+        this.elementCount = elementCount;
+        this.owned = true;
+        this.kind = kind;
+        this.deviceHandle = this.deviceAlloc(elementCount * elementBytes(), this.kind);
+    }
+
+    /**
      * Destructor — release the device memory. Runs via the drop chain at scope
      * exit, so device VRAM is never leaked by forgetting to free(). Null-
      * guarded and idempotent: a prior explicit free(), or a moved-from handle
@@ -212,9 +231,8 @@ public final class KernelBuffer<T> {
      * `Unified` (managed) and `Pinned` (page-locked) storage is host-accessible:
      * write/read it directly with {@link #hostStore}/{@link #hostLoad} (no device
      * transfer). `Device` keeps the explicit `upload`/`download` model. `kind` is
-     * a `MemoryKind` ordinal (the enum constant resolves to its i32 ordinal); it
-     * is taken as a separate overload (not a 2-arg constructor) to stay distinct
-     * from the `KernelBuffer(int64 deviceHandle, uint64 elementCount)` form. See {@link
+     * a `MemoryKind` ordinal (the enum constant resolves to its i32 ordinal).
+     * `heap KernelBuffer<T>(n, kind)` allocates the kind in one step. See {@link
      * MemoryKind}.
      */
     public void allocate(int32 kind) {
