@@ -59,6 +59,9 @@ namespace vulkan {
         // True iff the device has a device-local memory type the host cannot map (llvmpipe has none).
         static bool unmappedDeviceLocalAvailable();
 
+        // True iff the device is a CPU implementation (llvmpipe), where wall-clock limits mean nothing.
+        static bool cpuDevice();
+
         VulkanDriver() = default;
         ~VulkanDriver();
         VulkanDriver(const VulkanDriver&) = delete;

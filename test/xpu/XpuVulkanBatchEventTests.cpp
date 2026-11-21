@@ -133,12 +133,18 @@ Prog compile() {
 }
 const uint32_t kIters = 3000000u;   // a group of 20 takes well over 100 ms on gfx1151
 
+// A CPU Vulkan device (llvmpipe) runs the spin groups too slowly for these wall-clock limits.
+#define SKIP_IF_CPU_DEVICE()                                                              \
+    if (cajeta::xpu::vulkan::VulkanDriver::cpuDevice())                                   \
+        GTEST_SKIP() << "a CPU Vulkan device cannot meet the timing limits"
+
 } // namespace
 
 // 5.1/5.2 — recording is instant, the wait lets the host read group A while B runs, and
 // the sync at the end is where B is waited for.
 TEST(XpuVulkanBatchEvent, aWaitedEventDoesNotLandTheBatch) {
     CAJETA_SKIP_IF_NO_VULKAN();
+    SKIP_IF_CPU_DEVICE();
     Prog p = compile();
     ASSERT_NE(p.run, nullptr);
     const int64_t r = p.run(0, kIters);
@@ -161,6 +167,7 @@ TEST(XpuVulkanBatchEvent, aWaitedEventDoesNotLandTheBatch) {
 // 16.2.4.2 — on unmapped memory the read is a staged copy, and it still does not wait for group B.
 TEST(XpuVulkanBatchEvent, anUnmappedReadDoesNotWaitForLaterWork) {
     CAJETA_SKIP_IF_NO_VULKAN();
+    SKIP_IF_CPU_DEVICE();
     if (!cajeta::xpu::vulkan::VulkanDriver::unmappedDeviceLocalAvailable())
         GTEST_SKIP() << "the device has no unmapped device-local memory type";
     GTEST_FLAG_SET(death_test_style, "threadsafe");
@@ -178,6 +185,7 @@ TEST(XpuVulkanBatchEvent, anUnmappedReadDoesNotWaitForLaterWork) {
 // 5.3 — a buffer written after the event is not readable without the flush.
 TEST(XpuVulkanBatchEvent, aReadOfABufferWrittenAfterTheEventFlushes) {
     CAJETA_SKIP_IF_NO_VULKAN();
+    SKIP_IF_CPU_DEVICE();
     Prog p = compile();
     ASSERT_NE(p.run, nullptr);
     const int64_t r = p.run(1, kIters);
@@ -218,6 +226,7 @@ TEST(XpuVulkanBatchEvent, withoutEventsTheSentinelRemains) {
 // 6.1.5 — a host about to block on an event first hands the device what it recorded after it.
 TEST(XpuVulkanBatchEvent, aWaitSubmitsWhatWasRecordedAfterTheEvent) {
     CAJETA_SKIP_IF_NO_VULKAN();
+    SKIP_IF_CPU_DEVICE();
     Prog p = compile();
     ASSERT_NE(p.run, nullptr);
     // Chunks of 21: A and B's first spin fly with the event; B's other four stay in the open chunk.
