@@ -10,8 +10,8 @@
 #include "cajeta/xpu/XpuTarget.h"
 
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
-#include <string>
 
 using cajeta_test::CajetaJit;
 
@@ -139,9 +139,6 @@ const uint32_t kIters = 3000000u;   // a group of 20 takes well over 100 ms on g
 // the sync at the end is where B is waited for.
 TEST(XpuVulkanBatchEvent, aWaitedEventDoesNotLandTheBatch) {
     CAJETA_SKIP_IF_NO_VULKAN();
-    const char* unmapped = std::getenv("CAJETA_XPU_VK_UNMAPPED");
-    if (unmapped && *unmapped && std::string(unmapped) != "0")
-        GTEST_SKIP() << "an unmapped buffer's read queues behind group B (gpu-kernel-parity 16.2.4.2)";
     Prog p = compile();
     ASSERT_NE(p.run, nullptr);
     const int64_t r = p.run(0, kIters);
@@ -149,6 +146,29 @@ TEST(XpuVulkanBatchEvent, aWaitedEventDoesNotLandTheBatch) {
     EXPECT_LT(rec, 30) << "recording the event landed the batch (" << rec << " ms)";
     EXPECT_LT(rd, 30) << "reading group A's buffer flushed group B (" << rd << " ms)";
     EXPECT_GT(sy, 30) << "the sync had nothing left to wait for (" << sy << " ms): B did not overlap";
+}
+
+// Runs mode 0 and exits 0 when the event, the read and the sync timings all hold.
+[[noreturn]] static void runUnmappedOverlap() {
+    Prog p = compile();
+    if (!p.run) std::exit(2);
+    const int64_t r = p.run(0, kIters);
+    const int64_t rec = r >> 40, rd = (r >> 20) & 0xFFFFF, sy = r & 0xFFFFF;
+    std::fprintf(stderr, "rec %lld rd %lld sy %lld\n", (long long) rec, (long long) rd, (long long) sy);
+    std::exit(rec < 30 && rd < 30 && sy > 30 ? 0 : 1);
+}
+
+// 16.2.4.2 — on unmapped memory the read is a staged copy, and it still does not wait for group B.
+TEST(XpuVulkanBatchEvent, anUnmappedReadDoesNotWaitForLaterWork) {
+    CAJETA_SKIP_IF_NO_VULKAN();
+    if (!cajeta::xpu::vulkan::VulkanDriver::unmappedDeviceLocalAvailable())
+        GTEST_SKIP() << "the device has no unmapped device-local memory type";
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    setenv("CAJETA_XPU_VK_UNMAPPED", "1", 1);
+    setenv("CAJETA_XPU_VK_ALLOC_LOG", "1", 1);
+    EXPECT_EXIT(runUnmappedOverlap(), ::testing::ExitedWithCode(0), "device-local 1, mapped 0");
+    unsetenv("CAJETA_XPU_VK_UNMAPPED");
+    unsetenv("CAJETA_XPU_VK_ALLOC_LOG");
 }
 
 // 5.3 — a buffer written after the event is not readable without the flush.

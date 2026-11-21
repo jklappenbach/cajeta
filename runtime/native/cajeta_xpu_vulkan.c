@@ -188,6 +188,12 @@ struct cajeta_vk {
     VkDevice device;
     VkQueue queue;
     uint32_t queueFamily;
+    // A queue for staged reads, so a read need not wait behind later work; NULL when none.
+    VkQueue readQueue;
+    uint32_t readFamily;
+    VkCommandPool readPool;
+    // Both families, for CONCURRENT buffers when the read queue is in another family.
+    uint32_t sharedFamilies[2];
     VkCommandPool cmdPool;
     VkPhysicalDeviceMemoryProperties memProps;
     // VK_EXT_memory_budget: the per-heap budget and usage behind freeMemoryBytes.
@@ -390,6 +396,25 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL caj_vk_debug_cb(
 }
 #endif
 
+// The family for staged reads: a second queue of `pick`, else another compute family,
+// else UINT32_MAX.
+static uint32_t caj_vk_pick_read_family(const VkQueueFamilyProperties* qp, uint32_t n,
+                                        uint32_t pick) {
+    if (qp[pick].queueCount >= 2) return pick;
+    for (uint32_t i = 0; i < n; ++i)
+        if (i != pick && (qp[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && qp[i].queueCount >= 1)
+            return i;
+    return UINT32_MAX;
+}
+
+// Buffers are CONCURRENT across the main and read families when those differ.
+static void caj_vk_buffer_sharing(VkBufferCreateInfo* bci) {
+    const int other = g_xpu_vk.readQueue && g_xpu_vk.readFamily != g_xpu_vk.queueFamily;
+    bci->sharingMode = other ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE;
+    bci->queueFamilyIndexCount = other ? 2 : 0;
+    bci->pQueueFamilyIndices = other ? g_xpu_vk.sharedFamilies : NULL;
+}
+
 static int cajeta_xpu_vulkan_init_locked(void) {
     if (g_xpu_vk.loaded == 1) return 1;
     if (g_xpu_vk.loaded == -1) return 0;
@@ -588,6 +613,7 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         if (pick >= 0) {
             g_xpu_vk.phys = devs[di];
             g_xpu_vk.queueFamily = (uint32_t) pick;
+            g_xpu_vk.readFamily = caj_vk_pick_read_family(qp, qn, (uint32_t) pick);
             g_xpu_vk.tsValidBits = qbits[pick];
             g_xpu_vk.tsTimingOk = timingOk;
             found = 1;
@@ -1024,18 +1050,23 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         }
     }
 
-    float prio = 1.0f;
-    VkDeviceQueueCreateInfo qci;
-    memset(&qci, 0, sizeof(qci));
-    qci.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    qci.queueFamilyIndex = g_xpu_vk.queueFamily;
-    qci.queueCount = 1;
-    qci.pQueuePriorities = &prio;
+    float prio[2] = {1.0f, 1.0f};
+    const int readSame = g_xpu_vk.readFamily == g_xpu_vk.queueFamily;
+    const int readOther = !readSame && g_xpu_vk.readFamily != UINT32_MAX;
+    VkDeviceQueueCreateInfo qci[2];
+    memset(qci, 0, sizeof(qci));
+    qci[0].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    qci[0].queueFamilyIndex = g_xpu_vk.queueFamily;
+    qci[0].queueCount = readSame ? 2 : 1;
+    qci[0].pQueuePriorities = prio;
+    qci[1] = qci[0];
+    qci[1].queueFamilyIndex = g_xpu_vk.readFamily;
+    qci[1].queueCount = 1;
     VkDeviceCreateInfo dci;
     memset(&dci, 0, sizeof(dci));
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    dci.queueCreateInfoCount = 1;
-    dci.pQueueCreateInfos = &qci;
+    dci.queueCreateInfoCount = readOther ? 2 : 1;
+    dci.pQueueCreateInfos = qci;
 
     // Each optional path is gated on its probe: an unsupported extension fails.
     const char* devExts[24];
@@ -1417,6 +1448,10 @@ static int cajeta_xpu_vulkan_init_locked(void) {
 
     g_xpu_vk.vkGetDeviceQueue(g_xpu_vk.device, g_xpu_vk.queueFamily, 0,
                               &g_xpu_vk.queue);
+    g_xpu_vk.readQueue = VK_NULL_HANDLE;
+    if (readSame || readOther)
+        g_xpu_vk.vkGetDeviceQueue(g_xpu_vk.device, g_xpu_vk.readFamily, readSame ? 1 : 0,
+                                  &g_xpu_vk.readQueue);
     VkCommandPoolCreateInfo cpci;
     memset(&cpci, 0, sizeof(cpci));
     cpci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -1425,6 +1460,15 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     if (g_xpu_vk.vkCreateCommandPool(g_xpu_vk.device, &cpci, NULL,
                                      &g_xpu_vk.cmdPool) != VK_SUCCESS)
         return 0;
+    g_xpu_vk.readPool = g_xpu_vk.cmdPool;
+    g_xpu_vk.sharedFamilies[0] = g_xpu_vk.queueFamily;
+    g_xpu_vk.sharedFamilies[1] = g_xpu_vk.readFamily;
+    if (readOther) {
+        cpci.queueFamilyIndex = g_xpu_vk.readFamily;
+        if (g_xpu_vk.vkCreateCommandPool(g_xpu_vk.device, &cpci, NULL,
+                                         &g_xpu_vk.readPool) != VK_SUCCESS)
+            g_xpu_vk.readQueue = VK_NULL_HANDLE;
+    }
 
     // timestampPeriod is the driver's ADVERTISED rate; the drift fit refines it.
     {
@@ -1579,7 +1623,7 @@ static int64_t caj_vk_alloc_pref(uint64_t bytes, int kind) {
     bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                 VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    caj_vk_buffer_sharing(&bci);
     VkBuffer buf = VK_NULL_HANDLE;
     if (g_xpu_vk.vkCreateBuffer(g_xpu_vk.device, &bci, NULL, &buf) != VK_SUCCESS) {
         fprintf(stderr, "cajeta.xpu.vulkan: vkCreateBuffer FAILED (%llu bytes)\n",
@@ -2094,14 +2138,15 @@ static int64_t cajeta_xpu_vk_scalar_push(const void* p, uint32_t sz) {
     return v;
 }
 
-// Copy `bytes` between two buffers on the queue and wait for it, ordered after every
-// submitted dispatch; caller holds g_xpu_vk_submit_mu. 1 on success.
-static int caj_vk_copy_now(VkBuffer src, VkDeviceSize srcOff, VkBuffer dst, VkDeviceSize dstOff,
-                           VkDeviceSize bytes) {
+// One buffer copy on `queue`, waited on `fence` when given, else on the queue going idle;
+// caller holds g_xpu_vk_submit_mu. 1 on success.
+static int caj_vk_copy_on(VkQueue queue, VkFence fence, VkBuffer src, VkDeviceSize srcOff,
+                          VkBuffer dst, VkDeviceSize dstOff, VkDeviceSize bytes) {
+    const VkCommandPool pool = queue == g_xpu_vk.queue ? g_xpu_vk.cmdPool : g_xpu_vk.readPool;
     VkCommandBufferAllocateInfo cbai;
     memset(&cbai, 0, sizeof(cbai));
     cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    cbai.commandPool = g_xpu_vk.cmdPool;
+    cbai.commandPool = pool;
     cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cbai.commandBufferCount = 1;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
@@ -2138,12 +2183,42 @@ static int caj_vk_copy_now(VkBuffer src, VkDeviceSize srcOff, VkBuffer dst, VkDe
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cmd;
     int ok = 0;
-    if (g_xpu_vk.vkQueueSubmit(g_xpu_vk.queue, 1, &si, VK_NULL_HANDLE) == VK_SUCCESS) {
-        g_xpu_vk.vkQueueWaitIdle(g_xpu_vk.queue);
-        ok = 1;
+    if (g_xpu_vk.vkQueueSubmit(queue, 1, &si, fence) == VK_SUCCESS) {
+        if (fence) {
+            ok = g_xpu_vk.vkWaitForFences(g_xpu_vk.device, 1, &fence, VK_TRUE, ~0ull) == VK_SUCCESS;
+            g_xpu_vk.vkResetFences(g_xpu_vk.device, 1, &fence);
+        } else {
+            g_xpu_vk.vkQueueWaitIdle(queue);
+            ok = 1;
+        }
     }
-    g_xpu_vk.vkFreeCommandBuffers(g_xpu_vk.device, g_xpu_vk.cmdPool, 1, &cmd);
+    g_xpu_vk.vkFreeCommandBuffers(g_xpu_vk.device, pool, 1, &cmd);
     return ok;
+}
+// Copy on the main queue, ordered after every submitted dispatch.
+static int caj_vk_copy_now(VkBuffer src, VkDeviceSize srcOff, VkBuffer dst, VkDeviceSize dstOff,
+                           VkDeviceSize bytes) {
+    return caj_vk_copy_on(g_xpu_vk.queue, VK_NULL_HANDLE, src, srcOff, dst, dstOff, bytes);
+}
+
+// The read queue and its fence, or 0: the caller has ordered the read after the buffer's
+// writers, so the copy need not queue behind later work (16.2.4.2). Under the submit lock.
+static int caj_vk_read_queue(VkFence* fence) {
+    static int s_off = -1;
+    static VkFence s_fence = VK_NULL_HANDLE;
+    if (s_off < 0) {
+        const char* e = getenv("CAJETA_XPU_VK_READ_QUEUE");
+        s_off = e && strcmp(e, "0") == 0;
+    }
+    if (s_off || !g_xpu_vk.readQueue) return 0;
+    if (!s_fence) {
+        VkFenceCreateInfo fci;
+        memset(&fci, 0, sizeof(fci));
+        fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        if (g_xpu_vk.vkCreateFence(g_xpu_vk.device, &fci, NULL, &s_fence) != VK_SUCCESS) return 0;
+    }
+    *fence = s_fence;
+    return 1;
 }
 
 // Write `bytes` from host memory at `byteOffset` into the buffer: a memcpy into a mapping,
@@ -2216,7 +2291,10 @@ static void cajeta_xpu_vk_read(int64_t handle, void* dst, uint64_t bytes) {
     }
     struct cajeta_vk_buf* sb =
         g_vk_read_staging ? cajeta_xpu_vk_rec(g_vk_read_staging) : NULL;
-    int copied = sb && caj_vk_copy_now(r->buffer, r->view_offset, sb->buffer, 0, bytes);
+    VkFence rf = VK_NULL_HANDLE;
+    int copied = sb && (caj_vk_read_queue(&rf)
+        ? caj_vk_copy_on(g_xpu_vk.readQueue, rf, r->buffer, r->view_offset, sb->buffer, 0, bytes)
+        : caj_vk_copy_now(r->buffer, r->view_offset, sb->buffer, 0, bytes));
     pthread_mutex_unlock(&g_xpu_vk_submit_mu);
     if (s_readLog) clock_gettime(CLOCK_MONOTONIC, &ts1);
     if (copied && sb->mapped)
@@ -2728,7 +2806,7 @@ static int cajeta_xpu_vk_make_addr_buffer(uint64_t bytes, VkBufferUsageFlags usa
     bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bci.size = bytes;
     bci.usage = usage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    caj_vk_buffer_sharing(&bci);
     VkBuffer buf = VK_NULL_HANDLE;
     if (g_xpu_vk.vkCreateBuffer(g_xpu_vk.device, &bci, NULL, &buf) != VK_SUCCESS)
         return 0;
