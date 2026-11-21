@@ -250,6 +250,11 @@ jobs:
           CAJETA_SOURCE_ROOT: ${{ github.workspace }}
         run: |
           set -euo pipefail
+          # WSL's only Vulkan is llvmpipe; NVIDIA Vulkan is measured on the Windows leg.
+          if [ '${{ matrix.key }}' = 'wsl' ]; then
+            export VK_ICD_FILENAMES=/nonexistent/no-vulkan-on-wsl.json
+            export VK_DRIVER_FILES=/nonexistent/no-vulkan-on-wsl.json
+          fi
           FILTER='${{ inputs.filter }}'
           if [ -z "$FILTER" ]; then
             if [ '${{ matrix.key }}' = 'lavapipe' ]; then
