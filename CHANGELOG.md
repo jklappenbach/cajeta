@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.54.3 (2026-11-21)
+
 - **A cooperative-matrix load or store can state its alignment, and nvptx then drops the placement guard.** 0.54.0's guard keeps both the wmma and the per-element form at every native site whose placement the compiler cannot prove, and that cost two cajeta-llm GEMMs on sm_89 a spill (`q4kWmmaDeqMw8Kernel` 8 bytes, `q5kWmmaIdMwKernel` 24). `load`, `store` and `storeAs` now take `vload`'s trailing `align:`, a constant power of two from 1 to 16 stating that the tile's address and its pitch in bytes are multiples of it: `a.load(xs, offset, 0, stride, align: 16)`. Where the statement covers the fragment's run, nvptx emits wmma alone, and both kernels spill nothing. A narrower statement changes nothing, the other backends and the reference interpreter accept it without effect, and a bad value is refused naming the verb and its line (`XpuCoopStatedAlignment`, coop-stated-alignment Unit 1).
 
 - **An exact enum argument outranks one that decays to an integer.** When no overload matched exactly, resolution let every enum argument decay to its int32 ordinal and then picked among the candidates arbitrarily, because the closest-match scan scored every positional candidate the same. A call such as `f(n, Kind.B)` with `f(uint64, Kind)` and `f(int64, uint64)` could bind the second. The candidate whose formal is the argument's own enum type now ranks first. Calls with no enum argument resolve as before, and an enum still reaches an `int32`-only overload (`EnumOverloadRanking`, enum-overload-ranking Unit 1).
@@ -9,6 +11,10 @@
 - **`heap KernelBuffer<T>(n, MemoryKind.Pinned)` allocates n elements of that kind.** MemoryKind's documentation showed this call, but there was no such constructor: it bound the package-private `(int64 deviceHandle, uint64 elementCount)` form, wrapped address `n` with a count of the kind's ordinal, and a kernel touching it faulted with CUDA 700. `KernelBuffer(uint64 elementCount, MemoryKind kind)` now allocates the kind and releases it on drop, and `KernelBuffer(0, n)` with `allocate(kind)` keeps working (`XpuKernelBufferKindCtor`, enum-overload-ranking Unit 2).
 
 - **A debug build tests each stated tile alignment.** With ubTraps on (every debug build), a tile whose address or pitch breaks its `align:` is recorded and skipped rather than faulting the CUDA context, and the launch throws `XpuLaunchException` naming the kernel, the line and the misaligned address or pitch. The next conforming launch runs. Vulkan is not checked: it has no addresses and no guard to drop (coop-stated-alignment Unit 2).
+
+- **A Relaxed kernel atomic is relaxed on Vulkan too.** Vulkan raised every `MemoryOrder.Relaxed` atomic to AcquireRelease, so it cost more there than on nvptx or amdgpu. On the RTX 4090 the decoupled look-back scan spent 120 us of 860 on that. A Relaxed atomic now lowers to memory semantics 0, as on the other backends. An atomic with no order still takes AcquireRelease, and SequentiallyConsistent still raises to it. `CAJETA_XPU_VK_RELAXED=0` at compile time restores the old lowering (`SpirvRelaxedAtomicTests`, gpu-kernel-parity 16.2.4.3.2).
+
+- **8- and 16-bit lane groups read whole words on Vulkan.** A `vload` or `vstore` of int8, int16 or float16 lanes was one access per lane. With 16-byte alignment stated and 16 or 32 bytes moved, it is now one or two 16-byte accesses. With 4-byte alignment it moves whole 32-bit words. A group read inside a `@Device` helper counts too. Across cajeta-llm's 699 Vulkan kernels, 16-bit accesses fell from 6106 to 4570, and `q6kF16WaveMatVecColsKernel`'s 512 became 64. RADV already merged such reads, so proton's throughput is unchanged. Other drivers are not measured yet (`SpirvWideAccessTests`, gpu-kernel-parity 16.2.4.3.3).
 
 ## 0.54.2 (2026-11-20)
 
