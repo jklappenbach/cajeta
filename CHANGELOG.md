@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **A cooperative-matrix load or store can state its alignment, and nvptx then drops the placement guard.** 0.54.0's guard keeps both the wmma and the per-element form at every native site whose placement the compiler cannot prove, and that cost two cajeta-llm GEMMs on sm_89 a spill (`q4kWmmaDeqMw8Kernel` 8 bytes, `q5kWmmaIdMwKernel` 24). `load`, `store` and `storeAs` now take `vload`'s trailing `align:`, a constant power of two from 1 to 16 stating that the tile's address and its pitch in bytes are multiples of it: `a.load(xs, offset, 0, stride, align: 16)`. Where the statement covers the fragment's run, nvptx emits wmma alone, and both kernels spill nothing. A narrower statement changes nothing, the other backends and the reference interpreter accept it without effect, and a bad value is refused naming the verb and its line (`XpuCoopStatedAlignment`, coop-stated-alignment Unit 1).
+
+- **A debug build tests each stated tile alignment.** With ubTraps on (every debug build), a tile whose address or pitch breaks its `align:` is recorded and skipped rather than faulting the CUDA context, and the launch throws `XpuLaunchException` naming the kernel, the line and the misaligned address or pitch. The next conforming launch runs. Vulkan is not checked: it has no addresses and no guard to drop (coop-stated-alignment Unit 2).
+
 ## 0.54.2 (2026-11-20)
 
 - **Kernel atomics on NVIDIA and AMD reach the device, not the whole system.** Every `KernelBuffer` atomic on nvptx and amdgpu was emitted at LLVM's default system scope, so on cuda it was an `atom.*.sys`, ordered against the host and every peer device. That broke the atomics spec's own promise of device scope, which Vulkan already kept. A `KernelBuffer` atomic is now device-scoped (`.gpu` on NVIDIA, `agent` on AMD) and a `shared` array's atomic is workgroup-scoped, as CUDA's and HIP's `atomicAdd` are. On an RTX 4090 the decoupled look-back scan went from 1490 to 538 us, ahead of CUB's 594, and its look-back now costs nothing (`XpuAtomicScope`, kernel-atomic-scope 1).

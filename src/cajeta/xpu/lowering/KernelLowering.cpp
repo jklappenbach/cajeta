@@ -5660,6 +5660,103 @@ private:
         return c;
     }
 
+    // The arguments before the first labelled one.
+    static size_t positionalArgs(const std::shared_ptr<MethodCallExpression>& mc) {
+        const auto& params = mc->getParameters();
+        size_t n = 0;
+        while (n < params.size() && params[n].label.empty()) ++n;
+        return n;
+    }
+
+    // `align: A` on a CooperativeMatrix load, store or storeAs (coop-stated-alignment
+    // spec §2.1): a trailing labelled argument, a constant power of two from 1 to 16,
+    // stating that the tile's address and its pitch in bytes are both multiples of A.
+    // 0 when nothing is stated. Any other label, or a bad value, fails the kernel
+    // naming the verb and its line.
+    uint32_t coopStatedAlignment(const std::string& name,
+                                 const std::shared_ptr<MethodCallExpression>& mc) {
+        const auto& params = mc->getParameters();
+        const std::string where = "CooperativeMatrix." + name + " at line "
+            + std::to_string(mc->getSourceLine());
+        uint32_t stated = 0;
+        for (size_t pi = 0; pi < params.size(); ++pi) {
+            std::string lab = params[pi].label;
+            while (!lab.empty() && (lab.back() == ':' || lab.back() == ' ')) lab.pop_back();
+            if (lab.empty()) continue;
+            if (lab != "align" || pi + 1 != params.size())
+                unsupported(where + ": the only label a " + name
+                            + " takes is a trailing `align:`, not `" + lab + ":`");
+            auto* ci = llvm::dyn_cast<llvm::ConstantInt>(lowerExpr(params[pi].expression));
+            if (!ci)
+                unsupported(where + ": `align:` must be a constant, the bytes the tile's "
+                            "address and pitch are promised to be multiples of");
+            const uint64_t a = ci->getZExtValue();
+            if (a == 0 || a > 16 || (a & (a - 1)) != 0)
+                unsupported(where + ": `align: " + std::to_string(a)
+                            + "` is not a power of two from 1 to 16");
+            stated = (uint32_t) a;
+        }
+        return stated;
+    }
+
+    // A checked build's test of a tile's `align:` (coop-stated-alignment spec §2.3):
+    // the tile's address and its pitch in bytes must both be multiples of the
+    // statement. A violation is recorded in the fault record and the access skipped,
+    // so the launch raises naming the call where a misaligned wmma would have faulted
+    // the context. The info word is the line, the stated bytes, 0x80 for a tile and
+    // 0x40 when the pitch broke it; the second word is the address or the pitch.
+    bool checkingCoopPlacement_ = false;
+    llvm::Value* checkedCoopAccess(const std::string& recv, const std::string& name,
+                                   const std::shared_ptr<MethodCallExpression>& mc,
+                                   uint32_t stated) {
+        const auto& args = mc->getParameters();
+        llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+        llvm::Value* base = nullptr;
+        llvm::Type* bElem = nullptr;
+        struct Reset {
+            bool& f;
+            ~Reset() { f = false; }
+        } reset{checkingCoopPlacement_};
+        checkingCoopPlacement_ = true;
+        if (positionalArgs(mc) != 4 || !resolveBufferBase(args[0].expression, base, bElem)
+                || !bElem)
+            return lowerCoopMatrixMethod(recv, name, mc);
+        const uint64_t eb = mod.getDataLayout().getTypeStoreSize(bElem).getFixedValue();
+        llvm::Value* ebv = llvm::ConstantInt::get(i64, eb);
+        llvm::Value* addr = builder.CreateAdd(
+            builder.CreatePtrToInt(base, i64, "tp.base"),
+            builder.CreateMul(coerceTo(lowerExpr(args[1].expression), i64,
+                                       exprSigned(args[1].expression)), ebv), "tp.addr");
+        llvm::Value* pitch = builder.CreateMul(
+            coerceTo(lowerExpr(args[3].expression), i64, exprSigned(args[3].expression)), ebv,
+            "tp.pitch");
+        llvm::Value* mask = llvm::ConstantInt::get(i64, stated - 1);
+        llvm::Value* zero = llvm::ConstantInt::get(i64, 0);
+        llvm::Value* bad = builder.CreateICmpNE(
+            builder.CreateAnd(builder.CreateOr(addr, pitch), mask), zero, "tp.bad");
+        llvm::Function* f = builder.GetInsertBlock()->getParent();
+        auto* faultBB = llvm::BasicBlock::Create(ctx, "tp.fault", f);
+        auto* okBB = llvm::BasicBlock::Create(ctx, "tp.ok", f);
+        auto* joinBB = llvm::BasicBlock::Create(ctx, "tp.join", f);
+        builder.CreateCondBr(bad, faultBB, okBB,
+                             llvm::MDBuilder(ctx).createBranchWeights(1, 1u << 20));
+        builder.SetInsertPoint(faultBB);
+        llvm::Value* addrBad =
+            builder.CreateICmpNE(builder.CreateAnd(addr, mask), zero, "tp.addrbad");
+        const uint64_t line = (uint64_t) std::max(mc->getSourceLine(), 0);
+        llvm::Value* info = builder.CreateSelect(
+            addrBad, llvm::ConstantInt::get(i64, (line << 8) | 0x80 | stated),
+            llvm::ConstantInt::get(i64, (line << 8) | 0xC0 | stated));
+        target.recordAlignFault(builder, mod, info,
+                                builder.CreateSelect(addrBad, addr, pitch));
+        builder.CreateBr(joinBB);
+        builder.SetInsertPoint(okBB);
+        lowerCoopMatrixMethod(recv, name, mc);
+        builder.CreateBr(joinBB);
+        builder.SetInsertPoint(joinBB);
+        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
+    }
+
     // The U of `acc.storeAs<U>(dst, ...)` (coop-converting-store spec §2.1),
     // after the refusals: the fragment is a float32 accumulator and U is
     // float16, bfloat16 or float32 (a plain store). U is the explicit type
@@ -5673,7 +5770,7 @@ private:
                                   std::to_string(slot.cols) + "," +
                                   std::to_string(slot.use) + ">";
         const auto& args = mc->getParameters();
-        if (args.size() != 4)
+        if (positionalArgs(mc) != 4)
             unsupported("CooperativeMatrix.storeAs expects (Buffer, offset, layout, stride)");
         if (slot.use != 2)
             unsupported("CooperativeMatrix.storeAs: a " + shape + " is an operand fragment; "
@@ -5709,6 +5806,11 @@ private:
             const std::shared_ptr<MethodCallExpression>& mc) {
         const auto& args = mc->getParameters();
         CoopMatrixSlot slot = coopMatrixSlots[recv];
+        const uint32_t stated = name == "load" || name == "store" || name == "storeAs"
+            ? coopStatedAlignment(name, mc) : 0;
+        if (stated > 1 && checkStatements_ && !checkingCoopPlacement_
+                && target.checksTilePlacement())
+            return checkedCoopAccess(recv, name, mc, stated);
         // storeAs<U> on a tier whose store already converts each element to the
         // buffer's type (the software and distributed tiles), or at the
         // accumulator's own type, IS the store.
@@ -5722,7 +5824,7 @@ private:
             return lowerStagedStoreAs(slot, args, storeAsTy);
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         if (name == "load" || name == "store" || storeAsTy) {
-            if (args.size() != 4)
+            if (positionalArgs(mc) != 4)
                 unsupported("CooperativeMatrix." + name +
                             " expects (Buffer, offset, layout, stride)");
             uint32_t swz = swizzleStrideOfArg(args[0].expression);
@@ -5749,7 +5851,7 @@ private:
             if (name == "load") {
                 llvm::Value* v = target.coopMatrixLoad(
                     builder, mod, ptr, layout, stride, slot.matrixType,
-                    slot.rows, slot.cols, slot.use, swz, blk);
+                    slot.rows, slot.cols, slot.use, swz, blk, stated);
                 builder.CreateStore(v, slot.alloca);
                 // Remember what this fragment was loaded as, so the multiply
                 // can pair the layouts. `slot` is a COPY, so record through
@@ -5763,12 +5865,12 @@ private:
                                                     recv + ".val");
                 target.coopMatrixStoreAs(builder, mod, ptr, v, storeAsTy, layout, stride,
                                          slot.rows, slot.cols, slot.use, slot.matrixType,
-                                         swz, blk);
+                                         swz, blk, stated);
             } else {
                 llvm::Value* v = builder.CreateLoad(slot.matrixType, slot.alloca,
                                                     recv + ".val");
                 target.coopMatrixStore(builder, mod, ptr, v, layout, stride,
-                                       slot.rows, slot.cols, slot.use, swz, blk);
+                                       slot.rows, slot.cols, slot.use, swz, blk, stated);
             }
             return llvm::ConstantInt::get(i32, 0);
         }
@@ -6244,7 +6346,7 @@ private:
         }
 
         if (name == "load" || name == "store") {
-            if (args.size() != 4)
+            if (positionalArgs(mc) != 4)
                 unsupported("CooperativeMatrix." + name +
                             " expects (Buffer, offset, layout, stride)");
             llvm::Value* base = nullptr; llvm::Type* bElem = nullptr;
@@ -6627,7 +6729,7 @@ private:
         }
 
         if (name == "load" || name == "store") {
-            if (args.size() != 4)
+            if (positionalArgs(mc) != 4)
                 unsupported("CooperativeMatrix." + name +
                             " expects (Buffer, offset, layout, stride)");
             llvm::Value* base = nullptr; llvm::Type* bElem = nullptr;
@@ -9247,7 +9349,7 @@ llvm::Value* LoweringTarget::coopMatrixLoad(
     llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*ptr*/,
     llvm::Value* /*layout*/, llvm::Value* /*stride*/, llvm::Type* /*matrixType*/,
     uint32_t /*rows*/, uint32_t /*cols*/, uint32_t /*use*/,
-    uint32_t /*swizzleStride*/, LdsBlockPad /*blockPad*/) {
+    uint32_t /*swizzleStride*/, LdsBlockPad /*blockPad*/, uint32_t /*statedAlign*/) {
     throw coopMatrixUnsupported(name());
 }
 
@@ -9255,7 +9357,7 @@ void LoweringTarget::coopMatrixStore(
     llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*ptr*/,
     llvm::Value* /*matrixVal*/, llvm::Value* /*layout*/, llvm::Value* /*stride*/,
     uint32_t /*rows*/, uint32_t /*cols*/, uint32_t /*use*/,
-    uint32_t /*swizzleStride*/, LdsBlockPad /*blockPad*/) {
+    uint32_t /*swizzleStride*/, LdsBlockPad /*blockPad*/, uint32_t /*statedAlign*/) {
     throw coopMatrixUnsupported(name());
 }
 
@@ -9263,7 +9365,7 @@ void LoweringTarget::coopMatrixStoreAs(
     llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr, llvm::Value* matrixVal,
     llvm::Type* u, llvm::Value* layout, llvm::Value* stride, uint32_t rows,
     uint32_t cols, uint32_t use, llvm::Type* matrixType, uint32_t swizzleStride,
-    LdsBlockPad blockPad) {
+    LdsBlockPad blockPad, uint32_t /*statedAlign*/) {
     const unsigned n = coopMatrixElementCount(matrixType);
     llvm::Type* comp = nullptr;
     if (auto* st = llvm::dyn_cast<llvm::StructType>(matrixType))

@@ -2188,7 +2188,14 @@ private:
         std::vector<Val> a;
         if (self.k == Val::TileRef && tileVerbs().count(nm))
             for (auto& p : mc->getParameters()) a.push_back(verbArg(p.expression.get()));
-        else a = args(mc);
+        else if (self.k == Val::TileRef) {
+            // A tile's trailing `align:` (coop-stated-alignment spec §2.1) promises
+            // the placement; it never changes which cells are read or written.
+            for (auto& p : mc->getParameters())
+                if (p.label.empty()) a.push_back(eval(p.expression));
+        } else {
+            a = args(mc);
+        }
         if (self.k == Val::MemRef) return bufferCall(self, nm, mc, a);
         if (self.k == Val::Vector && nm == "dotAccum") return dotAccum(self, a, where);
         if (self.k == Val::Vector && vectorMethods().count(nm)) return vectorCall(self, nm, a, where);

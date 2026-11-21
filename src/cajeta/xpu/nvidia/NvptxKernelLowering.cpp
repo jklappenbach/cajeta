@@ -529,7 +529,7 @@ public:
                                 llvm::Value* stride, llvm::Type* matrixType,
                                 uint32_t /*rows*/, uint32_t /*cols*/,
                                 uint32_t use, uint32_t swz = 0,
-                                LdsBlockPad /*blk*/ = {}) override {
+                                LdsBlockPad /*blk*/ = {}, uint32_t statedAlign = 0) override {
         if (swz) {
             // Degrade to identity: NVPTX stages the tile unpermuted too.
             std::cerr << "note: [swizzle-tier] CooperativeMatrix.load from a "
@@ -544,6 +544,9 @@ public:
             b, use == 0 ? "load.a" : use == 1 ? "load.b" : "load.c",
             cajeta::xpu::nativeInstructionName(
                 nvWmmaLoadId(use, nvFragScalar(matrixType), lay)));
+        // A statement that covers the run is wmma alone (coop-stated-alignment §2.1).
+        if (nvStatementCovers(statedAlign, matrixType, use))
+            return b.CreateCall(f, {ptr, stride}, "wmma.ld");
         // wmma only where the tile and stride keep each lane's run aligned; anything
         // else gathers through the fragment's map (spec §2.5).
         llvm::LLVMContext& ctx = m.getContext();
@@ -610,6 +613,13 @@ public:
                                             llvm::GlobalValue::NotThreadLocal, 1);
         }
         b.CreateStore(llvm::ConstantInt::get(i32, 1), flag);
+    }
+    // Whether a kernel's `align:` covers the fragment's run (coop-stated-alignment
+    // spec §2.1): the statement promises the address and the pitch, which is all the
+    // guard tests. A forced per-element build keeps the guard's other side.
+    static bool nvStatementCovers(uint32_t statedAlign, llvm::Type* matrixType,
+                                  uint32_t use) {
+        return !nvPlacementForced() && statedAlign >= nvRunBytes(matrixType, use);
     }
     static llvm::Value* nvRunAligned(llvm::IRBuilderBase& b, llvm::Value* ptr,
                                      llvm::Value* stride, llvm::Type* matrixType,
@@ -711,7 +721,7 @@ public:
                          llvm::Value* matrixVal, llvm::Value* layout,
                          llvm::Value* stride, uint32_t /*rows*/, uint32_t /*cols*/,
                          uint32_t /*use*/, uint32_t swz = 0,
-                         LdsBlockPad /*blk*/ = {}) override {
+                         LdsBlockPad /*blk*/ = {}, uint32_t statedAlign = 0) override {
         if (swz) {
             // U5.3: degrade to identity, don't reject (see coopMatrixLoad).
             std::cerr << "note: [swizzle-tier] CooperativeMatrix.store to a "
@@ -734,6 +744,18 @@ public:
                 ? llvm::Intrinsic::nvvm_wmma_m16n16k16_store_d_f32_col_stride
                 : llvm::Intrinsic::nvvm_wmma_m16n16k16_store_d_f32_row_stride;
         cajeta::xpu::recordNativeOp(b, "store", cajeta::xpu::nativeInstructionName(sid));
+        auto wmmaStore = [&] {
+            std::vector<llvm::Value*> args;
+            args.push_back(ptr);
+            appendStructElems(b, matrixVal, args);
+            args.push_back(stride);
+            b.CreateCall(nvDecl(m, sid, ptr->getType()), args);
+        };
+        // A statement that covers the run is wmma alone (coop-stated-alignment §2.1).
+        if (nvStatementCovers(statedAlign, dFrag, 2)) {
+            wmmaStore();
+            return;
+        }
         // wmma only where each lane's run stays aligned; anything else scatters
         // through the accumulator's map (spec §2.5).
         llvm::LLVMContext& ctx = m.getContext();
@@ -745,12 +767,7 @@ public:
         llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx, "st.done", fn);
         b.CreateCondBr(nvRunAligned(b, ptr, stride, dFrag, 2), wmma, scatter);
         b.SetInsertPoint(wmma);
-        llvm::Function* f = nvDecl(m, sid, ptr->getType());
-        std::vector<llvm::Value*> args;
-        args.push_back(ptr);
-        appendStructElems(b, matrixVal, args);
-        args.push_back(stride);
-        b.CreateCall(f, args);
+        wmmaStore();
         b.CreateBr(done);
         b.SetInsertPoint(scatter);
         notePlacementFallback(b, m, "store");
@@ -785,7 +802,7 @@ public:
                            llvm::Value* matrixVal, llvm::Type* u, llvm::Value* layout,
                            llvm::Value* stride, uint32_t rows, uint32_t cols,
                            uint32_t use, llvm::Type* matrixType, uint32_t swz,
-                           LdsBlockPad blk) override {
+                           LdsBlockPad blk, uint32_t statedAlign) override {
         auto* dFrag = llvm::dyn_cast<llvm::StructType>(matrixType);
         if (swz || blk.period || !dFrag || fragCount(matrixType) != 8 ||
             !dFrag->getElementType(0)->isFloatTy() || rows != 16 || cols != 16 || use != 2) {
@@ -798,9 +815,6 @@ public:
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
         llvm::Function* fn = b.GetInsertBlock()->getParent();
-        llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx, "sa.done", fn);
-        llvm::BasicBlock* elem = llvm::BasicBlock::Create(ctx, "sa.elem", fn);
-        llvm::Value* addr = b.CreatePtrToInt(ptr, i64, "sa.addr");
         auto narrowPair = [&](unsigned k) {
             llvm::Value* v = llvm::PoisonValue::get(llvm::FixedVectorType::get(u, 2));
             v = b.CreateInsertElement(
@@ -813,14 +827,7 @@ public:
             return b.CreateICmpEQ(b.CreateAnd(x, llvm::ConstantInt::get(x->getType(), mask)),
                                   llvm::ConstantInt::get(x->getType(), 0));
         };
-        if (u->isHalfTy()) {
-            llvm::BasicBlock* wmma = llvm::BasicBlock::Create(ctx, "sa.wmma", fn, elem);
-            llvm::BasicBlock* next = llvm::BasicBlock::Create(ctx, "sa.next", fn, elem);
-            // The f16 accumulator's run is a 4-byte pair (spec §2.5): a 4-byte aligned
-            // tile and an even stride.
-            b.CreateCondBr(nvPlacementOk(b, b.CreateAnd(isZero(addr, 3), isZero(stride, 1))),
-                           wmma, next);
-            b.SetInsertPoint(wmma);
+        auto f16Wmma = [&] {
             const llvm::Intrinsic::ID sid = lay == 1
                 ? llvm::Intrinsic::nvvm_wmma_m16n16k16_store_d_f16_col_stride
                 : llvm::Intrinsic::nvvm_wmma_m16n16k16_store_d_f16_row_stride;
@@ -829,14 +836,8 @@ public:
             for (unsigned k = 0; k < 4; ++k) args.push_back(narrowPair(k));
             args.push_back(stride);
             b.CreateCall(nvDecl(m, sid, ptr->getType()), args);
-            b.CreateBr(done);
-            b.SetInsertPoint(next);
-        }
-        if (lay == 0 && !u->isHalfTy()) {
-            llvm::BasicBlock* pairs = llvm::BasicBlock::Create(ctx, "sa.pairs", fn, elem);
-            b.CreateCondBr(nvPlacementOk(b, b.CreateAnd(isZero(addr, 3), isZero(stride, 1))),
-                           pairs, elem);
-            b.SetInsertPoint(pairs);
+        };
+        auto bf16Pairs = [&] {
             for (unsigned k = 0; k < 4; ++k) {
                 llvm::Value* row = nullptr;
                 llvm::Value* col = nullptr;
@@ -846,6 +847,36 @@ public:
                 b.CreateAlignedStore(narrowPair(k), b.CreateGEP(u, ptr, idx, "sa.pp"),
                                      llvm::Align(4));
             }
+        };
+        // Both converting forms move a 4-byte pair, so a statement of 4 or more takes
+        // them alone (coop-stated-alignment §2.1).
+        if (!nvPlacementForced() && statedAlign >= 4 && (u->isHalfTy() || lay == 0)) {
+            if (u->isHalfTy()) f16Wmma();
+            else bf16Pairs();
+            return;
+        }
+        llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx, "sa.done", fn);
+        llvm::BasicBlock* elem = llvm::BasicBlock::Create(ctx, "sa.elem", fn);
+        llvm::Value* addr = b.CreatePtrToInt(ptr, i64, "sa.addr");
+        // The f16 accumulator's run is a 4-byte pair (spec §2.5): a 4-byte aligned tile
+        // and an even stride. The bf16 pairs need the same.
+        auto pairAligned = [&] {
+            return nvPlacementOk(b, b.CreateAnd(isZero(addr, 3), isZero(stride, 1)));
+        };
+        if (u->isHalfTy()) {
+            llvm::BasicBlock* wmma = llvm::BasicBlock::Create(ctx, "sa.wmma", fn, elem);
+            llvm::BasicBlock* next = llvm::BasicBlock::Create(ctx, "sa.next", fn, elem);
+            b.CreateCondBr(pairAligned(), wmma, next);
+            b.SetInsertPoint(wmma);
+            f16Wmma();
+            b.CreateBr(done);
+            b.SetInsertPoint(next);
+        }
+        if (lay == 0 && !u->isHalfTy()) {
+            llvm::BasicBlock* pairs = llvm::BasicBlock::Create(ctx, "sa.pairs", fn, elem);
+            b.CreateCondBr(pairAligned(), pairs, elem);
+            b.SetInsertPoint(pairs);
+            bf16Pairs();
             b.CreateBr(done);
         } else {
             b.CreateBr(elem);

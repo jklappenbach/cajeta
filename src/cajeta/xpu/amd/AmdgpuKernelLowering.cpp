@@ -992,7 +992,7 @@ public:
                                 llvm::Value* stride, llvm::Type* matrixType,
                                 uint32_t /*rows*/, uint32_t /*cols*/,
                                 uint32_t use, uint32_t swz = 0,
-                                LdsBlockPad blk = {}) override {
+                                LdsBlockPad blk = {}, uint32_t /*statedAlign*/ = 0) override {
         auto* vecTy = llvm::cast<llvm::FixedVectorType>(matrixType);
         llvm::Type* fe = vecTy->getElementType();
         unsigned n = vecTy->getNumElements();
@@ -1083,7 +1083,7 @@ public:
                          llvm::Value* matrixVal, llvm::Value* layout,
                          llvm::Value* stride, uint32_t /*rows*/, uint32_t /*cols*/,
                          uint32_t use, uint32_t swz = 0,
-                         LdsBlockPad blk = {}) override {
+                         LdsBlockPad blk = {}, uint32_t /*statedAlign*/ = 0) override {
         auto* vecTy = llvm::cast<llvm::FixedVectorType>(matrixVal->getType());
         llvm::Type* fe = vecTy->getElementType();
         unsigned n = vecTy->getNumElements();

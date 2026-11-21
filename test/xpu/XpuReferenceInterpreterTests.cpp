@@ -388,6 +388,31 @@ TEST(XpuReferenceInterpreter, cooperativeMatrixFragmentsMatchTheCpuBackend) {
     EXPECT_EQ(compareOn<float>(p, ins, 0, shape(1, 32), 0, 32), "");
 }
 
+// A tile's `align:` (coop-stated-alignment spec §2.1) promises the placement and
+// never changes the cells: the stated tile reads and writes what the bare one does.
+TEST(XpuReferenceInterpreter, aStatedTileAlignmentMatchesTheCpuBackend) {
+    Pair p(R"CJ(
+    @Kernel
+    public static void refStated(KernelBuffer<float32> c, KernelBuffer<float32> a,
+                                 KernelBuffer<float32> b) {
+        CooperativeMatrix<float32,16,16,0> ta;
+        CooperativeMatrix<float32,16,16,1> tb;
+        CooperativeMatrix<float32,16,16,2> acc;
+        acc.splat(1.0f);
+        for (uint32 kt = 0; kt < 2; kt = kt + 1) {
+            ta.load(a, kt * 16, 0, 32, align: 16);
+            tb.load(b, kt * 16, 1, 32, align: 16);
+            acc.mma(ta, tb);
+        }
+        acc.store(c, 0, 0, 16, align: 16);
+    }
+)CJ", "refStated");
+    std::vector<float> a(16 * 32), b(32 * 16);
+    for (int i = 0; i < 16 * 32; ++i) { a[i] = (float) ((i * 7) % 11 - 5); b[i] = (float) ((i * 5) % 9 - 4); }
+    std::vector<In> ins = {buffer(std::vector<float>(256)), buffer(a), buffer(b)};
+    EXPECT_EQ(compareOn<float>(p, ins, 0, shape(1, 32), 0, 32), "");
+}
+
 // Group.mac(acc, a, b) is the surface's dp4a dot: acc plus the sum of the
 // int8 products, in a wrapping int32, both operands signed as the vectors
 // are (the same as `a.dotSum(b, acc)`).

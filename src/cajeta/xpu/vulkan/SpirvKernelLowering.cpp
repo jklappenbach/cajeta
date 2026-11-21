@@ -992,7 +992,7 @@ public:
                                 llvm::Value* stride, llvm::Type* matrixType,
                                 uint32_t /*rows*/, uint32_t /*cols*/,
                                 uint32_t /*use*/, uint32_t swz = 0,
-                                LdsBlockPad /*blk*/ = {}) override {
+                                LdsBlockPad /*blk*/ = {}, uint32_t /*statedAlign*/ = 0) override {
         if (swz) {
             // Degrade to identity rather than reject: the tile was staged unpermuted.
             std::cerr << "note: [swizzle-tier] CooperativeMatrix.load from a "
@@ -1009,7 +1009,7 @@ public:
                          llvm::Value* matrixVal, llvm::Value* layout,
                          llvm::Value* stride, uint32_t /*rows*/, uint32_t /*cols*/,
                          uint32_t /*use*/, uint32_t swz = 0,
-                         LdsBlockPad /*blk*/ = {}) override {
+                         LdsBlockPad /*blk*/ = {}, uint32_t /*statedAlign*/ = 0) override {
         if (swz) {
             std::cerr << "note: [swizzle-tier] CooperativeMatrix.store to a "
                          "Swizzled<T,S> tile uses the IDENTITY layout on SPIR-V "
@@ -1192,6 +1192,8 @@ public:
     // to a buffer of its own, and reads back once the launch is flushed. Words:
     // 0 = (line << 8) | stated bytes, first violation wins; 2, 3 = the index.
     // i32 so the kernel needs no 64-bit atomics.
+    bool checksTilePlacement() const override { return false; }
+
     void recordAlignFault(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* info,
                           llvm::Value* index) override {
         llvm::LLVMContext& ctx = m.getContext();

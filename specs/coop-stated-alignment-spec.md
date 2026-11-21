@@ -58,10 +58,13 @@ Use cases:
 ### 2.3 A wrong statement is caught where it can be
 
 A stated alignment the address does not meet is undefined on nvptx, as with `vload`: the
-tile faults or writes wrong cells. A `--debug` build (bounds checks on) verifies each
-stated alignment at run time and traps with a named error giving the kernel, the address
-and the stated alignment, so a test run finds a wrong statement before a release build
-hides it.
+tile faults or writes wrong cells. A `--debug` build (ubTraps on, as for `vload`'s
+statement) verifies each stated alignment at run time. A violation is recorded in the
+kernel's fault record and the access is skipped, so a misaligned wmma never faults the
+context, and the launch fails with a named error giving the kernel, the line, the stated
+alignment and the misaligned address or pitch. A test run finds a wrong statement before
+a release build hides it. Vulkan is not checked: its logical pointers have no address,
+and it has no guard to drop.
 
 Use cases:
 1. A test that states `align: 16` on a tile at offset 2 halves fails in `--debug` with an

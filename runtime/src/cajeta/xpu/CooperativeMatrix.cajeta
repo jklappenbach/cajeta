@@ -167,6 +167,14 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
      * (in elements). `offset` selects a sub-tile of a larger matrix: for a
      * row-major M×K matrix, tile (ti,tj) starts at `(ti*Rows)*K + tj*Cols` with
      * stride `K` — the addressing a tiled GEMM walks over.
+     *
+     * `load`, `store` and `storeAs` take a trailing `align: A`, a constant power of
+     * two from 1 to 16, stating that the tile's address and its pitch in bytes are
+     * multiples of `A`. NVIDIA then drops the run-time placement guard where the
+     * statement covers the fragment's run, and a debug build tests it
+     * (CajetaXPU.md §3.3, "Tile placement"):
+     *
+     *     a.load(xs, offset, 0, stride, align: 16);
      */
     @Intrinsic
     public final void load(KernelBuffer<T> src, uint32 offset, uint32 layout, uint32 stride);

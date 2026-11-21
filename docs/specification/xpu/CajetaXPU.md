@@ -296,6 +296,32 @@ converts and stores each element through the lane-to-element map. Any other
 name, and the reference interpreter defines it for the conformance corpus
 (coop-converting-store). It is never slower than the loop it replaces.
 
+**Tile placement.** A tile can sit at any offset and any stride, and every
+backend reads and writes the right cells there. NVIDIA's `wmma` needs more:
+each lane moves a contiguous run as one access, so the tile's address and its
+pitch in bytes must be multiples of that run. The run is 8 bytes for a float32
+or int32 accumulator and 4 for a 16-bit fragment or an 8-bit operand. Where the
+compiler cannot prove that, nvptx guards the access at run time, taking `wmma`
+when the placement is aligned and a per-element form otherwise. The guard costs
+registers, because the site carries both forms. A kernel that knows its tiles
+are aligned says so, and nvptx emits `wmma` alone:
+
+```cajeta
+a.load(xs, offset, 0, stride, align: 16);
+acc.storeAs<float16>(y, offset, 0, n, align: 16);
+```
+
+`load`, `store` and `storeAs` take the same trailing `align:` as `vload`, a
+constant power of two from 1 to 16. It states that the tile's address and its
+pitch are both multiples of that many bytes. A statement narrower than the
+run changes nothing, and the other backends accept it without effect. A tile
+at a constant offset with a constant stride, such as a shared panel, is proven
+aligned without one. A build with `--ub-traps=on` (every debug build) tests
+each statement on every backend but Vulkan. A violation is recorded, the
+access is skipped, and the launch throws `XpuLaunchException` naming the
+kernel, the line and the tile's address or pitch. Two cajeta-llm GEMMs that
+spilled on sm_89 under the guard spill nothing once they state it.
+
 ### 3.4 Occupancy: the block the kernel is budgeted for
 
 A backend budgets a kernel's registers for the largest block it may be

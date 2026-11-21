@@ -96,7 +96,9 @@ static void cajeta_xpu_clear_launch_refusal(void) {
 static __thread int64_t g_xpu_refusal_detail[3];   // line, stated bytes, index
 
 // Raises a fault record's first violation as refusal reason 8: `info` is
-// (line << 8) | stated bytes, zero when the launch broke nothing.
+// (line << 8) | flags | stated bytes, zero when the launch broke nothing. The flags
+// are 0x80 for a cooperative-matrix tile (coop-stated-alignment spec §2.3), whose
+// `index` is its byte address, and 0x40 when the tile's pitch broke it instead.
 static void cajeta_xpu_note_align_fault(const char* name, int32_t backend,
                                         int64_t info, int64_t index) {
     if (info == 0) return;
@@ -105,9 +107,13 @@ static void cajeta_xpu_note_align_fault(const char* name, int32_t backend,
     g_xpu_refusal_detail[0] = info >> 8;
     g_xpu_refusal_detail[1] = info & 0xFF;
     g_xpu_refusal_detail[2] = index;
+    const char* what = (info & 0x80) == 0 ? "element index "
+                     : (info & 0x40) == 0 ? "the tile's byte address "
+                                          : "the tile's pitch of ";
     fprintf(stderr, "cajeta.xpu: kernel '%s' broke its `align: %lld` at line %lld: "
-            "element index %lld is not a multiple of it\n", name ? name : "?",
-            (long long) (info & 0xFF), (long long) (info >> 8), (long long) index);
+            "%s%lld%s is not a multiple of it\n", name ? name : "?",
+            (long long) (info & 0x3F), (long long) (info >> 8), what, (long long) index,
+            (info & 0xC0) == 0xC0 ? " bytes" : "");
 }
 
 // --- accessors for the stdlib launch-site check (Device.checkLaunch) -------- //

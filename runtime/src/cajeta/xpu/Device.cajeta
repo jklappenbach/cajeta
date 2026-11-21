@@ -581,11 +581,20 @@ public final class Device {
         }
         if (reason == 8) {
             int64 line = Device.nativeLastLaunchDetail(0);
-            int64 stated = Device.nativeLastLaunchDetail(1);
+            int64 bits = Device.nativeLastLaunchDetail(1);
             int64 index = Device.nativeLastLaunchDetail(2);
+            // 0x80: a cooperative-matrix tile's address, 0x40: its pitch
+            // (coop-stated-alignment spec §2.3); otherwise an element index.
+            String what = "element index ";
+            String unit = "";
+            if ((bits & 128) != 0) { what = "the tile's byte address "; }
+            if ((bits & 192) == 192) {
+                what = "the tile's pitch of ";
+                unit = " bytes";
+            }
             String broke #= "cajeta.xpu: kernel '" + kernel + "' on backend '" + backend
-                          + "' broke its `align: " + stated + "` at line " + line
-                          + ": element index " + index + " is not a multiple of it";
+                          + "' broke its `align: " + (bits & 63) + "` at line " + line
+                          + ": " + what + index + unit + " is not a multiple of it";
             throw heap XpuLaunchException(#broke);
         }
         if (reason == 11) {

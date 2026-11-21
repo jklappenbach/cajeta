@@ -340,6 +340,10 @@ namespace xpu {
         virtual llvm::Value* checkStatedAlignment(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* index,
             uint64_t laneElems, uint64_t statedBytes, unsigned line);
+        // Whether a checked build tests a cooperative-matrix tile's `align:`
+        // (coop-stated-alignment spec §2.3), which takes the tile's address. Vulkan's
+        // logical pointers have none, and it has no placement guard to drop.
+        virtual bool checksTilePlacement() const { return true; }
         // Writes one violation into the kernel's fault record. Default: the
         // device global kAlignFaultGlobal, first violation wins. The cpu
         // backend calls into the runtime instead.
@@ -640,11 +644,16 @@ namespace xpu {
 
         // m.load(src, layout, stride) → the loaded tile. `rows`/`cols`/`use` serve
         // per-lane backends; a whole-tile hardware load rejects swizzle/blockPad.
+        // `statedAlign` is the kernel's `align:` (coop-stated-alignment spec §2.1):
+        // the tile's address and its pitch in bytes are multiples of it, 0 when
+        // nothing is stated. A target with a placement guard drops it where the
+        // statement covers the access; the others ignore it.
         virtual llvm::Value* coopMatrixLoad(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
             llvm::Value* layout, llvm::Value* stride, llvm::Type* matrixType,
             uint32_t rows, uint32_t cols, uint32_t use,
-            uint32_t swizzleStride = 0, LdsBlockPad blockPad = {});
+            uint32_t swizzleStride = 0, LdsBlockPad blockPad = {},
+            uint32_t statedAlign = 0);
 
         // m.store(dst, layout, stride): store `matrixVal` to `ptr`. Shape and
         // swizzle operands as in coopMatrixLoad. Void op.
@@ -652,7 +661,8 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
             llvm::Value* matrixVal, llvm::Value* layout, llvm::Value* stride,
             uint32_t rows, uint32_t cols, uint32_t use,
-            uint32_t swizzleStride = 0, LdsBlockPad blockPad = {});
+            uint32_t swizzleStride = 0, LdsBlockPad blockPad = {},
+            uint32_t statedAlign = 0);
 
         // acc.storeAs<U>(dst, layout, stride) (coop-converting-store spec §2.1):
         // store the float32 accumulator `matrixVal` to `ptr` (a U pointer at the
@@ -666,7 +676,7 @@ namespace xpu {
             llvm::Value* matrixVal, llvm::Type* u, llvm::Value* layout,
             llvm::Value* stride, uint32_t rows, uint32_t cols, uint32_t use,
             llvm::Type* matrixType, uint32_t swizzleStride = 0,
-            LdsBlockPad blockPad = {});
+            LdsBlockPad blockPad = {}, uint32_t statedAlign = 0);
 
         // c.mma(a, b) → a*b+c. `signFlags` (A 0x1, B 0x2, C 0x4, Result 0x8) carries
         // the multiply's signedness as DATA — int types are signless in LLVM/SPIR-V.

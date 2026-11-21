@@ -302,7 +302,7 @@ public:
     llvm::Value* coopMatrixLoad(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
                                 llvm::Value* layout, llvm::Value* stride, llvm::Type*,
                                 uint32_t, uint32_t, uint32_t use, uint32_t swz = 0,
-                                LdsBlockPad blk = {}) override {
+                                LdsBlockPad blk = {}, uint32_t /*statedAlign*/ = 0) override {
         if (swz || blk.period)
             throw cajeta::Exception("AMX tile load takes no swizzle or block pad", "XPU-N03");
         llvm::LLVMContext& ctx = m.getContext();
@@ -392,7 +392,7 @@ public:
     void coopMatrixStore(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
                          llvm::Value* matrixVal, llvm::Value* layout, llvm::Value* stride,
                          uint32_t, uint32_t, uint32_t use, uint32_t swz = 0,
-                         LdsBlockPad blk = {}) override {
+                         LdsBlockPad blk = {}, uint32_t /*statedAlign*/ = 0) override {
         if (swz || blk.period || use != 2)
             throw cajeta::Exception("AMX stores the accumulator tile only, without swizzle or block pad", "XPU-N03");
         llvm::LLVMContext& ctx = m.getContext();
