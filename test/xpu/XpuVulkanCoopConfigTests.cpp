@@ -173,5 +173,11 @@ public class R {
         GTEST_SKIP() << "the portable tile is refused here (subgroups under 32)";
     }
     EXPECT_EQ(got, -1) << err;
+#ifndef _WIN32
+    // Where the device lists int8 (RADV), native cells would be right too, so the note is
+    // what proves the rung. On Windows the JIT'd runtime's stderr does not reach gtest's
+    // capture (device-tests 44944185988); there the 4090, which lists no 16x16x16 int8,
+    // proves it by the cells, all 0 without the rung.
     EXPECT_NE(err.find("[xpu-rung]"), std::string::npos) << err;
+#endif
 }
