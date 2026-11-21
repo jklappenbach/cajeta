@@ -53,6 +53,9 @@ public:
     // `!nontemporal` becomes the slc / nt cache policy — a @Streaming buffer skips L2.
     bool supportsNontemporal() const override { return true; }
 
+    // A tile's `align:` changes no amdgpu code, so a checked build does not test it.
+    bool checksTilePlacement() const override { return false; }
+
     // No AMDGPU inline-ray-query seam, so the Acceleration Structure is a software BVH.
     NounImpl accelImpl() const override { return NounImpl::SoftwareBvh; }
 

@@ -537,6 +537,15 @@ TEST(XpuCoopStatedAlignment, aReleaseBuildCarriesNoCheckOnNvptx) {
     EXPECT_FALSE(guarded(l));
 }
 
+// amdgpu drops no guard, so a checked build adds no test there: it cost llm's q4k GEMM a spill.
+TEST(XpuCoopStatedAlignment, aCheckedBuildCarriesNoCheckOnAmdgpu) {
+    using namespace cajeta::xpu::probe;
+    Lowered l = lowerForAmdgpu(kViolation, "stated", "test.V", "gfx1151", "coop_chk_amd",
+                               modeFlags(cajeta::CompilerMode::Debug, true));
+    ASSERT_TRUE(l.ok) << l.why;
+    EXPECT_EQ(l.ir.find("__cajeta_xpu_align_fault"), std::string::npos) << l.ir;
+}
+
 TEST(XpuCoopStatedAlignment, aWrongStatementRaisesNamingTheCallOnCpu) {
     aWrongStatementRaises(cajeta::xpu::Backend::Cpu);
 }
@@ -546,9 +555,18 @@ TEST(XpuCoopStatedAlignmentDeviceTests, aWrongStatementRaisesNamingTheCallOnNvpt
     aWrongStatementRaises(cajeta::xpu::Backend::Nvptx);
 }
 
-TEST(XpuCoopStatedAlignmentDeviceTests, aWrongStatementRaisesNamingTheCallOnAmdgpu) {
+// A wrong statement changes nothing on amdgpu: the launch runs and every cell is right.
+TEST(XpuCoopStatedAlignmentDeviceTests, aWrongStatementRunsUncheckedOnAmdgpu) {
     if (!cajeta::xpu::test::hipAvailable()) GTEST_SKIP() << "no ROCm device";
-    aWrongStatementRaises(cajeta::xpu::Backend::Amdgpu);
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(kViolation, "test.V", o);
+    ASSERT_NE(jit, nullptr);
+    auto run = jit->lookup<int32_t (*)(uint32_t, uint32_t)>("run");
+    ASSERT_NE(run, nullptr);
+    EXPECT_EQ(run(2, 16), 100);
+    EXPECT_EQ(run(0, 18), 100);
+    EXPECT_EQ(run(4, 20), 100);
 }
 
 // ---- Unit 3: the docs' example (CajetaXPU.md §3.3, "Tile placement") -------------
