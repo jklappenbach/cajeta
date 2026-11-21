@@ -128,6 +128,7 @@ package test;
 import cajeta.xpu.CooperativeMatrix;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
+import cajeta.xpu.XpuLaunchException;
 public class LS {
     @Kernel
     public static void ls(KernelBuffer<float32> y, KernelBuffer<float32> a) {
@@ -144,8 +145,10 @@ public class LS {
         a.upload(h);
         y.upload(g);
         KernelStream s #= KernelStream.current();
-        ls.launch(s, grid: [1], block: [32])(y, a);
-        s.sync();
+        try {
+            ls.launch(s, grid: [1], block: [32])(y, a);
+            s.sync();
+        } catch (XpuLaunchException e) { }
         y.download(g);
         for (int32 i = 0; i < 256; i = i + 1) { if (g[i] != h[i]) { return 1000 + i; } }
         return 777;

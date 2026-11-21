@@ -148,6 +148,8 @@ int expectKernelLines(const std::string& out, const std::string& bytes, const st
 // Forced onto unmapped device-local memory, every kernel buffer is unmapped and every value round-trips.
 TEST(VulkanUnmappedBufferDeviceTests, forcedUnmappedBuffersRoundTripOnVulkan) {
     if (!cajeta::xpu::test::vulkanAvailable()) GTEST_SKIP() << "no Vulkan device";
+    if (!cajeta::xpu::vulkan::VulkanDriver::unmappedDeviceLocalAvailable())
+        GTEST_SKIP() << "the device has no unmapped device-local memory type";
     std::string out = runProbe({{"CAJETA_XPU_VK_UNMAPPED", "1"}});
     EXPECT_NE(out.find("result 777"), std::string::npos) << out;
     EXPECT_EQ(expectKernelLines(out, "4194304", "device-local 1, mapped 0"), 3) << out;
@@ -157,6 +159,8 @@ TEST(VulkanUnmappedBufferDeviceTests, forcedUnmappedBuffersRoundTripOnVulkan) {
 // With a small BAR window, buffers over 1 MB skip it and small ones stay mapped.
 TEST(VulkanUnmappedBufferDeviceTests, aSmallBarKeepsItsWindowForSmallBuffers) {
     if (!cajeta::xpu::test::vulkanAvailable()) GTEST_SKIP() << "no Vulkan device";
+    if (!cajeta::xpu::vulkan::VulkanDriver::unmappedDeviceLocalAvailable())
+        GTEST_SKIP() << "the device has no unmapped device-local memory type";
     std::string out = runProbe({{"CAJETA_XPU_VK_SMALL_BAR", "1"}});
     EXPECT_NE(out.find("result 777"), std::string::npos) << out;
     EXPECT_EQ(expectKernelLines(out, "4194304", "device-local 1, mapped 0"), 3) << out;

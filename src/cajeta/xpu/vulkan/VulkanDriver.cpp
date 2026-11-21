@@ -447,6 +447,17 @@ bool VulkanDriver::available() {
 
 bool VulkanDriver::builtWithVulkan() { return true; }
 
+bool VulkanDriver::unmappedDeviceLocalAvailable() {
+    VulkanDriver probe;
+    if (!probe.init()) return false;
+    const VkPhysicalDeviceMemoryProperties& mp = probe.impl->memProps;
+    for (uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
+        VkMemoryPropertyFlags f = mp.memoryTypes[i].propertyFlags;
+        if ((f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) && !(f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) return true;
+    }
+    return false;
+}
+
 bool VulkanDriver::rayQueryAvailable() {
     void* lib = nullptr;
 #if defined(__APPLE__)
@@ -1157,6 +1168,7 @@ std::uint32_t VulkanDriver::subgroupWidth() { return 0; }
 bool VulkanDriver::canRunSubgroupWidth(std::uint32_t) { return false; }
 bool VulkanDriver::shaderAtomicFloatMinMaxAvailable() { return false; }
 bool VulkanDriver::shaderAtomicInt64Available() { return false; }
+bool VulkanDriver::unmappedDeviceLocalAvailable() { return false; }
 bool VulkanDriver::init() { return false; }
 VulkanDriver::Buffer VulkanDriver::alloc(std::size_t) { return 0; }
 bool VulkanDriver::upload(Buffer, const void*, std::size_t) { return false; }

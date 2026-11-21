@@ -56,6 +56,9 @@ namespace vulkan {
         // is what backs the Int64Atomics capability of Buffer<int64>.atomic*.
         static bool shaderAtomicInt64Available();
 
+        // True iff the device has a device-local memory type the host cannot map (llvmpipe has none).
+        static bool unmappedDeviceLocalAvailable();
+
         VulkanDriver() = default;
         ~VulkanDriver();
         VulkanDriver(const VulkanDriver&) = delete;
