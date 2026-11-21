@@ -1,6 +1,6 @@
 # coop-stated-alignment — a kernel states its tile alignment, and nvptx drops the placement guard
 
-Plan: [coop-stated-alignment-plan](../agents/coop-stated-alignment-plan.md).
+Plan: [coop-stated-alignment-plan](../../agents/archive/coop-stated-alignment-plan.md).
 Decided with Julian 2026-11-20: the author states alignment with `align:`, as `vload` and
 `vstore` already do, and a `--debug` build traps on a wrong statement. Approved 2026-11-20.
 
