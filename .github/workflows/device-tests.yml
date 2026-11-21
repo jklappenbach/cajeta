@@ -29,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       legs:
-        description: 'Which runners to use'
+        description: 'Which runners to use (Vulkan runs on windows only: wsl hides its llvmpipe ICD)'
         required: true
         type: choice
         options: [both, wsl, windows]
@@ -246,7 +246,7 @@ jobs:
         run: ./build/src/cajeta --version
 
       - name: Benchmark (scanparts on Vulkan)
-        if: ${{ inputs.bench == 'scanparts' }}
+        if: ${{ inputs.bench == 'scanparts' && matrix.key == 'windows' }}
         run: |
           set -euo pipefail
           echo "== device-local buffers allowed =="
@@ -288,6 +288,13 @@ jobs:
           set -euo pipefail
           if [ "${{ runner.os }}" != "Windows" ] && [ -x /usr/local/cuda/bin/ptxas ]; then
             export CUDA_PATH=/usr/local/cuda
+          fi
+          # WSL has no NVIDIA Vulkan ICD, only llvmpipe, so the 4090's Vulkan runs on the
+          # Windows leg alone: hide every ICD here and each Vulkan device test skips.
+          if [ "${{ matrix.key }}" = "wsl" ]; then
+            export VK_ICD_FILENAMES=/nonexistent/no-vulkan-on-wsl.json
+            export VK_DRIVER_FILES=/nonexistent/no-vulkan-on-wsl.json
+            echo "vulkan: hidden on wsl (llvmpipe only); Vulkan device tests run on windows-nvidia"
           fi
           FILTER='${{ inputs.filter }}'
           # Default: the device suites plus the coop-matrix lowering pins —
