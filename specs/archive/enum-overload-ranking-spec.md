@@ -1,6 +1,6 @@
 # enum-overload-ranking — an exact enum argument outranks one that decays to an integer
 
-Plan: [enum-overload-ranking-plan](../agents/enum-overload-ranking-plan.md).
+Plan: [enum-overload-ranking-plan](../../agents/archive/enum-overload-ranking-plan.md).
 Decided with Julian 2026-11-20: fix overload resolution, then add
 `KernelBuffer(uint64 elementCount, MemoryKind kind)`. Approved 2026-11-20.
 
