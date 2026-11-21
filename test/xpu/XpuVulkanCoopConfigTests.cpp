@@ -10,6 +10,7 @@
 #include "cajeta/xpu/vulkan/SpirvBackend.h"
 #include "cajeta/xpu/vulkan/SpirvKernelLowering.h"
 #include "../jit/JitTestHelper.h"
+#include "../PortableEnv.h"
 
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
