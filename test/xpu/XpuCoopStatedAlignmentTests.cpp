@@ -144,8 +144,11 @@ public class S {
         }
     }
     static int32 runAt(int32 which, uint32 off, uint32 stride) {
+        // Non-negative: gfx1151's f16 WMMA (and Vulkan's coop matrix on it) rounds a
+        // negative A x I product one f32 ulp off, with or without a statement (Proton,
+        // 2026-11-20). This test is about placement, so it keeps to exact inputs.
         float32[] mem = heap float32[600];
-        for (int32 m = 0; m < 600; m = m + 1) { mem[m] = (float32) ((m * 7) % 101 - 50); }
+        for (int32 m = 0; m < 600; m = m + 1) { mem[m] = (float32) ((m * 7) % 101); }
         float32[] got = heap float32[600];
         float32[] want = heap float32[600];
         for (int32 k = 0; k < 600; k = k + 1) { got[k] = -7.0f; want[k] = -7.0f; }
@@ -210,7 +213,7 @@ public class S {
         if (which == 3) {
             int8[] hm = heap int8[600];
             int8[] he = heap int8[256];
-            for (int32 m = 0; m < 600; m = m + 1) { hm[m] = (int8) ((m * 7) % 101 - 50); }
+            for (int32 m = 0; m < 600; m = m + 1) { hm[m] = (int8) ((m * 7) % 101); }
             for (int32 i = 0; i < 256; i = i + 1) { he[i] = (int8) ((i / 16 == i % 16) ? 1 : 0); }
             KernelBuffer<int8> a = heap KernelBuffer<int8>(600);
             KernelBuffer<int8> e = heap KernelBuffer<int8>(256);
