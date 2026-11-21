@@ -341,14 +341,20 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* index,
             uint64_t laneElems, uint64_t statedBytes, unsigned line);
         // Whether a checked build tests a cooperative-matrix tile's `align:`
-        // (coop-stated-alignment spec §2.3), which takes the tile's address. Vulkan's
-        // logical pointers have none, and it has no placement guard to drop.
+        // (coop-stated-alignment spec §2.3). The check belongs where a statement changes
+        // code: nvptx drops its placement guard on one, so a wrong statement there faults.
+        // Vulkan's logical pointers have no address, and amdgpu drops no guard.
         virtual bool checksTilePlacement() const { return true; }
         // Writes one violation into the kernel's fault record. Default: the
         // device global kAlignFaultGlobal, first violation wins. The cpu
         // backend calls into the runtime instead.
         virtual void recordAlignFault(llvm::IRBuilderBase& b, llvm::Module& m,
                                       llvm::Value* info, llvm::Value* index);
+        // A cooperative-matrix tile check's record: the same record, written with plain
+        // stores while it is empty, since a compare-and-swap at every tile site of a GEMM
+        // spills (see the definition). The cpu backend calls into the runtime instead.
+        virtual void recordTileFault(llvm::IRBuilderBase& b, llvm::Module& m,
+                                     llvm::Value* info, llvm::Value* index);
 
         // Sample 2-D texture `texHandle` at normalized (u, v) through
         // `samplerHandle` at explicit mip `lod`. Default: unsupported (XPU-N01).

@@ -5747,8 +5747,7 @@ private:
         llvm::Value* info = builder.CreateSelect(
             addrBad, llvm::ConstantInt::get(i64, (line << 8) | 0x80 | stated),
             llvm::ConstantInt::get(i64, (line << 8) | 0xC0 | stated));
-        target.recordAlignFault(builder, mod, info,
-                                builder.CreateSelect(addrBad, addr, pitch));
+        target.recordTileFault(builder, mod, info, builder.CreateSelect(addrBad, addr, pitch));
         builder.CreateBr(joinBB);
         builder.SetInsertPoint(okBB);
         lowerCoopMatrixMethod(recv, name, mc);
@@ -8600,6 +8599,39 @@ llvm::Value* LoweringTarget::checkStatedAlignment(llvm::IRBuilderBase& b, llvm::
     b.CreateBr(okBB);
     b.SetInsertPoint(okBB);
     return b.CreateAnd(index, llvm::ConstantInt::get(ity, ~(laneElems - 1)), "idx.aligned");
+}
+
+// A tile check's record (coop-stated-alignment spec §2.3): plain stores, written only while
+// the record is empty. recordAlignFault's compare-and-swap at each of a GEMM's tile sites
+// spilled cajeta-llm's q5kWmmaIdMwKernel 16 B on sm_89 in a debug build, and llm's spill
+// gate reads the debug build (measured 2026-11-21; the plain form spills nothing). Two lanes
+// racing past the empty test can mix their words; either way the record names a real line
+// and a real misaligned address or pitch.
+void LoweringTarget::recordTileFault(llvm::IRBuilderBase& b, llvm::Module& m,
+                                     llvm::Value* info, llvm::Value* index) {
+    llvm::LLVMContext& ctx = m.getContext();
+    auto* i64 = llvm::Type::getInt64Ty(ctx);
+    auto* recTy = llvm::ArrayType::get(i64, 2);
+    constexpr unsigned kGlobalAS = 1;   // NVPTX and AMDGPU global memory
+    auto* g = m.getGlobalVariable(cajeta::xpu::kAlignFaultGlobal, true);
+    if (!g)
+        g = new llvm::GlobalVariable(
+            m, recTy, /*isConstant=*/false, llvm::GlobalValue::ExternalLinkage,
+            llvm::ConstantAggregateZero::get(recTy), cajeta::xpu::kAlignFaultGlobal,
+            nullptr, llvm::GlobalValue::NotThreadLocal, kGlobalAS);
+    llvm::Value* word0 = b.CreateConstInBoundsGEP2_64(recTy, g, 0, 0);
+    llvm::Value* word1 = b.CreateConstInBoundsGEP2_64(recTy, g, 0, 1);
+    auto* held = b.CreateLoad(i64, word0, "tp.held");
+    held->setVolatile(true);
+    llvm::Function* f = b.GetInsertBlock()->getParent();
+    auto* writeBB = llvm::BasicBlock::Create(ctx, "tp.write", f);
+    auto* doneBB = llvm::BasicBlock::Create(ctx, "tp.written", f);
+    b.CreateCondBr(b.CreateICmpEQ(held, llvm::ConstantInt::get(i64, 0)), writeBB, doneBB);
+    b.SetInsertPoint(writeBB);
+    b.CreateStore(index, word1)->setVolatile(true);
+    b.CreateStore(info, word0)->setVolatile(true);
+    b.CreateBr(doneBB);
+    b.SetInsertPoint(doneBB);
 }
 
 void LoweringTarget::recordAlignFault(llvm::IRBuilderBase& b, llvm::Module& m,

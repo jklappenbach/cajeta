@@ -65,6 +65,12 @@ public:
     }
     // The blocks run on host workers, so the record is the runtime's: the
     // launcher reads it when the grid is done (kernel-load-alignment 5.1.1).
+    // The runtime's record, as for `vload`: a cpu kernel has no registers to spill over it.
+    void recordTileFault(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* info,
+                         llvm::Value* index) override {
+        recordAlignFault(b, m, info, index);
+    }
+
     void recordAlignFault(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* info,
                           llvm::Value* index) override {
         auto* i64 = llvm::Type::getInt64Ty(m.getContext());

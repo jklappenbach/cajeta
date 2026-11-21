@@ -407,13 +407,17 @@ TEST(XpuCoopStatedAlignment, theLlmWmmaKernelsStopSpillingWhenTheyStateAlignment
     const std::string stated = fixture("WmmaStated");
     ASSERT_FALSE(bare.empty());
     ASSERT_FALSE(stated.empty());
-    // cajeta-llm's leg builds --release, which is what its spill gate measures. A
-    // checked build pays for its statement tests.
+    // cajeta-llm's spill gate reads its debug test build first, then --release. The checked
+    // debug build tests every statement, and its record must not cost registers: a
+    // compare-and-swap at each tile site spilled q5kWmmaIdMwKernel 16 B (2026-11-21).
     const cajeta::CompilerFlags release =
         cajeta::CompilerFlags::defaultsForMode(cajeta::CompilerMode::Release);
+    const cajeta::CompilerFlags debug =
+        cajeta::CompilerFlags::defaultsForMode(cajeta::CompilerMode::Debug);
+    for (const auto* flags : {&release, &debug})
     for (const char* k : {"q4kWmmaDeqMw8Kernel", "q5kWmmaIdMwKernel"}) {
-        Lowered lb = lowerForNvptx(bare, k, "test.Wmma", "sm_89", "llm_bare", release);
-        Lowered ls = lowerForNvptx(stated, k, "test.WmmaStated", "sm_89", "llm_stated", release);
+        Lowered lb = lowerForNvptx(bare, k, "test.Wmma", "sm_89", "llm_bare", *flags);
+        Lowered ls = lowerForNvptx(stated, k, "test.WmmaStated", "sm_89", "llm_stated", *flags);
         ASSERT_TRUE(lb.ok) << k << ": " << lb.why;
         ASSERT_TRUE(ls.ok) << k << ": " << ls.why;
         EXPECT_TRUE(guarded(lb)) << k;
@@ -422,7 +426,8 @@ TEST(XpuCoopStatedAlignment, theLlmWmmaKernelsStopSpillingWhenTheyStateAlignment
         PtxasFrame fs = ptxasFrame(ls.ptx, k);
         if (!fb.ok || !fs.ok) GTEST_SKIP() << "no ptxas 12.1 or newer";
         EXPECT_GT(fb.spillStores, 0u) << k << ": the control no longer spills";
-        EXPECT_EQ(fs.spillStores, 0u) << k << " spills " << fs.spillStores << " B with "
+        EXPECT_EQ(fs.spillStores, 0u) << k << (flags == &debug ? " (debug)" : " (release)")
+                                      << " spills " << fs.spillStores << " B with "
                                       << fs.registers << " registers";
     }
 }
