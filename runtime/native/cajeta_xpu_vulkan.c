@@ -31,6 +31,13 @@
 #define CAJ_VK_CAP_RAYQUERY      (1u << 8)
 #define CAJ_VK_CAP_VMM           (1u << 9)
 #define CAJ_VK_CAP_MIXEDDOT      (1u << 10)
+// The 16x16x16 subgroup matrix configs the device lists (gpu-kernel-parity 14.2.6). The
+// capability says a device has matrix units, not which shapes and types: the 4090's Vulkan
+// lists int8 only at 16x16x32, and a native 16x16x16 int8 tile there wrote zeros.
+#define CAJ_VK_CAP_COOP_F16F32   (1u << 11)   // f16 x f16 -> f32
+#define CAJ_VK_CAP_COOP_S8       (1u << 12)   // s8 x s8 -> s32
+#define CAJ_VK_CAP_COOP_BF16     (1u << 13)   // bf16 x bf16 -> f32
+#define CAJ_VK_CAP_COOP_F16F16   (1u << 14)   // f16 x f16 -> f16
 
 // The first OpCapability in the module prologue of `w` that `have` lacks, or
 // 0; *name gets the capability's name. Capabilities the runtime does not
@@ -49,6 +56,65 @@ int cajeta_xpu_denied(const char* cap) {
         p = end + 1;
     }
     return 0;
+}
+
+// The first 16x16 subgroup tile config in the module's types that `have` does not list, named,
+// or NULL. Scans from word `start` (just past the capability prologue) to the first OpFunction:
+// one pass collects the OpTypeCooperativeMatrixKHR declarations, a second resolves their
+// component types (OpTypeInt, OpTypeFloat with SPV_KHR_bfloat16's encoding) and their scope,
+// shape and use constants. A tile of another shape or scope is left to the driver.
+static const char* cajeta_xpu_vk_spv_missing_coop_config(const uint32_t* w, size_t nwords,
+                                                         size_t start, uint32_t have) {
+    // ids: component, scope, rows, cols, use; resolved: kind (1 int8, 2 f16, 3 bf16, 4 f32)
+    // and the four constant values + 1 (0 while unknown).
+    struct { uint32_t id[5]; uint32_t kind; uint32_t val[4]; } t[32];
+    size_t nt = 0, end = nwords;
+    for (size_t i = start; i < nwords;) {
+        uint32_t op = w[i] & 0xFFFFu, wc = w[i] >> 16;
+        if (wc == 0 || i + wc > nwords) return NULL;
+        if (op == 54) { end = i; break; }   // OpFunction: the types are over
+        if (op == 4456 && wc == 7 && nt < 32) {
+            for (int k = 0; k < 5; ++k) t[nt].id[k] = w[i + 2 + k];
+            t[nt].kind = 0;
+            for (int k = 0; k < 4; ++k) t[nt].val[k] = 0;
+            ++nt;
+        }
+        i += wc;
+    }
+    if (nt == 0) return NULL;
+    for (size_t i = start; i < end;) {
+        uint32_t op = w[i] & 0xFFFFu, wc = w[i] >> 16;
+        for (size_t j = 0; j < nt; ++j) {
+            if (op == 21 && wc >= 3 && w[i + 1] == t[j].id[0])          // OpTypeInt
+                t[j].kind = w[i + 2] == 8 ? 1 : 0;
+            else if (op == 22 && wc >= 3 && w[i + 1] == t[j].id[0])     // OpTypeFloat
+                t[j].kind = w[i + 2] == 32 ? 4 : w[i + 2] != 16 ? 0 : (wc >= 4 && w[i + 3] == 0) ? 3 : 2;
+            else if (op == 43 && wc == 4)                                // OpConstant
+                for (int k = 0; k < 4; ++k)
+                    if (w[i + 2] == t[j].id[1 + k]) t[j].val[k] = w[i + 3] + 1;
+        }
+        i += wc;
+    }
+    int s8Op = 0, f16Op = 0, bf16Op = 0, f32Acc = 0, f16Acc = 0;
+    for (size_t j = 0; j < nt; ++j) {
+        if (t[j].val[0] != 3 + 1 || t[j].val[1] != 16 + 1 || t[j].val[2] != 16 + 1) continue;
+        uint32_t use = t[j].val[3] ? t[j].val[3] - 1 : 99;
+        if (use <= 1) {
+            if (t[j].kind == 1) s8Op = 1;
+            if (t[j].kind == 2) f16Op = 1;
+            if (t[j].kind == 3) bf16Op = 1;
+        } else if (use == 2) {
+            if (t[j].kind == 4) f32Acc = 1;
+            if (t[j].kind == 2) f16Acc = 1;
+        }
+    }
+    if (s8Op && !(have & CAJ_VK_CAP_COOP_S8)) return "the 16x16x16 int8 matrix config";
+    if (bf16Op && !(have & CAJ_VK_CAP_COOP_BF16)) return "the 16x16x16 bfloat16 matrix config";
+    if (f16Op && f32Acc && !(have & CAJ_VK_CAP_COOP_F16F32))
+        return "the 16x16x16 float16 matrix config with a float32 accumulator";
+    if (f16Acc && !(have & CAJ_VK_CAP_COOP_F16F16))
+        return "the 16x16x16 float16 matrix config with a float16 accumulator";
+    return NULL;
 }
 
 uint32_t __cajeta_xpu_vk_spv_missing_capability(const uint32_t* w, size_t nwords,
@@ -71,12 +137,14 @@ uint32_t __cajeta_xpu_vk_spv_missing_capability(const uint32_t* w, size_t nwords
     if (name) *name = NULL;
     if (!w || nwords < 6 || w[0] != 0x07230203u) return 0;
     size_t i = 5;
+    int coop = 0;
     while (i < nwords) {
         uint32_t op = w[i] & 0xFFFFu;
         uint32_t wc = w[i] >> 16;
         if (wc == 0 || i + wc > nwords) return 0;
         if (op == 17 && wc == 2) {
             uint32_t cap = w[i + 1];
+            if (cap == 6022) coop = 1;
             for (size_t k = 0; k < sizeof(known) / sizeof(known[0]); ++k) {
                 if (known[k].cap == cap && !(have & known[k].bit)) {
                     if (name) *name = known[k].name;
@@ -84,11 +152,15 @@ uint32_t __cajeta_xpu_vk_spv_missing_capability(const uint32_t* w, size_t nwords
                 }
             }
         } else if (op != 10 && op != 11) {
-            return 0;    // past OpCapability / OpExtension / OpExtInstImport: the prologue is over
+            break;    // past OpCapability / OpExtension / OpExtInstImport: the prologue is over
         }
         i += wc;
     }
-    return 0;
+    if (!coop) return 0;
+    const char* cfg = cajeta_xpu_vk_spv_missing_coop_config(w, nwords, i, have);
+    if (!cfg) return 0;
+    if (name) *name = cfg;
+    return 6022;
 }
 
 #if defined(CAJETA_RT_HAS_VULKAN)
@@ -1186,7 +1258,19 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         g_xpu_vk.caps |= CAJ_VK_CAP_STORAGE8;
     if (qs16.storageBuffer16BitAccess || qs16.uniformAndStorageBuffer16BitAccess)
         g_xpu_vk.caps |= CAJ_VK_CAP_STORAGE16;
-    if (wantCoopMat) g_xpu_vk.caps |= CAJ_VK_CAP_COOPMAT;
+    if (wantCoopMat) {
+        g_xpu_vk.caps |= CAJ_VK_CAP_COOPMAT;
+        // Each listed 16x16x16 config, unless CAJETA_XPU_DENY names it, so a tile kernel
+        // takes "$pt" on any box with matrix units (gpu-kernel-parity 14.2.6).
+        if (cajeta_xpu_denied("coop-f16")) g_xpu_vk.coopCfg &= ~1u;
+        if (cajeta_xpu_denied("coop-int8")) g_xpu_vk.coopCfg &= ~2u;
+        if (cajeta_xpu_denied("coop-bf16")) g_xpu_vk.coopCfg &= ~4u;
+        if (cajeta_xpu_denied("coop-f16acc")) g_xpu_vk.coopCfg &= ~8u;
+        if (g_xpu_vk.coopCfg & 1u) g_xpu_vk.caps |= CAJ_VK_CAP_COOP_F16F32;
+        if (g_xpu_vk.coopCfg & 2u) g_xpu_vk.caps |= CAJ_VK_CAP_COOP_S8;
+        if (g_xpu_vk.coopCfg & 4u) g_xpu_vk.caps |= CAJ_VK_CAP_COOP_BF16;
+        if (g_xpu_vk.coopCfg & 8u) g_xpu_vk.caps |= CAJ_VK_CAP_COOP_F16F16;
+    }
     if (wantMixedDot) g_xpu_vk.caps |= CAJ_VK_CAP_MIXEDDOT;
     if (g_xpu_vk.atomicInt64) g_xpu_vk.caps |= CAJ_VK_CAP_INT64_ATOMICS;
     if (wantRayQuery) g_xpu_vk.caps |= CAJ_VK_CAP_RAYQUERY;
