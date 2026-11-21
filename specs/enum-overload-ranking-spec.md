@@ -2,7 +2,7 @@
 
 Plan: [enum-overload-ranking-plan](../agents/enum-overload-ranking-plan.md).
 Decided with Julian 2026-11-20: fix overload resolution, then add
-`KernelBuffer(uint64 elementCount, MemoryKind kind)`.
+`KernelBuffer(uint64 elementCount, MemoryKind kind)`. Approved 2026-11-20.
 
 ## 1. Definition
 
