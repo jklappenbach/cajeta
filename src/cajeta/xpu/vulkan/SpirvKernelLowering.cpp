@@ -1123,29 +1123,40 @@ public:
         return index;
     }
 
-    // The <4 x T> view of a 32-bit buffer's own binding for a lane group stated 16-byte aligned, made
-    // once per kernel beside the handle; null when the access cannot take one.
-    static llvm::Value* wideView(llvm::Module& m, llvm::Value* base, llvm::Type* elemTy,
-                                 unsigned lanes, uint64_t statedAlign) {
-        if (statedAlign < 16 || lanes != 4 || !(elemTy->isIntegerTy(32) || elemTy->isFloatTy()))
-            return nullptr;
-        auto* call = llvm::dyn_cast<llvm::CallInst>(base);
-        if (!call || call->getIntrinsicID() != llvm::Intrinsic::spv_resource_handlefrombinding)
-            return nullptr;
-        auto* tet = llvm::cast<llvm::TargetExtType>(base->getType());
-        llvm::Type* viewTy = vkBufferType(m.getContext(), llvm::FixedVectorType::get(elemTy, 4),
-                                          tet->getIntParameter(1) != 0);
-        for (llvm::Instruction& i : *call->getParent()) {
-            auto* c = llvm::dyn_cast<llvm::CallInst>(&i);
-            if (c && c->getType() == viewTy && c->getIntrinsicID() == call->getIntrinsicID()
-                    && c->getArgOperand(1) == call->getArgOperand(1))
-                return c;
+    // Lanes per unit when a group reads as 16-byte <4 x W> units (stated 16-byte aligned) or, for 8- and 16-bit
+    // lanes, as i32 words (stated 4-byte aligned); 0 when neither fits. `count` is the units in the group.
+    static unsigned wideUnitLanes(llvm::Module& m, llvm::Type* elemTy, unsigned lanes, uint64_t statedAlign,
+                                  unsigned& count) {
+        const uint64_t eb = m.getDataLayout().getTypeStoreSize(elemTy).getFixedValue();
+        const uint64_t total = eb * lanes;
+        const bool word32 = elemTy->isIntegerTy(32) || elemTy->isFloatTy();
+        const bool narrow = elemTy->isIntegerTy(8) || elemTy->isIntegerTy(16) || elemTy->isHalfTy();
+        if (statedAlign >= 16 && word32 && total % 16 == 0) { count = (unsigned) (total / 16); return 4; }
+        if (statedAlign >= 16 && narrow && total % 16 == 0 && total <= 32) { count = (unsigned) (total / 16); return 4; }
+        if (statedAlign >= 4 && narrow && total % 4 == 0 && total <= 32) { count = (unsigned) (total / 4); return 1; }
+        return 0;
+    }
+
+    // The marker the backend expands after inlining (expandWideAccesses): a wide access when the handle is then a
+    // binding, else lane accesses.
+    static llvm::Function* wideAccessDecl(llvm::Module& m, bool store, llvm::Type* handleTy, llvm::Type* vecTy) {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::FunctionType* ft = store
+            ? llvm::FunctionType::get(llvm::Type::getVoidTy(m.getContext()), {handleTy, i32, i32, i32, vecTy}, false)
+            : llvm::FunctionType::get(vecTy, {handleTy, i32, i32, i32}, false);
+        const std::string prefix = store ? "cajeta.vk.wide.store." : "cajeta.vk.wide.load.";
+        unsigned n = 0;
+        for (llvm::Function& f : m) {
+            if (!f.getName().starts_with(prefix)) continue;
+            if (f.getFunctionType() == ft) return &f;
+            ++n;
         }
-        llvm::Function* hfb = llvm::Intrinsic::getOrInsertDeclaration(
-            &m, llvm::Intrinsic::spv_resource_handlefrombinding, {viewTy});
-        llvm::IRBuilder<> vb(call->getNextNode());
-        llvm::SmallVector<llvm::Value*, 5> args(call->arg_begin(), call->arg_end());
-        return vb.CreateCall(hfb, args, call->getName() + ".v4");
+        return llvm::Function::Create(ft, llvm::GlobalValue::ExternalLinkage, prefix + std::to_string(n), m);
+    }
+
+    static bool isVkBuffer(llvm::Value* base) {
+        auto* tet = llvm::dyn_cast<llvm::TargetExtType>(base->getType());
+        return tet && tet->getName() == "spirv.VulkanBuffer";
     }
 
     llvm::Value* vectorLoad(llvm::IRBuilderBase& b, llvm::Module& m,
@@ -1153,10 +1164,12 @@ public:
                             unsigned lanes, llvm::Value* index,
                             uint64_t statedAlign) override {
         auto* vecTy = llvm::FixedVectorType::get(elemTy, lanes);
-        if (llvm::Value* view = wideView(m, base, elemTy, lanes, statedAlign)) {
+        unsigned count = 0;
+        if (unsigned per = wideUnitLanes(m, elemTy, lanes, statedAlign, count); per && isVkBuffer(base)) {
             index = maskStatedIndex(b, m, elemTy, index, statedAlign);
-            llvm::Value* vi = b.CreateLShr(b.CreateTrunc(index, b.getInt32Ty()), b.getInt32(2), "vidx");
-            return b.CreateAlignedLoad(vecTy, getElementPtr(b, m, view, vi), llvm::Align(16), "vl.wide");
+            return b.CreateCall(wideAccessDecl(m, false, base->getType(), vecTy),
+                                {base, b.CreateTrunc(index, b.getInt32Ty()), b.getInt32(per), b.getInt32(count)},
+                                "vl.wide");
         }
         llvm::Value* vec = llvm::UndefValue::get(vecTy);
         index = maskStatedIndex(b, m, elemTy, laneIndexBase(b, base, index), statedAlign);
@@ -1230,10 +1243,11 @@ public:
     void vectorStore(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* base,
                      llvm::Type* elemTy, unsigned lanes, llvm::Value* index,
                      llvm::Value* value, uint64_t statedAlign) override {
-        if (llvm::Value* view = wideView(m, base, elemTy, lanes, statedAlign)) {
+        unsigned count = 0;
+        if (unsigned per = wideUnitLanes(m, elemTy, lanes, statedAlign, count); per && isVkBuffer(base)) {
             index = maskStatedIndex(b, m, elemTy, index, statedAlign);
-            llvm::Value* vi = b.CreateLShr(b.CreateTrunc(index, b.getInt32Ty()), b.getInt32(2), "vidx");
-            b.CreateAlignedStore(value, getElementPtr(b, m, view, vi), llvm::Align(16));
+            b.CreateCall(wideAccessDecl(m, true, base->getType(), value->getType()),
+                         {base, b.CreateTrunc(index, b.getInt32Ty()), b.getInt32(per), b.getInt32(count), value});
             return;
         }
         index = maskStatedIndex(b, m, elemTy, laneIndexBase(b, base, index), statedAlign);

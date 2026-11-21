@@ -493,9 +493,104 @@ void maskProvenLaneIndices(llvm::Module& m) {
 // RADV faulted creating the pipeline (cajeta-llm 15.2.19.6.1). The path that reads
 // the undef never uses the value, so any matrix serves: a zero splat built once per
 // type at the top of the function.
-// One binding has one SPIR-V variable, so a buffer the lowering read both through its <4 x T> view
-// and as T takes one type: the view, with each T access a lane of it, when every T access is a
-// plain load or store; else T, with the view's accesses split back into lanes (16.2.4.3).
+// Expands the lowering's wide-access markers once helpers are inlined: a handle that is now a binding reads and
+// writes through a view of it in the marker's units; any other handle takes one access per lane (16.2.4.3).
+void expandWideAccesses(llvm::Module& m) {
+    llvm::LLVMContext& ctx = m.getContext();
+    llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+    llvm::PointerType* sbPtr = llvm::PointerType::get(ctx, 11);
+    auto pointer = [&](llvm::IRBuilder<>& b, llvm::Value* h, llvm::Value* index) {
+        llvm::Function* gp = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_resource_getpointer, {sbPtr, h->getType(), i32});
+        return b.CreateCall(gp, {h, index}, "elem.ptr");
+    };
+    auto viewOf = [&](llvm::CallInst* h, llvm::Type* unit) -> llvm::Value* {
+        auto* tet = llvm::cast<llvm::TargetExtType>(h->getType());
+        llvm::Type* viewTy = llvm::TargetExtType::get(ctx, "spirv.VulkanBuffer", {llvm::ArrayType::get(unit, 0)},
+                                                      tet->int_params());
+        for (llvm::Instruction& i : *h->getParent()) {
+            auto* c = llvm::dyn_cast<llvm::CallInst>(&i);
+            if (c && c->getType() == viewTy && c->getIntrinsicID() == h->getIntrinsicID()
+                    && c->getArgOperand(1) == h->getArgOperand(1) && c->getArgOperand(0) == h->getArgOperand(0))
+                return c;
+        }
+        llvm::Function* hfb = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_resource_handlefrombinding, {viewTy});
+        llvm::IRBuilder<> vb(h->getNextNode());
+        llvm::SmallVector<llvm::Value*, 5> args(h->arg_begin(), h->arg_end());
+        return vb.CreateCall(hfb, args, h->getName() + ".wide");
+    };
+    llvm::SmallVector<llvm::Function*, 4> markers;
+    for (llvm::Function& f : m)
+        if (f.isDeclaration() && f.getName().starts_with("cajeta.vk.wide.")) markers.push_back(&f);
+    for (llvm::Function* f : markers) {
+        const bool store = f->getName().starts_with("cajeta.vk.wide.store.");
+        llvm::SmallVector<llvm::CallInst*, 16> calls;
+        for (llvm::User* u : f->users())
+            if (auto* c = llvm::dyn_cast<llvm::CallInst>(u)) calls.push_back(c);
+        for (llvm::CallInst* c : calls) {
+            llvm::IRBuilder<> b(c);
+            llvm::Value* h = c->getArgOperand(0);
+            llvm::Value* idx = c->getArgOperand(1);
+            const unsigned per = (unsigned) llvm::cast<llvm::ConstantInt>(c->getArgOperand(2))->getZExtValue();
+            const unsigned count = (unsigned) llvm::cast<llvm::ConstantInt>(c->getArgOperand(3))->getZExtValue();
+            llvm::Value* value = store ? c->getArgOperand(4) : nullptr;
+            auto* vecTy = llvm::cast<llvm::FixedVectorType>(store ? value->getType() : c->getType());
+            llvm::Type* elemTy = vecTy->getElementType();
+            const unsigned lanes = vecTy->getNumElements();
+            const uint64_t eb = m.getDataLayout().getTypeStoreSize(elemTy).getFixedValue();
+            auto* hc = llvm::dyn_cast<llvm::CallInst>(h);
+            if (!hc || hc->getIntrinsicID() != llvm::Intrinsic::spv_resource_handlefrombinding) {
+                llvm::Value* vec = llvm::PoisonValue::get(vecTy);
+                for (unsigned j = 0; j < lanes; ++j) {
+                    llvm::Value* p = pointer(b, h, b.CreateAdd(idx, b.getInt32(j), "", true, true));
+                    if (store) b.CreateStore(b.CreateExtractElement(value, b.getInt32(j), "vs.lane"), p);
+                    else vec = b.CreateInsertElement(vec, b.CreateLoad(elemTy, p, "vl.lane"), b.getInt32(j), "vl.ins");
+                }
+                if (!store) c->replaceAllUsesWith(vec);
+                c->eraseFromParent();
+                continue;
+            }
+            llvm::Type* scalar = eb == 4 ? elemTy : i32;
+            llvm::Type* unit = per == 1 ? scalar : (llvm::Type*) llvm::FixedVectorType::get(scalar, per);
+            llvm::Type* wordsTy = per * count == 1 ? scalar : (llvm::Type*) llvm::FixedVectorType::get(scalar, per * count);
+            llvm::Value* view = viewOf(hc, unit);
+            const llvm::Align a(per * 4);
+            llvm::Value* ui = b.CreateLShr(b.CreateMul(idx, b.getInt32((uint32_t) eb), "vbyte"),
+                                           b.getInt32(per == 4 ? 4 : 2), "vidx");
+            auto unitPtr = [&](unsigned k) { return pointer(b, view, k ? b.CreateAdd(ui, b.getInt32(k)) : ui); };
+            if (store) {
+                llvm::Value* words = wordsTy == vecTy ? value : b.CreateBitCast(value, wordsTy, "vs.words");
+                for (unsigned k = 0; k < count; ++k) {
+                    llvm::Value* u = words;
+                    if (count > 1) {
+                        u = per == 1 ? nullptr : (llvm::Value*) llvm::PoisonValue::get(unit);
+                        for (unsigned j = 0; j < per; ++j) {
+                            llvm::Value* x = b.CreateExtractElement(words, b.getInt32(k * per + j));
+                            u = per == 1 ? x : b.CreateInsertElement(u, x, b.getInt32(j));
+                        }
+                    }
+                    b.CreateAlignedStore(u, unitPtr(k), a);
+                }
+            } else {
+                llvm::Value* words = count == 1 ? nullptr : (llvm::Value*) llvm::PoisonValue::get(wordsTy);
+                for (unsigned k = 0; k < count; ++k) {
+                    llvm::Value* u = b.CreateAlignedLoad(unit, unitPtr(k), a, "vl.wide");
+                    if (count == 1) { words = u; break; }
+                    for (unsigned j = 0; j < per; ++j)
+                        words = b.CreateInsertElement(
+                            words, per == 1 ? u : b.CreateExtractElement(u, b.getInt32(j)), b.getInt32(k * per + j));
+                }
+                c->replaceAllUsesWith(wordsTy == vecTy ? words : b.CreateBitCast(words, vecTy, "vl.lanes"));
+            }
+            c->eraseFromParent();
+        }
+        f->eraseFromParent();
+    }
+}
+
+// One binding has one SPIR-V variable: a buffer reached through wide views and as lanes takes the widest view when
+// every other access is a plain load (or word store), else the lane type, its views split into lanes (16.2.4.3).
 void unifyWideBufferViews(llvm::Module& m) {
     auto bindingOf = [](llvm::CallInst* c) -> int64_t {
         auto* set = llvm::dyn_cast<llvm::ConstantInt>(c->getArgOperand(0));
@@ -519,12 +614,12 @@ void unifyWideBufferViews(llvm::Module& m) {
         }
         return true;
     };
-    auto plainAccess = [](llvm::IntrinsicInst* gp, llvm::Type* ty) {
+    auto plainAccess = [](llvm::IntrinsicInst* gp, llvm::Type* ty, bool storesToo) {
         for (llvm::User* u : gp->users()) {
             if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(u)) {
                 if (ld->isVolatile() || ld->isAtomic() || ld->getType() != ty) return false;
             } else if (auto* st = llvm::dyn_cast<llvm::StoreInst>(u)) {
-                if (st->isVolatile() || st->isAtomic() || st->getPointerOperand() != gp
+                if (!storesToo || st->isVolatile() || st->isAtomic() || st->getPointerOperand() != gp
                         || st->getValueOperand()->getType() != ty)
                     return false;
             } else {
@@ -533,6 +628,8 @@ void unifyWideBufferViews(llvm::Module& m) {
         }
         return true;
     };
+    const llvm::DataLayout& dl = m.getDataLayout();
+    auto bytesOf = [&](llvm::Type* t) { return dl.getTypeStoreSize(t).getFixedValue(); };
     llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
     for (llvm::Function& f : m) {
         if (f.isDeclaration()) continue;
@@ -541,64 +638,115 @@ void unifyWideBufferViews(llvm::Module& m) {
             for (llvm::Instruction& inst : bb)
                 if (auto* c = llvm::dyn_cast<llvm::CallInst>(&inst))
                     if (c->getIntrinsicID() == llvm::Intrinsic::spv_resource_handlefrombinding
-                            && bindingOf(c) >= 0)
+                            && bindingOf(c) >= 0 && runtimeElem(c->getType()))
                         byBinding[bindingOf(c)].push_back(c);
         for (auto& [binding, calls] : byBinding) {
-            llvm::CallInst* view = nullptr;
-            llvm::CallInst* flat = nullptr;
+            if (calls.size() < 2) continue;
+            llvm::CallInst* target = nullptr;
+            llvm::CallInst* lanes = nullptr;
             for (llvm::CallInst* c : calls) {
                 llvm::Type* e = runtimeElem(c->getType());
-                if (!e) continue;
-                if (e->isVectorTy()) view = c; else flat = c;
+                if (!target || e->isVectorTy()
+                        || (!runtimeElem(target->getType())->isVectorTy() && bytesOf(e) > bytesOf(runtimeElem(target->getType()))))
+                    target = c;
+                if (!lanes || (!e->isVectorTy() && bytesOf(e) < bytesOf(runtimeElem(lanes->getType()))))
+                    lanes = c;
             }
-            if (!view || !flat) continue;
-            auto* vecTy = llvm::cast<llvm::FixedVectorType>(runtimeElem(view->getType()));
-            llvm::Type* elemTy = vecTy->getElementType();
-            llvm::SmallVector<llvm::IntrinsicInst*, 16> flatPtrs, viewPtrs;
-            bool movable = runtimeElem(flat->getType()) == elemTy && pointerUsers(flat, flatPtrs);
-            for (llvm::IntrinsicInst* gp : flatPtrs) movable = movable && plainAccess(gp, elemTy);
+            llvm::Type* targetElem = runtimeElem(target->getType());
+            auto* vecTy = llvm::dyn_cast<llvm::FixedVectorType>(targetElem);
+            llvm::Type* word = targetElem->getScalarType();
+            if (target == lanes || bytesOf(word) != 4) continue;
+            bool movable = true;
+            std::vector<std::pair<llvm::CallInst*, llvm::SmallVector<llvm::IntrinsicInst*, 16>>> others;
+            for (llvm::CallInst* c : calls) {
+                if (c == target) continue;
+                llvm::Type* e = runtimeElem(c->getType());
+                others.push_back({c, {}});
+                if (!pointerUsers(c, others.back().second)) { movable = false; continue; }
+                const bool asWord = e == word && vecTy;
+                const bool asLane = !e->isVectorTy() && bytesOf(e) < 4 && word->isIntegerTy(32);
+                if (!asWord && !asLane) { movable = false; continue; }
+                for (llvm::IntrinsicInst* gp : others.back().second)
+                    movable = movable && plainAccess(gp, e, asWord);
+            }
+            auto wordPtr = [&](llvm::IRBuilder<>& b, llvm::Type* ptrTy, llvm::Value* off) -> llvm::Value* {
+                llvm::Function* decl = llvm::Intrinsic::getOrInsertDeclaration(
+                    &m, llvm::Intrinsic::spv_resource_getpointer, {ptrTy, target->getType(), i32});
+                if (!vecTy) return b.CreateCall(decl, {target, b.CreateLShr(off, b.getInt32(2))}, "wgp");
+                llvm::Value* vp = b.CreateCall(decl, {target, b.CreateLShr(off, b.getInt32(4))}, "vgp");
+                return b.CreateInBoundsGEP(vecTy, vp,
+                                           {b.getInt32(0), b.CreateAnd(b.CreateLShr(off, b.getInt32(2)), b.getInt32(3))},
+                                           "vlane");
+            };
             if (movable) {
-                for (llvm::IntrinsicInst* gp : flatPtrs) {
-                    llvm::IRBuilder<> b(gp);
-                    llvm::Value* idx = b.CreateZExtOrTrunc(gp->getArgOperand(1), i32);
-                    llvm::Function* decl = llvm::Intrinsic::getOrInsertDeclaration(
-                        &m, llvm::Intrinsic::spv_resource_getpointer, {gp->getType(), view->getType(), i32});
-                    llvm::Value* vp = b.CreateCall(decl, {view, b.CreateLShr(idx, b.getInt32(2))}, "vgp");
-                    llvm::Value* lane = b.CreateInBoundsGEP(vecTy, vp, {b.getInt32(0), b.CreateAnd(idx, b.getInt32(3))},
-                                                            "vlane");
-                    gp->replaceAllUsesWith(lane);
-                    gp->eraseFromParent();
+                for (auto& [c, ptrs] : others) {
+                    llvm::Type* e = runtimeElem(c->getType());
+                    const uint64_t eb = bytesOf(e);
+                    for (llvm::IntrinsicInst* gp : ptrs) {
+                        llvm::IRBuilder<> b(gp);
+                        llvm::Value* off = b.CreateMul(b.CreateZExtOrTrunc(gp->getArgOperand(1), i32),
+                                                       b.getInt32((uint32_t) eb), "boff");
+                        llvm::Value* wp = wordPtr(b, gp->getType(), off);
+                        if (eb == 4) {
+                            gp->replaceAllUsesWith(wp);
+                            gp->eraseFromParent();
+                            continue;
+                        }
+                        llvm::Value* sh = b.CreateShl(b.CreateAnd(off, b.getInt32(3)), b.getInt32(3), "bsh");
+                        for (llvm::User* u : llvm::make_early_inc_range(gp->users())) {
+                            auto* ld = llvm::cast<llvm::LoadInst>(u);
+                            llvm::IRBuilder<> lb(ld);
+                            llvm::Value* w = lb.CreateLoad(word, wp, "wlane");
+                            llvm::Value* v = lb.CreateTrunc(lb.CreateLShr(w, sh), lb.getIntNTy((unsigned) eb * 8));
+                            if (v->getType() != e) v = lb.CreateBitCast(v, e);
+                            ld->replaceAllUsesWith(v);
+                            ld->eraseFromParent();
+                        }
+                        gp->eraseFromParent();
+                    }
+                    if (c->use_empty()) c->eraseFromParent();
                 }
-                if (flat->use_empty()) flat->eraseFromParent();
                 continue;
             }
-            if (!pointerUsers(view, viewPtrs)) continue;   // left as is: spirv-val names it
-            for (llvm::IntrinsicInst* gp : viewPtrs) {
-                llvm::Value* vi = gp->getArgOperand(1);
-                for (llvm::User* u : llvm::make_early_inc_range(gp->users())) {
-                    auto* inst = llvm::cast<llvm::Instruction>(u);
-                    llvm::IRBuilder<> b(inst);
-                    llvm::Value* base = b.CreateShl(b.CreateZExtOrTrunc(vi, i32), b.getInt32(2));
-                    llvm::Function* decl = llvm::Intrinsic::getOrInsertDeclaration(
-                        &m, llvm::Intrinsic::spv_resource_getpointer, {gp->getType(), flat->getType(), i32});
-                    auto lanePtr = [&](unsigned j) {
-                        return b.CreateCall(decl, {flat, b.CreateAdd(base, b.getInt32(j))}, "lgp");
-                    };
-                    if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(inst)) {
-                        llvm::Value* v = llvm::PoisonValue::get(vecTy);
-                        for (unsigned j = 0; j < vecTy->getNumElements(); ++j)
-                            v = b.CreateInsertElement(v, b.CreateLoad(elemTy, lanePtr(j)), b.getInt32(j));
-                        ld->replaceAllUsesWith(v);
-                        ld->eraseFromParent();
-                    } else if (auto* st = llvm::dyn_cast<llvm::StoreInst>(inst)) {
-                        for (unsigned j = 0; j < vecTy->getNumElements(); ++j)
-                            b.CreateStore(b.CreateExtractElement(st->getValueOperand(), b.getInt32(j)), lanePtr(j));
-                        st->eraseFromParent();
+            llvm::Type* laneTy = runtimeElem(lanes->getType());
+            const uint64_t lb = bytesOf(laneTy);
+            for (llvm::CallInst* c : calls) {
+                if (c == lanes) continue;
+                llvm::Type* u = runtimeElem(c->getType());
+                llvm::SmallVector<llvm::IntrinsicInst*, 16> viewPtrs;
+                if (!pointerUsers(c, viewPtrs)) continue;   // left as is: spirv-val names it
+                const unsigned n = (unsigned) (bytesOf(u) / lb);
+                llvm::Type* partsTy = n == 1 ? laneTy : (llvm::Type*) llvm::FixedVectorType::get(laneTy, n);
+                for (llvm::IntrinsicInst* gp : viewPtrs) {
+                    llvm::Value* vi = gp->getArgOperand(1);
+                    for (llvm::User* us : llvm::make_early_inc_range(gp->users())) {
+                        auto* inst = llvm::cast<llvm::Instruction>(us);
+                        llvm::IRBuilder<> b(inst);
+                        llvm::Value* first = b.CreateMul(b.CreateZExtOrTrunc(vi, i32), b.getInt32(n));
+                        llvm::Function* decl = llvm::Intrinsic::getOrInsertDeclaration(
+                            &m, llvm::Intrinsic::spv_resource_getpointer, {gp->getType(), lanes->getType(), i32});
+                        auto lanePtr = [&](unsigned j) {
+                            return b.CreateCall(decl, {lanes, b.CreateAdd(first, b.getInt32(j))}, "lgp");
+                        };
+                        if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(inst)) {
+                            llvm::Value* v = n == 1 ? (llvm::Value*) b.CreateLoad(laneTy, lanePtr(0)) : llvm::PoisonValue::get(partsTy);
+                            for (unsigned j = 0; n > 1 && j < n; ++j)
+                                v = b.CreateInsertElement(v, b.CreateLoad(laneTy, lanePtr(j)), b.getInt32(j));
+                            if (v->getType() != ld->getType()) v = b.CreateBitCast(v, ld->getType());
+                            ld->replaceAllUsesWith(v);
+                            ld->eraseFromParent();
+                        } else if (auto* st = llvm::dyn_cast<llvm::StoreInst>(inst)) {
+                            llvm::Value* v = st->getValueOperand();
+                            if (v->getType() != partsTy) v = b.CreateBitCast(v, partsTy);
+                            for (unsigned j = 0; j < n; ++j)
+                                b.CreateStore(n == 1 ? v : b.CreateExtractElement(v, b.getInt32(j)), lanePtr(j));
+                            st->eraseFromParent();
+                        }
                     }
+                    if (gp->use_empty()) gp->eraseFromParent();
                 }
-                if (gp->use_empty()) gp->eraseFromParent();
+                if (c->use_empty()) c->eraseFromParent();
             }
-            if (view->use_empty()) view->eraseFromParent();
         }
     }
 }
@@ -1080,6 +1228,7 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
         if (failure != nullptr) *failure = reason;
         return false;
     }
+    expandWideAccesses(m);
     maskProvenLaneIndices(m);
     unifyWideBufferViews(m);
     defineUndefCooperativeMatrices(m);
