@@ -773,6 +773,101 @@ void restoreScalarExp(llvm::Function& f) {
     }
 }
 
+// A wave kernel's float16 reads (`load half` then widen to float32) go through a scalar shim over
+// the 16 raw bits, whose width-W variants convert 16 lanes a step. Left as `half` vectors the lanes'
+// values are loaded and inserted one at a time. restoreScalarHalf undoes what stayed scalar.
+const char* const kHalfShim = "__cajeta_xpu_cpu_h2f";
+unsigned routeWaveHalfLoads(llvm::Function& f, llvm::Module& m, unsigned W) {
+    llvm::LLVMContext& ctx = m.getContext();
+    llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+    llvm::Type* i16 = llvm::Type::getInt16Ty(ctx);
+    llvm::Type* half = llvm::Type::getHalfTy(ctx);
+    llvm::SmallVector<llvm::FPExtInst*, 32> exts;
+    for (auto& bb : f)
+        for (auto& in : bb)
+            if (auto* fe = llvm::dyn_cast<llvm::FPExtInst>(&in))
+                if (fe->getType() == f32 && fe->getOperand(0)->getType() == half)
+                    if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(fe->getOperand(0)))
+                        if (ld->hasOneUse() && ld->isSimple()) exts.push_back(fe);
+    if (exts.empty()) return 0;
+    llvm::Function* shim = m.getFunction(kHalfShim);
+    if (!shim) {
+        shim = llvm::Function::Create(llvm::FunctionType::get(f32, {i16}, false),
+                                      llvm::GlobalValue::InternalLinkage, kHalfShim, &m);
+        shim->addFnAttr(llvm::Attribute::NoInline);
+        shim->setDoesNotThrow();
+        shim->setWillReturn();
+        shim->setMemoryEffects(llvm::MemoryEffects::none());
+        llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", shim));
+        b.CreateRet(b.CreateFPExt(b.CreateBitCast(shim->getArg(0), half), f32));
+    }
+    const std::string sw = std::to_string(W);
+    auto* vIn = llvm::FixedVectorType::get(i16, W);
+    auto* vOut = llvm::FixedVectorType::get(f32, W);
+    auto* maskTy = llvm::FixedVectorType::get(llvm::Type::getInt1Ty(ctx), W);
+    auto body = [&](llvm::Function* fn) {
+        if (!fn->empty()) return;
+        llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", fn));
+        const unsigned step = W >= 16 ? 16 : W;
+        llvm::Value* out = nullptr;
+        for (unsigned at = 0; at < W; at += step) {
+            llvm::SmallVector<int, 16> pick;
+            for (unsigned i = 0; i < step; ++i) pick.push_back((int) (at + i));
+            llvm::Value* part = b.CreateShuffleVector(fn->getArg(0), pick);
+            llvm::Value* wide = b.CreateFPExt(
+                b.CreateBitCast(part, llvm::FixedVectorType::get(half, step)),
+                llvm::FixedVectorType::get(f32, step));
+            if (!out) { out = wide; continue; }
+            // Concatenate: widen `wide` to out's length by pairing, as the parts are equal lengths.
+            llvm::SmallVector<int, 64> cat;
+            const unsigned have = llvm::cast<llvm::FixedVectorType>(out->getType())->getNumElements();
+            llvm::SmallVector<int, 64> pad;
+            for (unsigned i = 0; i < have; ++i) pad.push_back(i < step ? (int) i : -1);
+            llvm::Value* widePadded = have == step ? wide : b.CreateShuffleVector(wide, pad);
+            for (unsigned i = 0; i < have + step; ++i) cat.push_back((int) i);
+            out = b.CreateShuffleVector(out, widePadded, cat);
+        }
+        b.CreateRet(out);
+    };
+    llvm::Function* unmasked = makeVariantShell(m, std::string(kHalfShim) + "_v" + sw,
+                                                llvm::FunctionType::get(vOut, {vIn}, false));
+    llvm::Function* masked = makeVariantShell(m, std::string(kHalfShim) + "_Mv" + sw,
+                                              llvm::FunctionType::get(vOut, {vIn, maskTy}, false));
+    body(unmasked);
+    body(masked);
+    shim->addFnAttr("vector-function-abi-variant",
+                    "_ZGV_LLVM_N" + sw + "v_" + kHalfShim + "(" + unmasked->getName().str() + "),"
+                    + "_ZGV_LLVM_M" + sw + "v_" + kHalfShim + "(" + masked->getName().str() + ")");
+    for (llvm::FPExtInst* fe : exts) {
+        auto* ld = llvm::cast<llvm::LoadInst>(fe->getOperand(0));
+        auto* raw = new llvm::LoadInst(i16, ld->getPointerOperand(), "", false, ld->getAlign(), ld->getIterator());
+        raw->copyMetadata(*ld, {llvm::LLVMContext::MD_access_group, llvm::LLVMContext::MD_tbaa});
+        llvm::CallInst* c = llvm::CallInst::Create(shim, {raw}, "", fe->getIterator());
+        c->takeName(fe);
+        fe->replaceAllUsesWith(c);
+        fe->eraseFromParent();
+        ld->eraseFromParent();
+    }
+    return (unsigned) exts.size();
+}
+
+// Turns the float16 shim calls LoopVectorize left scalar back into a bitcast and a widen.
+void restoreScalarHalf(llvm::Function& f) {
+    llvm::Function* shim = f.getParent()->getFunction(kHalfShim);
+    if (!shim) return;
+    llvm::SmallVector<llvm::CallInst*, 16> calls;
+    for (auto& bb : f)
+        for (auto& in : bb)
+            if (auto* c = llvm::dyn_cast<llvm::CallInst>(&in))
+                if (c->getCalledFunction() == shim) calls.push_back(c);
+    for (llvm::CallInst* c : calls) {
+        llvm::IRBuilder<> b(c);
+        c->replaceAllUsesWith(b.CreateFPExt(
+            b.CreateBitCast(c->getArgOperand(0), llvm::Type::getHalfTy(f.getContext())), c->getType()));
+        c->eraseFromParent();
+    }
+}
+
 // `width()` takes no argument, so it cannot carry a VFABI variant. The width IS
 // W in a vectorized wave kernel, so each call becomes that constant.
 unsigned rewriteWaveWidth(llvm::Function& f, unsigned W) {
@@ -1959,6 +2054,7 @@ void foldWaveVariants(llvm::Function& f) {
                         rewriteWaveWidth(*wrapper, waveW);
                         waveMaskAsData(*wrapper, hostModule, waveW);
                         if (!std::getenv("CAJETA_XPU_CPU_EXP_PER_LANE")) routeWaveExp(*wrapper, hostModule, waveW);
+                        if (!std::getenv("CAJETA_XPU_CPU_HALF_PER_LANE")) routeWaveHalfLoads(*wrapper, hostModule, waveW);
                         const auto laneSerial = laneSerialLoops(*wrapper, wiLatches);
                         for (llvm::UncondBrInst* latch : wiLatches) {
                             if (laneSerial.count(latch)) tagWorkItemLoop(latch, true);
@@ -2008,6 +2104,7 @@ void foldWaveVariants(llvm::Function& f) {
                         const auto t0 = std::chrono::steady_clock::now();
                         vectorizeUnderDeadline(*wrapper, hostTm.get(), waveKernel, entryName, ntidX);
                         restoreScalarExp(*wrapper);
+                        restoreScalarHalf(*wrapper);
                         if (cpuVectorizeTraced()) {
                             const double ms = std::chrono::duration<double, std::milli>(
                                 std::chrono::steady_clock::now() - t0).count();
@@ -2151,6 +2248,7 @@ void foldWaveVariants(llvm::Function& f) {
                 rewriteWaveWidth(*wrapper, waveW);
                 waveMaskAsData(*wrapper, hostModule, waveW);
                 if (!std::getenv("CAJETA_XPU_CPU_EXP_PER_LANE")) routeWaveExp(*wrapper, hostModule, waveW);
+                        if (!std::getenv("CAJETA_XPU_CPU_HALF_PER_LANE")) routeWaveHalfLoads(*wrapper, hostModule, waveW);
                 if (getenv("CAJETA_XPU_DEBUG_WAVE"))
                     fprintf(stderr, "[wave-pre]\n");
                 maybeDumpWaveWrapper(*wrapper, waveW);
@@ -2192,6 +2290,7 @@ void foldWaveVariants(llvm::Function& f) {
                     const auto t0 = std::chrono::steady_clock::now();
                     vectorizeUnderDeadline(*wrapper, hostTm.get(), waveKernel, entryName, ntidX);
                         restoreScalarExp(*wrapper);
+                        restoreScalarHalf(*wrapper);
                     if (cpuVectorizeTraced()) {
                         const double ms = std::chrono::duration<double, std::milli>(
                             std::chrono::steady_clock::now() - t0).count();
