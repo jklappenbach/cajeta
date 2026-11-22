@@ -85,7 +85,7 @@ void vectorizeUnderDeadline(llvm::Function& wrapper, llvm::TargetMachine* tm,
                             llvm::Value* ntidX) {
     const unsigned long long ms = cpuVectorizeDeadlineMs();
     if (ms == 0) {
-        vectorizeFunction(wrapper, tm, waveKernel, entryName, ntidX);
+        vectorizeFunction(wrapper, tm, waveKernel && !wrapper.hasFnAttribute("cajeta.xpu.keep-vectors"), entryName, ntidX);
         return;
     }
     std::promise<void> done;
@@ -95,7 +95,7 @@ void vectorizeUnderDeadline(llvm::Function& wrapper, llvm::TargetMachine* tm,
         // that does not come back, twice the deadline of sleep first.
         if (xpuFault("vectorize-stall"))
             std::this_thread::sleep_for(std::chrono::milliseconds(2 * ms + 50));
-        vectorizeFunction(wrapper, tm, waveKernel, entryName, ntidX);
+        vectorizeFunction(wrapper, tm, waveKernel && !wrapper.hasFnAttribute("cajeta.xpu.keep-vectors"), entryName, ntidX);
         done.set_value();
     });
     if (fut.wait_for(std::chrono::milliseconds(ms)) == std::future_status::ready) {
@@ -758,13 +758,14 @@ void tagWorkItemLoop(llvm::UncondBrInst* latch, bool disable) {
 }
 
 // The work-item loops of `f` that hold fixed-vector code and no lane-crossing runtime call: each lane
-// already runs SIMD, so widening across lanes would rebuild every vector an element at a time.
+// already runs SIMD, so they are not widened. Marks `f` cajeta.xpu.keep-vectors when no widened loop holds vectors.
 static llvm::SmallPtrSet<llvm::UncondBrInst*, 8> laneSerialLoops(
         llvm::Function& f, llvm::ArrayRef<llvm::UncondBrInst*> latches) {
     llvm::SmallPtrSet<llvm::UncondBrInst*, 8> out;
     if (f.hasFnAttribute("cajeta.xpu.coop-wavew") || std::getenv("CAJETA_XPU_CPU_WIDEN_VECTOR_BODY")) return out;
     llvm::DominatorTree dt(f);
     llvm::LoopInfo li(dt);
+    bool widenedHoldsVectors = false;
     for (llvm::UncondBrInst* latch : latches) {
         llvm::Loop* loop = li.getLoopFor(latch->getParent());
         if (!loop) continue;
@@ -777,7 +778,9 @@ static llvm::SmallPtrSet<llvm::UncondBrInst*, 8> laneSerialLoops(
                 if (llvm::isa<llvm::FixedVectorType>(in.getType())) vectorCode = true;
             }
         if (vectorCode && !crossesLanes) out.insert(latch);
+        else if (vectorCode) widenedHoldsVectors = true;
     }
+    if (!out.empty() && !widenedHoldsVectors) f.addFnAttr("cajeta.xpu.keep-vectors");
     return out;
 }
 

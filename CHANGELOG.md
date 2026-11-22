@@ -7,6 +7,9 @@
   rebuilt each lane's vector an element at a time and lost the VNNI dot instruction. The loop now runs
   lane by lane, and the wave operation after it still widens. An int8 dot mat-vec written as a wave
   kernel went from 15x slower than its row-a-work-item form to 1.4x (`bench/cpuwave`).
+  A kernel whose widened regions hold no vectors also skips the scalarize step, so its dots stay
+  VNNI instructions. cajeta-llm's GPU-shaped decode kernels on the cpu went from 4.7 to 11.7 tok/s
+  on Llama 3.1 8B Q4_K_M (the cpu-only kernels make 22.6).
   `CAJETA_XPU_CPU_WIDEN_VECTOR_BODY=1` restores the old form (gpu-kernel-parity 20.2.2).
 
 - **A cpu kernel that runs one work-item at a time says so.** On the cpu backend a kernel's work-items are a loop, and LLVM's loop vectorizer is what spreads them across SIMD lanes. When it does not, the kernel ran scalar with no word at build time. The build now notes it by name with the vectorizer's reason, `[xpu-cpu-scalar] rowSum: the work-item loop did not vectorize (the body has a loop of its own, and LoopVectorize widens only innermost loops)`, and `KernelManifest.vectorWidth()` gives the width the loop was built at, 1 when it stayed scalar. A wave kernel that does not vectorize is still refused, as before. `CAJETA_XPU_CPU_NO_VECTORIZE` now also turns the vectorizer off for kernels with neither barriers nor wave operations, as its documentation said (`XpuCpuScalarNote`, gpu-kernel-parity 19.1).
