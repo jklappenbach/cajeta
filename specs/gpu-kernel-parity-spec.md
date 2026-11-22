@@ -172,7 +172,7 @@ the dev compiler.
 
 ## 13. The cpu as a device
 
-Draft 2026-11-21, pending Julian's approval. cajeta-llm declares 360 kernels: 176 for every backend,
+Approved by Julian 2026-11-21. cajeta-llm declares 360 kernels: 176 for every backend,
 132 for GPUs only and 52 for the cpu only. The cpu backend already runs a wave as a SIMD vector of
 the host's width (wave reductions, ballots and shuffles have vector forms, and a cooperative or
 `@Wave(width = N)` kernel runs N lanes on any host). It gets there by wrapping each work-item in a
