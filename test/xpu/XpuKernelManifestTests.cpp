@@ -742,6 +742,33 @@ TEST(XpuKernelManifest, cpuManifestRecordsTheWidthAKernelWasBuiltAt) {
     EXPECT_NE(cajeta::xpu::toJson(*ws).find("\"waveWidth\""), std::string::npos);
 }
 
+// gpu-kernel-parity 19.1.2: the cpu manifest records the width LoopVectorize gave the
+// work-item loop, 1 when it stayed scalar (a body with its own loop).
+TEST(XpuKernelManifest, cpuManifestRecordsTheVectorizedWidth) {
+    const char* rowSum =
+        "    @Kernel\n"
+        "    public static void rsum(KernelBuffer<float32> y, KernelBuffer<float32> x, uint32 cols) {\n"
+        "        uint32 r = KernelThread.x();\n"
+        "        float32 acc = 0.0f;\n"
+        "        for (uint32 k = 0; k < cols; k = k + 1) { acc = acc + x[r * cols + k]; }\n"
+        "        y[r] = acc;\n"
+        "    }\n";
+    std::string source = std::string(
+        "package test;\nimport cajeta.xpu.KernelBuffer;\nimport cajeta.xpu.KernelThread;\n"
+        "public class M {\n") + kSaxpy + rowSum + kEnd;
+    auto ms = cpuManifests(source, {"saxpy", "rsum"});
+    ASSERT_EQ(ms.size(), 2u);
+    const KernelManifest* plain = byName(ms, ".saxpy");
+    const KernelManifest* nested = byName(ms, ".rsum");
+    ASSERT_NE(plain, nullptr);
+    ASSERT_NE(nested, nullptr);
+    ASSERT_TRUE(plain->vectorWidth.has_value());
+    EXPECT_GE(*plain->vectorWidth, 2u) << "saxpy's work-item loop vectorizes";
+    ASSERT_TRUE(nested->vectorWidth.has_value());
+    EXPECT_EQ(*nested->vectorWidth, 1u) << "a work-item loop around a loop stays scalar";
+    EXPECT_NE(cajeta::xpu::toJson(*plain).find("\"vectorWidth\""), std::string::npos);
+}
+
 // 1.1.5a — a pinned block records threadsPerGroup and residentGroupsPerCu equal
 // to DeviceProfile::occupancy's answer for that footprint (§3.3).
 TEST(XpuKernelManifest, pinnedBlockRecordsOccupancy) {
@@ -866,6 +893,20 @@ int runCacheProgram(const std::string& pkg, const std::string& body,
     if (!fn) return -2;
     return fn();
 }
+}
+
+// gpu-kernel-parity 19.1.2 — the vectorized width reads back from cajeta on the cpu backend.
+TEST(XpuKernelManifest, theVectorizedWidthReadsFromCajeta) {
+    std::unique_ptr<CajetaJit> jit;
+    int rc = runCacheProgram("mc4",
+        "    public static int32 run() {\n"
+        "        KernelManifest m = KernelManifest.of(\"cachek\");\n"
+        "        if (m == null) { return 1; }\n"
+        "        if (!m.vectorWidth().isPresent()) { return 2; }\n"
+        "        if (m.vectorWidth().get() < 2) { return 3; }\n"
+        "        return 0;\n"
+        "    }\n", jit);
+    EXPECT_EQ(rc, 0) << "1: no manifest, 2: no vectorWidth, 3: width below 2";
 }
 
 // scheduling 1.1.6 — a second `of` returns the record the first parsed: a

@@ -61,6 +61,7 @@ namespace xpu {
         bool instrumented  = false;   // completion records compiled in (Unit 8)
 
         std::optional<unsigned> waveWidth;
+        std::optional<unsigned> vectorWidth;     // cpu: the work-item loop's vectorized width, 1 if scalar
         std::optional<unsigned> vgpr;
         std::optional<unsigned> sgpr;
         std::optional<unsigned> spillBytes;      // scratch / private segment bytes
@@ -95,7 +96,7 @@ namespace xpu {
         std::optional<KernelCost> work;
 
         bool hasFootprint() const {
-            return waveWidth || vgpr || sgpr || spillBytes || spillStoreBytes
+            return waveWidth || vectorWidth || vgpr || sgpr || spillBytes || spillStoreBytes
                 || ldsStaticBytes
                 || ldsDynamicParam || threadsPerGroup || residentGroupsPerCu
                 || !feasibleBlocks.empty() || occupancyLimiter;

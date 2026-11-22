@@ -154,6 +154,7 @@ namespace xpu {
 
         llvm::json::Object footprint;
         putU(footprint, "waveWidth", m.waveWidth);
+        putU(footprint, "vectorWidth", m.vectorWidth);
         putU(footprint, "vgpr", m.vgpr);
         putU(footprint, "sgpr", m.sgpr);
         putU(footprint, "spillBytes", m.spillBytes);
@@ -259,6 +260,7 @@ namespace xpu {
         }
         if (const llvm::json::Object* fp = root->getObject("footprint")) {
             m.waveWidth = getU(*fp, "waveWidth");
+            m.vectorWidth = getU(*fp, "vectorWidth");
             m.vgpr = getU(*fp, "vgpr");
             m.sgpr = getU(*fp, "sgpr");
             m.spillBytes = getU(*fp, "spillBytes");

@@ -732,6 +732,31 @@ void forceLoopVectorWidth(llvm::UncondBrInst* latch, unsigned W) {
     latch->setMetadata("llvm.loop", loopId);
 }
 
+// Tags a work-item loop's back-edge `cajeta.xpu.wi` without forcing a width; `disable` also turns LoopVectorize off for it.
+void tagWorkItemLoop(llvm::UncondBrInst* latch, bool disable) {
+    llvm::LLVMContext& ctx = latch->getContext();
+    auto hint = [&](llvm::StringRef key) { return llvm::MDNode::get(ctx, {llvm::MDString::get(ctx, key)}); };
+    llvm::SmallVector<llvm::Metadata*, 6> ops;
+    ops.push_back(nullptr);  // self-reference, patched below
+    bool tagged = false;
+    if (llvm::MDNode* old = latch->getMetadata("llvm.loop"))
+        for (unsigned i = 1; i < old->getNumOperands(); ++i) {
+            ops.push_back(old->getOperand(i));
+            if (auto* md = llvm::dyn_cast<llvm::MDNode>(old->getOperand(i)))
+                if (md->getNumOperands() > 0)
+                    if (auto* s = llvm::dyn_cast<llvm::MDString>(md->getOperand(0)))
+                        tagged |= s->getString() == "cajeta.xpu.wi";
+        }
+    if (tagged && !disable) return;
+    if (!tagged) ops.push_back(hint("cajeta.xpu.wi"));
+    if (disable)
+        ops.push_back(llvm::MDNode::get(ctx, {llvm::MDString::get(ctx, "llvm.loop.vectorize.enable"),
+                                              llvm::ConstantAsMetadata::get(llvm::ConstantInt::getFalse(ctx))}));
+    llvm::MDNode* loopId = llvm::MDNode::getDistinct(ctx, ops);
+    loopId->replaceOperandWith(0, loopId);
+    latch->setMetadata("llvm.loop", loopId);
+}
+
 // A work-item loop is PARALLEL by the kernel model: its iterations are the
 // block's work-items, and within one barrier region they are independent (a
 // cross-work-item race there is undefined on every backend). LoopVectorize
@@ -886,23 +911,96 @@ static void neutralizeWaveStubs(llvm::Module& m) {
 
 // CAJETA_XPU_DEBUG_WAVE: surface LoopVectorize's remarks; no in-process flag.
 namespace {
-struct WaveRemarkHandler final : public llvm::DiagnosticHandler {
+// True iff `header` heads a loop whose back-edge carries the `cajeta.xpu.wi` hint.
+bool headsWorkItemLoop(const llvm::BasicBlock* header) {
+    for (const llvm::BasicBlock* pred : llvm::predecessors(header)) {
+        const llvm::Instruction* t = pred->getTerminator();
+        llvm::MDNode* id = t ? t->getMetadata("llvm.loop") : nullptr;
+        if (!id) continue;
+        for (unsigned i = 1; i < id->getNumOperands(); ++i)
+            if (auto* md = llvm::dyn_cast<llvm::MDNode>(id->getOperand(i)))
+                if (md->getNumOperands() > 0)
+                    if (auto* s = llvm::dyn_cast<llvm::MDString>(md->getOperand(0)))
+                        if (s->getString() == "cajeta.xpu.wi") return true;
+    }
+    return false;
+}
+
+// LoopVectorize's verdict on one wrapper's work-item loops (analysis remarks name a block, so they wait for the
+// loop's verdict, which names its header); with `print` it echoes every remark (CAJETA_XPU_DEBUG_WAVE).
+struct WorkItemVectorizeRecorder final : public llvm::DiagnosticHandler {
+    bool print = false;
+    llvm::DiagnosticHandler* next = nullptr;
+    unsigned widened = 0;
+    unsigned width = 0;
+    std::string analysis;
+    std::string pending;
+    bool pendingIsInterleave = false;
+    std::string missed;
     bool handleDiagnostics(const llvm::DiagnosticInfo& di) override {
-        if (auto* opt = llvm::dyn_cast<llvm::DiagnosticInfoOptimizationBase>(
-                const_cast<llvm::DiagnosticInfo*>(&di))) {
-            std::string msg;
-            llvm::raw_string_ostream os(msg);
-            os << opt->getPassName() << ": " << opt->getMsg();
-            fprintf(stderr, "[wave-remark] %s\n", os.str().c_str());
+        auto* opt = llvm::dyn_cast<llvm::DiagnosticInfoIROptimization>(&di);
+        if (!opt) return next ? next->handleDiagnostics(di) : false;
+        if (print)
+            fprintf(stderr, "[wave-remark] %s: %s\n", opt->getPassName(), opt->getMsg().c_str());
+        if (llvm::StringRef(opt->getPassName()) != "loop-vectorize") return true;
+        if (llvm::isa<llvm::OptimizationRemarkAnalysis>(opt)) {
+            const std::string msg = opt->getMsg();
+            const bool aboutInterleave = msg.find("interleav") != std::string::npos;
+            if (pending.empty() || (pendingIsInterleave && !aboutInterleave)) {
+                pending = msg;
+                pendingIsInterleave = aboutInterleave;
+            }
             return true;
         }
-        return false;
+        auto* header = llvm::dyn_cast_or_null<llvm::BasicBlock>(opt->getCodeRegion());
+        const bool wi = header && headsWorkItemLoop(header);
+        if (wi && llvm::isa<llvm::OptimizationRemark>(opt)) {
+            unsigned vf = 0;
+            for (const auto& a : opt->getArgs())
+                if (a.Key == "VectorizationFactor") vf = (unsigned) std::strtoul(a.Val.c_str(), nullptr, 10);
+            if (vf >= 2) { ++widened; width = std::max(width, vf); }
+            else if (analysis.empty()) analysis = pending;
+        } else if (wi && llvm::isa<llvm::OptimizationRemarkMissed>(opt)) {
+            if (analysis.empty()) analysis = pending;
+            if (missed.empty()) missed = opt->getMsg();
+        }
+        pending.clear();
+        pendingIsInterleave = false;
+        return true;
     }
-    bool isAnalysisRemarkEnabled(llvm::StringRef) const override { return true; }
-    bool isMissedOptRemarkEnabled(llvm::StringRef) const override { return true; }
-    bool isPassedOptRemarkEnabled(llvm::StringRef) const override { return true; }
+    bool isAnalysisRemarkEnabled(llvm::StringRef pass) const override { return print || pass == "loop-vectorize"; }
+    bool isMissedOptRemarkEnabled(llvm::StringRef pass) const override { return print || pass == "loop-vectorize"; }
+    bool isPassedOptRemarkEnabled(llvm::StringRef pass) const override { return print || pass == "loop-vectorize"; }
     bool isAnyRemarkEnabled() const override { return true; }
 };
+
+// The work-item loops of `f` (count, and whether any has a loop inside it).
+void countWorkItemLoops(llvm::Function& f, unsigned* loops, bool* nested);
+
+// The width a wrapper's work-item loops were built at: the forced wave width, the widest factor when every
+// loop was widened, else 1.
+unsigned vectorizedWidth(const WorkItemVectorizeRecorder* rec, unsigned loops, unsigned waveW) {
+    if (waveW >= 2) return waveW;
+    if (!rec || loops == 0 || rec->widened < loops) return 1u;
+    return std::max(rec->width, 1u);
+}
+
+// Names a kernel whose work-item loops LoopVectorize left scalar, with the reason (gpu-kernel-parity 19.1.1).
+void reportScalarWorkItemLoops(const std::string& entryName, unsigned loops, bool nested,
+                               const WorkItemVectorizeRecorder* rec) {
+    const unsigned widened = rec ? rec->widened : 0;
+    if (loops == 0 || widened >= loops) return;
+    std::string why;
+    if (cpuVectorizeDisabled()) why = "CAJETA_XPU_CPU_NO_VECTORIZE is set";
+    else if (rec && !rec->analysis.empty()) why = rec->analysis;
+    else if (rec && !rec->missed.empty()) why = rec->missed;
+    else if (nested) why = "the body has a loop of its own, and LoopVectorize widens only innermost loops";
+    else why = "LoopVectorize gave no reason";
+    const std::string which = loops == 1 ? std::string("the work-item loop")
+        : std::to_string(loops - widened) + " of " + std::to_string(loops) + " work-item loops";
+    fprintf(stderr, "cajeta: note: [xpu-cpu-scalar] %s: %s did not vectorize (%s); it runs one "
+                    "work-item at a time\n", entryName.c_str(), which.c_str(), why.c_str());
+}
 } // namespace
 
 static bool isMaskAsDataReduce(llvm::StringRef name, bool* isMasked) {
@@ -1168,6 +1266,21 @@ static unsigned workItemLoopInstructionCount(llvm::Function& f, unsigned* blocks
     if (blocksOut) *blocksOut = bestBlocks;
     return best;
 }
+
+namespace {
+void countWorkItemLoops(llvm::Function& f, unsigned* loops, bool* nested) {
+    llvm::DominatorTree dt(f);
+    llvm::LoopInfo li(dt);
+    *loops = 0;
+    *nested = false;
+    for (llvm::Loop* top : li)
+        for (llvm::Loop* L : llvm::depth_first(top))
+            if (loopHasHint(L, "cajeta.xpu.wi")) {
+                ++*loops;
+                *nested |= !L->isInnermost();
+            }
+}
+} // namespace
 // The WORK-ITEM loop this call sits in (the nearest enclosing loop tagged
 // cajeta.xpu.wi) must itself carry llvm.loop.isvectorized. An inner loop the
 // vectorizer widened instead does not count, and a wave call under no
@@ -1707,18 +1820,24 @@ void foldWaveVariants(llvm::Function& f) {
                         ec);
                     if (!ec) hostModule.print(os, nullptr);
                 }
+                if (!waveKernel)
+                    for (llvm::UncondBrInst* latch : wiLatches) tagWorkItemLoop(latch, false);
+                unsigned wiLoops = 0;
+                bool wiNested = false;
+                countWorkItemLoops(*wrapper, &wiLoops, &wiNested);
                 if (!cpuVectorizeDisabled()) {
                     // CAJETA_XPU_DEBUG_WAVE: LoopVectorize's own remarks say
                     // WHY a region stayed scalar (a callsite with no vector
                     // variant, an inner loop, a dependence), which the dump
                     // after the fact cannot.
-                    std::unique_ptr<llvm::DiagnosticHandler> saved;
+                    std::unique_ptr<llvm::DiagnosticHandler> saved = ctx.getDiagnosticHandler();
                     const bool dbg = getenv("CAJETA_XPU_DEBUG_WAVE") && waveKernel;
-                    if (dbg) {
-                        saved = ctx.getDiagnosticHandler();
-                        ctx.setDiagnosticHandler(std::make_unique<WaveRemarkHandler>());
-                        fprintf(stderr, "[wave-remarks] %s\n", entryName.c_str());
-                    }
+                    auto recOwned = std::make_unique<WorkItemVectorizeRecorder>();
+                    WorkItemVectorizeRecorder* rec = recOwned.get();
+                    rec->print = dbg;
+                    rec->next = saved.get();
+                    ctx.setDiagnosticHandler(std::move(recOwned));
+                    if (dbg) fprintf(stderr, "[wave-remarks] %s\n", entryName.c_str());
                     if (waveKernel) markWaveCallsConvergent(*wrapper);
                     if (waveKernel) { hoistAcquireFencesOutOfWorkItemLoops(*wrapper); markWorkItemLoopsParallel(*wrapper); }
                     wavePre = waveOpCallCount(*wrapper);
@@ -1738,7 +1857,12 @@ void foldWaveVariants(llvm::Function& f) {
                                     entryName.c_str(), instrs, wi, waveKernel ? 1 : 0, ms);
                         }
                     }
-                    if (dbg) ctx.setDiagnosticHandler(std::move(saved));
+                    if (!waveKernel) reportScalarWorkItemLoops(entryName, wiLoops, wiNested, rec);
+                    manifest.vectorWidth = vectorizedWidth(rec, wiLoops, waveKernel ? waveW : 0);
+                    ctx.setDiagnosticHandler(std::move(saved));
+                } else {
+                    if (!waveKernel) reportScalarWorkItemLoops(entryName, wiLoops, wiNested, nullptr);
+                    manifest.vectorWidth = 1u;
                 }
                 if (waveKernel) {
                     // The gate runs BEFORE the variants are folded: in a JIT
@@ -1882,14 +2006,19 @@ void foldWaveVariants(llvm::Function& f) {
                         + ".preopt.ll", ec);
                 if (!ec) hostModule.print(os, nullptr);
             }
+            if (!waveKernel) tagWorkItemLoop(latchBr, cpuVectorizeDisabled());
             {
-                std::unique_ptr<llvm::DiagnosticHandler> saved;
+                unsigned wiLoops = 0;
+                bool wiNested = false;
+                countWorkItemLoops(*wrapper, &wiLoops, &wiNested);
+                std::unique_ptr<llvm::DiagnosticHandler> saved = ctx.getDiagnosticHandler();
                 const bool dbg = getenv("CAJETA_XPU_DEBUG_WAVE") && waveKernel;
-                if (dbg) {
-                    saved = ctx.getDiagnosticHandler();
-                    ctx.setDiagnosticHandler(std::make_unique<WaveRemarkHandler>());
-                    fprintf(stderr, "[wave-remarks] %s\n", entryName.c_str());
-                }
+                auto recOwned = std::make_unique<WorkItemVectorizeRecorder>();
+                WorkItemVectorizeRecorder* rec = recOwned.get();
+                rec->print = dbg;
+                rec->next = saved.get();
+                ctx.setDiagnosticHandler(std::move(recOwned));
+                if (dbg) fprintf(stderr, "[wave-remarks] %s\n", entryName.c_str());
                 if (waveKernel) markWaveCallsConvergent(*wrapper);
                 if (waveKernel) { hoistAcquireFencesOutOfWorkItemLoops(*wrapper); markWorkItemLoopsParallel(*wrapper); }
                 wavePre = waveOpCallCount(*wrapper);
@@ -1909,7 +2038,10 @@ void foldWaveVariants(llvm::Function& f) {
                                 entryName.c_str(), instrs, wi, waveKernel ? 1 : 0, ms);
                     }
                 }
-                if (dbg) ctx.setDiagnosticHandler(std::move(saved));
+                if (!waveKernel) reportScalarWorkItemLoops(entryName, wiLoops, wiNested, rec);
+                manifest.vectorWidth = cpuVectorizeDisabled() && !waveKernel
+                    ? 1u : vectorizedWidth(rec, wiLoops, waveKernel ? waveW : 0);
+                ctx.setDiagnosticHandler(std::move(saved));
             }
 
             // Fold the substituted variant calls in; no inliner runs at -O0.

@@ -1,6 +1,7 @@
 // CPU kernel lowering — @Kernel AST → host llvm::Function, a thin wrapper over
 // the shared KernelLowering walk. The CPU has no hardware grid, so coordinates
-// arrive as trailing params, buffers are flat addrspace(0), and waves are width-1.
+// arrive as trailing params, buffers are flat addrspace(0), and a wave is the host
+// SIMD width (registration vectorizes the work-item loop).
 
 #pragma once
 

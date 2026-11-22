@@ -72,6 +72,7 @@ public final class KernelManifest {
 
     // ---- footprint (§3): -1 / null = absent ---------------------------- //
     private int32 waveWidthValue;
+    private int32 vectorWidthValue;
     private int32 vgprValue;
     private int32 sgprValue;
     private int32 spillBytesValue;
@@ -84,6 +85,7 @@ public final class KernelManifest {
 
     public KernelManifest() {
         this.waveWidthValue = -1;
+        this.vectorWidthValue = -1;
         this.vgprValue = -1;
         this.sgprValue = -1;
         this.spillBytesValue = -1;
@@ -209,6 +211,7 @@ public final class KernelManifest {
         if (fpOpt.isPresent()) {
             JsonObject fp = fpOpt.get();
             m.waveWidthValue = KernelManifest.num(fp, "waveWidth");
+            m.vectorWidthValue = KernelManifest.num(fp, "vectorWidth");
             m.vgprValue = KernelManifest.num(fp, "vgpr");
             m.sgprValue = KernelManifest.num(fp, "sgpr");
             m.spillBytesValue = KernelManifest.num(fp, "spillBytes");
@@ -243,6 +246,11 @@ public final class KernelManifest {
     public Optional<int32> waveWidth() {
         if (this.waveWidthValue < 0) { return stack Optional<int32>(false, 0); }
         return stack Optional<int32>(true, this.waveWidthValue);
+    }
+    /** cpu: the width the work-item loop was vectorized to, 1 when it stayed scalar. */
+    public Optional<int32> vectorWidth() {
+        if (this.vectorWidthValue < 0) { return stack Optional<int32>(false, 0); }
+        return stack Optional<int32>(true, this.vectorWidthValue);
     }
     /** Vector registers per work-item, as the artifact states them. */
     public Optional<int32> vgpr() {
