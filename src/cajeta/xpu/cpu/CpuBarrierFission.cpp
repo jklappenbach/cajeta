@@ -753,6 +753,43 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     auto qname = [](llvm::BasicBlock* b) {
         return b->hasName() ? b->getName().str() : std::string("<bb>");
     };
+    // The first block after top-level loop `L` that every work-item reaches, where a region cut can go;
+    // null when there is none (a PHI there, or the block sits in a loop or is a bare return).
+    auto laneSerialJoin = [&](llvm::Loop* L, llvm::LoopInfo& li) -> llvm::BasicBlock* {
+        llvm::SmallVector<llvm::BasicBlock*, 4> exits;
+        L->getUniqueExitBlocks(exits);
+        if (exits.size() != 1) return nullptr;
+        llvm::PostDominatorTree pdt(*wrapper);
+        llvm::BasicBlock* j = exits[0];
+        while (j && !pdt.dominates(j, &wrapper->getEntryBlock())) {
+            auto* nd = pdt.getNode(j);
+            auto* up = nd ? nd->getIDom() : nullptr;
+            j = up ? up->getBlock() : nullptr;
+        }
+        if (!j || li.getLoopFor(j) || llvm::isa<llvm::PHINode>(j->front())) return nullptr;
+        return j;
+    };
+    // A top-level loop of fixed-vector code with no lane-crossing call (or a loop inside one): each lane
+    // already runs SIMD, so it stays inside its work-item region and a cut follows it
+    // (CAJETA_XPU_CPU_WIDEN_VECTOR_BODY restores the lockstep form).
+    const bool widenVectorBodies = std::getenv("CAJETA_XPU_CPU_WIDEN_VECTOR_BODY") != nullptr
+        || wrapper->hasFnAttribute("cajeta.xpu.coop-wavew");
+    auto loopIsLaneSerial = [&](llvm::Loop* L, llvm::LoopInfo& li) {
+        if (widenVectorBodies) return false;
+        while (L->getParentLoop()) L = L->getParentLoop();
+        bool vectorCode = false;
+        for (llvm::BasicBlock* bb : L->blocks()) {
+            if (boundarySet.count(bb)) return false;
+            for (llvm::Instruction& in : *bb) {
+                if (auto* call = llvm::dyn_cast<llvm::CallBase>(&in))
+                    if (llvm::Function* cf = call->getCalledFunction())
+                        if (cf->getName().starts_with("__cajeta_xpu_")
+                            && cf->getName() != "__cajeta_xpu_wave_width") return false;
+                if (llvm::isa<llvm::FixedVectorType>(in.getType())) vectorCode = true;
+            }
+        }
+        return vectorCode && laneSerialJoin(L, li) != nullptr;
+    };
     auto qualifyLoop = [&](llvm::Loop* L, LoopCand& out) -> bool {
         auto no = [&](const char* why) {
             if (qdbg)
@@ -768,6 +805,13 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         for (llvm::BasicBlock* b : boundarySet)
             if (!cutSet.count(b) && L->contains(b)) { realBarrier = true; break; }
         if (realBarrier) return no("it holds a barrier");
+        {
+            llvm::DominatorTree lsDT(*wrapper);
+            llvm::LoopInfo lsLI(lsDT);
+            llvm::Loop* now = lsLI.getLoopFor(L->getHeader());
+            if (now && loopIsLaneSerial(now, lsLI))
+                return no("its body is vector code with no wave op; it runs lane by lane");
+        }
         llvm::BasicBlock* latch = L->getLoopLatch();
         if (!latch) return no("no single latch");
         if (latch == L->getHeader()) return no("one-block loop (latch is the header)");
@@ -964,6 +1008,28 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         llvm::DominatorTree cDT(*wrapper);
         llvm::LoopInfo cLI(cDT);
         llvm::SmallPtrSet<llvm::BasicBlock*, 8> heads = candidateHeaders(cLI);
+        // A region cut after each lane-serial loop, so the code that follows (a wave reduce, usually) is a
+        // region of its own and widens.
+        {
+            llvm::DominatorTree lsDT(*wrapper);
+            llvm::LoopInfo lsLI(lsDT);
+            llvm::SmallPtrSet<llvm::BasicBlock*, 4> cutBefore;
+            for (llvm::Loop* top : lsLI) {
+                if (!loopIsLaneSerial(top, lsLI)) continue;
+                llvm::BasicBlock* join = laneSerialJoin(top, lsLI);
+                if (isTrivialRet(join) || !cutBefore.insert(join).second) continue;
+                llvm::SmallVector<llvm::BasicBlock*, 4> preds(llvm::predecessors(join));
+                auto* cut = llvm::BasicBlock::Create(ctx, "wi.cut", wrapper, join);
+                llvm::UncondBrInst::Create(join, cut);
+                boundarySet.insert(cut);
+                cutSet.insert(cut);
+                for (llvm::BasicBlock* pb : preds) {
+                    auto* t = pb->getTerminator();
+                    for (unsigned sx = 0; sx < t->getNumSuccessors(); ++sx)
+                        if (t->getSuccessor(sx) == join) t->setSuccessor(sx, cut);
+                }
+            }
+        }
         struct Cand { llvm::BranchInst* br; unsigned depth; };
         std::vector<Cand> cands;
         for (auto& bb : *wrapper) {

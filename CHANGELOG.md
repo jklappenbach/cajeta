@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **A wave kernel whose lanes run explicit `Vector` code keeps that code whole on the cpu backend.** The
+  compiler used to step all lanes through such a loop together and widen it across the wave, which
+  rebuilt each lane's vector an element at a time and lost the VNNI dot instruction. The loop now runs
+  lane by lane, and the wave operation after it still widens. An int8 dot mat-vec written as a wave
+  kernel went from 15x slower than its row-a-work-item form to 1.4x (`bench/cpuwave`).
+  `CAJETA_XPU_CPU_WIDEN_VECTOR_BODY=1` restores the old form (gpu-kernel-parity 20.2.2).
+
 - **A cpu kernel that runs one work-item at a time says so.** On the cpu backend a kernel's work-items are a loop, and LLVM's loop vectorizer is what spreads them across SIMD lanes. When it does not, the kernel ran scalar with no word at build time. The build now notes it by name with the vectorizer's reason, `[xpu-cpu-scalar] rowSum: the work-item loop did not vectorize (the body has a loop of its own, and LoopVectorize widens only innermost loops)`, and `KernelManifest.vectorWidth()` gives the width the loop was built at, 1 when it stayed scalar. A wave kernel that does not vectorize is still refused, as before. `CAJETA_XPU_CPU_NO_VECTORIZE` now also turns the vectorizer off for kernels with neither barriers nor wave operations, as its documentation said (`XpuCpuScalarNote`, gpu-kernel-parity 19.1).
 
 - **A Vulkan tile kernel whose 16x16x16 shape the device does not list takes the portable tile.** `CooperativeMatrixKHR` says a device has matrix units, not which shapes and types, and the RTX 4090's Vulkan lists int8 only at 16x16x32. A native 16x16x16 int8 multiply launched there anyway and every cell came back 0, with no error. The runtime now reads each tile type the module declares and requires the matching listed config: f16 with an f32 or an f16 accumulator, int8, or bf16. A kernel that lacks one takes its `$pt` variant and names the rung, or is refused by name. `CAJETA_XPU_DENY=coop-int8` (or `coop-f16`, `coop-bf16`, `coop-f16acc`) treats one as unlisted on any box (`XpuVulkanCoopConfig`, gpu-kernel-parity 14.2.6).

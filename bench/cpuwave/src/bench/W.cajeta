@@ -1,0 +1,115 @@
+package bench;
+import cajeta.time.Clock;
+import cajeta.xpu.Device;
+import cajeta.xpu.Group;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Wave;
+
+// An int8 dot mat-vec in two shapes on the cpu backend: `wave` splits a row across a wave's
+// lanes and reduces, as the GPU kernels do; `rows` takes a row a work-item, as the cpu-only
+// kernels do. Both run the same 32-byte loads and dot products (gpu-kernel-parity 20.1.1).
+public class W {
+    static final int64 ROWS = 4096L;
+    static final int64 COLS = 4096L;
+
+    @Kernel @Occupancy(maxThreads = 256)
+    public static void wave(KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> x,
+            uint32 rows, uint32 chunks) {
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 row = KernelThread.globalIdX() / wv;
+        float32 acc = 0.0f;
+        if (row < rows) {
+            Vector<int32,8> zv = heap Vector<int32,8>(0, 0, 0, 0, 0, 0, 0, 0);
+            uint32 c = lane;
+            while (c < chunks) {
+                Vector<uint8,32> a = w.vload<32>((int64) (row * chunks + c) * 32L).asUnsigned();
+                Vector<int8,32> b = x.vload<32>((int64) c * 32L);
+                Vector<int32,8> d = a.dotAccum(b, zv);
+                acc = acc + (float32) (d[0] + d[1] + d[2] + d[3] + d[4] + d[5] + d[6] + d[7]);
+                c = c + wv;
+            }
+        }
+        float32 t = Wave.reduceSumF32(acc);
+        if (lane == 0 && row < rows) { y[(int64) row] = t; }
+    }
+
+    @Kernel @Occupancy(maxThreads = 256)
+    public static void rows(KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> x,
+            uint32 rows, uint32 chunks) {
+        uint32 row = KernelThread.globalIdX();
+        if (row < rows) {
+            Vector<int32,8> zv = heap Vector<int32,8>(0, 0, 0, 0, 0, 0, 0, 0);
+            float32 acc = 0.0f;
+            uint32 c = 0;
+            while (c < chunks) {
+                Vector<uint8,32> a = w.vload<32>((int64) (row * chunks + c) * 32L).asUnsigned();
+                Vector<int8,32> b = x.vload<32>((int64) c * 32L);
+                Vector<int32,8> d = a.dotAccum(b, zv);
+                acc = acc + (float32) (d[0] + d[1] + d[2] + d[3] + d[4] + d[5] + d[6] + d[7]);
+                c = c + 1;
+            }
+            y[(int64) row] = acc;
+        }
+    }
+
+    static void launch(boolean asWave, KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> w,
+            KernelBuffer<int8> x) {
+        uint32 chunks = (uint32) (COLS / 32L);
+        if (asWave) {
+            uint32 wv = (uint32) Device.waveSize();
+            wave.launch(s, grid: [(uint32) ROWS], block: [wv])(y, w, x, (uint32) ROWS, chunks);
+        } else {
+            rows.launch(s, grid: [(uint32) ROWS / 16], block: [16])(y, w, x, (uint32) ROWS, chunks);
+        }
+        s.sync();
+        return;
+    }
+
+    static int64 best(boolean asWave, KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> w,
+            KernelBuffer<int8> x) {
+        int32 k = 0;
+        while (k < 5) { W.launch(asWave, s, y, w, x); k = k + 1; }
+        int64 best = 0L;
+        int32 r = 0;
+        while (r < 5) {
+            int64 t0 = Clock.nanoTime();
+            int32 j = 0;
+            while (j < 20) { W.launch(asWave, s, y, w, x); j = j + 1; }
+            int64 dt = (Clock.nanoTime() - t0) / 20L;
+            if (best == 0L || dt < best) { best = dt; }
+            r = r + 1;
+        }
+        return best;
+    }
+
+    public static int32 main() {
+        int8[] wh = heap int8[ROWS * COLS];
+        int8[] xh = heap int8[COLS];
+        int64 i = 0L;
+        while (i < ROWS * COLS) { wh[i] = (int8) ((i * 7L + i / COLS) % 16L); i = i + 1L; }
+        i = 0L;
+        while (i < COLS) { xh[i] = (int8) ((i % 23L) - 11L); i = i + 1L; }
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) (ROWS * COLS));
+        KernelBuffer<int8> x = heap KernelBuffer<int8>((uint64) COLS);
+        KernelBuffer<float32> yw = heap KernelBuffer<float32>((uint64) ROWS);
+        KernelBuffer<float32> yr = heap KernelBuffer<float32>((uint64) ROWS);
+        w.upload(wh);
+        x.upload(xh);
+        KernelStream s #= KernelStream.current();
+        W.launch(true, s, yw, w, x);
+        W.launch(false, s, yr, w, x);
+        float32[] a = heap float32[ROWS];
+        float32[] b = heap float32[ROWS];
+        yw.download(a);
+        yr.download(b);
+        int64 bad = 0L;
+        i = 0L;
+        while (i < ROWS) { if (a[i] != b[i]) { bad = bad + 1L; } i = i + 1L; }
+        System.stdout.println("wave width " + Device.waveSize() + "  rows that differ " + bad + "  y[1] " + b[1L]);
+        System.stdout.println("wave " + W.best(true, s, yw, w, x) + " ns  rows " + W.best(false, s, yr, w, x) + " ns");
+        return bad == 0L ? 0 : 1;
+    }
+}

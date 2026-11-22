@@ -757,6 +757,30 @@ void tagWorkItemLoop(llvm::UncondBrInst* latch, bool disable) {
     latch->setMetadata("llvm.loop", loopId);
 }
 
+// The work-item loops of `f` that hold fixed-vector code and no lane-crossing runtime call: each lane
+// already runs SIMD, so widening across lanes would rebuild every vector an element at a time.
+static llvm::SmallPtrSet<llvm::UncondBrInst*, 8> laneSerialLoops(
+        llvm::Function& f, llvm::ArrayRef<llvm::UncondBrInst*> latches) {
+    llvm::SmallPtrSet<llvm::UncondBrInst*, 8> out;
+    if (f.hasFnAttribute("cajeta.xpu.coop-wavew") || std::getenv("CAJETA_XPU_CPU_WIDEN_VECTOR_BODY")) return out;
+    llvm::DominatorTree dt(f);
+    llvm::LoopInfo li(dt);
+    for (llvm::UncondBrInst* latch : latches) {
+        llvm::Loop* loop = li.getLoopFor(latch->getParent());
+        if (!loop) continue;
+        bool vectorCode = false, crossesLanes = false;
+        for (llvm::BasicBlock* bb : loop->blocks())
+            for (llvm::Instruction& in : *bb) {
+                if (auto* call = llvm::dyn_cast<llvm::CallBase>(&in))
+                    if (llvm::Function* cf = call->getCalledFunction())
+                        if (cf->getName().starts_with("__cajeta_xpu_")) crossesLanes = true;
+                if (llvm::isa<llvm::FixedVectorType>(in.getType())) vectorCode = true;
+            }
+        if (vectorCode && !crossesLanes) out.insert(latch);
+    }
+    return out;
+}
+
 // A work-item loop is PARALLEL by the kernel model: its iterations are the
 // block's work-items, and within one barrier region they are independent (a
 // cross-work-item race there is undefined on every backend). LoopVectorize
@@ -941,7 +965,8 @@ struct WorkItemVectorizeRecorder final : public llvm::DiagnosticHandler {
         auto* opt = llvm::dyn_cast<llvm::DiagnosticInfoIROptimization>(&di);
         if (!opt) return next ? next->handleDiagnostics(di) : false;
         if (print)
-            fprintf(stderr, "[wave-remark] %s: %s\n", opt->getPassName(), opt->getMsg().c_str());
+            fprintf(stderr, "[wave-remark] %s: %s\n", llvm::StringRef(opt->getPassName()).str().c_str(),
+                    opt->getMsg().c_str());
         if (llvm::StringRef(opt->getPassName()) != "loop-vectorize") return true;
         if (llvm::isa<llvm::OptimizationRemarkAnalysis>(opt)) {
             const std::string msg = opt->getMsg();
@@ -1806,8 +1831,11 @@ void foldWaveVariants(llvm::Function& f) {
                     if (waveKernel) {
                         rewriteWaveWidth(*wrapper, waveW);
                         waveMaskAsData(*wrapper, hostModule, waveW);
-                        for (llvm::UncondBrInst* latch : wiLatches)
-                            forceLoopVectorWidth(latch, waveW);
+                        const auto laneSerial = laneSerialLoops(*wrapper, wiLatches);
+                        for (llvm::UncondBrInst* latch : wiLatches) {
+                            if (laneSerial.count(latch)) tagWorkItemLoop(latch, true);
+                            else forceLoopVectorWidth(latch, waveW);
+                        }
                     }
                 }
                 // CAJETA_XPU_CPU_DUMP_PREOPT=<dir>: the module before vectorize.
