@@ -59,6 +59,10 @@ unit="$(dep cajeta-unit)"
 codec="$(dep dev.cajeta.codec)"
 jinja="$(dep dev.cajeta.jinja)"
 logging="$(dep dev.cajeta.logging)"
+# dev.cajeta.ml.kernels: a dependency of cajeta-llm since its tile families moved there; absent before.
+kernels="$(dep dev.cajeta.ml.kernels)"
+libs="$codec,$jinja,$logging"
+if [ -n "$kernels" ] && [ -f "$kernels" ]; then libs="$libs,$kernels"; fi
 for d in "$unit" "$codec" "$jinja" "$logging"; do
     if [ -z "$d" ] || [ ! -f "$d" ]; then
         echo "::error::a dependency archive the llm suite used was not found in its log" >&2
@@ -81,7 +85,7 @@ fi
 
 echo ">> conformance: building the llm library"
 mkdir -p "$out/lib"
-"$CAJETA" --emit=cja -o "$out/lib/llama.cja" --classpath="$codec,$jinja,$logging" \
+"$CAJETA" --emit=cja -o "$out/lib/llama.cja" --classpath="$libs" \
     dev.cajeta.llm.Llm.run "$llm/src/main/cajeta" "$out/lib" > /dev/null 2> "$out/lib.err" \
     || { cat "$out/lib.err" >&2; exit 1; }
 
@@ -89,7 +93,7 @@ echo ">> conformance: replaying through the reference interpreter"
 CAJETA_XPU_CONFORMANCE="$out/rec" \
 CAJETA_XPU_CONFORMANCE_HELD="$here/test/conformance/llm-held.tsv" \
 "$CAJETA" --emit=exe --profile=test --xpu-backend="$backend" \
-    --classpath="$out/lib/llama.cja,$unit,$codec,$jinja,$logging" \
+    --classpath="$out/lib/llama.cja,$unit,$libs" \
     -o "$out/lib/unused" \
     dev.cajeta.llm.selftest.TestMain.run "$llm/src/test/cajeta" "$out/lib" \
     > /dev/null 2> "$out/replay.err"
