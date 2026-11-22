@@ -2,15 +2,16 @@
 
 ## 1. Definition
 
-- **1.1** One kernel source runs on every GPU backend cajeta targets, on every device of those
-  backends. A developer who writes a GPU kernel never writes it again per device, and never needs
-  the device to know it will work:
+- **1.1** One kernel source runs on every backend cajeta targets, the cpu included, on every device
+  of those backends. A developer who writes a kernel never writes it again per device, and never
+  needs the device to know it will work:
   - A construct one backend cannot lower is a compiler gap, closed in the compiler.
   - Hardware a device lacks is covered by a fallback that keeps the native operation's result
     contract, and every fallback can be forced and tested on any hardware.
   - A driver or resource limit is a parameter the kernel family adapts to, not a hard-coded size.
   First written for SPIR-V (2026-11-18, sections 2 to 7); widened to every GPU the same day (Julian:
-  "Let's go after all the gaps", sections 8 to 12).
+  "Let's go after all the gaps", sections 8 to 12). Widened to the cpu on 2026-11-21 (Julian:
+  "let's not do GPU then cpu separately", section 13).
 - **1.2** Why. On 2026-11-18 (cajeta-llm 15.2.21.9.4, proton, Gemma 3 4B Q4_K_M) Vulkan decode
   was at llama.cpp's level (98% at depth 512, 105% at 1536) and prefill was not (60% at 512, 38%
   at 1536). The kernels that carry hip prefill have no SPIR-V:
@@ -35,8 +36,6 @@
   - Correctness never depends on a guessed lane-to-element map.
   - A probe dispatch stays under 1 s on proton.
 - **1.5** Non-goals:
-  - CPU-only kernels (cajeta-llm has 52). Converting an algorithm to a CPU-efficient structure is a
-    later spec, once the GPUs are device independent (Julian 2026-11-18).
   - Tuning Vulkan prefill to llama.cpp's level. That is cajeta-llm 15.2.21.9.4.1 and .9.4.2, once
     these kernels lower.
   - MoltenVK and Windows drivers past what already runs there.
@@ -170,3 +169,40 @@ the dev compiler.
   `vulkan` name tests. Each is measured on the backends at hand, and kept, replaced or removed on
   the numbers.
 
+
+## 13. The cpu as a device
+
+Draft 2026-11-21, pending Julian's approval. cajeta-llm declares 360 kernels: 176 for every backend,
+132 for GPUs only and 52 for the cpu only. The cpu backend already runs a wave as a SIMD vector of
+the host's width (wave reductions, ballots and shuffles have vector forms, and a cooperative or
+`@Wave(width = N)` kernel runs N lanes on any host). It gets there by wrapping each work-item in a
+loop and relying on LLVM's loop vectorizer to widen it. Three things may still keep a GPU-shaped
+kernel from running well on the cpu, and their sizes are not measured:
+- the vectorizer does not widen the loop (one tile kernel spent two hours in it, hence the
+  10-minute compile deadline);
+- the algorithm's shape: llm's cpu mat-vec kernels give each lane a row over an 8- or 16-row
+  weight interleave and need no cross-lane sum, where the GPU kernels split a row across the wave
+  and reduce;
+- hardware: no matrix unit on Zen 5, and 32 vector registers against a GPU lane's 256.
+
+- **13.1** When a cpu-only kernel and its GPU-shaped twin are measured, both run on the cpu at the
+  model's shapes. The report gives each one's time, the width its work-item loop vectorized to (1 if
+  it did not), and its value check.
+- **13.2** When a kernel's work-item loop does not vectorize on the cpu, the compiler says so by
+  name, with the reason, and the census counts it. A wave kernel is already refused this way.
+  A kernel without wave ops runs scalar and says nothing.
+- **13.3** When 13.1 shows the vectorizer is the gap, the cpu backend emits a wave's lanes as SIMD
+  vectors directly, as ISPC does, so no kernel depends on the loop vectorizer.
+- **13.4** When 13.1 shows the algorithm's shape is the gap, the operation becomes a family with
+  both shapes and the tuner picks per device (§11.1, §12.1). The weight layout is a family
+  parameter, repacked at load for the member chosen.
+- **13.5** When a cooperative-matrix tile runs on a cpu without a matrix unit, it takes a rung
+  built on the cpu's dot instructions (VNNI for int8, AVX512-BF16 for bf16), keeping the tile's
+  result contract (§10.1).
+- **13.6** When cajeta-llm's GPU-only kernels also build for the cpu, its cpu test binary builds
+  in no more than 10% over its time on 2026-11-21 (a proposed bound). Holding the 89 unheld
+  cooperative-matrix GEMMs off the cpu took that build from about 9:00 to 8:09 on 2026-11-05
+  (cajeta-llm 15.2.20.3.6).
+- **13.7** When the work is done, no `targets` restriction in cajeta-llm or dev.cajeta.ml.kernels
+  remains without a named reason and the measurement behind it, and each operation has one source,
+  or one family whose members are chosen by measurement.
