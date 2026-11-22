@@ -894,6 +894,14 @@ namespace xpu {
         // change is measured on a part.
         virtual bool distributedCoopMatrixUnrollsLoops() const { return false; }
 
+        // Does a replicated software tile in a `@Wave(width = N)` kernel run once a wave here: one copy
+        // of the tile a wave in workgroup-shared memory, its verbs run by the wave's first lane?
+        virtual bool softwareTileOncePerWave() const { return false; }
+
+        // Should a replicated software tile's mma run row by row (m, k, then the N columns innermost)?
+        // The per-element sum order is unchanged; a SIMD host then takes a row of the accumulator a step.
+        virtual bool softwareTileMmaByRows() const { return false; }
+
         // Like waveShuffle, but `srcLane` may be DIVERGENT. waveShuffle is
         // uniform-index on some backends (AMDGPU readlane needs an SGPR), so a
         // computed per-lane source uses this. Default = waveShuffle.

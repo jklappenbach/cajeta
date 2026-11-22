@@ -315,6 +315,10 @@ public:
     }
     // The most threads a launch of this kernel can have: sizes Workgroup.reduce's scratch.
     void setBlockLimit(unsigned n) { blockLimit_ = n; }
+    // The lanes that share one software tile (0: every work-item holds its own).
+    void setTileShareWave(unsigned w) { tileShareW_ = w; }
+    // Call once the body is lowered: turns the leader-verb marks into barriers.
+    void closeTileVerbs() { finishTileVerbs(); }
     // The subgroups a block has when the kernel declares @Occupancy(maxWaves): sizes the staging tiles.
     void setStagingSubgroups(unsigned n) { stagingSubgroups_ = n; }
     bool checkStatements_ = false;
@@ -504,6 +508,10 @@ private:
         // `waveW` is the width the layout was derived for (see coopDistributeW).
         bool distributed = false;
         uint32_t waveW = 0, perLane = 0;
+        // One copy a wave in workgroup-shared memory (softwareTileOncePerWave): `shareW` lanes share
+        // it, `waveStore` holds every wave's copy, and the wave's first lane runs the verbs.
+        uint32_t shareW = 0;
+        llvm::GlobalVariable* waveStore = nullptr;
         // The layout this fragment was LOADED with (0 row, 1 col). NVPTX's
         // wmma.mma encodes the A/B pair in the instruction, so the multiply
         // has to know what the loads chose. Recorded per VARIABLE, which is
@@ -564,6 +572,7 @@ private:
     bool usedWorkgroupScan_ = false;
     int loopDepth_ = 0;
     unsigned blockLimit_ = 1024;
+    unsigned tileShareW_ = 0;
     unsigned stagingSubgroups_ = 0;
     std::optional<std::array<unsigned, 3>> pinnedBlock_;
 
@@ -5034,6 +5043,20 @@ private:
                 slots = s.perLane;
             }
             s.matrixType = llvm::ArrayType::get(elem, slots);
+            if (tileShareW_ != 0 && !s.distributed && !existing) {
+                const uint64_t waves = (blockLimit_ + tileShareW_ - 1) / tileShareW_;
+                auto* storeTy = llvm::ArrayType::get(elem, waves * slots);
+                s.shareW = tileShareW_;
+                s.waveStore = new llvm::GlobalVariable(
+                    mod, storeTy, /*isConstant=*/false, llvm::GlobalValue::InternalLinkage,
+                    llvm::UndefValue::get(storeTy), fn->getName().str() + "_cmtile_" + sanitizeTileName(nm),
+                    /*InsertBefore=*/nullptr, llvm::GlobalValue::NotThreadLocal, kSharedAS);
+                s.waveStore->setAlignment(llvm::MaybeAlign(64));
+                if (s.use == 0)
+                    noteSoftwareCoopMatrix(elem, s.rows, s.cols,
+                                           baseTier == LoweringTarget::ImplTier::Native && !straddled);
+                return s;
+            }
             s.alloca = existing ? existing : entryAlloca(s.matrixType, nm);
             // A software tile is the WHOLE Rows*Cols matrix, per work-item, and
             // its indices are loop variables, so it lands in scratch and shows up
@@ -5146,9 +5169,40 @@ private:
     // &tile[linIdx] for a software coop slot (a `[N x elem]` array alloca).
     llvm::Value* coopElemPtr(const CoopMatrixSlot& s, llvm::Value* linIdx) {
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        if (s.waveStore) {
+            const uint32_t cells = (uint32_t) llvm::cast<llvm::ArrayType>(s.matrixType)->getNumElements();
+            llvm::Value* wave = builder.CreateUDiv(target.threadId(builder, mod, 0),
+                                                   llvm::ConstantInt::get(i32, s.shareW), "cm.wave");
+            llvm::Value* at = builder.CreateAdd(
+                builder.CreateMul(wave, llvm::ConstantInt::get(i32, cells)), linIdx);
+            return builder.CreateInBoundsGEP(s.waveStore->getValueType(), s.waveStore,
+                                             {llvm::ConstantInt::get(i32, 0), at}, "cm.elt");
+        }
         return builder.CreateInBoundsGEP(
             s.matrixType, s.alloca,
             {llvm::ConstantInt::get(i32, 0), linIdx}, "cm.elt");
+    }
+
+    // A fragment-array element's name (`acc[1][3]`) as a symbol suffix.
+    static std::string sanitizeTileName(std::string nm) {
+        for (char& c : nm)
+            if (!std::isalnum((unsigned char) c)) c = '_';
+        return nm;
+    }
+
+    // Is this lane the first of its tile-sharing wave?
+    llvm::Value* tileLeader(const CoopMatrixSlot& s) {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        return builder.CreateICmpEQ(
+            builder.CreateURem(target.threadId(builder, mod, 0), llvm::ConstantInt::get(i32, s.shareW)),
+            llvm::ConstantInt::get(i32, 0), "cm.leader");
+    }
+
+    // Marks where a leader-run tile verb starts or ends; finishTileVerbs turns the marks into barriers.
+    void tileVerbMark(bool begin) {
+        auto* fnTy = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), false);
+        builder.CreateCall(mod.getOrInsertFunction(
+            begin ? "__cajeta_xpu_tile_verb_begin" : "__cajeta_xpu_tile_verb_end", fnTy));
     }
 
     // Resolve a Buffer kernel-param identifier to its base + element type, so a
@@ -5622,6 +5676,9 @@ private:
                         std::to_string(s.rows) + "," + std::to_string(s.cols) + "," +
                         std::to_string(s.use) + "> where the parameter `" + paramName +
                         "` is " + paramType->toCanonical());
+        if (s.waveStore)
+            unsupported("@Device helper " + helper + ": `" + argText + "` is a software tile held once a "
+                        "wave (@Wave on a " + std::string(target.name()) + " kernel), which a helper cannot take yet");
         return s.alloca;
     }
 
@@ -6654,7 +6711,69 @@ private:
     // Software cooperative-matrix ops: the slot is a flat `[R*C x elem]` tile.
     // splat fills it, load/store gather/scatter it from a Buffer, and mma runs a
     // triple loop; FP GEMMs accumulate in f32 and narrow on store.
+    // A software tile's verb. On a tile held once a wave, the verbs that write it or move it run
+    // on the wave's first lane, between barriers; elements() is 0 on the other lanes.
     llvm::Value* lowerCoopMatrixMethodSoftware(
+            const std::string& recv, const std::string& name,
+            const std::shared_ptr<MethodCallExpression>& mc) {
+        const CoopMatrixSlot& slot = coopMatrixSlots[recv];
+        if (!slot.waveStore) return lowerCoopMatrixVerbSoftware(recv, name, mc);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        if (name == "elements")
+            return builder.CreateSelect(tileLeader(slot),
+                                        llvm::ConstantInt::get(i32, slot.rows * slot.cols),
+                                        llvm::ConstantInt::get(i32, 0), "cm.elements");
+        const bool moves = name == "splat" || name == "load" || name == "store" || name == "mma"
+            || name == "addScaledPow2";
+        if (!moves && name != "set") return lowerCoopMatrixVerbSoftware(recv, name, mc);
+        if (moves) tileVerbMark(true);
+        auto* lead = llvm::BasicBlock::Create(ctx, "cm.lead", fn);
+        auto* cont = llvm::BasicBlock::Create(ctx, "cm.cont", fn);
+        llvm::Instruction* gate = builder.CreateCondBr(tileLeader(slot), lead, cont);
+        builder.SetInsertPoint(lead);
+        lowerCoopMatrixVerbSoftware(recv, name, mc);
+        builder.CreateBr(cont);
+        // The leader's code runs on that lane alone: its loops, and a loop around a `set`, are marked
+        // so the cpu backend does not step every lane through them (CpuBarrierFission reads the mark).
+        llvm::MDNode* mark = llvm::MDNode::get(ctx, {});
+        gate->setMetadata("cajeta.xpu.tile", mark);
+        lead->getTerminator()->setMetadata("cajeta.xpu.tile", mark);
+        for (llvm::BasicBlock* bb = cont->getNextNode(); bb; bb = bb->getNextNode())
+            if (llvm::Instruction* t = bb->getTerminator()) t->setMetadata("cajeta.xpu.tile", mark);
+        builder.SetInsertPoint(cont);
+        if (moves) tileVerbMark(false);
+        return llvm::ConstantInt::get(i32, 0);
+    }
+
+    // Drops the end/begin marks between two adjacent leader verbs and makes the rest workgroup barriers.
+    void finishTileVerbs() {
+        llvm::Function* beginFn = mod.getFunction("__cajeta_xpu_tile_verb_begin");
+        llvm::Function* endFn = mod.getFunction("__cajeta_xpu_tile_verb_end");
+        if (!beginFn && !endFn) return;
+        auto marks = [&](llvm::Instruction* in, llvm::Function* f) {
+            auto* c = llvm::dyn_cast_or_null<llvm::CallInst>(in);
+            return c && f && c->getCalledFunction() == f;
+        };
+        llvm::SmallVector<llvm::Instruction*, 16> drop, keep;
+        for (llvm::BasicBlock& bb : *fn)
+            for (llvm::Instruction& in : bb) {
+                if (marks(&in, endFn) && marks(in.getNextNode(), beginFn)) {
+                    drop.push_back(&in);
+                    drop.push_back(in.getNextNode());
+                } else if ((marks(&in, beginFn) || marks(&in, endFn))
+                           && !(marks(&in, beginFn) && marks(in.getPrevNode(), endFn))) {
+                    keep.push_back(&in);
+                }
+            }
+        for (llvm::Instruction* in : keep) {
+            builder.SetInsertPoint(in);
+            target.workgroupBarrier(builder, mod);
+        }
+        for (llvm::Instruction* in : keep) in->eraseFromParent();
+        for (llvm::Instruction* in : drop) in->eraseFromParent();
+    }
+
+    llvm::Value* lowerCoopMatrixVerbSoftware(
             const std::string& recv, const std::string& name,
             const std::shared_ptr<MethodCallExpression>& mc) {
         const auto& args = mc->getParameters();
@@ -6791,6 +6910,39 @@ private:
             // FP: accumulate in the accumulator's width (f32 for the narrow
             // types), then narrow; see the distributed mma (1.5.4.5).
             llvm::Type* compTy = fp ? softwareTileComputeType(acc) : acc;
+            if (target.softwareTileMmaByRows()) {
+                llvm::Type* rowTy = llvm::ArrayType::get(compTy, N);
+                llvm::AllocaInst* row = entryAlloca(rowTy, "cm.row");
+                auto rowAt = [&](llvm::Value* n) {
+                    return builder.CreateInBoundsGEP(rowTy, row, {llvm::ConstantInt::get(i32, 0), n});
+                };
+                emitCountedLoop(M, [&](llvm::Value* m) {
+                    llvm::Value* cBase = builder.CreateMul(m, llvm::ConstantInt::get(i32, N));
+                    emitCountedLoop(N, [&](llvm::Value* n) {
+                        builder.CreateStore(
+                            coerceTo(builder.CreateLoad(acc, coopElemPtr(slot, builder.CreateAdd(cBase, n))), compTy),
+                            rowAt(n));
+                    });
+                    emitCountedLoop(K, [&](llvm::Value* k) {
+                        llvm::Value* aLin = builder.CreateAdd(builder.CreateMul(m, llvm::ConstantInt::get(i32, K)), k);
+                        llvm::Value* av = coerceTo(builder.CreateLoad(a.elemType, coopElemPtr(a, aLin)), compTy);
+                        llvm::Value* bBase = builder.CreateMul(k, llvm::ConstantInt::get(i32, N));
+                        emitCountedLoop(N, [&](llvm::Value* n) {
+                            llvm::Value* bv = coerceTo(
+                                builder.CreateLoad(b.elemType, coopElemPtr(b, builder.CreateAdd(bBase, n))), compTy);
+                            llvm::Value* prod = fp ? builder.CreateFMul(av, bv) : builder.CreateMul(av, bv);
+                            llvm::Value* cur = builder.CreateLoad(compTy, rowAt(n));
+                            builder.CreateStore(fp ? builder.CreateFAdd(cur, prod) : builder.CreateAdd(cur, prod),
+                                                rowAt(n));
+                        });
+                    });
+                    emitCountedLoop(N, [&](llvm::Value* n) {
+                        builder.CreateStore(coerceTo(builder.CreateLoad(compTy, rowAt(n)), acc),
+                                            coopElemPtr(slot, builder.CreateAdd(cBase, n)));
+                    });
+                });
+                return llvm::ConstantInt::get(i32, 0);
+            }
             emitCountedLoop(M, [&](llvm::Value* m) {
                 emitCountedLoop(N, [&](llvm::Value* n) {
                     llvm::Value* cLin = builder.CreateAdd(
@@ -10063,6 +10215,9 @@ llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
     lowerer.setParams(std::move(params));
     if (auto attr = XpuKernelAttr::from(*method); attr && attr->maxThreads())
         lowerer.setBlockLimit(*attr->maxThreads());
+    if (auto attr = XpuKernelAttr::from(*method);
+            attr && attr->waveWidth() && *attr->waveWidth() > 1 && attr->maxThreads() && target.softwareTileOncePerWave())
+        lowerer.setTileShareWave((unsigned) *attr->waveWidth());
     if (auto attr = XpuKernelAttr::from(*method); attr && attr->maxWaves() && !attr->maxThreads())
         lowerer.setStagingSubgroups(*attr->maxWaves());
     if (method->pinnedLaunchBlock()) lowerer.setPinnedBlock(*method->pinnedLaunchBlock());
@@ -10076,6 +10231,7 @@ llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
     DeviceLowerer::DeviceFnCache deviceFns;
     lowerer.setDeviceContext(method->getParent(), &deviceFns);
     lowerer.lowerBody(method);
+    lowerer.closeTileVerbs();
     if (workgroupReduceUnderDivergence(*fn))
         unsupported(lowerer.workgroupVerbs() + " under work-item-divergent control flow in " + kname +
                     " (every lane of the workgroup must reach it, and none may return "

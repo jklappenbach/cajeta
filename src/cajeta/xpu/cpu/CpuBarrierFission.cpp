@@ -790,6 +790,21 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         }
         return vectorCode && laneSerialJoin(L, li) != nullptr;
     };
+    // Does `L` walk a once-a-wave tile's elements (a leader-run set), with no boundary or runtime op inside?
+    auto loopIsLeaderSerial = [&](llvm::Loop* L) {
+        bool tile = false;
+        for (llvm::BasicBlock* bb : L->blocks()) {
+            if (boundarySet.count(bb)) return false;
+            for (llvm::Instruction& in : *bb) {
+                if (auto* call = llvm::dyn_cast<llvm::CallBase>(&in))
+                    if (llvm::Function* cf = call->getCalledFunction())
+                        if (cf->getName().starts_with("__cajeta_xpu_")
+                            && cf->getName() != "__cajeta_xpu_wave_width") return false;
+                if (in.hasMetadata("cajeta.xpu.tile")) tile = true;
+            }
+        }
+        return tile;
+    };
     auto qualifyLoop = [&](llvm::Loop* L, LoopCand& out) -> bool {
         auto no = [&](const char* why) {
             if (qdbg)
@@ -805,6 +820,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         for (llvm::BasicBlock* b : boundarySet)
             if (!cutSet.count(b) && L->contains(b)) { realBarrier = true; break; }
         if (realBarrier) return no("it holds a barrier");
+        if (loopIsLeaderSerial(L)) return no("it walks a once-a-wave tile's elements; the wave's first lane runs it");
         {
             llvm::DominatorTree lsDT(*wrapper);
             llvm::LoopInfo lsLI(lsDT);

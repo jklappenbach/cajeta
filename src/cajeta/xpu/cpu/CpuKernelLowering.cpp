@@ -115,6 +115,10 @@ public:
     // The inner loops must be gone for LoopVectorize to widen the work-item
     // loop (4A.7.2's loop-exposure spike).
     bool distributedCoopMatrixUnrollsLoops() const override { return true; }
+    bool softwareTileMmaByRows() const override { return true; }
+    bool softwareTileOncePerWave() const override {
+        return std::getenv("CAJETA_XPU_CPU_TILE_REPLICATED") == nullptr;
+    }
 
     // Wide `dotAccum` for the host ISA, so a @Kernel reaches the tier an ordinary
     // method does. Null (leaving the portable reduce) off x86, without VNNI, or on

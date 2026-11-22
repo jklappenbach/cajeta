@@ -10,7 +10,7 @@ import cajeta.xpu.KernelThread;
 public class T {
     static final int64 TILES = 256L;
 
-    @Kernel @Occupancy(maxThreads = 32)
+    @Kernel @Wave(width = 32) @Occupancy(maxThreads = 32)
     public static void tile(KernelBuffer<float32> c, KernelBuffer<float16> a, KernelBuffer<float16> b, uint32 reps) {
         uint32 g = KernelThread.globalIdX() / 32;
         CooperativeMatrix<float16,16,16,0> ma;
