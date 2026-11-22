@@ -146,8 +146,8 @@ about three hours from "prepare" to tag.
    artifact is the release binary itself, and it catches crashes that
    only a release compiler hits. llm builds its test binary in debug
    mode, so these legs also run llm's spill gate where it actually
-   reads. Each leg takes about 20 to 25 minutes, so expect about
-   1.5 hours for all four.
+   reads. Each leg took 13 to 15 minutes on proton (2026-11-21), so expect about
+   an hour for all four.
 
    ```sh
    # llm: a clean checkout of cajeta-llm main. The tool refuses to start
