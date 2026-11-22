@@ -1,6 +1,8 @@
 // A cpu kernel whose work-item loop the vectorizer does not widen runs one work-item at a time.
 // The build names it with `[xpu-cpu-scalar]` and the reason (gpu-kernel-parity 19.1.1, spec 13.2).
 #include "XpuCpuBarrierFissionShapes.h"
+
+#include "../PortableEnv.h"   // setenv/unsetenv on MinGW
 #include <cstdlib>
 #include <string>
 

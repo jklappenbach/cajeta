@@ -2,6 +2,8 @@
 // runs lane by lane, and only regions with a wave op are widened (gpu-kernel-parity 20.2.2).
 #include "gtest/gtest.h"
 
+#include "../PortableEnv.h"   // setenv/unsetenv on MinGW
+
 #include "../jit/JitTestHelper.h"
 #include "KernelLoweringProbe.h"
 

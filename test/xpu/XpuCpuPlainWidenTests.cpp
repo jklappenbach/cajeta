@@ -3,6 +3,8 @@
 // (gpu-kernel-parity 21.1.1, 21.2.2).
 #include "gtest/gtest.h"
 
+#include "../PortableEnv.h"   // setenv/unsetenv on MinGW
+
 #include "../jit/JitTestHelper.h"
 #include "KernelLoweringProbe.h"
 
