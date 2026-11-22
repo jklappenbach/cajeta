@@ -24,6 +24,20 @@ public class T {
         acc.store(c, g * 256, 0, 16);
     }
 
+    @Kernel @Wave(width = 32) @Occupancy(maxThreads = 32)
+    public static void tileI8(KernelBuffer<int32> c, KernelBuffer<int8> a, KernelBuffer<int8> b, uint32 reps) {
+        uint32 g = KernelThread.globalIdX() / 32;
+        CooperativeMatrix<int8,16,16,0> ma;
+        CooperativeMatrix<int8,16,16,1> mb;
+        CooperativeMatrix<int32,16,16,2> acc;
+        ma.load(a, g * 256, 0, 16);
+        mb.load(b, g * 256, 1, 16);
+        acc.splat(0);
+        uint32 r = 0;
+        while (r < reps) { acc.mma(ma, mb); r = r + 1; }
+        acc.store(c, g * 256, 0, 16);
+    }
+
     @Kernel
     public static void rows(KernelBuffer<float32> c, KernelBuffer<float32> a, KernelBuffer<float32> b, uint32 reps) {
         uint32 gi = KernelThread.globalIdX();
@@ -94,7 +108,41 @@ public class T {
         int64 bad = 0L;
         i = 0L;
         while (i < n) { if (x[i] != y[i]) { bad = bad + 1L; } i = i + 1L; }
+        int8[] a8h = heap int8[n];
+        int8[] b8h = heap int8[n];
+        i = 0L;
+        while (i < n) { a8h[i] = (int8) ((i * 7L) % 16L); b8h[i] = (int8) (((i * 5L + 3L) % 255L) - 127L); i = i + 1L; }
+        KernelBuffer<int8> a8 = heap KernelBuffer<int8>((uint64) n);
+        KernelBuffer<int8> b8 = heap KernelBuffer<int8>((uint64) n);
+        KernelBuffer<int32> c8 = heap KernelBuffer<int32>((uint64) n);
+        a8.upload(a8h);
+        b8.upload(b8h);
+        int64 t8 = 0L;
+        int32 q = 0;
+        while (q < 6) {
+            int64 t0 = Clock.nanoTime();
+            tileI8.launch(s, grid: [(uint32) TILES], block: [32])(c8, a8, b8, reps);
+            s.sync();
+            int64 dt = Clock.nanoTime() - t0;
+            if (q > 0 && (t8 == 0L || dt < t8)) { t8 = dt; }
+            q = q + 1;
+        }
+        int32[] c8h = heap int32[n];
+        c8.download(c8h);
+        int64 bad8 = 0L;
+        int64 e = 0L;
+        while (e < n) {
+            int64 t = e / 256L;
+            int64 m = (e % 256L) / 16L;
+            int64 col = e % 16L;
+            int64 want = 0L;
+            int64 k = 0L;
+            while (k < 16L) { want = want + (int64) a8h[t * 256L + m * 16L + k] * (int64) b8h[t * 256L + col * 16L + k]; k = k + 1L; }
+            if ((int64) c8h[e] != want * (int64) reps) { bad8 = bad8 + 1L; }
+            e = e + 1L;
+        }
         int64 mmas = TILES * (int64) reps;
+        System.stdout.println("int8 tile " + (t8 / mmas) + " ns a multiply  elements that differ " + bad8);
         System.stdout.println("elements that differ " + bad + "  c[1] " + y[1L]);
         System.stdout.println("tile " + (tt / mmas) + " ns a multiply  rows " + (tr / mmas) + " ns a multiply");
         return bad == 0L ? 0 : 1;
