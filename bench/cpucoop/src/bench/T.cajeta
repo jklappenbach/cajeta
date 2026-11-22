@@ -1,0 +1,102 @@
+package bench;
+import cajeta.time.Clock;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+
+// A 16x16x16 float16 cooperative-matrix multiply-accumulate on the cpu backend against the same
+// product written as row work-items over float32 (gpu-kernel-parity 22.2.2).
+public class T {
+    static final int64 TILES = 256L;
+
+    @Kernel @Occupancy(maxThreads = 32)
+    public static void tile(KernelBuffer<float32> c, KernelBuffer<float16> a, KernelBuffer<float16> b, uint32 reps) {
+        uint32 g = KernelThread.globalIdX() / 32;
+        CooperativeMatrix<float16,16,16,0> ma;
+        CooperativeMatrix<float16,16,16,1> mb;
+        CooperativeMatrix<float32,16,16,2> acc;
+        ma.load(a, g * 256, 0, 16);
+        mb.load(b, g * 256, 0, 16);
+        acc.splat(0.0f);
+        uint32 r = 0;
+        while (r < reps) { acc.mma(ma, mb); r = r + 1; }
+        acc.store(c, g * 256, 0, 16);
+    }
+
+    @Kernel
+    public static void rows(KernelBuffer<float32> c, KernelBuffer<float32> a, KernelBuffer<float32> b, uint32 reps) {
+        uint32 gi = KernelThread.globalIdX();
+        uint32 g = gi / 16;
+        uint32 i = gi % 16;
+        Vector<float32,16> acc = heap Vector<float32,16>(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+        uint32 r = 0;
+        while (r < reps) {
+            uint32 k = 0;
+            while (k < 16) {
+                acc = acc + b.vload<16>((int64) (g * 256 + k * 16)) * a[(int64) (g * 256 + i * 16 + k)];
+                k = k + 1;
+            }
+            r = r + 1;
+        }
+        c.vstore((int64) (g * 256 + i * 16), acc);
+    }
+
+    static int64 best(boolean asTile, KernelStream s, KernelBuffer<float32> c, KernelBuffer<float16> a16,
+            KernelBuffer<float16> b16, KernelBuffer<float32> a32, KernelBuffer<float32> b32, uint32 reps) {
+        int64 best = 0L;
+        int32 r = 0;
+        while (r < 6) {
+            int64 t0 = Clock.nanoTime();
+            if (asTile) { tile.launch(s, grid: [(uint32) TILES], block: [32])(c, a16, b16, reps); }
+            else { rows.launch(s, grid: [(uint32) TILES], block: [16])(c, a32, b32, reps); }
+            s.sync();
+            int64 dt = Clock.nanoTime() - t0;
+            if (r > 0 && (best == 0L || dt < best)) { best = dt; }
+            r = r + 1;
+        }
+        return best;
+    }
+
+    public static int32 main() {
+        int64 n = TILES * 256L;
+        float16[] ah = heap float16[n];
+        float16[] bh = heap float16[n];
+        float32[] af = heap float32[n];
+        float32[] bf = heap float32[n];
+        int64 i = 0L;
+        while (i < n) {
+            af[i] = (float32) ((i * 7L) % 9L);
+            bf[i] = (float32) ((i * 5L + 3L) % 7L);
+            ah[i] = (float16) af[i];
+            bh[i] = (float16) bf[i];
+            i = i + 1L;
+        }
+        KernelBuffer<float16> a16 = heap KernelBuffer<float16>((uint64) n);
+        KernelBuffer<float16> b16 = heap KernelBuffer<float16>((uint64) n);
+        KernelBuffer<float32> a32 = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> b32 = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> ct = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> cr = heap KernelBuffer<float32>((uint64) n);
+        a16.upload(ah);
+        b16.upload(bh);
+        a32.upload(af);
+        b32.upload(bf);
+        KernelStream s #= KernelStream.current();
+        uint32 reps = 16;
+        int64 tt = T.best(true, s, ct, a16, b16, a32, b32, reps);
+        int64 tr = T.best(false, s, cr, a16, b16, a32, b32, reps);
+        float32[] x = heap float32[n];
+        float32[] y = heap float32[n];
+        ct.download(x);
+        cr.download(y);
+        int64 bad = 0L;
+        i = 0L;
+        while (i < n) { if (x[i] != y[i]) { bad = bad + 1L; } i = i + 1L; }
+        int64 mmas = TILES * (int64) reps;
+        System.stdout.println("elements that differ " + bad + "  c[1] " + y[1L]);
+        System.stdout.println("tile " + (tt / mmas) + " ns a multiply  rows " + (tr / mmas) + " ns a multiply");
+        return bad == 0L ? 0 : 1;
+    }
+}
