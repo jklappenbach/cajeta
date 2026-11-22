@@ -1,0 +1,125 @@
+package releasecheck;
+
+import cajeta.lang.String;
+import cajeta.process.Command;
+import cajeta.process.ProcessResult;
+
+/**
+ * release-check — cajeta-llm's cpu and amdgpu legs against each candidate compiler,
+ * run before a release is prepared (RELEASING.md, "Candidate checks"). Exits 1 on any red leg.
+ */
+public final class Main {
+
+    /** Runs `sh -c script` in `dir` (null: inherit) and returns its trimmed stdout, or "" if none. */
+    static #String sh(String dir, String script) {
+        String[] argv = heap String[3];
+        argv[0] = "/bin/sh";
+        argv[1] = "-c";
+        argv[2] #= script + "";
+        Command cmd = heap Command(#argv);
+        if (dir != null) {
+            String d #= dir + "";
+            cmd.workingDir(#d);
+        }
+        cmd.captureStdout();
+        ProcessResult r #= cmd.run();
+        int8[] out = r.stdout();
+        if (out == null) { return ""; }
+        int32 n = (int32) out.count();
+        int8[] copy = heap int8[n];
+        int32 i = 0;
+        while (i < n) { copy[i] = out[i]; i = i + 1; }
+        String s #= heap String(#copy, n);
+        return s.trim();
+    }
+
+    /** Runs `sh -c script` in `dir` with stdio inherited and returns its exit code. */
+    static int32 run(String dir, String script) {
+        String[] argv = heap String[3];
+        argv[0] = "/bin/sh";
+        argv[1] = "-c";
+        argv[2] #= script + "";
+        Command cmd = heap Command(#argv);
+        String d #= dir + "";
+        cmd.workingDir(#d);
+        ProcessResult r #= cmd.run();
+        return r.code();
+    }
+
+    /** Single-quotes `s` for a POSIX shell. */
+    static #String q(String s) {
+        return "'" + s + "'";
+    }
+
+    /** Runs one llm leg on `backend` with compiler `cajeta`, logging to `log`; returns its exit code. */
+    static int32 leg(String llm, String cajeta, String backend, String log) {
+        String script #= "mkdir -p \"$HOME/.cache/llm-leg-tmp\" && "
+            + "KERNELS_REPO=/nonexistent-use-registry TMPDIR=\"$HOME/.cache/llm-leg-tmp\" "
+            + "CAJETA=" + Main.q(cajeta) + " XPU_BACKEND=" + backend + " CAJETA_XPU_BACKEND=" + backend
+            + " ./run-tests.sh > " + Main.q(log) + " 2>&1";
+        return Main.run(llm, script);
+    }
+
+    /** Usage: release-check <llm-checkout> <out-dir> <compiler>... */
+    public static int32 main(String[] args) {
+        int32 argc = (int32) args.count();
+        if (argc < 3) {
+            System.stderr.println("usage: release-check <llm-checkout> <out-dir> <compiler>...");
+            return 2;
+        }
+        String llm #= Main.sh(null, "cd " + Main.q(args[0]) + " && pwd");
+        String out #= Main.sh(null, "mkdir -p " + Main.q(args[1]) + " && cd " + Main.q(args[1]) + " && pwd");
+        if (llm.byteLength() == 0 || out.byteLength() == 0) {
+            System.stderr.println("release-check: cannot open " + args[0] + " or " + args[1]);
+            return 2;
+        }
+        String busy #= Main.sh(null, "pgrep -f '[R]unner.Worker' || true");
+        if (busy.byteLength() > 0) {
+            System.stderr.println("release-check: a CI job is running on this box (Runner.Worker " + busy
+                + "); the cpu leg needs a quiet box");
+            return 2;
+        }
+        String head #= Main.sh(llm, "git rev-parse --short HEAD");
+        String dirty #= Main.sh(llm, "git status --porcelain --untracked-files=no | head -1");
+        System.stdout.println("llm " + llm + " at " + head + (dirty.byteLength() > 0 ? " (modified)" : ""));
+        String[] backends = heap String[2];
+        backends[0] = "cpu";
+        backends[1] = "amdgpu";
+        int32 red = 0;
+        String summary = "";
+        int32 c = 2;
+        while (c < argc) {
+            String cajeta #= Main.sh(null, "readlink -f " + Main.q(args[c]) + " 2>/dev/null");
+            String version #= Main.sh(null, "[ -x " + Main.q(cajeta) + " ] && " + Main.q(cajeta)
+                + " --version 2>/dev/null | head -1");
+            if (version.byteLength() == 0) {
+                System.stderr.println("release-check: " + args[c] + " does not run");
+                return 2;
+            }
+            int32 b = 0;
+            while (b < 2) {
+                String be = backends[b];
+                String log #= out + "/leg-" + c + "-" + be + ".log";
+                String start #= Main.sh(null, "date +%H:%M");
+                System.stdout.println(start + " start " + be + " with " + version + " (" + cajeta + "), log " + log);
+                int32 rc = Main.leg(llm, cajeta, be, log);
+                String end #= Main.sh(null, "date +%H:%M");
+                String tests #= Main.sh(null, "grep -E '^Tests: ' " + Main.q(log) + " | tail -1");
+                String fails #= Main.sh(null, "grep -E '>> FAIL|\\[FAIL\\]' " + Main.q(log) + " | head -8");
+                String verdict = rc == 0 ? "green" : "RED";
+                if (rc != 0) { red = red + 1; }
+                String row #= end + " " + verdict + " rc=" + rc + " " + be + " " + version + " " + start + "-" + end
+                    + " " + tests;
+                System.stdout.println(row);
+                if (fails.byteLength() > 0) { System.stdout.println(fails); }
+                summary #= summary + row + "\n";
+                b = b + 1;
+            }
+            c = c + 1;
+        }
+        System.stdout.println("--- llm " + head + (dirty.byteLength() > 0 ? " (modified)" : ""));
+        System.stdout.print(summary);
+        System.stdout.println(red == 0 ? "release-check: every leg green" : "release-check: " + red + " leg(s) red");
+        return red == 0 ? 0 : 1;
+    }
+}

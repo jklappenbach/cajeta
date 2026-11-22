@@ -74,28 +74,33 @@ git commit -m "release: prepare v$(cat VERSION)"
 git push origin main
 ```
 
-```text
-# 2. Trigger a dry-run first to verify the matrix.
-# Actions → release → Run workflow → mode = dry-run → Run workflow
-# (Watch the run, fix anything that breaks. No tag is created;
-# nothing public is touched.)
+```sh
+# 2. Put the candidate on its own ref, then start both CI checks from it.
+#    rc/<version> keeps the nightly (same ref = same concurrency group)
+#    from cancelling the device run, and pins the sha while main moves.
+sha=$(git rev-parse HEAD); v="v$(cat VERSION)"
+git push origin "${sha}:refs/heads/rc/$v"
+gh workflow run device-tests.yml --ref "rc/$v"          # both legs, default filter
+gh workflow run release.yml --ref "rc/$v" -f mode=dry-run
 ```
 
 ```sh
-# 3. Once dry-run is green on every target, move the train, THEN tag it.
-#    The fast-forward is what makes the tag releasable: a tag on a
-#    main-only commit is refused by the guard before anything builds.
-git checkout release
-git merge --ff-only main          # refuses if main rewrote history
-git push origin release
-git tag "v$(cat VERSION)"         # tagging release, not main
-git push origin "v$(cat VERSION)"
-git checkout main
+# 3. While they run, run the local candidate checks (next section).
 ```
 
-`--ff-only` is deliberate. `release` must never carry a commit that is not
-on `main`, or the two diverge and "what shipped" stops being a prefix of
-"what we have". If it refuses, the fix is on `main`, not here.
+```sh
+# 4. Once device-tests, the dry-run and the candidate checks are all
+#    green, move the train, THEN tag it. The guard refuses a tag on a
+#    main-only commit, and a tag with no green device-tests run on it.
+git push origin "${sha}:refs/heads/release"   # fast-forward only
+git tag "$v" "$sha" && git push origin "$v"
+git push origin --delete "rc/$v"
+```
+
+The push to `release` is not forced, so it only fast-forwards. That is deliberate:
+`release` must never carry a commit that is not on `main`, or the two diverge
+and "what shipped" stops being a prefix of "what we have". If it refuses, the
+fix is on `main`, not here.
 
 Once the tag lands, watch the workflow at
 `https://github.com/jklappenbach/cajeta/actions`. The build jobs run in
@@ -120,6 +125,43 @@ on the repo page: tag with a semver pre-release suffix like
 publishes a Release that GitHub auto-flags as a pre-release (the
 `softprops/action-gh-release` action detects the `-` suffix). The tag
 itself is permanent, like any production tag.
+
+## Candidate checks
+
+A release needs three green results on its candidate commit. Plan on
+about three hours from "prepare" to tag.
+
+1. **device-tests, both legs, default filter** (2.5 to 3 h on Phoenix).
+   This is the only run on NVIDIA hardware (the RTX 4090 through WSL and
+   Windows). It also runs cajeta-llm's suite and spill gate on sm_89. The
+   release guard checks it: it looks for a successful run titled
+   `device-tests legs=both filter=*DeviceTests*` on the tagged commit, or
+   on an ancestor that differs only in `CHANGELOG.md`, `VERSION` or
+   `specs/`. A narrowed dispatch does not count.
+2. **The release dry-run** (about 1 h 50 m), which builds every shipped
+   binary.
+3. **cajeta-llm's cpu and amdgpu legs on proton, against the candidate
+   compiler built two ways.** The dev build (Debug, with assertions)
+   catches assertion failures. The dry-run's `cajeta-x86_64-linux-gnu`
+   artifact is the release binary itself, and it catches crashes that
+   only a release compiler hits. llm builds its test binary in debug
+   mode, so these legs also run llm's spill gate where it actually
+   reads. Each leg takes about 20 to 25 minutes, so expect about
+   1.5 hours for all four.
+
+   ```sh
+   # llm: a clean checkout of cajeta-llm main. The tool refuses to start
+   # while a CI job is running on the box.
+   build/src/cajeta jit-run tools/release-check/src releasecheck.Main.main \
+       <llm-checkout> <out-dir> build/src/cajeta <dry-run>/bin/cajeta
+   ```
+
+   It prints a row per leg and exits 1 if any leg is red.
+
+**A red nightly is a stop.** Do not prepare a release while device-tests
+is red on `main`. Fix the failure, or quarantine the test (a skip naming
+the cause) once Julian approves it. Every test that has stayed red on
+the nightly so far has turned up in a release later.
 
 ## When a dry-run fails
 

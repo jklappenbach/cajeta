@@ -24,6 +24,8 @@
 # runtime-bitcode clang and llvm-link are pinned explicitly). Keep the two in
 # sync when release.yml's recipe changes.
 name: device-tests
+# release.yml's guard accepts only a run titled with both legs and the default filter.
+run-name: device-tests legs=${{ inputs.legs || 'both' }} filter=${{ inputs.filter || '*DeviceTests*' }} bench=${{ inputs.bench || 'none' }}
 
 on:
   workflow_dispatch:

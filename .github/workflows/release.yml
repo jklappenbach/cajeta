@@ -104,6 +104,9 @@ jobs:
   guard:
     name: release branch guard
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -158,6 +161,33 @@ jobs:
             exit 1
           fi
           echo "::notice::tag '$REF_NAME' is on '$BRANCH' — guard satisfied"
+
+      # The 4090 is the only NVIDIA hardware, and only device-tests reaches it: a release
+      # needs a green full run on its commit, or on an ancestor that differs by notes alone.
+      - name: The candidate passed device-tests on NVIDIA
+        if: github.event_name == 'push' || github.event.inputs.mode == 'production'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          FULL='device-tests legs=both filter=*DeviceTests* '
+          RUNS=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/device-tests.yml/runs?status=success&per_page=100" \
+                   --jq ".workflow_runs[] | select(.display_title | startswith(\"$FULL\")) | \"\(.head_sha) \(.id)\"")
+          while read -r RUN_SHA RUN_ID; do
+            [ -n "$RUN_SHA" ] || continue
+            git cat-file -e "${RUN_SHA}^{commit}" 2>/dev/null || continue
+            git merge-base --is-ancestor "$RUN_SHA" "$SHA" || continue
+            OTHER=$(git diff --name-only "$RUN_SHA" "$SHA" | grep -vE '^(CHANGELOG\.md|VERSION|specs/)' || true)
+            if [ -z "$OTHER" ]; then
+              echo "::notice::device-tests run $RUN_ID passed on ${RUN_SHA:0:9}; $SHA differs from it by notes only"
+              exit 0
+            fi
+          done <<< "$RUNS"
+          echo "::error::no green full device-tests run (both legs, filter *DeviceTests*) covers $SHA." \
+               "Dispatch it on the candidate (push the sha to rc/<version>, run device-tests from that ref)," \
+               "fix or quarantine what it finds, then re-run this guard. See RELEASING.md, 'Candidate checks'."
+          exit 1
 
   # Resolve the build matrix. The canonical full target list lives here as
   # JSON; on a tag push or a production dispatch it is used whole, so a real
