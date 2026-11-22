@@ -73,6 +73,8 @@ if [ -s "$out/rec/skipped.tsv" ]; then
     cut -f2 "$out/rec/skipped.tsv" | sort | uniq -c | sort -rn | sed 's/^/   /'
 fi
 if [ "$recorded" -eq 0 ]; then
+    echo ">> conformance: the end of the llm suite's log ($out/leg.log)"
+    tail -40 "$out/leg.log" | sed 's/^/   /'
     echo "::error::nothing was recorded: an empty corpus is not a passing one" >&2
     exit 1
 fi

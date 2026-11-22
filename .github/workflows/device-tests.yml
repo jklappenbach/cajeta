@@ -491,6 +491,7 @@ jobs:
           name: llm-conformance-${{ matrix.name }}
           path: |
             conformance.log
+            conformance/leg.log
             conformance/rec/conformance.tsv
             conformance/rec/skipped.tsv
           if-no-files-found: warn
