@@ -684,6 +684,95 @@ void attachWaveVariants(llvm::Module& m, llvm::StringRef scalarName,
     scalar->addFnAttr("vector-function-abi-variant", attr);
 }
 
+// A wave kernel's `exp` calls go through a scalar shim with width-W variants that make one scalar call
+// when every (active) lane holds the same value, as a wave-uniform score does; otherwise a call a lane.
+// Results are the scalar call's, bit for bit. restoreScalarExp undoes what LoopVectorize left scalar.
+const char* const kExpShim = "__cajeta_xpu_cpu_exp_f32";
+unsigned routeWaveExp(llvm::Function& f, llvm::Module& m, unsigned W) {
+    llvm::LLVMContext& ctx = m.getContext();
+    llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+    llvm::SmallVector<llvm::IntrinsicInst*, 16> calls;
+    for (auto& bb : f)
+        for (auto& in : bb)
+            if (auto* ii = llvm::dyn_cast<llvm::IntrinsicInst>(&in))
+                if (ii->getIntrinsicID() == llvm::Intrinsic::exp && ii->getType() == f32) calls.push_back(ii);
+    if (calls.empty()) return 0;
+    llvm::Function* shim = m.getFunction(kExpShim);
+    if (!shim) {
+        shim = llvm::Function::Create(llvm::FunctionType::get(f32, {f32}, false),
+                                      llvm::GlobalValue::InternalLinkage, kExpShim, &m);
+        shim->addFnAttr(llvm::Attribute::NoInline);
+        shim->setDoesNotThrow();
+        shim->setWillReturn();
+        shim->setMemoryEffects(llvm::MemoryEffects::none());
+        llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", shim));
+        b.CreateRet(b.CreateUnaryIntrinsic(llvm::Intrinsic::exp, shim->getArg(0)));
+    }
+    const std::string sw = std::to_string(W);
+    auto* vTy = llvm::FixedVectorType::get(f32, W);
+    auto* maskTy = llvm::FixedVectorType::get(llvm::Type::getInt1Ty(ctx), W);
+    auto body = [&](llvm::Function* fn, bool masked) {
+        if (!fn->empty()) return;
+        auto* entry = llvm::BasicBlock::Create(ctx, "entry", fn);
+        auto* one = llvm::BasicBlock::Create(ctx, "one", fn);
+        auto* each = llvm::BasicBlock::Create(ctx, "each", fn);
+        llvm::IRBuilder<> b(entry);
+        llvm::Value* v = fn->getArg(0);
+        llvm::Value* first = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
+        llvm::Value* mask = masked ? fn->getArg(1) : nullptr;
+        if (mask) {
+            llvm::Type* bitsTy = llvm::IntegerType::get(ctx, W);
+            llvm::Value* bits = b.CreateBitCast(mask, bitsTy);
+            llvm::Value* tz = b.CreateBinaryIntrinsic(llvm::Intrinsic::cttz, bits, b.getTrue());
+            first = b.CreateSelect(b.CreateICmpEQ(bits, llvm::ConstantInt::get(bitsTy, 0)), first,
+                                   b.CreateZExtOrTrunc(tz, llvm::Type::getInt32Ty(ctx)));
+        }
+        llvm::Value* x0 = b.CreateExtractElement(v, first);
+        llvm::Value* same = b.CreateFCmpOEQ(v, b.CreateVectorSplat(W, x0));
+        if (mask) same = b.CreateOr(same, b.CreateNot(mask));
+        b.CreateCondBr(b.CreateAndReduce(same), one, each);
+        b.SetInsertPoint(one);
+        b.CreateRet(b.CreateVectorSplat(W, b.CreateUnaryIntrinsic(llvm::Intrinsic::exp, x0)));
+        b.SetInsertPoint(each);
+        b.CreateRet(b.CreateUnaryIntrinsic(llvm::Intrinsic::exp, v));
+    };
+    llvm::Function* unmasked = makeVariantShell(m, std::string(kExpShim) + "_v" + sw,
+                                                llvm::FunctionType::get(vTy, {vTy}, false));
+    llvm::Function* masked = makeVariantShell(m, std::string(kExpShim) + "_Mv" + sw,
+                                              llvm::FunctionType::get(vTy, {vTy, maskTy}, false));
+    body(unmasked, false);
+    body(masked, true);
+    shim->addFnAttr("vector-function-abi-variant",
+                    "_ZGV_LLVM_N" + sw + "v_" + kExpShim + "(" + unmasked->getName().str() + "),"
+                    + "_ZGV_LLVM_M" + sw + "v_" + kExpShim + "(" + masked->getName().str() + ")");
+    for (llvm::IntrinsicInst* ii : calls) {
+        llvm::CallInst* c = llvm::CallInst::Create(shim, {ii->getArgOperand(0)}, "", ii->getIterator());
+        c->setFastMathFlags(ii->getFastMathFlags());
+        c->takeName(ii);
+        ii->replaceAllUsesWith(c);
+        ii->eraseFromParent();
+    }
+    return (unsigned) calls.size();
+}
+
+// Turns the exp shim calls LoopVectorize left scalar back into `llvm.exp`.
+void restoreScalarExp(llvm::Function& f) {
+    llvm::Function* shim = f.getParent()->getFunction(kExpShim);
+    if (!shim) return;
+    llvm::SmallVector<llvm::CallInst*, 16> calls;
+    for (auto& bb : f)
+        for (auto& in : bb)
+            if (auto* c = llvm::dyn_cast<llvm::CallInst>(&in))
+                if (c->getCalledFunction() == shim) calls.push_back(c);
+    for (llvm::CallInst* c : calls) {
+        llvm::IRBuilder<> b(c);
+        llvm::Value* e = b.CreateUnaryIntrinsic(llvm::Intrinsic::exp, c->getArgOperand(0));
+        if (auto* ei = llvm::dyn_cast<llvm::Instruction>(e)) ei->setFastMathFlags(c->getFastMathFlags());
+        c->replaceAllUsesWith(e);
+        c->eraseFromParent();
+    }
+}
+
 // `width()` takes no argument, so it cannot carry a VFABI variant. The width IS
 // W in a vectorized wave kernel, so each call becomes that constant.
 unsigned rewriteWaveWidth(llvm::Function& f, unsigned W) {
@@ -1869,6 +1958,7 @@ void foldWaveVariants(llvm::Function& f) {
                     if (waveKernel) {
                         rewriteWaveWidth(*wrapper, waveW);
                         waveMaskAsData(*wrapper, hostModule, waveW);
+                        if (!std::getenv("CAJETA_XPU_CPU_EXP_PER_LANE")) routeWaveExp(*wrapper, hostModule, waveW);
                         const auto laneSerial = laneSerialLoops(*wrapper, wiLatches);
                         for (llvm::UncondBrInst* latch : wiLatches) {
                             if (laneSerial.count(latch)) tagWorkItemLoop(latch, true);
@@ -1917,6 +2007,7 @@ void foldWaveVariants(llvm::Function& f) {
                                     entryName.c_str(), instrs, wi, wiBlocks, waveKernel ? 1 : 0);
                         const auto t0 = std::chrono::steady_clock::now();
                         vectorizeUnderDeadline(*wrapper, hostTm.get(), waveKernel, entryName, ntidX);
+                        restoreScalarExp(*wrapper);
                         if (cpuVectorizeTraced()) {
                             const double ms = std::chrono::duration<double, std::milli>(
                                 std::chrono::steady_clock::now() - t0).count();
@@ -2059,6 +2150,7 @@ void foldWaveVariants(llvm::Function& f) {
             if (waveKernel) {
                 rewriteWaveWidth(*wrapper, waveW);
                 waveMaskAsData(*wrapper, hostModule, waveW);
+                if (!std::getenv("CAJETA_XPU_CPU_EXP_PER_LANE")) routeWaveExp(*wrapper, hostModule, waveW);
                 if (getenv("CAJETA_XPU_DEBUG_WAVE"))
                     fprintf(stderr, "[wave-pre]\n");
                 maybeDumpWaveWrapper(*wrapper, waveW);
@@ -2099,6 +2191,7 @@ void foldWaveVariants(llvm::Function& f) {
                                 entryName.c_str(), instrs, wi, wiBlocks, waveKernel ? 1 : 0);
                     const auto t0 = std::chrono::steady_clock::now();
                     vectorizeUnderDeadline(*wrapper, hostTm.get(), waveKernel, entryName, ntidX);
+                        restoreScalarExp(*wrapper);
                     if (cpuVectorizeTraced()) {
                         const double ms = std::chrono::duration<double, std::milli>(
                             std::chrono::steady_clock::now() - t0).count();
