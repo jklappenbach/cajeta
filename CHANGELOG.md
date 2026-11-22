@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **A kernel without wave operations widens across work-items on the cpu where the vectorizer could not bound its accesses.** A kernel that is also built for a GPU cannot depend on the order of its work-items, so the cpu backend now tells LLVM's loop vectorizer that they are independent, as it already did for wave kernels. A gather, a scatter and a bias add over rows (`y[i] += b[i % n]`) used to stay scalar with "cannot identify array bounds". A kernel declared `@Kernel(targets = {"cpu"})` keeps work-item order, and so does any kernel that stores to one fixed location from every work-item. In cajeta-llm, 12 kernels now widen and 29 more are left scalar by the vectorizer's cost model instead of by the refusal. The `[xpu-cpu-scalar]` note now ends "each running its own vector code" when the body holds explicit `Vector` code, which is 158 of cajeta-llm's 289 notes (`XpuCpuPlainWidenTests`, gpu-kernel-parity 21.2.1).
+
 - **A wave kernel whose lanes run explicit `Vector` code keeps that code whole on the cpu backend.** The
   compiler used to step all lanes through such a loop together and widen it across the wave, which
   rebuilt each lane's vector an element at a time and lost the VNNI dot instruction. The loop now runs
