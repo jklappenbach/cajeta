@@ -1,5 +1,6 @@
 // A software cooperative-matrix tile in a `@Wave(width = N)` kernel is held once a wave on the cpu
-// and its verbs run on the wave's first lane (gpu-kernel-parity 22.2.3).
+// and its verbs run on the wave's first lane, a helper that takes the tile included
+// (gpu-kernel-parity 22.2.3, 22.2.5).
 #include "gtest/gtest.h"
 
 #include "../PortableEnv.h"   // setenv/unsetenv on MinGW
@@ -34,6 +35,12 @@ import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
 public class M {
+    @Device
+    public static void twice(CooperativeMatrix<float32,16,16,2> m) {
+        uint32 n = m.elements();
+        uint32 e = 0;
+        while (e < n) { m.set(e, m.get(e) * 2.0f); e = e + 1; }
+    }
     @Kernel @Wave(width = 32) @Occupancy(maxThreads = 64)
     public static void tiles(KernelBuffer<float32> c, KernelBuffer<float16> a, KernelBuffer<float16> b,
             uint32 reps) {
@@ -49,6 +56,7 @@ public class M {
         uint32 n = acc.elements();
         uint32 e = 0;
         while (e < n) { acc.set(e, acc.get(e) * (float32) (acc.row(e) + 1)); e = e + 1; }
+        M.twice(acc);
         acc.store(c, g * 256, 0, 16);
     }
     public static int32 run() {
@@ -89,7 +97,7 @@ public class M {
                         want = want + af[t * 256L + r * 16L + k] * bf[t * 256L + k * 16L + j];
                         k = k + 1L;
                     }
-                    want = want * 3.0f * (float32) (r + 1L);
+                    want = want * 3.0f * (float32) (r + 1L) * 2.0f;
                     if (got[t * 256L + r * 16L + j] != want) { bad = bad + 1; }
                     j = j + 1L;
                 }

@@ -4404,6 +4404,20 @@ private:
             MethodPtr m = found->isMethodTemplate() ? instantiateDeviceHelper(found, mc) : found;
             llvm::Function* hfn = lowerDeviceFn(m);
             const auto& args = mc->getParameters();
+            // A helper handed a once-a-wave tile runs on the wave's first lane, between barriers.
+            const CoopMatrixSlot* waveTile = sharedTileArg(m, args);
+            llvm::BasicBlock* tileCont = nullptr;
+            if (waveTile) {
+                if (!hfn->getReturnType()->isVoidTy())
+                    unsupported("@Device helper " + name + " takes a software tile held once a wave and "
+                                "returns a value; only the wave's first lane runs it, so it must return void");
+                tileVerbMark(true);
+                auto* lead = llvm::BasicBlock::Create(ctx, "cm.lead", fn);
+                tileCont = llvm::BasicBlock::Create(ctx, "cm.cont", fn);
+                llvm::Instruction* gate = builder.CreateCondBr(tileLeader(*waveTile), lead, tileCont);
+                gate->setMetadata("cajeta.xpu.tile", llvm::MDNode::get(ctx, {}));
+                builder.SetInsertPoint(lead);
+            }
             std::vector<llvm::Value*> argv;
             argv.reserve(args.size());
             unsigned i = 0;
@@ -4431,8 +4445,14 @@ private:
                 }
                 ++i;
             }
-            return builder.CreateCall(hfn, argv, hfn->getReturnType()->isVoidTy()
-                                                     ? "" : "dev.call");
+            llvm::Value* callV = builder.CreateCall(hfn, argv, hfn->getReturnType()->isVoidTy()
+                                                                   ? "" : "dev.call");
+            if (tileCont) {
+                builder.CreateBr(tileCont);
+                builder.SetInsertPoint(tileCont);
+                tileVerbMark(false);
+            }
+            return callV;
         }
         unsupported("device builtin '" + recv + "." + name + "()'");
     }
@@ -5676,10 +5696,32 @@ private:
                         std::to_string(s.rows) + "," + std::to_string(s.cols) + "," +
                         std::to_string(s.use) + "> where the parameter `" + paramName +
                         "` is " + paramType->toCanonical());
+        // A once-a-wave tile goes in as this wave's copy; the call itself runs on the wave's first lane.
         if (s.waveStore)
-            unsupported("@Device helper " + helper + ": `" + argText + "` is a software tile held once a "
-                        "wave (@Wave on a " + std::string(target.name()) + " kernel), which a helper cannot take yet");
+            return builder.CreateAddrSpaceCast(
+                coopElemPtr(s, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0)),
+                llvm::PointerType::get(ctx, target.allocaAddressSpace()), "cm.wave.tile");
         return s.alloca;
+    }
+
+    // The first once-a-wave tile among a helper call's arguments, or null.
+    const CoopMatrixSlot* sharedTileArg(const MethodPtr& m, const std::vector<MethodCallParameter>& args) {
+        unsigned i = 0;
+        for (auto& p : m->getParameterList()) {
+            if (!p || p->getName() == "this") continue;
+            if (i >= args.size()) break;
+            if (isCooperativeMatrixType(p->getType())) {
+                std::string text;
+                if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(args[i].expression))
+                    text = id->getTextValue();
+                else
+                    text = fragmentSlotName(args[i].expression);
+                auto it = text.empty() ? coopMatrixSlots.end() : coopMatrixSlots.find(text);
+                if (it != coopMatrixSlots.end() && it->second.waveStore) return &it->second;
+            }
+            ++i;
+        }
+        return nullptr;
     }
 
     // Element `e` of a native fragment, for either shape: NVPTX fragments are
@@ -6723,9 +6765,9 @@ private:
             return builder.CreateSelect(tileLeader(slot),
                                         llvm::ConstantInt::get(i32, slot.rows * slot.cols),
                                         llvm::ConstantInt::get(i32, 0), "cm.elements");
-        const bool moves = name == "splat" || name == "load" || name == "store" || name == "mma"
-            || name == "addScaledPow2";
-        if (!moves && name != "set") return lowerCoopMatrixVerbSoftware(recv, name, mc);
+        // Reads are any lane's; everything else changes a tile or a buffer and is the leader's.
+        if (name == "get" || name == "row" || name == "col") return lowerCoopMatrixVerbSoftware(recv, name, mc);
+        const bool moves = name != "set";
         if (moves) tileVerbMark(true);
         auto* lead = llvm::BasicBlock::Create(ctx, "cm.lead", fn);
         auto* cont = llvm::BasicBlock::Create(ctx, "cm.cont", fn);
