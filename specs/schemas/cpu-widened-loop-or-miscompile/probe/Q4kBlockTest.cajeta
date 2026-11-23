@@ -1,0 +1,237 @@
+package probe;
+import cajeta.lang.Cajeta;
+import cajeta.lang.System;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Vector;
+
+
+/**
+ * The Q4_K block as pieces a GEMM or mat-vec driver calls (kernel-drivers spec §2): 256 values in
+ * 144 bytes, { f16 d; f16 dmin; u8 scales[12]; u8 qs[128] }, eight sub-blocks of 32 values with a
+ * 6-bit scale and min each. A value is `d * scale * q - dmin * min`. The header is taken as its four
+ * little-endian words `h0 .. h3`, so one 16-byte load serves every field. Device and host call the
+ * same methods.
+ */
+public final class Q4kBlock {
+    public Q4kBlock() { return; }
+
+    /** Bytes of one block. */
+    @Device
+    public static uint32 blockBytes() { return 144; }
+
+    /** Offset of the quant bytes in a block. */
+    @Device
+    public static uint32 quantOffset() { return 16; }
+
+    /** Sub-blocks in a block, each with its own scale and min. */
+    @Device
+    public static uint32 subBlocks() { return 8; }
+
+    /** IEEE half bits (low 16 of `h`) as float32, exactly. */
+    @Device
+    public static float32 halfBits(int32 h) {
+        int32 sign = (h >> 15) & 1;
+        int32 exp = (h >> 10) & 31;
+        int32 mant = h & 1023;
+        int32 bits = 0;
+        if (exp == 0) {
+            if (mant == 0) { bits = sign << 31; }
+            else {
+                int32 e = 0;
+                int32 mm = mant;
+                while ((mm & 1024) == 0) { mm = mm << 1; e = e + 1; }
+                bits = (sign << 31) | ((113 - e) << 23) | ((mm & 1023) << 13);
+            }
+        } else if (exp == 31) {
+            bits = (sign << 31) | 2139095040 | (mant << 13);
+        } else {
+            bits = (sign << 31) | ((exp + 112) << 23) | (mant << 13);
+        }
+        return Cajeta.bitsToF32(bits);
+    }
+
+    /** The block's scale step `d`. */
+    @Device
+    public static float32 d(int32 h0) { return Q4kBlock.halfBits(h0 & 65535); }
+
+    /** The block's min step `dmin`. */
+    @Device
+    public static float32 dmin(int32 h0) { return Q4kBlock.halfBits((h0 >> 16) & 65535); }
+
+    /** Sub-block `j`'s 6-bit scale, `j` in 0..7. */
+    @Device
+    public static int32 scale(int32 h1, int32 h3, uint32 j) {
+        if (j < 4) { return (h1 >> (int32) (8 * j)) & 63; }
+        int32 s = (int32) (8 * (j - 4));
+        return ((h3 >> s) & 15) | ((((h1 >> s) & 255) >> 2) & 48);
+    }
+
+    /** Sub-block `j`'s 6-bit min, `j` in 0..7. */
+    @Device
+    public static int32 min(int32 h2, int32 h3, uint32 j) {
+        if (j < 4) { return (h2 >> (int32) (8 * j)) & 63; }
+        int32 s = (int32) (8 * (j - 4));
+        return (((h3 >> s) & 255) >> 4) | ((((h2 >> s) & 255) >> 2) & 48);
+    }
+
+    /** The four low-nibble values of a quant word: values `k .. k+3` of a 64-value run's first half. */
+    @Device
+    public static int32 low(int32 quants) { return quants & 252645135; }
+
+    /** The four high-nibble values of a quant word: values `k+32 .. k+35` of the run. */
+    @Device
+    public static int32 high(int32 quants) { return (quants >> 4) & 252645135; }
+}
+
+
+/** Runs a block piece class on the device: work-item `i` decodes block `i`'s header and first quant word into 20 int32. */
+public final class PieceProbe<P> {
+    public PieceProbe() { return; }
+
+    @Kernel
+    public static void header(KernelBuffer<int32> out, KernelBuffer<int8> packed, uint32 blocks) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < blocks) {
+            int64 at = (int64) (i * P.blockBytes());
+            Vector<int32,4> h = packed.vload<16>(at).asWords();
+            Vector<int32,4> q = packed.vload<16>(at + (int64) P.quantOffset()).asWords();
+            int32 h0 = h[0];
+            int32 h1 = h[1];
+            int32 h2 = h[2];
+            int32 h3 = h[3];
+            int64 o = (int64) (i * 20);
+            out[o] = Cajeta.f32ToBits(P.d(h0));
+            out[o + 1L] = Cajeta.f32ToBits(P.dmin(h0));
+            uint32 j = 0;
+            while (j < 8) {
+                out[o + 2L + (int64) j] = P.scale(h1, h3, j);
+                out[o + 10L + (int64) j] = P.min(h2, h3, j);
+                j = j + 1;
+            }
+            out[o + 18L] = P.low(q[0]);
+            out[o + 19L] = P.high(q[0]);
+        }
+    }
+
+    public void run(KernelBuffer<int32> out, KernelBuffer<int8> packed, int64 blocks) {
+        KernelStream s #= KernelStream.current();
+        header.launch(s, grid: [(uint32) ((blocks + 63L) / 64L)], block: [64])(out, packed, (uint32) blocks);
+        s.sync();
+    }
+}
+
+
+/** kernel-drivers 2.1.1: the Q4_K pieces against a byte-by-byte reading of the block, on the host and in a kernel. */
+public class Q4kBlockTest {
+    static void check(boolean ok) { if (!ok) { System.stdout.println("CHECK FAILED"); } }
+    public static int32 main() { Q4kBlockTest x = heap Q4kBlockTest(); x.thePiecesReadTheSameInAKernel(); System.stdout.println("done"); return 0; }
+    public Q4kBlockTest() { return; }
+
+    static int32 u8(int8[] raw, int64 at) { return (int32) raw[at] & 255; }
+
+    /** The block's 20 reference words, read a byte at a time as the GGUF layout states it. */
+    static void reference(int8[] raw, int64 ro, int32[] want, int64 o) {
+        want[o] = Cajeta.f32ToBits(Q4kBlock.halfBits(Q4kBlockTest.u8(raw, ro) | (Q4kBlockTest.u8(raw, ro + 1L) << 8)));
+        want[o + 1L] = Cajeta.f32ToBits(Q4kBlock.halfBits(Q4kBlockTest.u8(raw, ro + 2L) | (Q4kBlockTest.u8(raw, ro + 3L) << 8)));
+        int64 j = 0L;
+        while (j < 8L) {
+            int32 sc = 0;
+            int32 mn = 0;
+            if (j < 4L) {
+                sc = Q4kBlockTest.u8(raw, ro + 4L + j) & 63;
+                mn = Q4kBlockTest.u8(raw, ro + 8L + j) & 63;
+            } else {
+                int32 dj = Q4kBlockTest.u8(raw, ro + 4L + (j - 4L));
+                int32 mj = Q4kBlockTest.u8(raw, ro + 8L + (j - 4L));
+                int32 kj = Q4kBlockTest.u8(raw, ro + 12L + (j - 4L));
+                sc = (kj & 15) | ((dj >> 2) & 48);
+                mn = (kj >> 4) | ((mj >> 2) & 48);
+            }
+            want[o + 2L + j] = sc;
+            want[o + 10L + j] = mn;
+            j = j + 1L;
+        }
+        int32 lo = 0;
+        int32 hi = 0;
+        int64 b = 0L;
+        while (b < 4L) {
+            int32 q = Q4kBlockTest.u8(raw, ro + 16L + b);
+            lo = lo | ((q & 15) << (int32) (8L * b));
+            hi = hi | ((q >> 4) << (int32) (8L * b));
+            b = b + 1L;
+        }
+        want[o + 18L] = lo;
+        want[o + 19L] = hi;
+    }
+
+    static #int8[] blocks(int64 n) {
+        int8[] raw #= heap int8[n * 144L];
+        int64 seed = 12345L;
+        int64 i = 0L;
+        while (i < n * 144L) {
+            seed = (seed * 1103515245L + 12345L) % 2147483648L;
+            raw[i] = (int8) ((seed >> 16) % 256L);
+            i = i + 1L;
+        }
+        return #raw;
+    }
+
+        public void halfBitsCoversZeroSubnormalNormalAndInfinity() {
+        Q4kBlockTest.check(Q4kBlock.halfBits(0) == 0.0f);
+        Q4kBlockTest.check(Q4kBlock.halfBits(15360) == 1.0f);
+        Q4kBlockTest.check(Q4kBlock.halfBits(49152) == 0.0f - 2.0f);
+        Q4kBlockTest.check(Q4kBlock.halfBits(1) == 5.9604645e-8f);
+        Q4kBlockTest.check(Cajeta.f32ToBits(Q4kBlock.halfBits(31744)) == 2139095040);
+    }
+
+        public void thePiecesReadTheHeaderAndNibblesOnTheHost() {
+        int64 n = 96L;
+        int8[] raw #= Q4kBlockTest.blocks(n);
+        int32[] want #= heap int32[20L];
+        int64 b = 0L;
+        while (b < n) {
+            int64 ro = b * 144L;
+            Q4kBlockTest.reference(raw, ro, want, 0L);
+            int32 h0 = Q4kBlockTest.u8(raw, ro) | (Q4kBlockTest.u8(raw, ro + 1L) << 8) | (Q4kBlockTest.u8(raw, ro + 2L) << 16) | (Q4kBlockTest.u8(raw, ro + 3L) << 24);
+            int32 h1 = Q4kBlockTest.u8(raw, ro + 4L) | (Q4kBlockTest.u8(raw, ro + 5L) << 8) | (Q4kBlockTest.u8(raw, ro + 6L) << 16) | (Q4kBlockTest.u8(raw, ro + 7L) << 24);
+            int32 h2 = Q4kBlockTest.u8(raw, ro + 8L) | (Q4kBlockTest.u8(raw, ro + 9L) << 8) | (Q4kBlockTest.u8(raw, ro + 10L) << 16) | (Q4kBlockTest.u8(raw, ro + 11L) << 24);
+            int32 h3 = Q4kBlockTest.u8(raw, ro + 12L) | (Q4kBlockTest.u8(raw, ro + 13L) << 8) | (Q4kBlockTest.u8(raw, ro + 14L) << 16) | (Q4kBlockTest.u8(raw, ro + 15L) << 24);
+            Q4kBlockTest.check(Cajeta.f32ToBits(Q4kBlock.d(h0)) == want[0L]);
+            Q4kBlockTest.check(Cajeta.f32ToBits(Q4kBlock.dmin(h0)) == want[1L]);
+            uint32 j = 0;
+            while (j < 8) {
+                Q4kBlockTest.check(Q4kBlock.scale(h1, h3, j) == want[2L + (int64) j]);
+                Q4kBlockTest.check(Q4kBlock.min(h2, h3, j) == want[10L + (int64) j]);
+                j = j + 1;
+            }
+            b = b + 1L;
+        }
+    }
+
+        public void thePiecesReadTheSameInAKernel() {
+        int64 n = 96L;
+        int8[] raw #= Q4kBlockTest.blocks(n);
+        KernelBuffer<int8> packed = heap KernelBuffer<int8>((uint64) (n * 144L));
+        KernelBuffer<int32> out = heap KernelBuffer<int32>((uint64) (n * 20L));
+        packed.upload(raw);
+        
+        PieceProbe<Q4kBlock> probe = heap PieceProbe<Q4kBlock>();
+        probe.run(out, packed, n);
+        int32[] got #= heap int32[n * 20L];
+        out.download(got);
+        int32[] want #= heap int32[n * 20L];
+        int64 b = 0L;
+        while (b < n) { Q4kBlockTest.reference(raw, b * 144L, want, b * 20L); b = b + 1L; }
+        int64 i = 0L;
+        int64 bad = 0L;
+        while (i < n * 20L) {
+            if (got[i] != want[i] && bad < 4000L) { System.stdout.println("mismatch at " + i + " field " + (i % 20L) + " got " + got[i] + " want " + want[i]); bad = bad + 1L; }
+            i = i + 1L;
+        }
+        Q4kBlockTest.check(bad == 0L);
+        
+    }
+}
