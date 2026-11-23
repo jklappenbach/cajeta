@@ -115,3 +115,7 @@ epilogue, which the source asks for and the cpu never needs.
 - **7.3** gpu-kernel-parity Unit 23's attention compiler work and its families work pause until
   the gate of §5 reports.
 - **7.4** The GPU tolerance of 5.3 is 2% (approved with the plan).
+- **7.5** (2026-11-23) The gate of §5 passes on the cpu and AMD evidence: the remaining
+  quantizations move to the drivers. No hand-written kernel is removed until the RTX 4090 row of
+  5.3 is in. 5.3's vulkan row is the harness: cajeta-llm routes vulkan prefill to its own
+  cooperative-matrix kernels, which the plan's Unit 10 decides separately.
