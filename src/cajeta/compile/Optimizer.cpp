@@ -183,7 +183,8 @@ struct RestampParallelAccessGroupsPass
                             if (!in.mayReadOrWriteMemory()) continue;
                             if (auto* c = llvm::dyn_cast<llvm::CallBase>(&in))
                                 if (!c->getCalledFunction()
-                                        || !c->getCalledFunction()->isIntrinsic())
+                                        || !(c->getCalledFunction()->isIntrinsic()
+                                             || c->getCalledFunction()->hasFnAttribute("cajeta.xpu.lane-read")))
                                     continue;       // an opaque call keeps its own effects
                             llvm::MDNode* have =
                                 in.getMetadata(llvm::LLVMContext::MD_access_group);

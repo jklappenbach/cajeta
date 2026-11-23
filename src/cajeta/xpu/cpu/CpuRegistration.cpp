@@ -41,6 +41,7 @@
 #include "llvm/Linker/Linker.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Transforms/Utils/Cloning.h"
+#include "llvm/Transforms/Utils/ValueMapper.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
 #include <chrono>
@@ -755,6 +756,156 @@ unsigned routeWaveExp(llvm::Function& f, llvm::Module& m, unsigned W) {
     return (unsigned) calls.size();
 }
 
+// The arm's first exp shim call, when everything before it in the arm is a read of stack memory or
+// arithmetic, so the argument can be computed ahead of the branch.
+static llvm::CallInst* leadingArmExp(llvm::BasicBlock* arm, llvm::Function* shim) {
+    for (llvm::Instruction& in : *arm) {
+        if (auto* c = llvm::dyn_cast<llvm::CallInst>(&in))
+            return c->getCalledFunction() == shim ? c : nullptr;
+        if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(&in)) {
+            if (!ld->isSimple() || !llvm::isa<llvm::AllocaInst>(llvm::getUnderlyingObject(ld->getPointerOperand())))
+                return nullptr;
+            continue;
+        }
+        if (llvm::isa<llvm::GetElementPtrInst>(in) || llvm::isa<llvm::CastInst>(in)
+                || llvm::isa<llvm::BinaryOperator>(in) || llvm::isa<llvm::UnaryOperator>(in))
+            continue;
+        return nullptr;
+    }
+    return nullptr;
+}
+
+const char* const kExpPickShim = "__cajeta_xpu_cpu_exp_pick_f32";
+
+// `exp(c ? a : b)` as a scalar shim. Its width-W variants make one scalar call for each arm that has
+// lanes, when that arm's lanes hold one value; otherwise a call a lane.
+static llvm::Function* expPickShim(llvm::Module& m, unsigned W) {
+    if (llvm::Function* have = m.getFunction(kExpPickShim)) return have;
+    llvm::LLVMContext& ctx = m.getContext();
+    llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+    llvm::Type* i1 = llvm::Type::getInt1Ty(ctx);
+    llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+    auto* shim = llvm::Function::Create(llvm::FunctionType::get(f32, {i1, f32, f32}, false),
+                                        llvm::GlobalValue::InternalLinkage, kExpPickShim, &m);
+    shim->addFnAttr(llvm::Attribute::NoInline);
+    shim->setDoesNotThrow();
+    shim->setWillReturn();
+    shim->setMemoryEffects(llvm::MemoryEffects::none());
+    {
+        llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", shim));
+        b.CreateRet(b.CreateUnaryIntrinsic(llvm::Intrinsic::exp,
+            b.CreateSelect(shim->getArg(0), shim->getArg(1), shim->getArg(2))));
+    }
+    const std::string sw = std::to_string(W);
+    auto* vTy = llvm::FixedVectorType::get(f32, W);
+    auto* maskTy = llvm::FixedVectorType::get(i1, W);
+    llvm::Type* bitsTy = llvm::IntegerType::get(ctx, W);
+    auto body = [&](llvm::Function* fn, bool masked) {
+        if (!fn->empty()) return;
+        auto* entry = llvm::BasicBlock::Create(ctx, "entry", fn);
+        auto* callA = llvm::BasicBlock::Create(ctx, "arm.a", fn);
+        auto* midB = llvm::BasicBlock::Create(ctx, "mid", fn);
+        auto* callB = llvm::BasicBlock::Create(ctx, "arm.b", fn);
+        auto* done = llvm::BasicBlock::Create(ctx, "done", fn);
+        auto* each = llvm::BasicBlock::Create(ctx, "each", fn);
+        llvm::IRBuilder<> b(entry);
+        llvm::Value* cond = fn->getArg(0);
+        llvm::Value* active = masked ? static_cast<llvm::Value*>(fn->getArg(3))
+                                     : llvm::Constant::getAllOnesValue(maskTy);
+        llvm::Value* arm[2] = {b.CreateAnd(active, cond), b.CreateAnd(active, b.CreateNot(cond))};
+        llvm::Value* any[2];
+        llvm::Value* lead[2];
+        llvm::Value* same = nullptr;
+        for (unsigned i = 0; i < 2; ++i) {
+            llvm::Value* bits = b.CreateBitCast(arm[i], bitsTy);
+            any[i] = b.CreateICmpNE(bits, llvm::ConstantInt::get(bitsTy, 0));
+            llvm::Value* tz = b.CreateBinaryIntrinsic(llvm::Intrinsic::cttz, bits, b.getTrue());
+            llvm::Value* at = b.CreateSelect(any[i], b.CreateZExtOrTrunc(tz, i32), llvm::ConstantInt::get(i32, 0));
+            lead[i] = b.CreateExtractElement(fn->getArg(1 + i), at);
+            llvm::Value* eq = b.CreateOr(b.CreateFCmpOEQ(fn->getArg(1 + i), b.CreateVectorSplat(W, lead[i])),
+                                         b.CreateNot(arm[i]));
+            same = same ? b.CreateAnd(same, eq) : eq;
+        }
+        llvm::Value* zero = llvm::ConstantFP::get(f32, 0.0);
+        llvm::BasicBlock* test = llvm::BasicBlock::Create(ctx, "test", fn, callA);
+        b.CreateCondBr(b.CreateAndReduce(same), test, each);
+        b.SetInsertPoint(test);
+        b.CreateCondBr(any[0], callA, midB);
+        b.SetInsertPoint(callA);
+        llvm::Value* ea = b.CreateUnaryIntrinsic(llvm::Intrinsic::exp, lead[0]);
+        b.CreateBr(midB);
+        b.SetInsertPoint(midB);
+        llvm::PHINode* ra = b.CreatePHI(f32, 2);
+        ra->addIncoming(zero, test);
+        ra->addIncoming(ea, callA);
+        b.CreateCondBr(any[1], callB, done);
+        b.SetInsertPoint(callB);
+        llvm::Value* eb = b.CreateUnaryIntrinsic(llvm::Intrinsic::exp, lead[1]);
+        b.CreateBr(done);
+        b.SetInsertPoint(done);
+        llvm::PHINode* rb = b.CreatePHI(f32, 2);
+        rb->addIncoming(zero, midB);
+        rb->addIncoming(eb, callB);
+        b.CreateRet(b.CreateSelect(cond, b.CreateVectorSplat(W, ra), b.CreateVectorSplat(W, rb)));
+        b.SetInsertPoint(each);
+        b.CreateRet(b.CreateUnaryIntrinsic(llvm::Intrinsic::exp,
+            b.CreateSelect(cond, fn->getArg(1), fn->getArg(2))));
+    };
+    llvm::Function* unmasked = makeVariantShell(m, std::string(kExpPickShim) + "_v" + sw,
+                                                llvm::FunctionType::get(vTy, {maskTy, vTy, vTy}, false));
+    llvm::Function* masked = makeVariantShell(m, std::string(kExpPickShim) + "_Mv" + sw,
+                                              llvm::FunctionType::get(vTy, {maskTy, vTy, vTy, maskTy}, false));
+    body(unmasked, false);
+    body(masked, true);
+    shim->addFnAttr("vector-function-abi-variant",
+                    "_ZGV_LLVM_N" + sw + "vvv_" + kExpPickShim + "(" + unmasked->getName().str() + "),"
+                    + "_ZGV_LLVM_M" + sw + "vvv_" + kExpPickShim + "(" + masked->getName().str() + ")");
+    return shim;
+}
+
+// `if (c) { x = exp(a); .. } else { y = exp(b); .. }` becomes one pick-and-exp call ahead of the
+// branch. Each arm reads the value its own call returned. Returns the pairs merged.
+unsigned mergeArmExps(llvm::Function& f, unsigned W) {
+    llvm::Function* shim = f.getParent()->getFunction(kExpShim);
+    if (!shim) return 0;
+    unsigned merged = 0;
+    for (llvm::BasicBlock& head : f) {
+        auto* br = llvm::dyn_cast<llvm::CondBrInst>(head.getTerminator());
+        if (!br) continue;
+        llvm::BasicBlock* arms[2] = {br->getSuccessor(0), br->getSuccessor(1)};
+        if (arms[0] == arms[1]) continue;
+        llvm::CallInst* calls[2] = {nullptr, nullptr};
+        for (unsigned i = 0; i < 2; ++i)
+            if (arms[i]->getSinglePredecessor() == &head) calls[i] = leadingArmExp(arms[i], shim);
+        if (!calls[0] || !calls[1]) continue;
+        llvm::Value* args[2];
+        for (unsigned i = 0; i < 2; ++i) {
+            llvm::ValueToValueMapTy map;
+            for (llvm::Instruction& in : *arms[i]) {
+                if (&in == calls[i]) break;
+                llvm::Instruction* copy = in.clone();
+                copy->insertBefore(br->getIterator());
+                llvm::RemapInstruction(copy, map, llvm::RF_NoModuleLevelChanges | llvm::RF_IgnoreMissingLocals);
+                map[&in] = copy;
+            }
+            llvm::Value* a = calls[i]->getArgOperand(0);
+            auto it = map.find(a);
+            args[i] = it != map.end() ? static_cast<llvm::Value*>(it->second) : a;
+        }
+        llvm::IRBuilder<> b(br);
+        llvm::CallInst* one = b.CreateCall(expPickShim(*f.getParent(), W), {br->getCondition(), args[0], args[1]});
+        llvm::FastMathFlags fmf = calls[0]->getFastMathFlags();
+        fmf &= calls[1]->getFastMathFlags();
+        one->setFastMathFlags(fmf);
+        for (unsigned i = 0; i < 2; ++i) {
+            calls[i]->replaceAllUsesWith(one);
+            calls[i]->eraseFromParent();
+        }
+        ++merged;
+    }
+    return merged;
+}
+
 // Turns the exp shim calls LoopVectorize left scalar back into `llvm.exp`.
 void restoreScalarExp(llvm::Function& f) {
     llvm::Function* shim = f.getParent()->getFunction(kExpShim);
@@ -764,9 +915,16 @@ void restoreScalarExp(llvm::Function& f) {
         for (auto& in : bb)
             if (auto* c = llvm::dyn_cast<llvm::CallInst>(&in))
                 if (c->getCalledFunction() == shim) calls.push_back(c);
+    llvm::Function* pick = f.getParent()->getFunction(kExpPickShim);
+    for (auto& bb : f)
+        for (auto& in : bb)
+            if (auto* c = llvm::dyn_cast<llvm::CallInst>(&in))
+                if (pick && c->getCalledFunction() == pick) calls.push_back(c);
     for (llvm::CallInst* c : calls) {
         llvm::IRBuilder<> b(c);
-        llvm::Value* e = b.CreateUnaryIntrinsic(llvm::Intrinsic::exp, c->getArgOperand(0));
+        llvm::Value* arg = c->getCalledFunction() == shim ? c->getArgOperand(0)
+            : b.CreateSelect(c->getArgOperand(0), c->getArgOperand(1), c->getArgOperand(2));
+        llvm::Value* e = b.CreateUnaryIntrinsic(llvm::Intrinsic::exp, arg);
         if (auto* ei = llvm::dyn_cast<llvm::Instruction>(e)) ei->setFastMathFlags(c->getFastMathFlags());
         c->replaceAllUsesWith(e);
         c->eraseFromParent();
@@ -774,21 +932,29 @@ void restoreScalarExp(llvm::Function& f) {
 }
 
 // A wave kernel's float16 reads (`load half` then widen to float32) go through a scalar shim over
-// the 16 raw bits, whose width-W variants convert 16 lanes a step. Left as `half` vectors the lanes'
-// values are loaded and inserted one at a time. restoreScalarHalf undoes what stayed scalar.
+// the 16 raw bits, whose width-W variants convert 16 lanes a step. Only reads directly in a work-item
+// loop are routed; a read in the kernel's own inner loop widens as before. restoreScalarHalf undoes what stayed scalar.
 const char* const kHalfShim = "__cajeta_xpu_cpu_h2f";
-unsigned routeWaveHalfLoads(llvm::Function& f, llvm::Module& m, unsigned W) {
+unsigned routeWaveHalfLoads(llvm::Function& f, llvm::Module& m, unsigned W,
+                            llvm::ArrayRef<llvm::UncondBrInst*> wiLatches) {
     llvm::LLVMContext& ctx = m.getContext();
     llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
     llvm::Type* i16 = llvm::Type::getInt16Ty(ctx);
     llvm::Type* half = llvm::Type::getHalfTy(ctx);
     llvm::SmallVector<llvm::FPExtInst*, 32> exts;
-    for (auto& bb : f)
+    llvm::DominatorTree dt(f);
+    llvm::LoopInfo li(dt);
+    for (auto& bb : f) {
+        llvm::Loop* inner = li.getLoopFor(&bb);
+        llvm::BasicBlock* latch = inner ? inner->getLoopLatch() : nullptr;
+        if (!latch || llvm::none_of(wiLatches, [&](llvm::UncondBrInst* br) { return br->getParent() == latch; }))
+            continue;
         for (auto& in : bb)
             if (auto* fe = llvm::dyn_cast<llvm::FPExtInst>(&in))
                 if (fe->getType() == f32 && fe->getOperand(0)->getType() == half)
                     if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(fe->getOperand(0)))
                         if (ld->hasOneUse() && ld->isSimple()) exts.push_back(fe);
+    }
     if (exts.empty()) return 0;
     llvm::Function* shim = m.getFunction(kHalfShim);
     if (!shim) {
@@ -801,43 +967,43 @@ unsigned routeWaveHalfLoads(llvm::Function& f, llvm::Module& m, unsigned W) {
         llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", shim));
         b.CreateRet(b.CreateFPExt(b.CreateBitCast(shim->getArg(0), half), f32));
     }
-    const std::string sw = std::to_string(W);
-    auto* vIn = llvm::FixedVectorType::get(i16, W);
-    auto* vOut = llvm::FixedVectorType::get(f32, W);
-    auto* maskTy = llvm::FixedVectorType::get(llvm::Type::getInt1Ty(ctx), W);
-    auto body = [&](llvm::Function* fn) {
-        if (!fn->empty()) return;
-        llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", fn));
-        const unsigned step = W >= 16 ? 16 : W;
-        llvm::Value* out = nullptr;
-        for (unsigned at = 0; at < W; at += step) {
-            llvm::SmallVector<int, 16> pick;
-            for (unsigned i = 0; i < step; ++i) pick.push_back((int) (at + i));
-            llvm::Value* part = b.CreateShuffleVector(fn->getArg(0), pick);
-            llvm::Value* wide = b.CreateFPExt(
-                b.CreateBitCast(part, llvm::FixedVectorType::get(half, step)),
-                llvm::FixedVectorType::get(f32, step));
-            if (!out) { out = wide; continue; }
-            // Concatenate: widen `wide` to out's length by pairing, as the parts are equal lengths.
-            llvm::SmallVector<int, 64> cat;
-            const unsigned have = llvm::cast<llvm::FixedVectorType>(out->getType())->getNumElements();
-            llvm::SmallVector<int, 64> pad;
-            for (unsigned i = 0; i < have; ++i) pad.push_back(i < step ? (int) i : -1);
-            llvm::Value* widePadded = have == step ? wide : b.CreateShuffleVector(wide, pad);
-            for (unsigned i = 0; i < have + step; ++i) cat.push_back((int) i);
-            out = b.CreateShuffleVector(out, widePadded, cat);
-        }
-        b.CreateRet(out);
-    };
-    llvm::Function* unmasked = makeVariantShell(m, std::string(kHalfShim) + "_v" + sw,
-                                                llvm::FunctionType::get(vOut, {vIn}, false));
-    llvm::Function* masked = makeVariantShell(m, std::string(kHalfShim) + "_Mv" + sw,
-                                              llvm::FunctionType::get(vOut, {vIn, maskTy}, false));
-    body(unmasked);
-    body(masked);
-    shim->addFnAttr("vector-function-abi-variant",
-                    "_ZGV_LLVM_N" + sw + "v_" + kHalfShim + "(" + unmasked->getName().str() + "),"
-                    + "_ZGV_LLVM_M" + sw + "v_" + kHalfShim + "(" + masked->getName().str() + ")");
+    std::string variants;
+    for (unsigned w : {W}) {
+        const std::string sw = std::to_string(w);
+        if (m.getFunction(std::string(kHalfShim) + "_v" + sw)) continue;
+        auto* vIn = llvm::FixedVectorType::get(i16, w);
+        auto* vOut = llvm::FixedVectorType::get(f32, w);
+        auto* maskTy = llvm::FixedVectorType::get(llvm::Type::getInt1Ty(ctx), w);
+        auto body = [&](llvm::Function* fn) {
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", fn));
+            const unsigned step = w >= 16 ? 16 : w;
+            llvm::Value* out = nullptr;
+            for (unsigned at = 0; at < w; at += step) {
+                llvm::SmallVector<int, 16> pick;
+                for (unsigned i = 0; i < step; ++i) pick.push_back((int) (at + i));
+                llvm::Value* wide = b.CreateFPExt(
+                    b.CreateBitCast(b.CreateShuffleVector(fn->getArg(0), pick), llvm::FixedVectorType::get(half, step)),
+                    llvm::FixedVectorType::get(f32, step));
+                if (!out) { out = wide; continue; }
+                const unsigned have = llvm::cast<llvm::FixedVectorType>(out->getType())->getNumElements();
+                llvm::SmallVector<int, 64> pad, cat;
+                for (unsigned i = 0; i < have; ++i) pad.push_back(i < step ? (int) i : -1);
+                for (unsigned i = 0; i < have + step; ++i) cat.push_back((int) i);
+                out = b.CreateShuffleVector(out, have == step ? wide : b.CreateShuffleVector(wide, pad), cat);
+            }
+            b.CreateRet(out);
+        };
+        llvm::Function* unmasked = makeVariantShell(m, std::string(kHalfShim) + "_v" + sw,
+                                                    llvm::FunctionType::get(vOut, {vIn}, false));
+        llvm::Function* masked = makeVariantShell(m, std::string(kHalfShim) + "_Mv" + sw,
+                                                  llvm::FunctionType::get(vOut, {vIn, maskTy}, false));
+        body(unmasked);
+        body(masked);
+        if (!variants.empty()) variants += ",";
+        variants += "_ZGV_LLVM_N" + sw + "v_" + kHalfShim + "(" + unmasked->getName().str() + "),"
+                  + "_ZGV_LLVM_M" + sw + "v_" + kHalfShim + "(" + masked->getName().str() + ")";
+    }
+    if (!variants.empty()) shim->addFnAttr("vector-function-abi-variant", variants);
     for (llvm::FPExtInst* fe : exts) {
         auto* ld = llvm::cast<llvm::LoadInst>(fe->getOperand(0));
         auto* raw = new llvm::LoadInst(i16, ld->getPointerOperand(), "", false, ld->getAlign(), ld->getIterator());
@@ -865,6 +1031,290 @@ void restoreScalarHalf(llvm::Function& f) {
         c->replaceAllUsesWith(b.CreateFPExt(
             b.CreateBitCast(c->getArgOperand(0), llvm::Type::getHalfTy(f.getContext())), c->getType()));
         c->eraseFromParent();
+    }
+}
+
+// Splits a float16 element index into its 32-bit root and constant offset, through one sign or
+// zero extension. A root read from a stack slot is returned as that load.
+static bool halfIndexParts(llvm::Value* idx, llvm::Value** root, int64_t* off, bool* isSigned) {
+    auto* cast = llvm::dyn_cast<llvm::CastInst>(idx);
+    if (!cast || (!llvm::isa<llvm::SExtInst>(cast) && !llvm::isa<llvm::ZExtInst>(cast))) return false;
+    *isSigned = llvm::isa<llvm::SExtInst>(cast);
+    llvm::Value* v = cast->getOperand(0);
+    *off = 0;
+    if (auto* add = llvm::dyn_cast<llvm::BinaryOperator>(v))
+        if (add->getOpcode() == llvm::Instruction::Add)
+            if (auto* c = llvm::dyn_cast<llvm::ConstantInt>(add->getOperand(1))) {
+                *off = c->getSExtValue();
+                v = add->getOperand(0);
+            }
+    *root = v;
+    return true;
+}
+
+// Whether two index roots are one value: the same SSA value, or two reads of one stack slot.
+static bool sameIndexRoot(llvm::Value* a, llvm::Value* b) {
+    if (a == b) return true;
+    auto* la = llvm::dyn_cast<llvm::LoadInst>(a);
+    auto* lb = llvm::dyn_cast<llvm::LoadInst>(b);
+    return la && lb && la->getPointerOperand() == lb->getPointerOperand()
+        && llvm::isa<llvm::AllocaInst>(la->getPointerOperand());
+}
+
+// Whether the index slot keeps its value from the read `root` up to `last`, both in one block.
+static bool slotHeld(llvm::LoadInst* root, llvm::Instruction* last) {
+    if (root->getParent() != last->getParent()) return false;
+    for (llvm::Instruction* in = root; in != last; in = in->getNextNode()) {
+        if (!in) return false;
+        if (auto* st = llvm::dyn_cast<llvm::StoreInst>(in))
+            if (llvm::getUnderlyingObject(st->getPointerOperand()) == root->getPointerOperand()) return false;
+        if (auto* c = llvm::dyn_cast<llvm::CallBase>(in)) {
+            if (auto* ii = llvm::dyn_cast<llvm::IntrinsicInst>(c))
+                if (ii->isLifetimeStartOrEnd()) continue;
+            if (!c->onlyReadsMemory()) return false;
+        }
+    }
+    return true;
+}
+
+// Whether the instructions from `first` up to `last` (one block) leave the buffer untouched:
+// stores go to stack memory other than `slot`, calls touch no memory.
+static bool quietBetween(llvm::Instruction* first, llvm::Instruction* last, llvm::Value* slot) {
+    for (llvm::Instruction* in = first; in != last; in = in->getNextNode()) {
+        if (auto* st = llvm::dyn_cast<llvm::StoreInst>(in)) {
+            llvm::Value* obj = llvm::getUnderlyingObject(st->getPointerOperand());
+            if (!llvm::isa<llvm::AllocaInst>(obj) || obj == slot) return false;
+            continue;
+        }
+        if (auto* c = llvm::dyn_cast<llvm::CallBase>(in)) {
+            if (auto* ii = llvm::dyn_cast<llvm::IntrinsicInst>(c))
+                if (ii->isLifetimeStartOrEnd()) continue;
+            if (!c->doesNotAccessMemory() || !c->doesNotThrow()) return false;
+            continue;
+        }
+        if (in->mayWriteToMemory() || in->isTerminator()) return false;
+    }
+    return true;
+}
+
+const char* const kHalfQuadShim = "__cajeta_xpu_cpu_ld4h";
+
+// The four-element read's scalar shim and its width-W variants. A variant takes the lanes' elements
+// in one wide read when the lanes are 4 or 8 elements apart in order; otherwise lane by lane.
+static llvm::Function* halfQuadShim(llvm::Module& m, unsigned W) {
+    if (llvm::Function* have = m.getFunction(kHalfQuadShim)) return have;
+    llvm::LLVMContext& ctx = m.getContext();
+    llvm::Type* i16 = llvm::Type::getInt16Ty(ctx);
+    llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+    llvm::Type* ptr = llvm::PointerType::getUnqual(ctx);
+    auto* shim = llvm::Function::Create(llvm::FunctionType::get(i64, {i64, i64, i64, i64, i64}, false),
+                                        llvm::GlobalValue::InternalLinkage, kHalfQuadShim, &m);
+    shim->addFnAttr(llvm::Attribute::NoInline);
+    shim->setDoesNotThrow();
+    shim->setWillReturn();
+    shim->setMemoryEffects(llvm::MemoryEffects::readOnly());
+    shim->addFnAttr("cajeta.xpu.lane-read");
+    {
+        llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", shim));
+        llvm::Value* base = b.CreateIntToPtr(shim->getArg(0), ptr);
+        llvm::Value* out = nullptr;
+        for (unsigned j = 0; j < 4; ++j) {
+            llvm::Value* e = b.CreateAlignedLoad(i16, b.CreateGEP(i16, base, shim->getArg(1 + j)), llvm::Align(2));
+            llvm::Value* w = b.CreateShl(b.CreateZExt(e, i64), 16 * j);
+            out = out ? b.CreateOr(out, w) : w;
+        }
+        b.CreateRet(out);
+    }
+    const std::string sw = std::to_string(W);
+    auto* vIdx = llvm::FixedVectorType::get(i64, W);
+    auto* maskTy = llvm::FixedVectorType::get(llvm::Type::getInt1Ty(ctx), W);
+    llvm::Type* iW = llvm::IntegerType::get(ctx, W);
+    auto* quadTy = llvm::ArrayType::get(vIdx, 4);
+    auto* slow = llvm::Function::Create(llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), {i64, ptr, ptr, iW}, false),
+                                        llvm::GlobalValue::InternalLinkage,
+                                        std::string(kHalfQuadShim) + "_each" + sw, &m);
+    slow->addFnAttr(llvm::Attribute::NoInline);
+    slow->setDoesNotThrow();
+    slow->setWillReturn();
+    {
+        auto* entry = llvm::BasicBlock::Create(ctx, "entry", slow);
+        auto* head = llvm::BasicBlock::Create(ctx, "head", slow);
+        auto* read = llvm::BasicBlock::Create(ctx, "read", slow);
+        auto* next = llvm::BasicBlock::Create(ctx, "next", slow);
+        auto* done = llvm::BasicBlock::Create(ctx, "done", slow);
+        llvm::IRBuilder<> b(entry);
+        llvm::Value* base = b.CreateIntToPtr(slow->getArg(0), ptr);
+        b.CreateBr(head);
+        b.SetInsertPoint(head);
+        llvm::PHINode* lane = b.CreatePHI(i64, 2);
+        lane->addIncoming(llvm::ConstantInt::get(i64, 0), entry);
+        llvm::Value* bit = b.CreateTrunc(b.CreateLShr(slow->getArg(3), b.CreateZExtOrTrunc(lane, iW)),
+                                         llvm::Type::getInt1Ty(ctx));
+        b.CreateCondBr(bit, read, next);
+        b.SetInsertPoint(read);
+        llvm::Value* out = nullptr;
+        for (unsigned j = 0; j < 4; ++j) {
+            llvm::Value* at = b.CreateLoad(i64, b.CreateGEP(i64, slow->getArg(1),
+                b.CreateAdd(lane, llvm::ConstantInt::get(i64, (uint64_t) j * W))));
+            llvm::Value* e = b.CreateAlignedLoad(i16, b.CreateGEP(i16, base, at), llvm::Align(2));
+            llvm::Value* w = b.CreateShl(b.CreateZExt(e, i64), 16 * j);
+            out = out ? b.CreateOr(out, w) : w;
+        }
+        b.CreateStore(out, b.CreateGEP(i64, slow->getArg(2), lane));
+        b.CreateBr(next);
+        b.SetInsertPoint(next);
+        llvm::Value* up = b.CreateAdd(lane, llvm::ConstantInt::get(i64, 1));
+        lane->addIncoming(up, next);
+        b.CreateCondBr(b.CreateICmpULT(up, llvm::ConstantInt::get(i64, W)), head, done);
+        b.SetInsertPoint(done);
+        b.CreateRetVoid();
+    }
+    auto body = [&](llvm::Function* fn, bool masked) {
+        if (!fn->empty()) return;
+        fn->setMemoryEffects(llvm::MemoryEffects::unknown());
+        auto* entry = llvm::BasicBlock::Create(ctx, "entry", fn);
+        auto* near = llvm::BasicBlock::Create(ctx, "near", fn);
+        auto* far = llvm::BasicBlock::Create(ctx, "far", fn);
+        auto* farRead = llvm::BasicBlock::Create(ctx, "far.read", fn);
+        auto* each = llvm::BasicBlock::Create(ctx, "each", fn);
+        auto* join = llvm::BasicBlock::Create(ctx, "join", fn);
+        llvm::IRBuilder<> b(entry);
+        llvm::Value* mask = masked ? static_cast<llvm::Value*>(fn->getArg(5))
+                                   : llvm::Constant::getAllOnesValue(maskTy);
+        llvm::AllocaInst* idxAt = b.CreateAlloca(quadTy);
+        llvm::AllocaInst* outAt = b.CreateAlloca(vIdx);
+        llvm::Value* idx[4];
+        for (unsigned j = 0; j < 4; ++j) idx[j] = b.CreateFreeze(fn->getArg(1 + j));
+        llvm::Value* first = b.CreateExtractElement(idx[0], (uint64_t) 0);
+        llvm::Value* stride = b.CreateSub(b.CreateExtractElement(idx[0], (uint64_t) 1), first);
+        llvm::SmallVector<llvm::Constant*, 64> lanes;
+        for (unsigned l = 0; l < W; ++l) lanes.push_back(llvm::ConstantInt::get(i64, l));
+        llvm::Value* reach = b.CreateMul(b.CreateVectorSplat(W, stride), llvm::ConstantVector::get(lanes));
+        llvm::Value* run = nullptr;
+        for (unsigned j = 0; j < 4; ++j) {
+            llvm::Value* want = b.CreateAdd(b.CreateVectorSplat(W, b.CreateAdd(first, llvm::ConstantInt::get(i64, j))), reach);
+            llvm::Value* eq = b.CreateICmpEQ(idx[j], want);
+            run = run ? b.CreateAnd(run, eq) : eq;
+        }
+        llvm::Value* ok = b.CreateAndReduce(b.CreateOr(b.CreateNot(mask), run));
+        llvm::Value* at = b.CreateGEP(i16, b.CreateIntToPtr(fn->getArg(0), ptr), first);
+        b.CreateCondBr(b.CreateAnd(ok, b.CreateICmpEQ(stride, llvm::ConstantInt::get(i64, 4))), near, far);
+        b.SetInsertPoint(near);
+        llvm::Value* w = masked
+            ? static_cast<llvm::Value*>(b.CreateMaskedLoad(vIdx, at, llvm::Align(2), mask,
+                                                           llvm::Constant::getNullValue(vIdx)))
+            : static_cast<llvm::Value*>(b.CreateAlignedLoad(vIdx, at, llvm::Align(2)));
+        b.CreateBr(join);
+        b.SetInsertPoint(far);
+        b.CreateCondBr(b.CreateAnd(ok, b.CreateICmpEQ(stride, llvm::ConstantInt::get(i64, 8))), farRead, each);
+        b.SetInsertPoint(farRead);
+        llvm::SmallVector<int, 128> spread, evens;
+        for (unsigned l = 0; l < W; ++l) { spread.push_back((int) l); spread.push_back((int) W); evens.push_back((int) (2 * l)); }
+        auto* vTwice = llvm::FixedVectorType::get(i64, 2 * W);
+        llvm::Value* twice = b.CreateMaskedLoad(vTwice, at, llvm::Align(2),
+            b.CreateShuffleVector(mask, llvm::Constant::getNullValue(maskTy), spread), llvm::Constant::getNullValue(vTwice));
+        llvm::Value* f = b.CreateShuffleVector(twice, evens);
+        b.CreateBr(join);
+        b.SetInsertPoint(each);
+        for (unsigned j = 0; j < 4; ++j)
+            b.CreateStore(idx[j], b.CreateConstGEP2_32(quadTy, idxAt, 0, j));
+        b.CreateStore(llvm::Constant::getNullValue(vIdx), outAt);
+        b.CreateCall(slow, {fn->getArg(0), idxAt, outAt, b.CreateBitCast(mask, iW)});
+        llvm::Value* e = b.CreateLoad(vIdx, outAt);
+        b.CreateBr(join);
+        b.SetInsertPoint(join);
+        llvm::PHINode* phi = b.CreatePHI(vIdx, 3);
+        phi->addIncoming(w, near);
+        phi->addIncoming(f, farRead);
+        phi->addIncoming(e, each);
+        b.CreateRet(phi);
+    };
+    llvm::Function* unmasked = makeVariantShell(m, std::string(kHalfQuadShim) + "_v" + sw,
+        llvm::FunctionType::get(vIdx, {i64, vIdx, vIdx, vIdx, vIdx}, false));
+    llvm::Function* masked = makeVariantShell(m, std::string(kHalfQuadShim) + "_Mv" + sw,
+        llvm::FunctionType::get(vIdx, {i64, vIdx, vIdx, vIdx, vIdx, maskTy}, false));
+    body(unmasked, false);
+    body(masked, true);
+    shim->addFnAttr("vector-function-abi-variant",
+                    "_ZGV_LLVM_N" + sw + "uvvvv_" + kHalfQuadShim + "(" + unmasked->getName().str() + "),"
+                    + "_ZGV_LLVM_M" + sw + "uvvvv_" + kHalfQuadShim + "(" + masked->getName().str() + ")");
+    return shim;
+}
+
+// A wave kernel's lane that reads four float16 elements in a row (`x[i]` .. `x[i + 3]`) reads them
+// through one shim call, so the lanes' elements can be taken in one wide read. Returns the groups.
+unsigned groupWaveHalfQuads(llvm::Function& f, llvm::Module& m, unsigned W) {
+    llvm::Function* h2f = m.getFunction(kHalfShim);
+    if (!h2f) return 0;
+    llvm::Type* i64 = llvm::Type::getInt64Ty(m.getContext());
+    llvm::Type* i16 = llvm::Type::getInt16Ty(m.getContext());
+    struct Read { llvm::LoadInst* load; llvm::Value* base; llvm::Value* root; int64_t off; bool isSigned; };
+    unsigned groups = 0;
+    for (auto& bb : f) {
+        std::vector<Read> reads;
+        for (auto& in : bb) {
+            auto* ld = llvm::dyn_cast<llvm::LoadInst>(&in);
+            if (!ld || ld->getType() != i16 || !ld->isSimple() || !ld->hasOneUse()) continue;
+            auto* use = llvm::dyn_cast<llvm::CallInst>(ld->user_back());
+            if (!use || use->getCalledFunction() != h2f) continue;
+            auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(ld->getPointerOperand());
+            if (!gep || gep->getNumIndices() != 1 || !llvm::isa<llvm::Argument>(gep->getPointerOperand())) continue;
+            if (m.getDataLayout().getTypeAllocSize(gep->getSourceElementType()) != 2) continue;
+            Read r{ld, gep->getPointerOperand(), nullptr, 0, false};
+            if (!halfIndexParts(gep->getOperand(1), &r.root, &r.off, &r.isSigned)) continue;
+            reads.push_back(r);
+        }
+        for (size_t at = 0; at + 4 <= reads.size();) {
+            const Read& r0 = reads[at];
+            bool fits = true;
+            for (unsigned j = 1; j < 4 && fits; ++j) {
+                const Read& r = reads[at + j];
+                fits = r.base == r0.base && r.off == r0.off + (int64_t) j && sameIndexRoot(r.root, r0.root);
+            }
+            llvm::Value* slot = nullptr;
+            if (auto* rl = llvm::dyn_cast<llvm::LoadInst>(r0.root)) {
+                slot = rl->getPointerOperand();
+                bool reread = false;
+                for (unsigned j = 1; j < 4 && fits; ++j) reread = reread || reads[at + j].root != r0.root;
+                if (fits && reread) fits = slotHeld(rl, reads[at + 3].load);
+            }
+            if (fits) fits = quietBetween(r0.load, reads[at + 3].load, slot);
+            if (!fits) { ++at; continue; }
+            llvm::IRBuilder<> b(r0.load);
+            llvm::Value* args[5];
+            llvm::Instruction* entryAt = &*f.getEntryBlock().getFirstInsertionPt();
+            args[0] = new llvm::PtrToIntInst(r0.base, i64, "", entryAt->getIterator());
+            for (unsigned j = 0; j < 4; ++j) {
+                const Read& r = reads[at + j];
+                llvm::Value* v = r.off ? b.CreateAdd(r0.root, llvm::ConstantInt::get(r0.root->getType(), r.off))
+                                       : r0.root;
+                args[1 + j] = r.isSigned ? b.CreateSExt(v, i64) : b.CreateZExt(v, i64);
+            }
+            llvm::Value* quad = b.CreateCall(halfQuadShim(m, W), args);
+            for (unsigned j = 0; j < 4; ++j) {
+                llvm::LoadInst* ld = reads[at + j].load;
+                ld->replaceAllUsesWith(b.CreateTrunc(b.CreateLShr(quad, 16 * j), i16));
+            }
+            for (unsigned j = 0; j < 4; ++j) reads[at + j].load->eraseFromParent();
+            ++groups;
+            at += 4;
+        }
+    }
+    return groups;
+}
+
+// Puts the four-element reads LoopVectorize left scalar back as four reads.
+void restoreScalarHalfQuads(llvm::Function& f) {
+    llvm::Function* shim = f.getParent()->getFunction(kHalfQuadShim);
+    if (!shim) return;
+    llvm::SmallVector<llvm::CallInst*, 16> calls;
+    for (auto& bb : f)
+        for (auto& in : bb)
+            if (auto* c = llvm::dyn_cast<llvm::CallInst>(&in))
+                if (c->getCalledFunction() == shim) calls.push_back(c);
+    for (llvm::CallInst* c : calls) {
+        llvm::InlineFunctionInfo ifi;
+        llvm::InlineFunction(*c, ifi);
     }
 }
 
@@ -1058,7 +1508,8 @@ static void markWorkItemLoopsParallel(llvm::Function& f, bool plain = false) {
             for (llvm::Instruction& in : *bb) {
                 if (!in.mayReadOrWriteMemory()) continue;
                 if (auto* c = llvm::dyn_cast<llvm::CallBase>(&in))
-                    if (!c->getCalledFunction() || !c->getCalledFunction()->isIntrinsic())
+                    if (!c->getCalledFunction() || !(c->getCalledFunction()->isIntrinsic()
+                            || c->getCalledFunction()->hasFnAttribute("cajeta.xpu.lane-read")))
                         continue;               // an opaque call keeps its own effects
                 in.setMetadata(llvm::LLVMContext::MD_access_group, group);
             }
@@ -2053,8 +2504,13 @@ void foldWaveVariants(llvm::Function& f) {
                     if (waveKernel) {
                         rewriteWaveWidth(*wrapper, waveW);
                         waveMaskAsData(*wrapper, hostModule, waveW);
-                        if (!std::getenv("CAJETA_XPU_CPU_EXP_PER_LANE")) routeWaveExp(*wrapper, hostModule, waveW);
-                        if (!std::getenv("CAJETA_XPU_CPU_HALF_PER_LANE")) routeWaveHalfLoads(*wrapper, hostModule, waveW);
+                        if (!std::getenv("CAJETA_XPU_CPU_EXP_PER_LANE") && routeWaveExp(*wrapper, hostModule, waveW)
+                                && !std::getenv("CAJETA_XPU_CPU_EXP_PER_ARM"))
+                            mergeArmExps(*wrapper, waveW);
+                        if (!std::getenv("CAJETA_XPU_CPU_HALF_PER_LANE")) {
+                            routeWaveHalfLoads(*wrapper, hostModule, waveW, wiLatches);
+                            if (!std::getenv("CAJETA_XPU_CPU_HALF_QUAD_PER_LANE")) groupWaveHalfQuads(*wrapper, hostModule, waveW);
+                        }
                         const auto laneSerial = laneSerialLoops(*wrapper, wiLatches);
                         for (llvm::UncondBrInst* latch : wiLatches) {
                             if (laneSerial.count(latch)) tagWorkItemLoop(latch, true);
@@ -2104,6 +2560,7 @@ void foldWaveVariants(llvm::Function& f) {
                         const auto t0 = std::chrono::steady_clock::now();
                         vectorizeUnderDeadline(*wrapper, hostTm.get(), waveKernel, entryName, ntidX);
                         restoreScalarExp(*wrapper);
+                        restoreScalarHalfQuads(*wrapper);
                         restoreScalarHalf(*wrapper);
                         if (cpuVectorizeTraced()) {
                             const double ms = std::chrono::duration<double, std::milli>(
@@ -2247,8 +2704,13 @@ void foldWaveVariants(llvm::Function& f) {
             if (waveKernel) {
                 rewriteWaveWidth(*wrapper, waveW);
                 waveMaskAsData(*wrapper, hostModule, waveW);
-                if (!std::getenv("CAJETA_XPU_CPU_EXP_PER_LANE")) routeWaveExp(*wrapper, hostModule, waveW);
-                        if (!std::getenv("CAJETA_XPU_CPU_HALF_PER_LANE")) routeWaveHalfLoads(*wrapper, hostModule, waveW);
+                if (!std::getenv("CAJETA_XPU_CPU_EXP_PER_LANE") && routeWaveExp(*wrapper, hostModule, waveW)
+                                && !std::getenv("CAJETA_XPU_CPU_EXP_PER_ARM"))
+                            mergeArmExps(*wrapper, waveW);
+                        if (!std::getenv("CAJETA_XPU_CPU_HALF_PER_LANE")) {
+                            routeWaveHalfLoads(*wrapper, hostModule, waveW, {latchBr});
+                            if (!std::getenv("CAJETA_XPU_CPU_HALF_QUAD_PER_LANE")) groupWaveHalfQuads(*wrapper, hostModule, waveW);
+                        }
                 if (getenv("CAJETA_XPU_DEBUG_WAVE"))
                     fprintf(stderr, "[wave-pre]\n");
                 maybeDumpWaveWrapper(*wrapper, waveW);
@@ -2290,6 +2752,7 @@ void foldWaveVariants(llvm::Function& f) {
                     const auto t0 = std::chrono::steady_clock::now();
                     vectorizeUnderDeadline(*wrapper, hostTm.get(), waveKernel, entryName, ntidX);
                         restoreScalarExp(*wrapper);
+                        restoreScalarHalfQuads(*wrapper);
                         restoreScalarHalf(*wrapper);
                     if (cpuVectorizeTraced()) {
                         const double ms = std::chrono::duration<double, std::milli>(
