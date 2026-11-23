@@ -1,0 +1,10 @@
+# kernel-drivers gate harness
+
+Evidence for agents/kernel-drivers-plan.md 3.1, 3.3.1, 4.1 and 4.2.1. `ref/RefX8`, `ref/RefPack` and
+`ref/QkTile` are cajeta-llm's kernels lifted unchanged (llm 9887052); `Bench` runs the cpu row driver
+against `q4kQ8X8RowsKernel`, `TileBench` the GPU tile driver against `QkTile`. Each prints, per shape,
+the count of differing output words and the min time of both kernels; the last line is `ALL EQUAL`
+or `DIFFERENT`.
+
+    KERNELS=~/cajeta-ml/kernels UNIT_CJA=.../dev.cajeta.unit-0.3.6.cja CAJETA=.../cajeta ./build.sh nvptx TileBench
+    CAJETA_XPU_BACKEND=nvptx out-nvptx/TileBench

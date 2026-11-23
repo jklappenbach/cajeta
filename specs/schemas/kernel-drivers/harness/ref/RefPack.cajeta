@@ -1,0 +1,133 @@
+package ref;
+
+import cajeta.lang.Cajeta;
+import cajeta.xpu.Vector;
+
+/** cajeta-llm's Q4_K 8-row interleave and header decode, lifted unchanged. */
+public final class RefPack {
+    public RefPack() { return; }
+
+    static void putF32(int8[] out, int64 o, float32 v) {
+        int32 bits = Cajeta.f32ToBits(v);
+        out[o] = (int8) (bits & 255);
+        out[o + 1L] = (int8) ((bits >> 8) & 255);
+        out[o + 2L] = (int8) ((bits >> 16) & 255);
+        out[o + 3L] = (int8) ((bits >> 24) & 255);
+    }
+
+    public static void q4kInterleave8(int8[] packed, int64 srcOff, int64 rows, int64 bpr,
+            int8[] out, int64 outOff) {
+        int64 groups = (rows + 7L) / 8L;
+        int64 n = groups * bpr * 1216L;
+        if (rows % 8L != 0L) {
+            int64 z = 0;
+            while (z < n) { out[outOff + z] = (int8) 0; z = z + 1; }
+        }
+        float32[] ds #= heap float32[2];
+        int32[] sc #= heap int32[8];
+        int32[] mn #= heap int32[8];
+        int64 r = 0;
+        while (r < rows) {
+            int64 g8 = r / 8L;
+            int64 lane = r % 8L;
+            int64 b = 0;
+            while (b < bpr) {
+                int64 ro = srcOff + (r * bpr + b) * 144L;
+                int64 wo = outOff + (g8 * bpr + b) * 1216L;
+                RefPack.headK4(packed, ro, ds, sc, mn);
+                RefPack.putF32(out, wo + lane * 4L, ds[0]);
+                RefPack.putF32(out, wo + 32L + lane * 4L, ds[1]);
+                int64 sb = 0;
+                while (sb < 8L) {
+                    out[wo + 64L + 8L * sb + lane] = (int8) sc[sb];
+                    out[wo + 128L + 8L * sb + lane] = (int8) mn[sb];
+                    sb = sb + 1L;
+                }
+                int64 qd = 0;
+                while (qd < 32L) {
+                    int64 si = ro + 16L + 4L * qd;
+                    int64 di = wo + 192L + 32L * qd + 4L * lane;
+                    out[di] = packed[si];
+                    out[di + 1L] = packed[si + 1L];
+                    out[di + 2L] = packed[si + 2L];
+                    out[di + 3L] = packed[si + 3L];
+                    qd = qd + 1L;
+                }
+                b = b + 1L;
+            }
+            r = r + 1L;
+        }
+    }
+
+    static void headK4(int8[] raw, int64 ro, float32[] ds,
+            int32[] sc, int32[] mn) {
+        // The whole header — { f16 d; f16 dmin; u8 scales[12] } — is exactly
+        // 16 bytes, so ONE load and one bounds check cover all 14 fields
+        // instead of 16 separately-checked byte reads. Lanes are unrolled
+        // because a runtime lane index round-trips the vector through memory,
+        // which is the thing being removed.
+        Vector<int8,16> v = raw.vload<16>(ro);
+        ds[0] = RefPack.halfBitsToF32(((int32) v[0] & 255)
+            | (((int32) v[1] & 255) << 8));
+        ds[1] = RefPack.halfBitsToF32(((int32) v[2] & 255)
+            | (((int32) v[3] & 255) << 8));
+        int32 d0 = (int32) v[4] & 255;
+        int32 d1 = (int32) v[5] & 255;
+        int32 d2 = (int32) v[6] & 255;
+        int32 d3 = (int32) v[7] & 255;
+        int32 m0 = (int32) v[8] & 255;
+        int32 m1 = (int32) v[9] & 255;
+        int32 m2 = (int32) v[10] & 255;
+        int32 m3 = (int32) v[11] & 255;
+        int32 k0 = (int32) v[12] & 255;
+        int32 k1 = (int32) v[13] & 255;
+        int32 k2 = (int32) v[14] & 255;
+        int32 k3 = (int32) v[15] & 255;
+        sc[0] = d0 & 63;  mn[0] = m0 & 63;
+        sc[1] = d1 & 63;  mn[1] = m1 & 63;
+        sc[2] = d2 & 63;  mn[2] = m2 & 63;
+        sc[3] = d3 & 63;  mn[3] = m3 & 63;
+        sc[4] = (k0 & 15) | ((d0 >> 2) & 48);
+        sc[5] = (k1 & 15) | ((d1 >> 2) & 48);
+        sc[6] = (k2 & 15) | ((d2 >> 2) & 48);
+        sc[7] = (k3 & 15) | ((d3 >> 2) & 48);
+        mn[4] = (k0 >> 4) | ((m0 >> 2) & 48);
+        mn[5] = (k1 >> 4) | ((m1 >> 2) & 48);
+        mn[6] = (k2 >> 4) | ((m2 >> 2) & 48);
+        mn[7] = (k3 >> 4) | ((m3 >> 2) & 48);
+    }
+
+    @Device
+    public static float32 halfBitsToF32(int32 h) {
+        // Bit-layout rebase, not arithmetic: f16 and f32 share a sign bit and
+        // a normalised mantissa, so the conversion is a shift and an exponent
+        // bias change. The old arithmetic decode existed only because
+        // Cajeta.bitsToF32 aborted AOT emission; that defect is fixed (the
+        // intrinsics coerce their operands now), and pow2()'s repeated-squaring
+        // loop measured 38% of the Q4_K mat-vec.
+        int32 sign = (h >> 15) & 1;
+        int32 exp = (h >> 10) & 31;
+        int32 man = h & 1023;
+        int64 bits;
+        if (exp == 0) {
+            if (man == 0) {
+                bits = (int64) sign << 31;              // +/- zero
+            } else {
+                // Subnormal: normalise so the implicit leading 1 appears, and
+                // pay for the exponent with the shift distance.
+                int32 k = 9;
+                while ((man & (1 << k)) == 0) { k = k - 1; }
+                bits = ((int64) sign << 31)
+                     | ((int64) (k + 103) << 23)
+                     | (((int64) man << (23 - k)) & 8388607L);
+            }
+        } else if (exp == 31) {
+            bits = ((int64) sign << 31) | (255L << 23) | ((int64) man << 13);
+        } else {
+            bits = ((int64) sign << 31)
+                 | ((int64) (exp + 112) << 23)
+                 | ((int64) man << 13);
+        }
+        return Cajeta.bitsToF32(bits);
+    }
+}
