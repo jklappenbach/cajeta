@@ -1,6 +1,6 @@
 # Kernel drivers: one operation source, a data-movement layer per device
 
-Status: draft, 2026-11-22. Opened from gpu-kernel-parity §13 (Julian: "what about having a CPU
+Status: active. Spec and plan approved by Julian 2026-11-22. Opened from gpu-kernel-parity §13 (Julian: "what about having a CPU
 specific scheduler and a GPU scheduler? The device specific scheduler would then treat the data as
 it needed"; "That could be the solution. Let's give it a try.").
 
@@ -114,7 +114,4 @@ epilogue, which the source asks for and the cpu never needs.
   cajeta-llm consumes them from there.
 - **7.3** gpu-kernel-parity Unit 23's attention compiler work and its families work pause until
   the gate of §5 reports.
-
-## 8. Open questions
-
-- **8.1** The GPU tolerance in 5.3 (2% is a proposal).
+- **7.4** The GPU tolerance of 5.3 is 2% (approved with the plan).
