@@ -1,6 +1,7 @@
 # cpu backend: a widened inner loop ORs two arms that should be selected
 
-Status: draft (defect), filed 2026-11-22 from kernel-drivers 2.1.1.
+Status: active. Fixed in the LLVM fork 2026-11-23 (cajeta-llvm 14cb28499e06); closes when the toolchain
+pin carries it (§4). Filed 2026-11-22 from kernel-drivers 2.1.1.
 
 ## 1. Definition
 
@@ -48,3 +49,27 @@ mismatches.
 
 - **3.1** Whether a device shift by an out-of-range amount should be defined (masked, as x86 and
   the GPUs do) so no poison is created at all. The host traps on it.
+  Not needed for this defect (§4): the fault was a use of a lane the source never read, and the
+  same can happen with any poison lane, not only a shift. Left open as a language question.
+
+## 4. Finding (2026-11-23)
+
+**4.1 Where.** LLVM's x86 instruction selection, `matchBinaryShuffle` in `X86ISelLowering.cpp`,
+upstream code and not ours. It rewrites a blend of two vectors as an OR when each input is known
+zero in the lanes the blend does not pick. Known bits call a poison lane zero. The dead arm's lanes
+are poison (the out-of-range shifts), so the rewrite was taken, and the OR then read lanes the
+blend never read. Their real content was not zero: the `and` mask's undefined lanes were emitted
+as a splat of 15 once two blends shared the mask (which is why one store alone was right), and
+`vpsravd` saturates an out-of-range count. `llc` alone reproduces it from the 16-line IR.
+
+**4.2 Fix.** The rewrite also requires both inputs to be guaranteed not undef or poison on the
+lanes the blend skips (cajeta-llvm 14cb28499e06, with `shuffle-blend-as-or-poison.ll`). Of LLVM's
+5484 x86 codegen tests one changed, a single `vpor` back to `vpblendw`. No upstream report of it
+was found; it is a candidate for UPSTREAM-PRS.
+
+**4.3 Held by** `XpuCpuTwoArmShift.theArmNotTakenDoesNotLeakIntoTheResult`: 472 wrong values with
+the released v0.54.3, none with the fix.
+
+**4.4 Until the pin moves.** A compiler built on toolchain r13 or older still has the fault.
+The kernels' Q4_K pieces keep their in-range shifts.
+

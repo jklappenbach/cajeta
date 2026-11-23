@@ -7473,7 +7473,8 @@ private:
         };
         std::string simpleSelf;
         if (cls) {
-            std::string q = cls->toCanonical();
+            CajetaClassPtr origin = cls->getTemplateOrigin();
+            std::string q = (origin ? origin : cls)->toCanonical();
             simpleSelf = q.substr(q.find_last_of('.') + 1);
             if (recv.empty() || recv == simpleSelf) {
                 if (auto m = findIn(cls)) return m;

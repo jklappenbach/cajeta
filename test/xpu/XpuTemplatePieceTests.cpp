@@ -88,6 +88,43 @@ public class M {
 // Thrice over 8: x[24..31] = 4,0,1,2,3,4,0,1, sum 15, tripled 45, minus 1 = 44.
 constexpr int kWant = 19 * 1000 + 44;
 
+// A kernel in a class template calling its own class's @Device helper by the template's name.
+const char* kOwnHelperSource = R"CJ(
+package test;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+public final class Two {
+    @Device
+    public static int32 k() { return 2; }
+}
+public final class Own<P> {
+    public Own() { return; }
+
+    @Device
+    static int32 plus(int32 a, int32 b) { return a + b; }
+
+    @Kernel
+    public static void run(KernelBuffer<int32> y, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) { y[(int64) i] = Own.plus((int32) i, P.k()); }
+    }
+
+    public int32 at(int32 k) {
+        KernelBuffer<int32> y = heap KernelBuffer<int32>((uint64) 64L);
+        KernelStream s #= KernelStream.current();
+        run.launch(s, grid: [1], block: [64])(y, 64);
+        s.sync();
+        int32[] got = heap int32[64L];
+        y.download(got);
+        return got[k];
+    }
+}
+public class M {
+    public static int32 run() { Own<Two> a #= heap Own<Two>(); return a.at(40); }
+}
+)CJ";
+
 int runOn(cajeta::xpu::Backend backend) {
     CajetaJit::Options o;
     o.xpuBackends = {backend};
@@ -127,6 +164,16 @@ std::string compileError(const std::string& source) {
 
 TEST(XpuTemplatePiece, eachInstantiationComputesWithItsOwnPieceOnCpu) {
     EXPECT_EQ(runOn(cajeta::xpu::Backend::Cpu), kWant);
+}
+
+TEST(XpuTemplatePiece, aKernelCallsItsOwnClassHelperByTheTemplatesNameOnCpu) {
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
+    auto jit = CajetaJit::compile(kOwnHelperSource, "test.M", o);
+    ASSERT_TRUE(jit);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 42);
 }
 
 TEST(XpuTemplatePiece, eachInstantiationComputesWithItsOwnPieceOnNvptx) {

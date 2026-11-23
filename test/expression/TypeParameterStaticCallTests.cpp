@@ -47,3 +47,29 @@ TEST(TypeParameterStaticCallTests, staticCallThroughMethodTypeParameter) {
     auto fn = jit->lookup<int32_t (*)()>("run");
     EXPECT_EQ(fn(), 79);
 }
+
+// `Box.inc(..)` inside Box<T> is the current instantiation's static, so `T` in its arguments
+// keeps its binding (kernel-drivers 3.2.1: a driver's load-time repack calls its piece).
+TEST(TypeParameterStaticCallTests, staticCallThroughTypeParameterInAnArgumentOfTheTemplatesOwnStatic) {
+    auto src =
+        "package test;\n"
+        "public class Seven { public static int32 value() { return 7; } }\n"
+        "public class Nine { public static int32 value() { return 9; } }\n"
+        "public class Box<T> {\n"
+        "    public Box() { return; }\n"
+        "    static int32 inc(int32 x) { return x + 1; }\n"
+        "    public int32 make() { return Box.inc(T.value()); }\n"
+        "}\n"
+        "public final class U {\n"
+        "    public static int32 run() {\n"
+        "        Box<Seven> a = heap Box<Seven>();\n"
+        "        Box<Nine> b = heap Box<Nine>();\n"
+        "        return a.make() * 100 + b.make();\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.U");
+    ASSERT_TRUE(jit);
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 810);
+}

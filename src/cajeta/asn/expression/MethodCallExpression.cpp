@@ -6407,7 +6407,18 @@ namespace cajeta {
                             receiverType = scoped;
                         }
                         if (auto cls = dynamic_pointer_cast<CajetaClass>(scoped)) {
-                            if (cls->isTemplate()) {
+                            CajetaClassPtr self;
+                            if (auto cm = module->getCurrentMethod()) {
+                                auto parent = dynamic_pointer_cast<CajetaClass>(cm->getParent());
+                                if (parent && parent->isInstantiation()
+                                        && !parent->isWildcardInstantiation()
+                                        && parent->getTemplateOrigin() == cls) {
+                                    self = parent;
+                                }
+                            }
+                            if (self) {
+                                receiverType = self;
+                            } else if (cls->isTemplate()) {
                                 std::vector<CajetaTypePtr> wildArgs;
                                 for (size_t i = 0;
                                         i < cls->getTypeParameters().size(); ++i) {
