@@ -1,6 +1,6 @@
 # cpu backend: a widened inner loop ORs two arms that should be selected
 
-Status: active. Fixed in the LLVM fork 2026-11-23 (cajeta-llvm 14cb28499e06); closes when the toolchain
+Status: active. Fixed in the LLVM fork 2026-11-23 (cajeta-llvm 14cb28499e06, toolchain r14); closes when the toolchain
 pin carries it (§4). Filed 2026-11-22 from kernel-drivers 2.1.1.
 
 ## 1. Definition
@@ -70,6 +70,6 @@ was found; it is a candidate for UPSTREAM-PRS.
 **4.3 Held by** `XpuCpuTwoArmShift.theArmNotTakenDoesNotLeakIntoTheResult`: 472 wrong values with
 the released v0.54.3, none with the fix.
 
-**4.4 Until the pin moves.** A compiler built on toolchain r13 or older still has the fault.
-The kernels' Q4_K pieces keep their in-range shifts.
-
+**4.4 The pin.** Toolchain cajeta-llvm-23-r14 carries the fix and cajeta's workflows pin it since
+2026-11-23. The defect closes when a device-tests run on r14 shows `XpuCpuTwoArmShift` green. A
+compiler released before that (v0.54.3 and earlier) keeps the fault.
