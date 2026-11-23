@@ -42,7 +42,7 @@ epilogue, which the source asks for and the cpu never needs.
   boundary per block or per tile.
 - The GPU driver reproduces today's tile kernels: same staging, same barriers, same register
   budget. Tiles remain the GPU's execution form and `CooperativeMatrix` stays in the language.
-- Results keep each device's current value contract (the conformance corpus and llm's value tests).
+- Results keep each device's current value contract (7.1; the conformance corpus and llm's value tests).
 - cajeta-llm's speed against same-day llama.cpp does not drop on any device.
 
 **1.6 Non-goals.**
@@ -105,10 +105,16 @@ epilogue, which the source asks for and the cpu never needs.
   and either gets a driver pair or stays a family.
 - **6.3** When an operation has drivers, gpu-kernel-parity 13.7 counts it as one source.
 
-## 7. Open questions
+## 7. Decisions (Julian, 2026-11-22)
 
-- **7.1** Whether the cpu and GPU value contracts stay different (each matches its current
-  kernel) or one is chosen for both.
-- **7.2** Whether the drivers live in dev.cajeta.ml.kernels from the start or are proven in
-  cajeta-llm first.
-- **7.3** The GPU tolerance in 5.3 (2% is a proposal).
+- **7.1** Each device's driver matches its current kernel's values: the cpu driver equals
+  `q4kQ8X8RowsKernel` bit for bit, the GPU driver equals `QkTile`. One contract for both is not
+  part of this work.
+- **7.2** The drivers and pieces are built in dev.cajeta.ml.kernels from the start, and
+  cajeta-llm consumes them from there.
+- **7.3** gpu-kernel-parity Unit 23's attention compiler work and its families work pause until
+  the gate of §5 reports.
+
+## 8. Open questions
+
+- **8.1** The GPU tolerance in 5.3 (2% is a proposal).
