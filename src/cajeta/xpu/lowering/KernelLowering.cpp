@@ -4454,6 +4454,10 @@ private:
             }
             return callV;
         }
+        if (CajetaClassPtr piece = typeArgumentNamed(recv))
+            unsupported("`" + recv + "." + name + "()`: " + recv + " is " + piece->toCanonical()
+                        + " in this instantiation, which has no @Device method " + name + " taking "
+                        + std::to_string(mc->getParameters().size()) + " argument(s)");
         unsupported("device builtin '" + recv + "." + name + "()'");
     }
 
@@ -7440,6 +7444,18 @@ private:
     // Resolve `name(args)` / `Cls.name(args)` to a @Device method by name and
     // arity. Unqualified and `Self.helper(...)` resolve in the kernel's own
     // class; `OtherClass.helper(...)` resolves cross-class via the canonicalMap.
+    // The class a type parameter of the kernel's class template is bound to, or null.
+    CajetaClassPtr typeArgumentNamed(const std::string& recv) {
+        if (!cls) return nullptr;
+        CajetaClassPtr origin = cls->getTemplateOrigin();
+        const auto& tps = origin ? origin->getTypeParameters() : cls->getTypeParameters();
+        const auto& targs = cls->getTypeArguments();
+        for (std::size_t i = 0; i < tps.size() && i < targs.size(); ++i)
+            if (!tps[i].isNonType && tps[i].name == recv)
+                return std::dynamic_pointer_cast<CajetaClass>(targs[i]);
+        return nullptr;
+    }
+
     MethodPtr resolveDeviceMethod(
             const std::string& recv, const std::string& name,
             const std::shared_ptr<MethodCallExpression>& mc) {
