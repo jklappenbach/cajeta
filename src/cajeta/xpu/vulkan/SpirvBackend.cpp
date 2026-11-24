@@ -1187,6 +1187,87 @@ bool decorateNoContraction(std::vector<uint8_t>& bytes) {
     return true;
 }
 
+// A scalar load or store through an element GEP on a workgroup array, or a chain of them, takes
+// one access rooted at the array, as sharedAt does at lowering: a helper's Shared<T> parameter is
+// not the array until it inlines, and an element offset off the array's pointer does not step on
+// spirv. Vector accesses keep their GEPs; the pointer-cast legalizer reads them as they are.
+void rootWorkgroupGeps(llvm::Module& m) {
+    const llvm::DataLayout& dl = m.getDataLayout();
+    for (auto& f : m) {
+        llvm::SmallVector<llvm::GetElementPtrInst*, 32> geps;
+        for (auto& bb : f)
+            for (auto& inst : bb)
+                if (auto* g = llvm::dyn_cast<llvm::GetElementPtrInst>(&inst))
+                    if (g->getAddressSpace() == 3 && g->getNumIndices() == 1) geps.push_back(g);
+        for (llvm::GetElementPtrInst* g : geps) {
+            // The chain's links as (index, elements of the root's type per index step).
+            llvm::SmallVector<std::pair<llvm::Value*, int64_t>, 4> links;
+            llvm::Value* at = g;
+            llvm::GlobalVariable* root = nullptr;
+            llvm::Type* ety = nullptr;
+            while (true) {
+                if (auto* gv = llvm::dyn_cast<llvm::GlobalVariable>(at)) {
+                    if (auto* arr = llvm::dyn_cast<llvm::ArrayType>(gv->getValueType())) {
+                        root = gv;
+                        ety = arr->getElementType();
+                    }
+                    break;
+                }
+                auto* p = llvm::dyn_cast<llvm::GEPOperator>(at);
+                if (p == nullptr) break;
+                llvm::Type* st = p->getSourceElementType();
+                if (p->getNumIndices() == 1) {
+                    links.push_back({p->getOperand(1), (int64_t) dl.getTypeAllocSize(st)});
+                } else if (p->getNumIndices() == 2 && st->isArrayTy()) {
+                    auto* z = llvm::dyn_cast<llvm::ConstantInt>(p->getOperand(1));
+                    if (z == nullptr || !z->isZero()) break;
+                    llvm::Type* inner = llvm::cast<llvm::ArrayType>(st)->getElementType();
+                    links.push_back({p->getOperand(2), (int64_t) dl.getTypeAllocSize(inner)});
+                } else {
+                    break;
+                }
+                at = p->getPointerOperand();
+            }
+            if (root == nullptr || links.empty()) continue;
+            bool scalarUse = !g->use_empty();
+            for (llvm::User* u : g->users()) {
+                if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(u)) {
+                    if (ld->getType() != ety) scalarUse = false;
+                } else if (auto* st = llvm::dyn_cast<llvm::StoreInst>(u)) {
+                    if (st->getPointerOperand() != g || st->getValueOperand()->getType() != ety) scalarUse = false;
+                } else {
+                    scalarUse = false;
+                }
+            }
+            if (!scalarUse) continue;
+            const int64_t esz = (int64_t) dl.getTypeAllocSize(ety);
+            bool exact = esz > 0;
+            for (auto& l : links) {
+                if (l.second % esz == 0) continue;
+                auto* c = llvm::dyn_cast<llvm::ConstantInt>(l.first);
+                if (c == nullptr || (c->getSExtValue() * l.second) % esz != 0) exact = false;
+            }
+            if (!exact) continue;
+            llvm::IRBuilder<> b(g);
+            llvm::Value* off = nullptr;
+            for (auto& l : links) {
+                llvm::Value* term;
+                if (l.second % esz == 0) {
+                    term = b.CreateZExtOrTrunc(l.first, b.getInt32Ty());
+                    if (l.second != esz) term = b.CreateMul(term, b.getInt32((uint32_t) (l.second / esz)));
+                } else {
+                    auto* c = llvm::cast<llvm::ConstantInt>(l.first);
+                    term = b.getInt32((uint32_t) (c->getSExtValue() * l.second / esz));
+                }
+                off = off == nullptr ? term : b.CreateAdd(off, term);
+            }
+            llvm::Value* rooted = b.CreateInBoundsGEP(root->getValueType(), root, {b.getInt32(0), off});
+            g->replaceAllUsesWith(rooted);
+            g->eraseFromParent();
+        }
+    }
+}
+
 bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
                   llvm::CodeGenFileType type, llvm::SmallVectorImpl<char>& out,
                   std::string* failure) {
@@ -1282,6 +1363,7 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
     splitWideCasts(m);
     widenBooleanStorage(m);
 
+    rootWorkgroupGeps(m);
     // SPIRVLegalizePointerCast crashes on an address that is a constant-expression GEP, a
     // shared array read at a constant index, so every such address becomes an instruction.
     {

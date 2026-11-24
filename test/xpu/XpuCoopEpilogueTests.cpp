@@ -86,6 +86,46 @@ const char* KERNEL =
     "        facc.store(y, 0, 0, 16);\n"
     "    }\n";
 
+// KERNEL with the tile work in a @Device helper that takes the panels: an epilogue factor read
+// off a panel parameter (rowG[16]) is a GEP chain until the helper inlines, which spir-v must root.
+const char* KERNEL_HELPER =
+    "    @Device\n"
+    "    static void tile(KernelBuffer<float32> y, KernelBuffer<int8> a, KernelBuffer<int8> b,\n"
+    "            Shared<float32> rowF, Shared<float32> colF, Shared<float32> rowG, Shared<float32> colG) {\n"
+    "        CooperativeMatrix<int8,16,16,0> ma;\n"
+    "        CooperativeMatrix<int8,16,16,1> mb;\n"
+    "        CooperativeMatrix<int32,16,16,2> mc;\n"
+    "        CooperativeMatrix<float32,16,16,2> facc;\n"
+    "        facc.splat(0.0f);\n"
+    "        mc.splat(0);\n"
+    "        ma.load(a, 0, 0, 16);\n"
+    "        mb.load(b, 0, 0, 16);\n"
+    "        mc.mma(ma, mb);\n"
+    "        mc.scaledAccumInto(facc, rowF, colF);\n"
+    "        facc.rank1Accum(rowG[16], colG);\n"
+    "        mc.scaledAccumInto2(facc, rowF, colF, rowG[16], colG);\n"
+    "        facc.store(y, 0, 0, 16);\n"
+    "    }\n"
+    "    @Kernel\n"
+    "    public static void epi(KernelBuffer<float32> y,\n"
+    "            KernelBuffer<int8> a, KernelBuffer<int8> b,\n"
+    "            KernelBuffer<float32> rf, KernelBuffer<float32> cf,\n"
+    "            KernelBuffer<float32> rg, KernelBuffer<float32> cg) {\n"
+    "        Shared<float32> rowF = shared float32[16];\n"
+    "        Shared<float32> colF = shared float32[16];\n"
+    "        Shared<float32> rowG = shared float32[48];\n"
+    "        Shared<float32> colG = shared float32[16];\n"
+    "        uint32 lane = KernelThread.x();\n"
+    "        uint32 i = lane;\n"
+    "        while (i < 16) {\n"
+    "            rowF[i] = rf[i]; colF[i] = cf[i];\n"
+    "            rowG[16 + i] = rg[i]; colG[i] = cg[i];\n"
+    "            i = i + 32;\n"
+    "        }\n"
+    "        Barrier.workgroup();\n"
+    "        D.tile(y, a, b, rowF, colF, rowG, colG);\n"
+    "    }\n";
+
 // Host driver: distinct signed operands, non-uniform scale vectors, a
 // scalar reference computed in the SAME per-element order, EXACT compare,
 // and a liveness guard (an all-zero agreement proves the kernel never
@@ -195,6 +235,23 @@ TEST(XpuCoopEpilogueTests, verbsMatchScalarReferenceExactlyOnVulkan) {
     EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos) << err;
     EXPECT_EQ(err.find("[mma-epilogue]"), std::string::npos)
         << "the verbs must stay on the native tile:\n" << err;
+}
+
+// The same verbs on Vulkan from a @Device helper that takes the panels: a factor read off a panel
+// parameter is rooted on the caller's workgroup array once the helper inlines (kernel-drivers 8.3.2).
+TEST(XpuCoopEpilogueTests, verbsInAHelperTakingThePanelsMatchExactlyOnVulkan) {
+    if (!cajeta::xpu::test::vulkanAvailable()) GTEST_SKIP() << "no Vulkan device";
+    std::string src = std::string(PRE) +
+        "public final class D {\n" + KERNEL_HELPER + RUN + "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    testing::internal::CaptureStderr();
+    auto jit = CajetaJit::compile(src, "test.D", o);
+    auto fn = jit ? jit->lookup<int32_t (*)()>("run") : nullptr;
+    int32_t r = fn ? fn() : -2000;
+    std::string err = testing::internal::GetCapturedStderr();
+    EXPECT_EQ(r, 1) << "element " << (-r - 1) << " disagrees:\n" << err;
+    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos) << err;
 }
 
 // scaledAccumI32 with a WaveVector.ofLane column on Vulkan: iacc[r][c] =
