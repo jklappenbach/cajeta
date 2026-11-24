@@ -1,0 +1,18 @@
+package cajeta.xpu;
+
+/**
+ * Unroll: a `for` loop of a kernel written out at compile time.
+ *
+ *   for (int64 q = Unroll.from(0L); q < 8L; q = q + 1L) { ... }
+ *
+ * lowers the body once per iteration with `q` a constant in each copy, so a
+ * shift or an offset by `q` is a constant and no loop remains. The bounds and
+ * the update must be compile-time constants; a loop that is not is refused by
+ * name. `break` and `continue` are not allowed in the body. On the host the
+ * loop is an ordinary loop.
+ */
+public final class Unroll {
+    /** `start`, marking the loop whose counter it initializes for unrolling. */
+    @Device
+    public static int64 from(int64 start) { return start; }
+}

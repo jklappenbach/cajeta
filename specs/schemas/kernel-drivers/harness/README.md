@@ -8,3 +8,6 @@ or `DIFFERENT`.
 
     KERNELS=~/cajeta-ml/kernels UNIT_CJA=.../dev.cajeta.unit-0.3.6.cja CAJETA=.../cajeta ./build.sh nvptx TileBench
     CAJETA_XPU_BACKEND=nvptx out-nvptx/TileBench
+
+`Bench5` and `TileBench5` are the same two harnesses for Q5_K (plan 7.2 and 7.3), against
+`ref/RefX8Q5` (`q5kQ8X8RowsKernel`) and `ref/Q5Tile`. They need cajeta with `Unroll.from`.

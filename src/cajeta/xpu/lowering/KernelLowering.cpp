@@ -1838,6 +1838,28 @@ private:
     // False, having emitted nothing that matters, when the trip is not a
     // compile-time constant; the loop then lowers as a loop, and an index by
     // its counter is refused by name.
+    // The argument of `Unroll.from(start)` when `e` is that call, else null.
+    static ExpressionPtr unrollStart(const ExpressionPtr& e) {
+        auto mc = std::dynamic_pointer_cast<MethodCallExpression>(e);
+        if (!mc || mc->getMethodCallName() != "from" || mc->getParameters().size() != 1
+                || mc->getChildren().empty())
+            return nullptr;
+        auto id = std::dynamic_pointer_cast<IdentifierExpression>(mc->getChildren()[0]);
+        if (!id || id->getTextValue() != "Unroll") return nullptr;
+        return mc->getParameters()[0].expression;
+    }
+
+    // Whether `fs` declares its counter as `T i = Unroll.from(c)`.
+    static bool asksUnroll(const std::shared_ptr<ForStatement>& fs) {
+        auto lvd = std::dynamic_pointer_cast<LocalVariableDeclaration>(fs->getInit());
+        if (!lvd || lvd->getVariableDeclarators().size() != 1) return false;
+        auto vd = lvd->getVariableDeclarators().front();
+        if (!vd || !vd->getInitializer() || vd->getInitializer()->getChildren().empty())
+            return false;
+        return unrollStart(std::dynamic_pointer_cast<Expression>(
+                   vd->getInitializer()->getChildren()[0])) != nullptr;
+    }
+
     bool tryUnrollFor(const std::shared_ptr<ForStatement>& fs) {
         auto lvd = std::dynamic_pointer_cast<LocalVariableDeclaration>(fs->getInit());
         if (!lvd || lvd->getVariableDeclarators().size() != 1 || !fs->getCondition())
@@ -1852,6 +1874,7 @@ private:
         const bool sgn = typeIsSigned(lvd->getType());
         auto initExpr = std::dynamic_pointer_cast<Expression>(
             vd->getInitializer()->getChildren()[0]);
+        if (auto start = unrollStart(initExpr)) initExpr = start;
         auto asConst = [&](llvm::Value* v) -> llvm::Constant* {
             auto* c = llvm::dyn_cast<llvm::ConstantInt>(v);
             if (!c) return nullptr;
@@ -1910,6 +1933,12 @@ private:
     // for (init; cond; update) body Ã¢ÂÂ BB shape mirrors the host
     // (Statement.cpp): head(cond) / body / update / exit; continueÃ¢ÂÂupdate.
     void lowerFor(const std::shared_ptr<ForStatement>& fs) {
+        if (asksUnroll(fs)) {
+            if (!tryUnrollFor(fs))
+                unsupported("Unroll.from: the loop's start, bound or update is not a compile-time "
+                            "constant, so it cannot be written out");
+            return;
+        }
         if (((!fragmentArrays.empty() && usesFragmentArray(fs->getBody()))
                  || (!coopMatrixSlots.empty() && usesFragmentElements(fs->getBody())))
                 && tryUnrollFor(fs))
