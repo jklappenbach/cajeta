@@ -8,7 +8,7 @@ import cajeta.xpu.KernelThread;
 import cajeta.xpu.Vector;
 import cajeta.xpu.Wave;
 
-/** cajeta-llm's GPU Q8_0 and Q5_0 decode mat-vecs and their split row layout, lifted unchanged (llm 0730a8b). */
+/** cajeta-llm's GPU Q8_0, Q5_0 and Q4_0 decode mat-vecs and their split row layout, lifted unchanged (llm 0730a8b). */
 public final class RefWave32 {
     public RefWave32() { return; }
 
@@ -185,6 +185,58 @@ public final class RefWave32 {
         }
     }
 
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void q40Q8WaveMatVecKernel(KernelBuffer<float32> y,
+            KernelBuffer<int8> packed, KernelBuffer<int8> xp,
+            uint32 rows, int64 blocksPerRow, int64 yOff) {
+        // Wave-relative (xpu-kernel-adaptor Unit 9): the workgroup may carry
+        // several rows, one per wave, and the kernel is correct at any wave
+        // width; the literal 32 this assumed was one workgroup per row.
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 row = KernelThread.globalIdX() / wv;
+        int64 prefix = ((blocksPerRow * 2L + 3L) / 4L) * 4L;
+        int64 rowBytes = prefix + blocksPerRow * 16L;
+        float32 acc = 0.0f;
+        if (row < rows) {
+            int64 i = (int64) row;
+            Vector<int32,4> z4 = heap Vector<int32,4>(0, 0, 0, 0);
+            int64 wb = (int64) lane;
+            while (wb < blocksPerRow) {
+            int64 ro = i * rowBytes + prefix + wb * 16L;
+            float32 d = RefWave32.scaleAtDev(packed, i * rowBytes / 2L + wb);
+            Vector<int8,16> qs = packed.vload<16>(ro);
+            Vector<uint8,16> lo = (qs & 15).asUnsigned();
+            Vector<uint8,16> hi = ((qs >> 4) & 15).asUnsigned();
+            int64 ab = wb / 8L;
+            int64 xb = ab * 320L + (wb % 8L) * 32L;
+            Vector<int8,16> a0 = xp.vload<16>(xb);
+            Vector<int8,16> a1 = xp.vload<16>(xb + 16L);
+            Vector<uint8,16> ones = (lo ^ lo) | 1;
+            Vector<int32,4> t0 = lo.dotAccum(a0, z4);
+            Vector<int32,4> t1 = hi.dotAccum(a1, z4);
+            Vector<int32,4> s0 = ones.dotAccum(a0, z4);
+            Vector<int32,4> s1 = ones.dotAccum(a1, z4);
+            int32 dot = t0[0] + t0[1] + t0[2] + t0[3]
+                      + t1[0] + t1[1] + t1[2] + t1[3];
+            int32 asum = s0[0] + s0[1] + s0[2] + s0[3]
+                       + s1[0] + s1[1] + s1[2] + s1[3];
+            Vector<int8,4> dv = xp.vload<4>(ab * 320L + 288L);
+            float32 xs = Cajeta.bitsToF32(((int32) dv[0] & 255)
+                | (((int32) dv[1] & 255) << 8)
+                | (((int32) dv[2] & 255) << 16)
+                | (((int32) dv[3] & 255) << 24));
+            acc = acc + d * xs * (float32) (dot - 8 * asum);
+            wb = wb + (int64) wv;
+            }
+        }
+        float32 tot = Wave.reduceSumF32(acc);
+        if (lane == 0 && row < rows) {
+            y[yOff + (int64) row] = tot;
+        }
+    }
+
     /** llm's split of `rows` rows of `bpr` blocks of `bb` bytes with the f16 at byte 0: the row's scales first, padded to a word, then the payloads. */
     public static void split(int8[] raw, int64 rows, int64 bpr, int64 bb, int8[] out) {
         int64 pb = bb - 2L;
@@ -216,5 +268,10 @@ public final class RefWave32 {
     public static void run_q50(KernelBuffer<float32> y, KernelBuffer<int8> p, KernelBuffer<int8> xp, int64 rows, int64 nb, int64 wpb, int64 wv) {
         KernelStream s #= KernelStream.current();
         q50Q8WaveMatVecKernel.launch(s, grid: [(uint32) ((rows + wpb - 1L) / wpb)], block: [(uint32) (wpb * wv)])(y, p, xp, (uint32) rows, nb, 0L);
+    }
+
+    public static void run_q40(KernelBuffer<float32> y, KernelBuffer<int8> p, KernelBuffer<int8> xp, int64 rows, int64 nb, int64 wpb, int64 wv) {
+        KernelStream s #= KernelStream.current();
+        q40Q8WaveMatVecKernel.launch(s, grid: [(uint32) ((rows + wpb - 1L) / wpb)], block: [(uint32) (wpb * wv)])(y, p, xp, (uint32) rows, nb, 0L);
     }
 }
