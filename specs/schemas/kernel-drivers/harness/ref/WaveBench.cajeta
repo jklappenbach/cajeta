@@ -1,0 +1,776 @@
+package ref;
+
+import cajeta.lang.Cajeta;
+import cajeta.lang.String;
+import cajeta.lang.System;
+import cajeta.time.Clock;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.ml.kernels.gemm.BlockGemvWave;
+import dev.cajeta.ml.kernels.quant.Q2kBlock;
+import dev.cajeta.ml.kernels.quant.Q3kBlock;
+import dev.cajeta.ml.kernels.quant.Q4kBlock;
+import dev.cajeta.ml.kernels.quant.Q5kBlock;
+import dev.cajeta.ml.kernels.quant.Q6kBlock;
+
+/** kernel-drivers 9.1.4: the GPU decode driver's members against cajeta-llm's GPU decode kernels, every K format, on the same data. */
+public class WaveBench {
+    static int64 bitDiff(float32[] a, float32[] b, int64 n) {
+        int64 bad = 0L;
+        int64 i = 0L;
+        while (i < n) { if (Cajeta.f32ToBits(a[i]) != Cajeta.f32ToBits(b[i])) { bad = bad + 1L; } i = i + 1L; }
+        return bad;
+    }
+
+    static float64 normRel(float32[] a, float32[] b, int64 n) {
+        float64 m = 0.0;
+        float64 big = 0.0;
+        int64 i = 0L;
+        while (i < n) {
+            float64 d = (float64) a[i] - (float64) b[i];
+            if (d < 0.0) { d = 0.0 - d; }
+            float64 mag = (float64) a[i];
+            if (mag < 0.0) { mag = 0.0 - mag; }
+            if (d > m) { m = d; }
+            if (mag > big) { big = mag; }
+            i = i + 1L;
+        }
+        return m / (big + 1.0);
+    }
+
+    static int64 q4(int64 rows, int64 cols, int64 reps) {
+        int64 bpr = cols / 256L;
+        int8[] file #= Bench.weight(rows * bpr);
+        int8[] hx #= Bench.acts(bpr);
+        KernelBuffer<int8> wr = heap KernelBuffer<int8>((uint64) (rows * bpr * 144L));
+        wr.upload(file);
+        KernelBuffer<int8> wn = heap KernelBuffer<int8>((uint64) (rows * bpr * 144L));
+        wn.upload(file);
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (bpr * 320L));
+        xp.upload(hx);
+        KernelBuffer<float32> yr = heap KernelBuffer<float32>((uint64) rows);
+        KernelBuffer<float32> yn = heap KernelBuffer<float32>((uint64) rows);
+        int64 wv = (int64) Device.waveSize();
+        if (wv <= 0L) { wv = 32L; }
+        KernelStream s #= KernelStream.current();
+        float32[] gn #= heap float32[rows];
+        int64 bad = 0L;
+        float64 worst = 0.0;
+        int64 bestRef = 9000000000000L;
+        int64 bestDrv = 9000000000000L;
+        String bestRefName = "";
+        String bestDrvName = "";
+        float32[] gr0 #= heap float32[rows];
+        {
+            int64 waves = (rows + 4L - 1L) / 4L;
+            RefWave.run_q4kQ8WaveMatVecKernel(yr, wr, xp, (uint32) rows, bpr, waves, wv);
+            s.sync();
+            yr.download(gr0);
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { RefWave.run_q4kQ8WaveMatVecKernel(yr, wr, xp, (uint32) rows, bpr, waves, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestRef) { bestRef = best; bestRefName = "q4kQ8WaveMatVecKernel"; }
+        }
+        float32[] gr1 #= heap float32[rows];
+        {
+            int64 waves = (rows + 4L - 1L) / 4L;
+            RefWave.run_q4kQ8WavePfMatVecKernel(yr, wr, xp, (uint32) rows, bpr, waves, wv);
+            s.sync();
+            yr.download(gr1);
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { RefWave.run_q4kQ8WavePfMatVecKernel(yr, wr, xp, (uint32) rows, bpr, waves, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestRef) { bestRef = best; bestRefName = "q4kQ8WavePfMatVecKernel"; }
+        }
+        float32[] gr2 #= heap float32[rows];
+        {
+            int64 waves = (rows + 2L - 1L) / 2L;
+            RefWave.run_q4kQ8WavePf2MatVecKernel(yr, wr, xp, (uint32) rows, bpr, waves, wv);
+            s.sync();
+            yr.download(gr2);
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { RefWave.run_q4kQ8WavePf2MatVecKernel(yr, wr, xp, (uint32) rows, bpr, waves, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestRef) { bestRef = best; bestRefName = "q4kQ8WavePf2MatVecKernel"; }
+        }
+        float32[] gr3 #= heap float32[rows];
+        {
+            int64 waves = (rows + 1L - 1L) / 1L;
+            RefWave.run_q4kQ8WavePf1MatVecKernel(yr, wr, xp, (uint32) rows, bpr, waves, wv);
+            s.sync();
+            yr.download(gr3);
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { RefWave.run_q4kQ8WavePf1MatVecKernel(yr, wr, xp, (uint32) rows, bpr, waves, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestRef) { bestRef = best; bestRefName = "q4kQ8WavePf1MatVecKernel"; }
+        }
+        {
+            BlockGemvWave<Q4kBlock, 1, 0> d = heap BlockGemvWave<Q4kBlock, 1, 0>();
+            d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv);
+            s.sync();
+            yn.download(gn);
+            float64 rel = WaveBench.normRel(gr0, gn, rows);
+            if (rel > 0.000001) { bad = bad + 1L; System.stdout.println("Q4_K " + rows + "x" + cols + " <1,0> normRel " + rel); }
+            if (rel > worst) { worst = rel; }
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestDrv) { bestDrv = best; bestDrvName = "<1,0>"; }
+        }
+        {
+            BlockGemvWave<Q4kBlock, 2, 0> d = heap BlockGemvWave<Q4kBlock, 2, 0>();
+            d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv);
+            s.sync();
+            yn.download(gn);
+            float64 rel = WaveBench.normRel(gr0, gn, rows);
+            if (rel > 0.000001) { bad = bad + 1L; System.stdout.println("Q4_K " + rows + "x" + cols + " <2,0> normRel " + rel); }
+            if (rel > worst) { worst = rel; }
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestDrv) { bestDrv = best; bestDrvName = "<2,0>"; }
+        }
+        {
+            BlockGemvWave<Q4kBlock, 4, 0> d = heap BlockGemvWave<Q4kBlock, 4, 0>();
+            d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv);
+            s.sync();
+            yn.download(gn);
+            if (WaveBench.bitDiff(gr0, gn, rows) != 0L) { bad = bad + 1L; System.stdout.println("Q4_K " + rows + "x" + cols + " <4,0> not bit-equal to q4kQ8WaveMatVecKernel"); }
+            float64 rel = WaveBench.normRel(gr0, gn, rows);
+            if (rel > 0.000001) { bad = bad + 1L; System.stdout.println("Q4_K " + rows + "x" + cols + " <4,0> normRel " + rel); }
+            if (rel > worst) { worst = rel; }
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestDrv) { bestDrv = best; bestDrvName = "<4,0>"; }
+        }
+        {
+            BlockGemvWave<Q4kBlock, 1, 1> d = heap BlockGemvWave<Q4kBlock, 1, 1>();
+            d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv);
+            s.sync();
+            yn.download(gn);
+            if (WaveBench.bitDiff(gr3, gn, rows) != 0L) { bad = bad + 1L; System.stdout.println("Q4_K " + rows + "x" + cols + " <1,1> not bit-equal to q4kQ8WavePf1MatVecKernel"); }
+            float64 rel = WaveBench.normRel(gr0, gn, rows);
+            if (rel > 0.000001) { bad = bad + 1L; System.stdout.println("Q4_K " + rows + "x" + cols + " <1,1> normRel " + rel); }
+            if (rel > worst) { worst = rel; }
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestDrv) { bestDrv = best; bestDrvName = "<1,1>"; }
+        }
+        {
+            BlockGemvWave<Q4kBlock, 2, 1> d = heap BlockGemvWave<Q4kBlock, 2, 1>();
+            d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv);
+            s.sync();
+            yn.download(gn);
+            if (WaveBench.bitDiff(gr2, gn, rows) != 0L) { bad = bad + 1L; System.stdout.println("Q4_K " + rows + "x" + cols + " <2,1> not bit-equal to q4kQ8WavePf2MatVecKernel"); }
+            float64 rel = WaveBench.normRel(gr0, gn, rows);
+            if (rel > 0.000001) { bad = bad + 1L; System.stdout.println("Q4_K " + rows + "x" + cols + " <2,1> normRel " + rel); }
+            if (rel > worst) { worst = rel; }
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestDrv) { bestDrv = best; bestDrvName = "<2,1>"; }
+        }
+        {
+            BlockGemvWave<Q4kBlock, 4, 1> d = heap BlockGemvWave<Q4kBlock, 4, 1>();
+            d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv);
+            s.sync();
+            yn.download(gn);
+            if (WaveBench.bitDiff(gr1, gn, rows) != 0L) { bad = bad + 1L; System.stdout.println("Q4_K " + rows + "x" + cols + " <4,1> not bit-equal to q4kQ8WavePfMatVecKernel"); }
+            float64 rel = WaveBench.normRel(gr0, gn, rows);
+            if (rel > 0.000001) { bad = bad + 1L; System.stdout.println("Q4_K " + rows + "x" + cols + " <4,1> normRel " + rel); }
+            if (rel > worst) { worst = rel; }
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestDrv) { bestDrv = best; bestDrvName = "<4,1>"; }
+        }
+        System.stdout.println("Q4_K " + rows + "x" + cols + " llm " + bestRefName + " " + bestRef + " ns  drv " + bestDrvName + " " + bestDrv
+            + " ns  ratio_pct " + (bestDrv * 100L / bestRef) + "  worst normRel " + worst);
+        return bad;
+    }
+
+    static int64 q5(int64 rows, int64 cols, int64 reps) {
+        int64 bpr = cols / 256L;
+        int8[] file #= Bench5.weight(rows * bpr);
+        int8[] hx #= Bench5.acts(bpr);
+        KernelBuffer<int8> wr = heap KernelBuffer<int8>((uint64) (rows * bpr * 176L));
+        wr.upload(file);
+        KernelBuffer<int8> wn = heap KernelBuffer<int8>((uint64) (rows * bpr * 176L));
+        wn.upload(file);
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (bpr * 320L));
+        xp.upload(hx);
+        KernelBuffer<float32> yr = heap KernelBuffer<float32>((uint64) rows);
+        KernelBuffer<float32> yn = heap KernelBuffer<float32>((uint64) rows);
+        int64 wv = (int64) Device.waveSize();
+        if (wv <= 0L) { wv = 32L; }
+        KernelStream s #= KernelStream.current();
+        float32[] gn #= heap float32[rows];
+        int64 bad = 0L;
+        float64 worst = 0.0;
+        int64 bestRef = 9000000000000L;
+        int64 bestDrv = 9000000000000L;
+        String bestRefName = "";
+        String bestDrvName = "";
+        float32[] gr0 #= heap float32[rows];
+        {
+            int64 waves = (rows + 1L - 1L) / 1L;
+            RefWave.run_q5kQ8WaveMatVecKernel(yr, wr, xp, (uint32) rows, bpr, waves, wv);
+            s.sync();
+            yr.download(gr0);
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { RefWave.run_q5kQ8WaveMatVecKernel(yr, wr, xp, (uint32) rows, bpr, waves, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestRef) { bestRef = best; bestRefName = "q5kQ8WaveMatVecKernel"; }
+        }
+        {
+            BlockGemvWave<Q5kBlock, 1, 0> d = heap BlockGemvWave<Q5kBlock, 1, 0>();
+            d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv);
+            s.sync();
+            yn.download(gn);
+            if (WaveBench.bitDiff(gr0, gn, rows) != 0L) { bad = bad + 1L; System.stdout.println("Q5_K " + rows + "x" + cols + " <1,0> not bit-equal to q5kQ8WaveMatVecKernel"); }
+            float64 rel = WaveBench.normRel(gr0, gn, rows);
+            if (rel > 0.000001) { bad = bad + 1L; System.stdout.println("Q5_K " + rows + "x" + cols + " <1,0> normRel " + rel); }
+            if (rel > worst) { worst = rel; }
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestDrv) { bestDrv = best; bestDrvName = "<1,0>"; }
+        }
+        {
+            BlockGemvWave<Q5kBlock, 2, 0> d = heap BlockGemvWave<Q5kBlock, 2, 0>();
+            d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv);
+            s.sync();
+            yn.download(gn);
+            float64 rel = WaveBench.normRel(gr0, gn, rows);
+            if (rel > 0.000001) { bad = bad + 1L; System.stdout.println("Q5_K " + rows + "x" + cols + " <2,0> normRel " + rel); }
+            if (rel > worst) { worst = rel; }
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestDrv) { bestDrv = best; bestDrvName = "<2,0>"; }
+        }
+        {
+            BlockGemvWave<Q5kBlock, 4, 0> d = heap BlockGemvWave<Q5kBlock, 4, 0>();
+            d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv);
+            s.sync();
+            yn.download(gn);
+            float64 rel = WaveBench.normRel(gr0, gn, rows);
+            if (rel > 0.000001) { bad = bad + 1L; System.stdout.println("Q5_K " + rows + "x" + cols + " <4,0> normRel " + rel); }
+            if (rel > worst) { worst = rel; }
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestDrv) { bestDrv = best; bestDrvName = "<4,0>"; }
+        }
+        System.stdout.println("Q5_K " + rows + "x" + cols + " llm " + bestRefName + " " + bestRef + " ns  drv " + bestDrvName + " " + bestDrv
+            + " ns  ratio_pct " + (bestDrv * 100L / bestRef) + "  worst normRel " + worst);
+        return bad;
+    }
+
+    static int64 q6(int64 rows, int64 cols, int64 reps) {
+        int64 bpr = cols / 256L;
+        int8[] file #= Bench6.weight(rows * bpr);
+        int8[] hx #= Bench6.acts(bpr);
+        int64 prefix = ((bpr * 2L + 3L) / 4L) * 4L;
+        int64 resRow = prefix + bpr * 208L;
+        int8[] res #= heap int8[rows * resRow];
+        int64 rr = 0L;
+        while (rr < rows) {
+            int64 bq = 0L;
+            while (bq < bpr) {
+                int64 ro = (rr * bpr + bq) * 210L;
+                res[rr * resRow + bq * 2L] = file[ro + 208L];
+                res[rr * resRow + bq * 2L + 1L] = file[ro + 209L];
+                int64 kk = 0L;
+                while (kk < 208L) { res[rr * resRow + prefix + bq * 208L + kk] = file[ro + kk]; kk = kk + 1L; }
+                bq = bq + 1L;
+            }
+            rr = rr + 1L;
+        }
+        KernelBuffer<int8> wr = heap KernelBuffer<int8>((uint64) (rows * resRow));
+        wr.upload(res);
+        KernelBuffer<int8> wn = heap KernelBuffer<int8>((uint64) (rows * bpr * 210L));
+        wn.upload(file);
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (bpr * 320L));
+        xp.upload(hx);
+        KernelBuffer<float32> yr = heap KernelBuffer<float32>((uint64) rows);
+        KernelBuffer<float32> yn = heap KernelBuffer<float32>((uint64) rows);
+        int64 wv = (int64) Device.waveSize();
+        if (wv <= 0L) { wv = 32L; }
+        KernelStream s #= KernelStream.current();
+        float32[] gn #= heap float32[rows];
+        int64 bad = 0L;
+        float64 worst = 0.0;
+        int64 bestRef = 9000000000000L;
+        int64 bestDrv = 9000000000000L;
+        String bestRefName = "";
+        String bestDrvName = "";
+        float32[] gr0 #= heap float32[rows];
+        {
+            int64 waves = (rows + 4L - 1L) / 4L;
+            RefWave.run_q6kQ8WaveMatVecKernel(yr, wr, xp, (uint32) rows, bpr, waves, wv);
+            s.sync();
+            yr.download(gr0);
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { RefWave.run_q6kQ8WaveMatVecKernel(yr, wr, xp, (uint32) rows, bpr, waves, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestRef) { bestRef = best; bestRefName = "q6kQ8WaveMatVecKernel"; }
+        }
+        {
+            BlockGemvWave<Q6kBlock, 1, 0> d = heap BlockGemvWave<Q6kBlock, 1, 0>();
+            d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv);
+            s.sync();
+            yn.download(gn);
+            float64 rel = WaveBench.normRel(gr0, gn, rows);
+            if (rel > 0.000001) { bad = bad + 1L; System.stdout.println("Q6_K " + rows + "x" + cols + " <1,0> normRel " + rel); }
+            if (rel > worst) { worst = rel; }
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestDrv) { bestDrv = best; bestDrvName = "<1,0>"; }
+        }
+        {
+            BlockGemvWave<Q6kBlock, 2, 0> d = heap BlockGemvWave<Q6kBlock, 2, 0>();
+            d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv);
+            s.sync();
+            yn.download(gn);
+            float64 rel = WaveBench.normRel(gr0, gn, rows);
+            if (rel > 0.000001) { bad = bad + 1L; System.stdout.println("Q6_K " + rows + "x" + cols + " <2,0> normRel " + rel); }
+            if (rel > worst) { worst = rel; }
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestDrv) { bestDrv = best; bestDrvName = "<2,0>"; }
+        }
+        {
+            BlockGemvWave<Q6kBlock, 4, 0> d = heap BlockGemvWave<Q6kBlock, 4, 0>();
+            d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv);
+            s.sync();
+            yn.download(gn);
+            float64 rel = WaveBench.normRel(gr0, gn, rows);
+            if (rel > 0.000001) { bad = bad + 1L; System.stdout.println("Q6_K " + rows + "x" + cols + " <4,0> normRel " + rel); }
+            if (rel > worst) { worst = rel; }
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestDrv) { bestDrv = best; bestDrvName = "<4,0>"; }
+        }
+        System.stdout.println("Q6_K " + rows + "x" + cols + " llm " + bestRefName + " " + bestRef + " ns  drv " + bestDrvName + " " + bestDrv
+            + " ns  ratio_pct " + (bestDrv * 100L / bestRef) + "  worst normRel " + worst);
+        return bad;
+    }
+
+    static int64 q3(int64 rows, int64 cols, int64 reps) {
+        int64 bpr = cols / 256L;
+        int8[] file #= Bench3.weight(rows * bpr);
+        int8[] hx #= Bench3.acts(bpr);
+        int64 prefix = ((bpr * 2L + 3L) / 4L) * 4L;
+        int64 resRow = prefix + bpr * 108L;
+        int8[] res #= heap int8[rows * resRow];
+        int64 rr = 0L;
+        while (rr < rows) {
+            int64 bq = 0L;
+            while (bq < bpr) {
+                int64 ro = (rr * bpr + bq) * 110L;
+                res[rr * resRow + bq * 2L] = file[ro + 108L];
+                res[rr * resRow + bq * 2L + 1L] = file[ro + 109L];
+                int64 kk = 0L;
+                while (kk < 108L) { res[rr * resRow + prefix + bq * 108L + kk] = file[ro + kk]; kk = kk + 1L; }
+                bq = bq + 1L;
+            }
+            rr = rr + 1L;
+        }
+        KernelBuffer<int8> wr = heap KernelBuffer<int8>((uint64) (rows * resRow));
+        wr.upload(res);
+        KernelBuffer<int8> wn = heap KernelBuffer<int8>((uint64) (rows * bpr * 110L));
+        wn.upload(file);
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (bpr * 320L));
+        xp.upload(hx);
+        KernelBuffer<float32> yr = heap KernelBuffer<float32>((uint64) rows);
+        KernelBuffer<float32> yn = heap KernelBuffer<float32>((uint64) rows);
+        int64 wv = (int64) Device.waveSize();
+        if (wv <= 0L) { wv = 32L; }
+        KernelStream s #= KernelStream.current();
+        float32[] gn #= heap float32[rows];
+        int64 bad = 0L;
+        float64 worst = 0.0;
+        int64 bestRef = 9000000000000L;
+        int64 bestDrv = 9000000000000L;
+        String bestRefName = "";
+        String bestDrvName = "";
+        float32[] gr0 #= heap float32[rows];
+        {
+            int64 waves = (rows + 1L - 1L) / 1L;
+            RefWave.run_q3kQ8WaveMatVecKernel(yr, wr, xp, (uint32) rows, bpr, waves, wv);
+            s.sync();
+            yr.download(gr0);
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { RefWave.run_q3kQ8WaveMatVecKernel(yr, wr, xp, (uint32) rows, bpr, waves, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestRef) { bestRef = best; bestRefName = "q3kQ8WaveMatVecKernel"; }
+        }
+        {
+            BlockGemvWave<Q3kBlock, 1, 0> d = heap BlockGemvWave<Q3kBlock, 1, 0>();
+            d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv);
+            s.sync();
+            yn.download(gn);
+            float64 rel = WaveBench.normRel(gr0, gn, rows);
+            if (rel > 0.000001) { bad = bad + 1L; System.stdout.println("Q3_K " + rows + "x" + cols + " <1,0> normRel " + rel); }
+            if (rel > worst) { worst = rel; }
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestDrv) { bestDrv = best; bestDrvName = "<1,0>"; }
+        }
+        {
+            BlockGemvWave<Q3kBlock, 2, 0> d = heap BlockGemvWave<Q3kBlock, 2, 0>();
+            d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv);
+            s.sync();
+            yn.download(gn);
+            float64 rel = WaveBench.normRel(gr0, gn, rows);
+            if (rel > 0.000001) { bad = bad + 1L; System.stdout.println("Q3_K " + rows + "x" + cols + " <2,0> normRel " + rel); }
+            if (rel > worst) { worst = rel; }
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestDrv) { bestDrv = best; bestDrvName = "<2,0>"; }
+        }
+        {
+            BlockGemvWave<Q3kBlock, 4, 0> d = heap BlockGemvWave<Q3kBlock, 4, 0>();
+            d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv);
+            s.sync();
+            yn.download(gn);
+            float64 rel = WaveBench.normRel(gr0, gn, rows);
+            if (rel > 0.000001) { bad = bad + 1L; System.stdout.println("Q3_K " + rows + "x" + cols + " <4,0> normRel " + rel); }
+            if (rel > worst) { worst = rel; }
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestDrv) { bestDrv = best; bestDrvName = "<4,0>"; }
+        }
+        System.stdout.println("Q3_K " + rows + "x" + cols + " llm " + bestRefName + " " + bestRef + " ns  drv " + bestDrvName + " " + bestDrv
+            + " ns  ratio_pct " + (bestDrv * 100L / bestRef) + "  worst normRel " + worst);
+        return bad;
+    }
+
+    static int64 q2(int64 rows, int64 cols, int64 reps) {
+        int64 bpr = cols / 256L;
+        int8[] file #= Bench2.weight(rows * bpr);
+        int8[] hx #= Bench2.acts(bpr);
+        KernelBuffer<int8> wr = heap KernelBuffer<int8>((uint64) (rows * bpr * 84L));
+        wr.upload(file);
+        KernelBuffer<int8> wn = heap KernelBuffer<int8>((uint64) (rows * bpr * 84L));
+        wn.upload(file);
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (bpr * 320L));
+        xp.upload(hx);
+        KernelBuffer<float32> yr = heap KernelBuffer<float32>((uint64) rows);
+        KernelBuffer<float32> yn = heap KernelBuffer<float32>((uint64) rows);
+        int64 wv = (int64) Device.waveSize();
+        if (wv <= 0L) { wv = 32L; }
+        KernelStream s #= KernelStream.current();
+        float32[] gn #= heap float32[rows];
+        int64 bad = 0L;
+        float64 worst = 0.0;
+        int64 bestRef = 9000000000000L;
+        int64 bestDrv = 9000000000000L;
+        String bestRefName = "";
+        String bestDrvName = "";
+        float32[] gr0 #= heap float32[rows];
+        {
+            int64 waves = (rows + 1L - 1L) / 1L;
+            RefWave.run_q2kQ8WaveMatVecKernel(yr, wr, xp, (uint32) rows, bpr, waves, wv);
+            s.sync();
+            yr.download(gr0);
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { RefWave.run_q2kQ8WaveMatVecKernel(yr, wr, xp, (uint32) rows, bpr, waves, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestRef) { bestRef = best; bestRefName = "q2kQ8WaveMatVecKernel"; }
+        }
+        {
+            BlockGemvWave<Q2kBlock, 1, 0> d = heap BlockGemvWave<Q2kBlock, 1, 0>();
+            d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv);
+            s.sync();
+            yn.download(gn);
+            float64 rel = WaveBench.normRel(gr0, gn, rows);
+            if (rel > 0.000001) { bad = bad + 1L; System.stdout.println("Q2_K " + rows + "x" + cols + " <1,0> normRel " + rel); }
+            if (rel > worst) { worst = rel; }
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestDrv) { bestDrv = best; bestDrvName = "<1,0>"; }
+        }
+        {
+            BlockGemvWave<Q2kBlock, 2, 0> d = heap BlockGemvWave<Q2kBlock, 2, 0>();
+            d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv);
+            s.sync();
+            yn.download(gn);
+            float64 rel = WaveBench.normRel(gr0, gn, rows);
+            if (rel > 0.000001) { bad = bad + 1L; System.stdout.println("Q2_K " + rows + "x" + cols + " <2,0> normRel " + rel); }
+            if (rel > worst) { worst = rel; }
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestDrv) { bestDrv = best; bestDrvName = "<2,0>"; }
+        }
+        {
+            BlockGemvWave<Q2kBlock, 4, 0> d = heap BlockGemvWave<Q2kBlock, 4, 0>();
+            d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv);
+            s.sync();
+            yn.download(gn);
+            float64 rel = WaveBench.normRel(gr0, gn, rows);
+            if (rel > 0.000001) { bad = bad + 1L; System.stdout.println("Q2_K " + rows + "x" + cols + " <4,0> normRel " + rel); }
+            if (rel > worst) { worst = rel; }
+            int64 best = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { d.runOn(s, yn, wn, xp, rows, cols, 0L, false, 1L, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best) { best = (t1 - t0) / reps; }
+                round = round + 1L;
+            }
+            if (best < bestDrv) { bestDrv = best; bestDrvName = "<4,0>"; }
+        }
+        System.stdout.println("Q2_K " + rows + "x" + cols + " llm " + bestRefName + " " + bestRef + " ns  drv " + bestDrvName + " " + bestDrv
+            + " ns  ratio_pct " + (bestDrv * 100L / bestRef) + "  worst normRel " + worst);
+        return bad;
+    }
+
+    public static int32 main() {
+        int64 bad = 0L;
+        int64[] rs #= heap int64[9];
+        int64[] cs #= heap int64[9];
+        rs[0] = 1024L; cs[0] = 4096L;
+        rs[1] = 4096L; cs[1] = 4096L;
+        rs[2] = 14336L; cs[2] = 4096L;
+        rs[3] = 4096L; cs[3] = 14336L;
+        rs[4] = 1024L; cs[4] = 2560L;
+        rs[5] = 2048L; cs[5] = 2560L;
+        rs[6] = 2560L; cs[6] = 2048L;
+        rs[7] = 10240L; cs[7] = 2560L;
+        rs[8] = 2560L; cs[8] = 10240L;
+        int64 i = 0L;
+        bad = bad + WaveBench.q4(37L, 2304L, 2L);
+        i = 0L;
+        while (i < 9L) { bad = bad + WaveBench.q4(rs[i], cs[i], 50L); i = i + 1L; }
+        bad = bad + WaveBench.q5(37L, 2304L, 2L);
+        i = 0L;
+        while (i < 9L) { bad = bad + WaveBench.q5(rs[i], cs[i], 50L); i = i + 1L; }
+        bad = bad + WaveBench.q6(37L, 2304L, 2L);
+        i = 0L;
+        while (i < 9L) { bad = bad + WaveBench.q6(rs[i], cs[i], 50L); i = i + 1L; }
+        bad = bad + WaveBench.q3(37L, 2304L, 2L);
+        i = 0L;
+        while (i < 9L) { bad = bad + WaveBench.q3(rs[i], cs[i], 50L); i = i + 1L; }
+        bad = bad + WaveBench.q2(37L, 2304L, 2L);
+        i = 0L;
+        while (i < 9L) { bad = bad + WaveBench.q2(rs[i], cs[i], 50L); i = i + 1L; }
+        System.stdout.println(bad == 0L ? "ALL WITHIN" : "OUTSIDE");
+        return bad == 0L ? 0 : 1;
+    }
+}
