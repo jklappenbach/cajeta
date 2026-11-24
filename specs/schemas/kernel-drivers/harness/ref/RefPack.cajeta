@@ -226,4 +226,107 @@ public final class RefPack {
         }
     }
 
+    static int32 u8(int8[] raw, int64 at) { return (int32) raw[at] & 255; }
+
+    static float32 f16At(int8[] raw, int64 at) { return RefPack.halfBitsToF32(RefPack.u8(raw, at) | (RefPack.u8(raw, at + 1L) << 8)); }
+
+    /** The 16 signed 6-bit scales of the Q3_K block at `raw[ro..)`, each already minus 32. */
+    static void q3kScales(int8[] raw, int64 ro, int32[] sc) {
+        int32 k = 0;
+        while (k < 8) {
+            int32 b0 = RefPack.u8(raw, ro + (int64) (96 + k));
+            sc[k] = b0 & 15;
+            sc[k + 8] = b0 >> 4;
+            k = k + 1;
+        }
+        k = 0;
+        while (k < 16) {
+            int32 hb = RefPack.u8(raw, ro + (int64) (104 + (k & 3)));
+            sc[k] = (sc[k] | (((hb >> (2 * (k / 4))) & 3) << 4)) - 32;
+            k = k + 1;
+        }
+    }
+
+    /** Bytes of {@link #q3kInterleave8}'s layout for `rows` Q3_K rows of `bpr` blocks. */
+    public static int64 q3kInterleave8Bytes(int64 rows, int64 bpr) {
+        return ((rows + 7L) / 8L) * bpr * 928L;
+    }
+
+    /** Q3_K rows (file layout) in groups of eight, each block of a group in 928 bytes: d of the eight rows as f32,
+     *  the 16 scales minus 32 at `32 + 8*sb + r`, the qs quads at `160 + 32*Q + 4r` and the hmask quads at
+     *  `672 + 32*q + 4r`. Rows past `rows` are zero. */
+    public static void q3kInterleave8(int8[] packed, int64 srcOff, int64 rows, int64 bpr,
+            int8[] out, int64 outOff) {
+        int64 n = ((rows + 7L) / 8L) * bpr * 928L;
+        if (rows % 8L != 0L) {
+            int64 z = 0;
+            while (z < n) { out[outOff + z] = (int8) 0; z = z + 1; }
+        }
+        int32[] sc #= heap int32[16];
+        int64 r = 0;
+        while (r < rows) {
+            int64 g8 = r / 8L;
+            int64 lane = r % 8L;
+            int64 b = 0;
+            while (b < bpr) {
+                int64 ro = srcOff + (r * bpr + b) * 110L;
+                int64 wo = outOff + (g8 * bpr + b) * 928L;
+                RefPack.putF32(out, wo + lane * 4L, RefPack.f16At(packed, ro + 108L));
+                RefPack.q3kScales(packed, ro, sc);
+                int64 sb = 0;
+                while (sb < 16L) { out[wo + 32L + 8L * sb + lane] = (int8) sc[sb]; sb = sb + 1L; }
+                int64 k = 0;
+                while (k < 64L) {
+                    out[wo + 160L + 32L * (k / 4L) + 4L * lane + k % 4L] = packed[ro + 32L + k];
+                    k = k + 1L;
+                }
+                k = 0;
+                while (k < 32L) {
+                    out[wo + 672L + 32L * (k / 4L) + 4L * lane + k % 4L] = packed[ro + k];
+                    k = k + 1L;
+                }
+                b = b + 1L;
+            }
+            r = r + 1L;
+        }
+    }
+
+    /** Bytes of {@link #q2kInterleave8}'s layout for `rows` Q2_K rows of `bpr` blocks. */
+    public static int64 q2kInterleave8Bytes(int64 rows, int64 bpr) {
+        return ((rows + 7L) / 8L) * bpr * 704L;
+    }
+
+    /** Q2_K rows (file layout) in groups of eight, each block of a group in 704 bytes: d and dmin of the eight rows
+     *  as f32, the scale-and-min bytes at `64 + 8*sb + r`, the qs quads at `192 + 32*Q + 4r`. Rows past `rows` are
+     *  zero. */
+    public static void q2kInterleave8(int8[] packed, int64 srcOff, int64 rows, int64 bpr,
+            int8[] out, int64 outOff) {
+        int64 n = ((rows + 7L) / 8L) * bpr * 704L;
+        if (rows % 8L != 0L) {
+            int64 z = 0;
+            while (z < n) { out[outOff + z] = (int8) 0; z = z + 1; }
+        }
+        int64 r = 0;
+        while (r < rows) {
+            int64 g8 = r / 8L;
+            int64 lane = r % 8L;
+            int64 b = 0;
+            while (b < bpr) {
+                int64 ro = srcOff + (r * bpr + b) * 84L;
+                int64 wo = outOff + (g8 * bpr + b) * 704L;
+                RefPack.putF32(out, wo + lane * 4L, RefPack.f16At(packed, ro + 80L));
+                RefPack.putF32(out, wo + 32L + lane * 4L, RefPack.f16At(packed, ro + 82L));
+                int64 sb = 0;
+                while (sb < 16L) { out[wo + 64L + 8L * sb + lane] = packed[ro + sb]; sb = sb + 1L; }
+                int64 k = 0;
+                while (k < 64L) {
+                    out[wo + 192L + 32L * (k / 4L) + 4L * lane + k % 4L] = packed[ro + 16L + k];
+                    k = k + 1L;
+                }
+                b = b + 1L;
+            }
+            r = r + 1L;
+        }
+    }
+
 }

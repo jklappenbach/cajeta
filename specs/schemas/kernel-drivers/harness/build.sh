@@ -1,6 +1,6 @@
 #!/bin/bash
 # kernel-drivers gate harness: the lifted cajeta-llm reference kernels and ml.kernels' drivers on the same data.
-#   build.sh <backend> <entry>     backend: cpu | amdgpu | vulkan | nvptx     entry: Bench, Bench5, Bench6 (cpu rows) | TileBench, TileBench5, TileBench6 (GPU tiles)
+#   build.sh <backend> <entry>     backend: cpu | amdgpu | vulkan | nvptx     entry: Bench, Bench2, Bench3, Bench5, Bench6 (cpu rows) | TileBench and the same numbers (GPU tiles)
 #   CAJETA   compiler (cajeta 814f92e52 or later)
 #   KERNELS  cajeta-ml checkout's kernels/ on branch kernel-drivers
 #   UNIT_CJA dev.cajeta.unit archive

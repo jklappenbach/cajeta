@@ -1,0 +1,122 @@
+package ref;
+
+import cajeta.lang.Cajeta;
+import cajeta.lang.System;
+import cajeta.time.Clock;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.ml.kernels.gemm.BlockGemmTile;
+import dev.cajeta.ml.kernels.quant.Q3kBlock;
+
+/** kernel-drivers 8.2: the GPU tile driver over the Q3_K pieces and the lifted Q3Tile on the same data. */
+public class TileBench3 {
+    static int64 compare(float32[] a, float32[] b, int64 n) {
+        int64 bad = 0L;
+        int64 i = 0L;
+        while (i < n) { if (Cajeta.f32ToBits(a[i]) != Cajeta.f32ToBits(b[i])) { bad = bad + 1L; } i = i + 1L; }
+        return bad;
+    }
+
+    static int64 shape(int64 tokens, int64 outDim, int64 cols, int64 reps) {
+        int64 bpr = cols / 256L;
+        int8[] file #= Bench3.weight(outDim * bpr);
+        int8[] hx #= Bench3.acts(tokens * bpr);
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) (outDim * bpr * 110L));
+        int64 prefix = ((bpr * 2L + 3L) / 4L) * 4L;
+        int64 resRow = prefix + bpr * 108L;
+        int8[] res #= heap int8[outDim * resRow];
+        int64 rr = 0L;
+        while (rr < outDim) {
+            int64 bb = 0L;
+            while (bb < bpr) {
+                int64 ro = (rr * bpr + bb) * 110L;
+                res[rr * resRow + bb * 2L] = file[ro + 108L];
+                res[rr * resRow + bb * 2L + 1L] = file[ro + 109L];
+                int64 kk = 0L;
+                while (kk < 108L) { res[rr * resRow + prefix + bb * 108L + kk] = file[ro + kk]; kk = kk + 1L; }
+                bb = bb + 1L;
+            }
+            rr = rr + 1L;
+        }
+        KernelBuffer<int8> wres = heap KernelBuffer<int8>((uint64) (outDim * resRow));
+        wres.upload(res);
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (tokens * bpr * 320L));
+        KernelBuffer<float32> yr = heap KernelBuffer<float32>((uint64) (tokens * outDim));
+        KernelBuffer<float32> yn = heap KernelBuffer<float32>((uint64) (tokens * outDim));
+        KernelBuffer<float32> part = heap KernelBuffer<float32>((uint64) 16L);
+        w.upload(file);
+        xp.upload(hx);
+        float32[] seed #= heap float32[tokens * outDim];
+        int64 i = 0L;
+        while (i < tokens * outDim) { seed[i] = 0.25f * (float32) (i % 7L); i = i + 1L; }
+        float32[] gr #= heap float32[tokens * outDim];
+        float32[] gn #= heap float32[tokens * outDim];
+        Q3Tile<64, 64, 32, 32, 128> r64 = heap Q3Tile<64, 64, 32, 32, 128>();
+        Q3Tile<128, 128, 32, 64, 128> r128 = heap Q3Tile<128, 128, 32, 64, 128>();
+        BlockGemmTile<Q3kBlock, 64, 64, 32, 32, 128> d64 = heap BlockGemmTile<Q3kBlock, 64, 64, 32, 32, 128>();
+        BlockGemmTile<Q3kBlock, 128, 128, 32, 64, 128> d128 = heap BlockGemmTile<Q3kBlock, 128, 128, 32, 64, 128>();
+        KernelStream s #= KernelStream.current();
+        int64 bad = 0L;
+        int32 members = Device.kernelUsable("Q3Tile_128_128_32_64_128_q3kQ8") ? 2 : 1;
+        int32 big = 0;
+        while (big < members) {
+            uint32 ac = 0;
+            while (ac < 2) {
+                yr.upload(seed);
+                yn.upload(seed);
+                if (big == 0) {
+                    r64.launchAs(yr, wres, xp, tokens, outDim, cols, part, 1L, ac);
+                    d64.runOn(s, yn, w, xp, tokens, outDim, cols, part, 1L, ac);
+                } else {
+                    r128.launchAs(yr, wres, xp, tokens, outDim, cols, part, 1L, ac);
+                    d128.runOn(s, yn, w, xp, tokens, outDim, cols, part, 1L, ac);
+                }
+                s.sync();
+                yr.download(gr);
+                yn.download(gn);
+                bad = bad + TileBench3.compare(gr, gn, tokens * outDim);
+                ac = ac + 1;
+            }
+            int64 bestR = 9000000000000L;
+            int64 bestN = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) {
+                    if (big == 0) { r64.launchAs(yr, wres, xp, tokens, outDim, cols, part, 1L, 0); } else { r128.launchAs(yr, wres, xp, tokens, outDim, cols, part, 1L, 0); }
+                    k = k + 1L;
+                }
+                s.sync();
+                yr.download(gr);
+                int64 t1 = Clock.nanoTime();
+                k = 0L;
+                while (k < reps) {
+                    if (big == 0) { d64.runOn(s, yn, w, xp, tokens, outDim, cols, part, 1L, 0); } else { d128.runOn(s, yn, w, xp, tokens, outDim, cols, part, 1L, 0); }
+                    k = k + 1L;
+                }
+                s.sync();
+                yn.download(gn);
+                int64 t2 = Clock.nanoTime();
+                if ((t1 - t0) / reps < bestR) { bestR = (t1 - t0) / reps; }
+                if ((t2 - t1) / reps < bestN) { bestN = (t2 - t1) / reps; }
+                round = round + 1L;
+            }
+            System.stdout.println("" + tokens + "x" + outDim + "x" + cols + " tile " + (big == 0 ? 64 : 128) + " valueDiff " + bad
+                + " y0 " + gr[0] + " ref_us " + (bestR / 1000L) + " drv_us " + (bestN / 1000L) + " ratio_pct " + (bestN * 100L / bestR));
+            big = big + 1;
+        }
+        return bad;
+    }
+
+    public static int32 main() {
+        int64 bad = 0L;
+        bad = bad + TileBench3.shape(128L, 256L, 512L, 2L);
+        bad = bad + TileBench3.shape(512L, 1024L, 4096L, 20L);
+        bad = bad + TileBench3.shape(512L, 4096L, 4096L, 20L);
+        bad = bad + TileBench3.shape(512L, 2560L, 2560L, 20L);
+        System.stdout.println(bad == 0L ? "ALL EQUAL" : "DIFFERENT");
+        return bad == 0L ? 0 : 1;
+    }
+}

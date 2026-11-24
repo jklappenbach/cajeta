@@ -1,0 +1,143 @@
+package ref;
+
+import cajeta.lang.Cajeta;
+import cajeta.lang.System;
+import cajeta.time.Clock;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.ml.kernels.gemm.BlockGemmRows8;
+import dev.cajeta.ml.kernels.quant.Q2kBlock;
+
+/** kernel-drivers 8.2: the cpu driver over the Q2_K pieces and the lifted reference on the same data. */
+public class Bench2 {
+    static void putI32(int8[] out, int64 o, int32 v) {
+        out[o] = (int8) (v & 255);
+        out[o + 1L] = (int8) ((v >> 8) & 255);
+        out[o + 2L] = (int8) ((v >> 16) & 255);
+        out[o + 3L] = (int8) ((v >> 24) & 255);
+    }
+
+    static #int8[] weight(int64 blocks) {
+        int8[] raw #= heap int8[blocks * 84L];
+        int64 seed = 777L;
+        int64 i = 0L;
+        while (i < blocks * 84L) {
+            seed = (seed * 1103515245L + 12345L) % 2147483648L;
+            raw[i] = (int8) ((seed >> 16) % 256L);
+            i = i + 1L;
+        }
+        int64 b = 0L;
+        while (b < blocks) {
+            raw[b * 84L + 81L] = (int8) (44 + (int32) (b % 4L));
+            raw[b * 84L + 83L] = (int8) (40 + (int32) (b % 3L));
+            b = b + 1L;
+        }
+        return #raw;
+    }
+
+    static #int8[] acts(int64 blocks) {
+        int8[] xp #= heap int8[blocks * 320L];
+        int64 seed = 4242L;
+        int64 b = 0L;
+        while (b < blocks) {
+            int64 o = b * 320L;
+            int64 j = 0L;
+            while (j < 8L) {
+                int32 s = 0;
+                int64 l = 0L;
+                while (l < 32L) {
+                    seed = (seed * 1103515245L + 12345L) % 2147483648L;
+                    int32 q = (int32) ((seed >> 16) % 255L) - 127;
+                    xp[o + j * 32L + l] = (int8) q;
+                    s = s + q;
+                    l = l + 1L;
+                }
+                Bench2.putI32(xp, o + 256L + 4L * j, s);
+                j = j + 1L;
+            }
+            Bench2.putI32(xp, o + 288L, Cajeta.f32ToBits(0.003f + 0.001f * (float32) (b % 5L)));
+            b = b + 1L;
+        }
+        return #xp;
+    }
+
+    static int64 shape(int64 rows, int64 cols, int64 nc, int64 reps) {
+        int64 bpr = cols / 256L;
+        int8[] file #= Bench2.weight(rows * bpr);
+        BlockGemmRows8<Q2kBlock> drv = heap BlockGemmRows8<Q2kBlock>();
+        int64 pb = drv.packedBytes(rows, bpr);
+        int64 pr = RefPack.q2kInterleave8Bytes(rows, bpr);
+        int8[] wr #= heap int8[pr];
+        int8[] wn #= heap int8[pb];
+        RefPack.q2kInterleave8(file, 0L, rows, bpr, wr, 0L);
+        drv.pack(file, 0L, rows, bpr, wn, 0L);
+        int64 packBad = pb == pr ? 0L : 1L;
+        int64 i = 0L;
+        int8[] hx #= Bench2.acts(nc * bpr);
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) pr);
+        KernelBuffer<int8> wd = heap KernelBuffer<int8>((uint64) pb);
+        KernelBuffer<int32> s16 = heap KernelBuffer<int32>((uint64) (nc * bpr * 16L));
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (nc * bpr * 320L));
+        KernelBuffer<float32> yr = heap KernelBuffer<float32>((uint64) (nc * rows));
+        KernelBuffer<float32> yn = heap KernelBuffer<float32>((uint64) (nc * rows));
+        w.upload(wr);
+        wd.upload(wn);
+        xp.upload(hx);
+        KernelStream s #= KernelStream.current();
+        float32[] gr #= heap float32[nc * rows];
+        float32[] gn #= heap float32[nc * rows];
+        int64 bad = 0L;
+        int64 nz = 0L;
+        int32 pass = 0;
+        while (pass < 2) {
+            RefX8Q2.sums(s16, xp, nc * bpr);
+            RefX8Q2.launch(yr, w, xp, s16, rows, bpr, nc, bpr * 320L, rows, pass == 1, 64L, 32L);
+            drv.run(yn, wd, xp, rows, bpr, nc, bpr * 320L, rows, pass == 1, 64L, 32L);
+            s.sync();
+            yr.download(gr);
+            yn.download(gn);
+            i = 0L;
+            while (i < nc * rows) {
+                if (Cajeta.f32ToBits(gr[i]) != Cajeta.f32ToBits(gn[i])) { bad = bad + 1L; }
+                if (gr[i] != 0.0f) { nz = nz + 1L; }
+                i = i + 1L;
+            }
+            pass = pass + 1;
+        }
+        int64 bestR = 9000000000000L;
+        int64 bestN = 9000000000000L;
+        int64 k = 0L;
+        while (k < reps) {
+            int64 t0 = Clock.nanoTime();
+            RefX8Q2.sums(s16, xp, nc * bpr);
+            RefX8Q2.launch(yr, w, xp, s16, rows, bpr, nc, bpr * 320L, rows, false, 64L, 32L);
+            s.sync();
+            int64 t1 = Clock.nanoTime();
+            drv.run(yn, wd, xp, rows, bpr, nc, bpr * 320L, rows, false, 64L, 32L);
+            s.sync();
+            int64 t2 = Clock.nanoTime();
+            if (t1 - t0 < bestR) { bestR = t1 - t0; }
+            if (t2 - t1 < bestN) { bestN = t2 - t1; }
+            k = k + 1L;
+        }
+        System.stdout.println("" + rows + "x" + cols + "x" + nc + " packSizeDiff " + packBad + " valueDiff " + bad + " nonzero " + nz + "/" + (2L * nc * rows) + " y0 " + gr[0] + " yLast " + gr[nc * rows - 1L]
+            + " ref_us " + (bestR / 1000L) + " drv_us " + (bestN / 1000L) + " ratio_pct " + (bestN * 100L / bestR));
+        return bad;
+    }
+
+    public static int32 main() {
+        int64 bad = 0L;
+        bad = bad + Bench2.shape(13L, 512L, 5L, 1L);
+        bad = bad + Bench2.shape(1024L, 4096L, 512L, 12L);
+        bad = bad + Bench2.shape(4096L, 4096L, 512L, 12L);
+        bad = bad + Bench2.shape(14336L, 4096L, 512L, 12L);
+        bad = bad + Bench2.shape(4096L, 14336L, 512L, 12L);
+        bad = bad + Bench2.shape(2048L, 2560L, 512L, 12L);
+        bad = bad + Bench2.shape(1024L, 2560L, 512L, 12L);
+        bad = bad + Bench2.shape(2560L, 2048L, 512L, 12L);
+        bad = bad + Bench2.shape(10240L, 2560L, 512L, 12L);
+        bad = bad + Bench2.shape(2560L, 10240L, 512L, 12L);
+        System.stdout.println(bad == 0L ? "ALL EQUAL" : "DIFFERENT");
+        return bad == 0L ? 0 : 1;
+    }
+}

@@ -15,3 +15,7 @@ or `DIFFERENT`.
 `Bench6` and `TileBench6` are the same for Q6_K (plan 8.1), against `ref/RefX8Q6`
 (`q6kQ8X8RowsKernel`, timed with its 16-value group sums) and `ref/Q6Tile`, which reads cajeta-llm's
 split row layout; the driver reads the file's blocks.
+
+`Bench3`/`TileBench3` (Q3_K) and `Bench2`/`TileBench2` (Q2_K) follow the same pattern (plan 8.2).
+`Q3Tile` reads the split row layout, `Q2Tile` the file's blocks. `Bench2` reports the pack size
+difference without failing on it: the driver keeps scales and mins as two tables.
