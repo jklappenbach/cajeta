@@ -2826,7 +2826,7 @@ namespace cajeta {
         for (auto& module : xpuModules) {
             for (auto& method : module->getAllMethods()) {
                 if (!method || !cajeta::xpu::isKernel(*method)) continue;
-                auto it = kernelUnboundedBlock.find(method->getName());
+                auto it = kernelUnboundedBlock.find(cajeta::xpu::qualifiedKernelName(method));
                 auto attr = cajeta::xpu::XpuKernelAttr::from(*method);
                 const bool ceiling = attr && attr->hasThreadBound();
                 if (ceiling) {
@@ -2837,7 +2837,7 @@ namespace cajeta {
                 if (it == kernelUnboundedBlock.end()) {
                     // Bounded at every site this build can see; a kernel with no
                     // visible launch site is neither bounded nor unbounded here.
-                    if (kernelMaxThreads.count(method->getName()))
+                    if (kernelMaxThreads.count(cajeta::xpu::qualifiedKernelName(method)))
                         cajeta::xpu::noteKernelBounded(
                             *method, method->getName(),
                             "every launch site passes a constant block");

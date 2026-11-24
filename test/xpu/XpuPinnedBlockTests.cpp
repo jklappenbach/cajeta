@@ -95,6 +95,15 @@ const char* kSrc =
     "        split.launch(s, grid: [1], block: [128])(out, dims);\n"
     "        loose.launch(s, grid: [1], block: [n])(out, dims);\n"
     "    }\n"
+    "}\n"
+    "public class Q {\n"
+    "    @Kernel\n"
+    "    public static void loose(KernelBuffer<float32> out) {\n"
+    "        out[KernelThread.globalIdX()] = 1.0f;\n"
+    "    }\n"
+    "    public static void go(KernelStream s, KernelBuffer<float32> out) {\n"
+    "        loose.launch(s, grid: [1], block: [64])(out);\n"
+    "    }\n"
     "}\n";
 
 struct Scanned {
@@ -154,9 +163,18 @@ TEST(XpuPinnedBlockTests, disagreeingNonConstantOrUnlaunchedSitesPinNothing) {
         EXPECT_EQ(s->blocks.pinned.count(std::string("test.P.") + k), 0u) << k;
         EXPECT_FALSE(s->kernel(k)->pinnedLaunchBlock().has_value()) << k;
     }
-    EXPECT_EQ(s->blocks.maxThreads["split"], 256u);
-    EXPECT_EQ(s->blocks.maxThreads.count("loose"), 0u);
-    EXPECT_EQ(s->blocks.unboundedSites["loose"], 1u);
+    EXPECT_EQ(s->blocks.maxThreads["test.P.split"], 256u);
+    EXPECT_EQ(s->blocks.maxThreads.count("test.P.loose"), 0u);
+    EXPECT_EQ(s->blocks.unboundedSites["test.P.loose"], 1u);
+}
+
+// kernel-drivers 6.1.1: a kernel answers for its own launch sites, not a namesake's.
+TEST(XpuPinnedBlockTests, twoKernelsOfOneMethodNameKeepTheirOwnSites) {
+    auto s = scan();
+    EXPECT_EQ(s->blocks.unboundedSites["test.P.loose"], 1u);
+    EXPECT_EQ(s->blocks.unboundedSites.count("test.Q.loose"), 0u);
+    EXPECT_EQ(s->blocks.maxThreads["test.Q.loose"], 64u);
+    EXPECT_EQ(s->blocks.maxThreads.count("test.P.loose"), 0u);
 }
 
 TEST(XpuPinnedBlockTests, aRescanClearsAPinTheSitesNoLongerSupport) {

@@ -16,8 +16,8 @@ namespace xpu {
 
     /** What the launch sites say about each @Kernel's block. */
     struct LaunchBlocks {
-        std::unordered_map<std::string, unsigned> maxThreads;      // simple name -> largest constant block
-        std::unordered_map<std::string, unsigned> unboundedSites;  // simple name -> non-constant sites
+        std::unordered_map<std::string, unsigned> maxThreads;      // qualified name -> largest constant block
+        std::unordered_map<std::string, unsigned> unboundedSites;  // qualified name -> non-constant sites
         std::unordered_map<std::string, std::array<unsigned, 3>> pinned;  // qualified name -> the one block
     };
 

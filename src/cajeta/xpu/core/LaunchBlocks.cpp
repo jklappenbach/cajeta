@@ -38,6 +38,8 @@ namespace xpu {
         LaunchBlocks out;
         std::unordered_map<std::string, std::optional<std::array<unsigned, 3>>> agreed;
         std::unordered_set<std::string> broken;
+        // What the sites say, under the name each site gives and under the bare method name.
+        std::unordered_map<std::string, unsigned> maxAt, unboundedAt, maxBare, unboundedBare;
         for (auto& module : modules) {
             if (!module) continue;
             bool hasKernel = false;
@@ -52,18 +54,38 @@ namespace xpu {
                 std::string simple = simpleName(qualified);
                 auto b = constBlock(site->block);
                 if (!b) {
-                    ++out.unboundedSites[simple];
+                    ++unboundedAt[qualified];
+                    ++unboundedBare[simple];
                     broken.insert(qualified);
                     continue;
                 }
-                unsigned& cur = out.maxThreads[simple];
-                cur = std::max(cur, (*b)[0] * (*b)[1] * (*b)[2]);
+                unsigned threads = (*b)[0] * (*b)[1] * (*b)[2];
+                unsigned& cur = maxAt[qualified];
+                cur = std::max(cur, threads);
+                unsigned& bare = maxBare[simple];
+                bare = std::max(bare, threads);
                 auto it = agreed.find(qualified);
                 if (it == agreed.end()) agreed.emplace(qualified, b);
                 else if (it->second != b) broken.insert(qualified);
             }
         }
-        for (const auto& k : out.unboundedSites) out.maxThreads.erase(k.first);
+        // A kernel answers for its own sites; the bare name serves only a kernel no site names in full.
+        for (auto& module : modules) {
+            if (!module) continue;
+            for (auto& method : module->getXpuMethods()) {
+                if (!method || !isKernel(*method)) continue;
+                const std::string qualified = qualifiedKernelName(method);
+                const bool own = maxAt.count(qualified) || unboundedAt.count(qualified);
+                const auto& maxOf = own ? maxAt : maxBare;
+                const auto& unboundedOf = own ? unboundedAt : unboundedBare;
+                const std::string& key = own ? qualified : method->getName();
+                if (auto u = unboundedOf.find(key); u != unboundedOf.end()) {
+                    out.unboundedSites[qualified] = u->second;
+                } else if (auto m = maxOf.find(key); m != maxOf.end()) {
+                    out.maxThreads[qualified] = m->second;
+                }
+            }
+        }
         for (const auto& [qualified, b] : agreed)
             if (b && !broken.count(qualified)) out.pinned.emplace(qualified, *b);
         for (auto& module : modules) {

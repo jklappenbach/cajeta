@@ -800,7 +800,7 @@ TEST(XpuKernelManifest, pinnedBlockRecordsOccupancy) {
 TEST(XpuKernelManifest, launchSiteConstantBlockIsAPin) {
     CAJETA_SKIP_IF_NO_HIP();
     cajeta::xpu::amd::KernelMaxThreads pins;
-    pins["saxpy"] = 128;
+    pins["test.M.saxpy"] = 128;
     auto ms = amdManifests(src({kSaxpy}), {"saxpy"}, pins);
     ASSERT_EQ(ms.size(), 1u);
     ASSERT_TRUE(ms[0].threadsPerGroup.has_value());
@@ -1754,7 +1754,7 @@ TEST(XpuKernelManifest, aDeclaredCeilingSpillsNoMoreThanTheConstantBlockOnNvptx)
 TEST(XpuKernelManifest, aDeclaredCeilingSpillsNoMoreThanTheConstantBlockOnAmdgpu) {
     CAJETA_SKIP_IF_NO_HIP();
     cajeta::xpu::amd::KernelMaxThreads pins;
-    pins["spiller"] = 64;
+    pins["test.M.spiller"] = 64;
     auto pinned = amdManifests(std::string(kImports) + spillerSource() + kEnd, {"spiller"}, pins);
     ASSERT_EQ(pinned.size(), 1u);
     std::string ceilSrc = spillerSource();

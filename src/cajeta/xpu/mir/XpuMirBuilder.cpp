@@ -148,7 +148,8 @@ std::vector<ExpressionPtr> dimElements(const ExpressionPtr& dimExpr) {
 // resolving the receiver against `kernels`; nullptr for an unrelated `launch`.
 XpuMirLaunchSitePtr buildLaunchSite(
         const std::shared_ptr<CallExpression>& call,
-        const std::vector<XpuMirKernelPtr>& kernels) {
+        const std::vector<XpuMirKernelPtr>& kernels,
+        const MethodPtr& from) {
     if (!call) return nullptr;
     auto callee = std::dynamic_pointer_cast<MethodCallExpression>(call->getCallee());
     if (!callee || callee->getMethodCallName() != "launch") return nullptr;
@@ -158,8 +159,17 @@ XpuMirLaunchSitePtr buildLaunchSite(
     // A local shadowing a kernel's short name still collides by suffix-match.
     std::string recv = receiverIdentifier(callee.get());
     bool matched = false;
+    // A bare kernel name is the launching class's own kernel before any namesake.
     for (auto& k : kernels) {
-        if (!k) continue;
+        if (!k || !k->method || !from) continue;
+        if (k->method->getName() == recv && k->method->getParent() == from->getParent()) {
+            site->kernelCanonicalName = k->canonicalName;
+            matched = true;
+            break;
+        }
+    }
+    for (auto& k : kernels) {
+        if (!k || matched) continue;
         const std::string& cn = k->canonicalName;
         if (cn == recv ||
             (cn.size() > recv.size() &&
@@ -233,7 +243,7 @@ XpuMirModulePtr XpuMirBuilder::buildForModule(const CajetaModulePtr& module) {
         if (!method) continue;
         forEachNode(method->getBlock(), [&](const AbstractSyntaxNodePtr& n) {
             if (auto ce = std::dynamic_pointer_cast<CallExpression>(n)) {
-                if (auto site = buildLaunchSite(ce, m->kernels)) {
+                if (auto site = buildLaunchSite(ce, m->kernels, method)) {
                     m->launchSites.push_back(site);
                 }
             }

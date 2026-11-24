@@ -127,7 +127,7 @@ namespace amd {
 
             // Pin the real launch workgroup size so registers are budgeted for it.
             auto sizeWorkgroup = [&](llvm::Function* kfn) {
-                if (auto it = maxThreads.find(method->getName()); it != maxThreads.end()) {
+                if (auto it = maxThreads.find(qualifiedKernelName(method)); it != maxThreads.end()) {
                     setKernelWorkgroupSize(kfn, it->second);
                 } else {
                     // xpu-kernel-adaptor 7.0.4: an UNBOUNDED kernel (a non-constant
@@ -257,7 +257,7 @@ namespace amd {
                     else pinnedWaves = attr->maxWaves();
                 }
                 if (!pinned && !pinnedWaves)
-                    if (auto it = maxThreads.find(method->getName()); it != maxThreads.end())
+                    if (auto it = maxThreads.find(qualifiedKernelName(method)); it != maxThreads.end())
                         pinned = it->second;
                 for (const ArchHsaco& ah : perArch) {
                     KernelManifest m;
