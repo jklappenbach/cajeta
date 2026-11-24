@@ -125,3 +125,8 @@ epilogue, which the source asks for and the cpu never needs.
   it is held to a small relative tolerance at kernel level and to cajeta-llm's logits KL tests on
   the models. This amends 7.1 for those three GPU decode kernels only.
 
+- **7.7** (2026-11-24) The GPU decode-attention driver equals cajeta-llm's
+  `attnFlashDecodeGqa8Kernel` bit for bit. Against `attnFlashDecodeGqa4Kernel` and
+  `attnFlashDecodeGqa2Hd256Kernel`, whose source arithmetic is the same but which the compiler
+  rounds differently under `@FastMath` (a few ulps), it is held to a relative tolerance at kernel
+  level and to cajeta-llm's logits KL on the models.
