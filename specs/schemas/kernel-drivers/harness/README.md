@@ -32,3 +32,7 @@ cajeta-llm's `q{4,5,6,3,2}kQ8X8VecKernel` (`ref/RefVec*`), every K format, on th
 `AttnWaveBench` is the GPU decode attention (plan 9.3.3) against `ref/RefAttnW` (llm's Gqa4, Gqa8 and Gqa2Hd256 flash decode); Gqa8 bitwise, the others by difference over the output scale (spec 7.7).
 
 `AttnBatchBench` (GPU) and `AttnCpuBatchBench` (cpu) are the batched decode attention (plan 9.3.6).
+
+`Bench32` is the 32-value family (plan 8.3.1): the cpu row driver over `Q80Block` and `Q50Block` against
+cajeta-llm's `q80Q8X8RowsKernel`, `q80Q8X8VecKernel`, `q50Q8X8RowsKernel` and `q50Q8X8VecKernel` and
+their packs (`ref/RefQ80`, generated from llm 0730a8b), prefill and decode, packs compared byte for byte.

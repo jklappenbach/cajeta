@@ -1,0 +1,178 @@
+package ref;
+
+import cajeta.lang.Cajeta;
+import cajeta.lang.System;
+import cajeta.time.Clock;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.ml.kernels.gemm.Block32GemmRows8;
+import dev.cajeta.ml.kernels.quant.Q50Block;
+import dev.cajeta.ml.kernels.quant.Q80Block;
+
+/** kernel-drivers 8.3.1: the cpu driver over the Q8_0 and Q5_0 pieces against cajeta-llm's kernels (`ref/RefQ80`), prefill and decode, on the same data. */
+public class Bench32 {
+    static #int8[] weight(int64 blocks, int64 bb) {
+        int8[] raw #= heap int8[blocks * bb];
+        int64 seed = 913L;
+        int64 i = 0L;
+        while (i < blocks * bb) {
+            seed = (seed * 1103515245L + 12345L) % 2147483648L;
+            raw[i] = (int8) ((seed >> 16) % 256L);
+            i = i + 1L;
+        }
+        int64 b = 0L;
+        while (b < blocks) { raw[b * bb + 1L] = (int8) (40 + (int32) (b % 4L)); b = b + 1L; }
+        return #raw;
+    }
+
+    /** `blocks` q8_K blocks with eight scales at byte 288. */
+    static #int8[] acts(int64 blocks) {
+        int8[] xp #= heap int8[blocks * 320L];
+        int64 seed = 5151L;
+        int64 b = 0L;
+        while (b < blocks) {
+            int64 o = b * 320L;
+            int64 j = 0L;
+            while (j < 8L) {
+                int32 s = 0;
+                int64 l = 0L;
+                while (l < 32L) {
+                    seed = (seed * 1103515245L + 12345L) % 2147483648L;
+                    int32 q = (int32) ((seed >> 16) % 255L) - 127;
+                    xp[o + j * 32L + l] = (int8) q;
+                    s = s + q;
+                    l = l + 1L;
+                }
+                Bench6.putI32(xp, o + 256L + 4L * j, s);
+                Bench6.putI32(xp, o + 288L + 4L * j, Cajeta.f32ToBits(0.002f + 0.001f * (float32) ((b + j) % 5L)));
+                j = j + 1L;
+            }
+            b = b + 1L;
+        }
+        return #xp;
+    }
+
+    static int64 diff(KernelBuffer<float32> yr, KernelBuffer<float32> yn, float32[] gr, float32[] gn, int64 n) {
+        yr.download(gr);
+        yn.download(gn);
+        int64 bad = 0L;
+        int64 i = 0L;
+        while (i < n) { if (Cajeta.f32ToBits(gr[i]) != Cajeta.f32ToBits(gn[i])) { bad = bad + 1L; } i = i + 1L; }
+        return bad;
+    }
+
+    static int64 packDiff(int8[] a, int8[] b, int64 n) {
+        int64 bad = 0L;
+        int64 i = 0L;
+        while (i < n) { if (a[i] != b[i]) { bad = bad + 1L; } i = i + 1L; }
+        return bad;
+    }
+
+    /** Q8_0 (`q5` false, activation scale stride `sst`) or Q5_0 at `rows x cols` against `nc` tokens; `reps` launches a timing round, 15 rounds interleaved. */
+    static int64 shape(boolean q5, int64 sst, int64 rows, int64 cols, int64 nc, int64 reps) {
+        int64 nb = cols / 32L;
+        int64 sbpr = (nb + 7L) / 8L;
+        int64 bb = q5 ? 22L : 34L;
+        int8[] file #= Bench32.weight(rows * nb, bb);
+        Block32GemmRows8<Q80Block> d8 = heap Block32GemmRows8<Q80Block>();
+        Block32GemmRows8<Q50Block> d5 = heap Block32GemmRows8<Q50Block>();
+        int64 pb = q5 ? d5.packedBytes(rows, nb) : d8.packedBytes(rows, nb);
+        int8[] wr #= heap int8[pb];
+        int8[] wn #= heap int8[pb];
+        if (q5) {
+            RefQ80.q50Interleave8Pad(file, 0L, rows, nb, wr, 0L);
+            d5.pack(file, 0L, rows, nb, wn, 0L);
+        } else {
+            RefQ80.q80Interleave8Pad(file, 0L, rows, nb, wr, 0L);
+            d8.pack(file, 0L, rows, nb, wn, 0L);
+        }
+        int64 packBad = Bench32.packDiff(wr, wn, pb);
+        int8[] hx #= Bench32.acts(nc * sbpr);
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) pb);
+        KernelBuffer<int8> wd = heap KernelBuffer<int8>((uint64) pb);
+        w.upload(wr);
+        wd.upload(wn);
+        KernelBuffer<float16> wh #= w.halfView();
+        KernelBuffer<float16> wdh #= wd.halfView();
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (nc * sbpr * 320L));
+        KernelBuffer<float32> yr = heap KernelBuffer<float32>((uint64) (nc * rows));
+        KernelBuffer<float32> yn = heap KernelBuffer<float32>((uint64) (nc * rows));
+        xp.upload(hx);
+        int64 blk = nc == 1L ? VecBench.evenBlock((rows + 7L) / 8L) : 64L;
+        KernelStream s #= KernelStream.current();
+        float32[] gr #= heap float32[nc * rows];
+        float32[] gn #= heap float32[nc * rows];
+        int64 bad = 0L;
+        int32 pass = 0;
+        while (pass < 2) {
+            if (q5) {
+                RefQ80.q50(yr, w, wh, xp, rows, sbpr, nc, sbpr * 320L, rows, pass == 1, blk, 32L);
+                d5.run(yn, wd, wdh, xp, rows, nb, nc, sbpr * 320L, rows, pass == 1, 0L, blk, 32L);
+            } else {
+                RefQ80.q80(yr, w, wh, xp, rows, sbpr, nc, sbpr * 320L, rows, pass == 1, sst, blk, 32L);
+                d8.run(yn, wd, wdh, xp, rows, nb, nc, sbpr * 320L, rows, pass == 1, sst, blk, 32L);
+            }
+            s.sync();
+            bad = bad + Bench32.diff(yr, yn, gr, gn, nc * rows);
+            pass = pass + 1;
+        }
+        int64 bestR = 9000000000000L;
+        int64 bestN = 9000000000000L;
+        int64 round = 0L;
+        while (round < 15L) {
+            int64 t0 = Clock.nanoTime();
+            int64 k = 0L;
+            while (k < reps) {
+                if (q5) { RefQ80.q50(yr, w, wh, xp, rows, sbpr, nc, sbpr * 320L, rows, false, blk, 32L); }
+                else { RefQ80.q80(yr, w, wh, xp, rows, sbpr, nc, sbpr * 320L, rows, false, sst, blk, 32L); }
+                k = k + 1L;
+            }
+            s.sync();
+            int64 t1 = Clock.nanoTime();
+            k = 0L;
+            while (k < reps) {
+                if (q5) { d5.run(yn, wd, wdh, xp, rows, nb, nc, sbpr * 320L, rows, false, 0L, blk, 32L); }
+                else { d8.run(yn, wd, wdh, xp, rows, nb, nc, sbpr * 320L, rows, false, sst, blk, 32L); }
+                k = k + 1L;
+            }
+            s.sync();
+            int64 t2 = Clock.nanoTime();
+            if ((t1 - t0) / reps < bestR) { bestR = (t1 - t0) / reps; }
+            if ((t2 - t1) / reps < bestN) { bestN = (t2 - t1) / reps; }
+            round = round + 1L;
+        }
+        System.stdout.println((q5 ? "Q5_0" : (sst == 4L ? "Q8_0/s32" : "Q8_0")) + " " + rows + "x" + cols + "x" + nc + " packDiff " + packBad
+            + " valueDiff " + bad + " y0 " + gr[0] + " ref_us " + (bestR / 1000L) + " drv_us " + (bestN / 1000L) + " ratio_pct " + (bestN * 100L / bestR));
+        return packBad + bad;
+    }
+
+    static int64 all(int64 rows, int64 cols, int64 nc, int64 reps) {
+        int64 bad = Bench32.shape(false, 4L, rows, cols, nc, reps);
+        bad = bad + Bench32.shape(true, 0L, rows, cols, nc, reps);
+        return bad;
+    }
+
+    public static int32 main() {
+        int64 bad = 0L;
+        bad = bad + Bench32.shape(false, 0L, 13L, 800L, 5L, 1L);
+        bad = bad + Bench32.shape(false, 4L, 13L, 800L, 5L, 1L);
+        bad = bad + Bench32.shape(true, 0L, 13L, 800L, 5L, 1L);
+        bad = bad + Bench32.shape(false, 4L, 13L, 800L, 1L, 1L);
+        bad = bad + Bench32.shape(true, 0L, 13L, 800L, 1L, 1L);
+        bad = bad + Bench32.all(4096L, 4096L, 512L, 2L);
+        bad = bad + Bench32.all(14336L, 4096L, 512L, 1L);
+        bad = bad + Bench32.all(4096L, 14336L, 512L, 1L);
+        bad = bad + Bench32.all(2048L, 2560L, 512L, 2L);
+        bad = bad + Bench32.all(10240L, 2560L, 512L, 1L);
+        bad = bad + Bench32.all(2560L, 10240L, 512L, 1L);
+        bad = bad + Bench32.all(4096L, 4096L, 1L, 200L);
+        bad = bad + Bench32.all(14336L, 4096L, 1L, 60L);
+        bad = bad + Bench32.all(4096L, 14336L, 1L, 60L);
+        bad = bad + Bench32.all(1024L, 2560L, 1L, 400L);
+        bad = bad + Bench32.all(2048L, 2560L, 1L, 300L);
+        bad = bad + Bench32.all(10240L, 2560L, 1L, 100L);
+        bad = bad + Bench32.all(2560L, 10240L, 1L, 100L);
+        System.stdout.println(bad == 0L ? "ALL EQUAL" : "DIFFERENT");
+        return bad == 0L ? 0 : 1;
+    }
+}
