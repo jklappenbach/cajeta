@@ -54,3 +54,8 @@ over the output scale, best member against best (`IdTile` folds the scales in fl
 `MwBench` (plan 8.3.3) times cajeta-llm's multi-wave Q4_K GEMM `ref/MwTile` (lifted, one launch in place of its
 sliced sweep) against the tile driver's Q4_K members, best against best, by difference over the output scale;
 `IdBench`'s Q4_K rows also time the hand-written Id kernel `ref/RefIdMw` (`q4kWmmaIdMwKernel`, `IdHandTile`).
+
+`ColsBench` is the GPU batched decode (plan 9.1.8): both decode drivers' column kernels against cajeta-llm's
+`q{4,5,6,3,2}kQ8WaveMatVecColsKernel`, the Q4_K and Q6_K `Pf` forms and `q80Q8WaveMatVecColsKernel`
+(`ref/RefCols`, each kernel with the helpers it calls), at 2, 4 and 8 tokens, each side at 1, 2 and 4 waves a
+workgroup, best against best; Q4_K, Q5_K and Q8_0 bitwise, the rest by difference over the output scale.

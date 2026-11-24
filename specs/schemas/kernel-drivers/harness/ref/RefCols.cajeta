@@ -1,0 +1,969 @@
+package ref;
+
+import cajeta.lang.Cajeta;
+import cajeta.xpu.Group;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Vector;
+import cajeta.xpu.Wave;
+
+/** cajeta-llm's GPU batched-decode column kernels and the helpers they call, lifted unchanged (llm 0730a8b). */
+public final class RefCols {
+    public RefCols() { return; }
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void q2kQ8WaveMatVecColsKernel(KernelBuffer<float32> y,
+            KernelBuffer<int8> packed, KernelBuffer<int8> xp,
+            uint32 rows, int64 blocksPerRow, int64 yOff, uint32 accum,
+            uint32 ncols, uint32 yStride, uint32 xpStride) {
+        int64 xps = (int64) ((xpStride >> 4) << 4);
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 row = KernelThread.globalIdX() / wv;
+        int64 rowBytes = blocksPerRow * 84L;
+        float32 c0 = 0.0f;
+        float32 c1 = 0.0f;
+        float32 c2 = 0.0f;
+        float32 c3 = 0.0f;
+        float32 c4 = 0.0f;
+        float32 c5 = 0.0f;
+        float32 c6 = 0.0f;
+        float32 c7 = 0.0f;
+        if (row < rows) {
+            int64 i = (int64) row;
+            int32 g = (int32) (lane % 4);
+            int64 b = (int64) (lane / 4);
+            int64 bStride = (int64) (wv / 4);
+            int32 sb0 = 8 * (g / 2) + (g % 2);
+            int32 qOff = 16 + 16 * g;
+            int64 o1 = 0L;
+            int64 o2 = 0L;
+            int64 o3 = 0L;
+            if (ncols > 1) { o1 = xps; }
+            if (ncols > 2) { o2 = 2L * xps; }
+            if (ncols > 3) { o3 = 3L * xps; }
+            Vector<int32,4> z4 = heap Vector<int32,4>(0, 0, 0, 0);
+            while (b < blocksPerRow) {
+                int64 ro = i * rowBytes + b * 84L;
+                float32 d = RefCols.f16AtDev(packed, ro + 80L);
+                float32 dmin = RefCols.f16AtDev(packed, ro + 82L);
+                int64 xb = b * 320L;
+                Vector<int32,4> qw = packed.vload<16>(ro + (int64) qOff, align: 4).asWords();
+                int64 ab = xb + (int64) (sb0 * 16);
+                int64 xr = xb + 288L;
+                int32 s0 = (int32) packed[ro + (int64) sb0] & 255;
+                int32 s1 = (int32) packed[ro + (int64) (sb0 + 2)] & 255;
+                int32 s2 = (int32) packed[ro + (int64) (sb0 + 4)] & 255;
+                int32 s3 = (int32) packed[ro + (int64) (sb0 + 6)] & 255;
+                Vector<uint8,16> w0 = RefCols.q2kScaledPlane(qw, s0 & 15);
+                Vector<uint8,16> w1 = RefCols.q2kScaledPlane(qw >> 2, s1 & 15);
+                Vector<uint8,16> w2 = RefCols.q2kScaledPlane(qw >> 4, s2 & 15);
+                Vector<uint8,16> w3 = RefCols.q2kScaledPlane(qw >> 6, s3 & 15);
+                Vector<uint8,16> m0 = RefCols.q2kMinSplat(z4, s0 >> 4);
+                Vector<uint8,16> m1 = RefCols.q2kMinSplat(z4, s1 >> 4);
+                Vector<uint8,16> m2 = RefCols.q2kMinSplat(z4, s2 >> 4);
+                Vector<uint8,16> m3 = RefCols.q2kMinSplat(z4, s3 >> 4);
+                Vector<int8,16> a0_0 = xp.vload<16>(ab);
+                Vector<int8,16> a0_1 = xp.vload<16>(ab + 32L, align: 16);
+                Vector<int8,16> a0_2 = xp.vload<16>(ab + 64L, align: 16);
+                Vector<int8,16> a0_3 = xp.vload<16>(ab + 96L, align: 16);
+                float32 x0 = RefCols.q8kColScale(xp, xr);
+                Vector<int8,16> a1_0 = xp.vload<16>(ab + o1, align: 16);
+                Vector<int8,16> a1_1 = xp.vload<16>(ab + o1 + 32L, align: 16);
+                Vector<int8,16> a1_2 = xp.vload<16>(ab + o1 + 64L, align: 16);
+                Vector<int8,16> a1_3 = xp.vload<16>(ab + o1 + 96L, align: 16);
+                float32 x1 = RefCols.q8kColScale(xp, xr + o1);
+                Vector<int8,16> a2_0 = xp.vload<16>(ab + o2, align: 16);
+                Vector<int8,16> a2_1 = xp.vload<16>(ab + o2 + 32L, align: 16);
+                Vector<int8,16> a2_2 = xp.vload<16>(ab + o2 + 64L, align: 16);
+                Vector<int8,16> a2_3 = xp.vload<16>(ab + o2 + 96L, align: 16);
+                float32 x2 = RefCols.q8kColScale(xp, xr + o2);
+                Vector<int8,16> a3_0 = xp.vload<16>(ab + o3, align: 16);
+                Vector<int8,16> a3_1 = xp.vload<16>(ab + o3 + 32L, align: 16);
+                Vector<int8,16> a3_2 = xp.vload<16>(ab + o3 + 64L, align: 16);
+                Vector<int8,16> a3_3 = xp.vload<16>(ab + o3 + 96L, align: 16);
+                float32 x3 = RefCols.q8kColScale(xp, xr + o3);
+                c0 = RefCols.q2kColAccA(c0, a0_0, a0_1, a0_2, a0_3, x0, w0, w1, w2, w3, m0, m1, m2, m3, d, dmin);
+                c1 = RefCols.q2kColAccA(c1, a1_0, a1_1, a1_2, a1_3, x1, w0, w1, w2, w3, m0, m1, m2, m3, d, dmin);
+                c2 = RefCols.q2kColAccA(c2, a2_0, a2_1, a2_2, a2_3, x2, w0, w1, w2, w3, m0, m1, m2, m3, d, dmin);
+                c3 = RefCols.q2kColAccA(c3, a3_0, a3_1, a3_2, a3_3, x3, w0, w1, w2, w3, m0, m1, m2, m3, d, dmin);
+                if (ncols > 4) { c4 = RefCols.q2kColAcc(c4, xp, ab + 4L * xps, xr + 4L * xps, w0, w1, w2, w3, m0, m1, m2, m3, d, dmin); }
+                if (ncols > 5) { c5 = RefCols.q2kColAcc(c5, xp, ab + 5L * xps, xr + 5L * xps, w0, w1, w2, w3, m0, m1, m2, m3, d, dmin); }
+                if (ncols > 6) { c6 = RefCols.q2kColAcc(c6, xp, ab + 6L * xps, xr + 6L * xps, w0, w1, w2, w3, m0, m1, m2, m3, d, dmin); }
+                if (ncols > 7) { c7 = RefCols.q2kColAcc(c7, xp, ab + 7L * xps, xr + 7L * xps, w0, w1, w2, w3, m0, m1, m2, m3, d, dmin); }
+                b = b + bStride;
+            }
+        }
+        RefCols.colsStore(y, row, rows, yOff, yStride, accum, ncols, lane,
+            c0, c1, c2, c3, c4, c5, c6, c7);
+    }
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void q3kQ8WaveMatVecColsKernel(KernelBuffer<float32> y,
+            KernelBuffer<int8> packed, KernelBuffer<int8> xp,
+            uint32 rows, int64 blocksPerRow, int64 yOff, uint32 accum,
+            uint32 ncols, uint32 yStride, uint32 xpStride) {
+        int64 xps = (int64) ((xpStride >> 4) << 4);
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 row = KernelThread.globalIdX() / wv;
+        int64 prefix = ((blocksPerRow * 2L + 3L) / 4L) * 4L;
+        int64 rowBytes = prefix + blocksPerRow * 108L;
+        float32 c0 = 0.0f;
+        float32 c1 = 0.0f;
+        float32 c2 = 0.0f;
+        float32 c3 = 0.0f;
+        float32 c4 = 0.0f;
+        float32 c5 = 0.0f;
+        float32 c6 = 0.0f;
+        float32 c7 = 0.0f;
+        if (row < rows) {
+            int64 i = (int64) row;
+            int32 g = (int32) (lane % 4);
+            int64 b = (int64) (lane / 4);
+            int32 sb0 = 8 * (g / 2) + (g % 2);
+            int32 qOff = 32 + 16 * g;
+            int32 hOff = 16 * (g % 2);
+            int32 hb0 = 4 * (g / 2);
+            int64 o1 = 0L;
+            int64 o2 = 0L;
+            int64 o3 = 0L;
+            if (ncols > 1) { o1 = xps; }
+            if (ncols > 2) { o2 = 2L * xps; }
+            if (ncols > 3) { o3 = 3L * xps; }
+            while (b < blocksPerRow) {
+                int64 ro = i * rowBytes + prefix + b * 108L;
+                float32 d = RefCols.scaleAtDev(packed,
+                    i * rowBytes / 2L + b);
+                int64 xb = b * 320L;
+                Vector<int32,4> qw = packed.vload<16>(ro + (int64) qOff, align: 4).asWords();
+                Vector<int32,4> hw = packed.vload<16>(ro + (int64) hOff, align: 4).asWords();
+                Vector<int32,4> v0 = RefCols.q3kCenteredPlane(qw & 50529027, (hw >> hb0) & 16843009);
+                Vector<int32,4> v1 = RefCols.q3kCenteredPlane((qw >> 2) & 50529027, (hw >> (hb0 + 1)) & 16843009);
+                Vector<int32,4> v2 = RefCols.q3kCenteredPlane((qw >> 4) & 50529027, (hw >> (hb0 + 2)) & 16843009);
+                Vector<int32,4> v3 = RefCols.q3kCenteredPlane((qw >> 6) & 50529027, (hw >> (hb0 + 3)) & 16843009);
+                int64 ab = xb + (int64) (sb0 * 16);
+                int64 xr = xb + 288L;
+                int32 lb0 = (int32) packed[ro + (int64) (96 + (sb0 % 8))] & 255;
+                int32 lb1 = (int32) packed[ro + (int64) (96 + ((sb0 + 2) % 8))] & 255;
+                int32 lb2 = (int32) packed[ro + (int64) (96 + ((sb0 + 4) % 8))] & 255;
+                int32 lb3 = (int32) packed[ro + (int64) (96 + ((sb0 + 6) % 8))] & 255;
+                int32 lo0 = lb0 & 15;
+                int32 lo1 = lb1 & 15;
+                int32 lo2 = lb2 & 15;
+                int32 lo3 = lb3 & 15;
+                if (sb0 >= 8) {
+                    lo0 = lb0 >> 4;
+                    lo1 = lb1 >> 4;
+                    lo2 = lb2 >> 4;
+                    lo3 = lb3 >> 4;
+                }
+                int32 h0 = ((int32) packed[ro + (int64) (104 + (sb0 & 3))] & 255) >> (2 * (sb0 / 4));
+                int32 h1 = ((int32) packed[ro + (int64) (104 + ((sb0 + 2) & 3))] & 255) >> (2 * ((sb0 + 2) / 4));
+                int32 h2 = ((int32) packed[ro + (int64) (104 + ((sb0 + 4) & 3))] & 255) >> (2 * ((sb0 + 4) / 4));
+                int32 h3 = ((int32) packed[ro + (int64) (104 + ((sb0 + 6) & 3))] & 255) >> (2 * ((sb0 + 6) / 4));
+                int32 sc0 = (lo0 | ((h0 & 3) << 4)) - 32;
+                int32 sc1 = (lo1 | ((h1 & 3) << 4)) - 32;
+                int32 sc2 = (lo2 | ((h2 & 3) << 4)) - 32;
+                int32 sc3 = (lo3 | ((h3 & 3) << 4)) - 32;
+                Vector<int8,16> a0_0 = xp.vload<16>(ab);
+                Vector<int8,16> a0_1 = xp.vload<16>(ab + 32L, align: 16);
+                Vector<int8,16> a0_2 = xp.vload<16>(ab + 64L, align: 16);
+                Vector<int8,16> a0_3 = xp.vload<16>(ab + 96L, align: 16);
+                float32 x0 = RefCols.q8kColScale(xp, xr);
+                Vector<int8,16> a1_0 = xp.vload<16>(ab + o1, align: 16);
+                Vector<int8,16> a1_1 = xp.vload<16>(ab + o1 + 32L, align: 16);
+                Vector<int8,16> a1_2 = xp.vload<16>(ab + o1 + 64L, align: 16);
+                Vector<int8,16> a1_3 = xp.vload<16>(ab + o1 + 96L, align: 16);
+                float32 x1 = RefCols.q8kColScale(xp, xr + o1);
+                Vector<int8,16> a2_0 = xp.vload<16>(ab + o2, align: 16);
+                Vector<int8,16> a2_1 = xp.vload<16>(ab + o2 + 32L, align: 16);
+                Vector<int8,16> a2_2 = xp.vload<16>(ab + o2 + 64L, align: 16);
+                Vector<int8,16> a2_3 = xp.vload<16>(ab + o2 + 96L, align: 16);
+                float32 x2 = RefCols.q8kColScale(xp, xr + o2);
+                Vector<int8,16> a3_0 = xp.vload<16>(ab + o3, align: 16);
+                Vector<int8,16> a3_1 = xp.vload<16>(ab + o3 + 32L, align: 16);
+                Vector<int8,16> a3_2 = xp.vload<16>(ab + o3 + 64L, align: 16);
+                Vector<int8,16> a3_3 = xp.vload<16>(ab + o3 + 96L, align: 16);
+                float32 x3 = RefCols.q8kColScale(xp, xr + o3);
+                c0 = RefCols.q3kColAccA(c0, a0_0, a0_1, a0_2, a0_3, x0, v0, v1, v2, v3, sc0, sc1, sc2, sc3, d);
+                c1 = RefCols.q3kColAccA(c1, a1_0, a1_1, a1_2, a1_3, x1, v0, v1, v2, v3, sc0, sc1, sc2, sc3, d);
+                c2 = RefCols.q3kColAccA(c2, a2_0, a2_1, a2_2, a2_3, x2, v0, v1, v2, v3, sc0, sc1, sc2, sc3, d);
+                c3 = RefCols.q3kColAccA(c3, a3_0, a3_1, a3_2, a3_3, x3, v0, v1, v2, v3, sc0, sc1, sc2, sc3, d);
+                if (ncols > 4) { c4 = RefCols.q3kColAcc(c4, xp, ab + 4L * xps, xr + 4L * xps, v0, v1, v2, v3, sc0, sc1, sc2, sc3, d); }
+                if (ncols > 5) { c5 = RefCols.q3kColAcc(c5, xp, ab + 5L * xps, xr + 5L * xps, v0, v1, v2, v3, sc0, sc1, sc2, sc3, d); }
+                if (ncols > 6) { c6 = RefCols.q3kColAcc(c6, xp, ab + 6L * xps, xr + 6L * xps, v0, v1, v2, v3, sc0, sc1, sc2, sc3, d); }
+                if (ncols > 7) { c7 = RefCols.q3kColAcc(c7, xp, ab + 7L * xps, xr + 7L * xps, v0, v1, v2, v3, sc0, sc1, sc2, sc3, d); }
+                b = b + (int64) (wv / 4);
+            }
+        }
+        RefCols.colsStore(y, row, rows, yOff, yStride, accum, ncols, lane,
+            c0, c1, c2, c3, c4, c5, c6, c7);
+    }
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void q4kQ8WaveMatVecColsKernel(KernelBuffer<float32> y,
+            KernelBuffer<int8> packed, KernelBuffer<int8> xp,
+            uint32 rows, int64 blocksPerRow, int64 yOff, uint32 accum,
+            uint32 ncols, uint32 yStride, uint32 xpStride) {
+        uint32 xps = (xpStride >> 4) << 4;   // provably 16-aligned column offsets: see q4kQ8WaveR2MatVecColsKernel
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 row = KernelThread.globalIdX() / wv;
+        uint32 bpr = (uint32) blocksPerRow;
+        uint32 rowBytes = bpr * 144;
+        float32 c0 = 0.0f;
+        float32 c1 = 0.0f;
+        float32 c2 = 0.0f;
+        float32 c3 = 0.0f;
+        float32 c4 = 0.0f;
+        float32 c5 = 0.0f;
+        float32 c6 = 0.0f;
+        float32 c7 = 0.0f;
+        if (row < rows) {
+            uint32 rb = row * rowBytes;
+            int32 g = (int32) (lane % 4);
+            uint32 b = lane / 4;
+            int32 sh0 = 16 * (g & 1);
+            int32 sh1 = sh0 + 8;
+            int32 hiSel = 0 - (g >> 1);
+            int32 loSel = hiSel ^ (0 - 1);
+            while (b < bpr) {
+                uint32 ro = rb + b * 144;
+                uint32 rw = ro + (uint32) (32 * g);
+                Vector<int8,16> hv = packed.vload<16>((int64) ro);
+                Vector<uint8,32> raw = packed.vload<32>(
+                    (int64) rw + 16L).asUnsigned();
+                float32 d = RefCols.halfBitsToF32Branchless(((int32) hv[0] & 255)
+                    | (((int32) hv[1] & 255) << 8));
+                float32 dmin = RefCols.halfBitsToF32Branchless(((int32) hv[2] & 255)
+                    | (((int32) hv[3] & 255) << 8));
+                Vector<int32,4> hw = hv.asWords();
+                int32 scw = hw[1];
+                int32 mnw = hw[2];
+                int32 hiw = hw[3];
+                int32 sA = (scw >> sh0) & 255;
+                int32 sB = (scw >> sh1) & 255;
+                int32 mC = (mnw >> sh0) & 255;
+                int32 mD = (mnw >> sh1) & 255;
+                int32 sc0 = sA & 63;
+                int32 sc1 = sB & 63;
+                int32 mn0 = mC & 63;
+                int32 mn1 = mD & 63;
+                int32 k0 = (hiw >> sh0) & 255;
+                int32 k1 = (hiw >> sh1) & 255;
+                sc0 = (((k0 & 15) | ((sA >> 2) & 48)) & hiSel) | (sc0 & loSel);
+                sc1 = (((k1 & 15) | ((sB >> 2) & 48)) & hiSel) | (sc1 & loSel);
+                mn0 = (((k0 >> 4) | ((mC >> 2) & 48)) & hiSel) | (mn0 & loSel);
+                mn1 = (((k1 >> 4) | ((mD >> 2) & 48)) & hiSel) | (mn1 & loSel);
+                Vector<int32,8> rv = raw.asWords();
+                Vector<uint8,32> lo = (rv & 252645135).asBytes().asUnsigned();
+                Vector<uint8,32> hi = ((rv >> 4) & 252645135).asBytes().asUnsigned();
+                uint32 xo = b * 320 + (uint32) (64 * g);
+                uint32 xr = b * 320 + 288;
+                c0 = RefCols.q4kColAcc(c0, xp, xo, xr, lo, hi, sc0, sc1, mn0, mn1, d, dmin);
+                if (ncols > 1) { c1 = RefCols.q4kColAcc(c1, xp, xo + xps, xr + xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                if (ncols > 2) { c2 = RefCols.q4kColAcc(c2, xp, xo + 2 * xps, xr + 2 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                if (ncols > 3) { c3 = RefCols.q4kColAcc(c3, xp, xo + 3 * xps, xr + 3 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                if (ncols > 4) { c4 = RefCols.q4kColAcc(c4, xp, xo + 4 * xps, xr + 4 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                if (ncols > 5) { c5 = RefCols.q4kColAcc(c5, xp, xo + 5 * xps, xr + 5 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                if (ncols > 6) { c6 = RefCols.q4kColAcc(c6, xp, xo + 6 * xps, xr + 6 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                if (ncols > 7) { c7 = RefCols.q4kColAcc(c7, xp, xo + 7 * xps, xr + 7 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                b = b + wv / 4;
+            }
+        }
+        RefCols.colsStore(y, row, rows, yOff, yStride, accum, ncols, lane,
+            c0, c1, c2, c3, c4, c5, c6, c7);
+    }
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void q4kQ8WavePfMatVecColsKernel(KernelBuffer<float32> y,
+            KernelBuffer<int8> packed, KernelBuffer<int8> xp,
+            uint32 rows, int64 blocksPerRow, int64 yOff, uint32 accum,
+            uint32 ncols, uint32 yStride, uint32 xpStride) {
+        uint32 xps = (xpStride >> 4) << 4;   // provably 16-aligned column offsets: see q4kQ8WaveR2MatVecColsKernel
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 row = KernelThread.globalIdX() / wv;
+        uint32 bpr = (uint32) blocksPerRow;
+        uint32 rowBytes = bpr * 144;
+        float32 c0 = 0.0f;
+        float32 c1 = 0.0f;
+        float32 c2 = 0.0f;
+        float32 c3 = 0.0f;
+        float32 c4 = 0.0f;
+        float32 c5 = 0.0f;
+        float32 c6 = 0.0f;
+        float32 c7 = 0.0f;
+        if (row < rows) {
+            uint32 rb = row * rowBytes;
+            int32 g = (int32) (lane % 4);
+            uint32 b = lane / 4;
+            int32 sh0 = 16 * (g & 1);
+            int32 sh1 = sh0 + 8;
+            int32 hiSel = 0 - (g >> 1);
+            int32 loSel = hiSel ^ (0 - 1);
+            uint32 stepB = wv / 4;
+            Vector<int8,16> nhv = packed.vload<16>((int64) (rb + b * 144));
+            Vector<uint8,32> nraw = packed.vload<32>((int64) (rb + b * 144 + (uint32) (32 * g)) + 16L).asUnsigned();
+            while (b < bpr) {
+                Vector<int8,16> hv = nhv;
+                Vector<uint8,32> raw = nraw;
+                uint32 bn = b + stepB;
+                int32 inr = (((int32) bn - (int32) bpr) >> 31) & 1;
+                uint32 bl = b + (uint32) (inr * (int32) stepB);
+                nhv = packed.vload<16>((int64) (rb + bl * 144));
+                nraw = packed.vload<32>((int64) (rb + bl * 144 + (uint32) (32 * g)) + 16L).asUnsigned();
+                float32 d = RefCols.halfBitsToF32Branchless(((int32) hv[0] & 255)
+                    | (((int32) hv[1] & 255) << 8));
+                float32 dmin = RefCols.halfBitsToF32Branchless(((int32) hv[2] & 255)
+                    | (((int32) hv[3] & 255) << 8));
+                Vector<int32,4> hw = hv.asWords();
+                int32 scw = hw[1];
+                int32 mnw = hw[2];
+                int32 hiw = hw[3];
+                int32 sA = (scw >> sh0) & 255;
+                int32 sB = (scw >> sh1) & 255;
+                int32 mC = (mnw >> sh0) & 255;
+                int32 mD = (mnw >> sh1) & 255;
+                int32 sc0 = sA & 63;
+                int32 sc1 = sB & 63;
+                int32 mn0 = mC & 63;
+                int32 mn1 = mD & 63;
+                int32 k0 = (hiw >> sh0) & 255;
+                int32 k1 = (hiw >> sh1) & 255;
+                sc0 = (((k0 & 15) | ((sA >> 2) & 48)) & hiSel) | (sc0 & loSel);
+                sc1 = (((k1 & 15) | ((sB >> 2) & 48)) & hiSel) | (sc1 & loSel);
+                mn0 = (((k0 >> 4) | ((mC >> 2) & 48)) & hiSel) | (mn0 & loSel);
+                mn1 = (((k1 >> 4) | ((mD >> 2) & 48)) & hiSel) | (mn1 & loSel);
+                Vector<int32,8> rv = raw.asWords();
+                Vector<uint8,32> lo = (rv & 252645135).asBytes().asUnsigned();
+                Vector<uint8,32> hi = ((rv >> 4) & 252645135).asBytes().asUnsigned();
+                uint32 xo = b * 320 + (uint32) (64 * g);
+                uint32 xr = b * 320 + 288;
+                c0 = RefCols.q4kColAcc(c0, xp, xo, xr, lo, hi, sc0, sc1, mn0, mn1, d, dmin);
+                if (ncols > 1) { c1 = RefCols.q4kColAcc(c1, xp, xo + xps, xr + xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                if (ncols > 2) { c2 = RefCols.q4kColAcc(c2, xp, xo + 2 * xps, xr + 2 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                if (ncols > 3) { c3 = RefCols.q4kColAcc(c3, xp, xo + 3 * xps, xr + 3 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                if (ncols > 4) { c4 = RefCols.q4kColAcc(c4, xp, xo + 4 * xps, xr + 4 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                if (ncols > 5) { c5 = RefCols.q4kColAcc(c5, xp, xo + 5 * xps, xr + 5 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                if (ncols > 6) { c6 = RefCols.q4kColAcc(c6, xp, xo + 6 * xps, xr + 6 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                if (ncols > 7) { c7 = RefCols.q4kColAcc(c7, xp, xo + 7 * xps, xr + 7 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                b = bn;
+            }
+        }
+        RefCols.colsStore(y, row, rows, yOff, yStride, accum, ncols, lane,
+            c0, c1, c2, c3, c4, c5, c6, c7);
+    }
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void q5kQ8WaveMatVecColsKernel(KernelBuffer<float32> y,
+            KernelBuffer<int8> packed, KernelBuffer<int8> xp,
+            uint32 rows, int64 blocksPerRow, int64 yOff, uint32 accum,
+            uint32 ncols, uint32 yStride, uint32 xpStride) {
+        uint32 xps = (xpStride >> 4) << 4;
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 row = KernelThread.globalIdX() / wv;
+        uint32 bpr = (uint32) blocksPerRow;
+        uint32 rowBytes = bpr * 176;
+        float32 c0 = 0.0f;
+        float32 c1 = 0.0f;
+        float32 c2 = 0.0f;
+        float32 c3 = 0.0f;
+        float32 c4 = 0.0f;
+        float32 c5 = 0.0f;
+        float32 c6 = 0.0f;
+        float32 c7 = 0.0f;
+        if (row < rows) {
+            uint32 rb = row * rowBytes;
+            int32 g = (int32) (lane % 4);
+            uint32 b = lane / 4;
+            while (b < bpr) {
+                uint32 ro = rb + b * 176;
+                Vector<int8,16> hv = packed.vload<16>((int64) ro);
+                float32 d = RefCols.halfBitsToF32Branchless(((int32) hv[0] & 255)
+                    | (((int32) hv[1] & 255) << 8));
+                float32 dmin = RefCols.halfBitsToF32Branchless(((int32) hv[2] & 255)
+                    | (((int32) hv[3] & 255) << 8));
+                int32 sc0 = 0;
+                int32 sc1 = 0;
+                int32 mn0 = 0;
+                int32 mn1 = 0;
+                if (g < 2) {
+                    int32 j = 2 * g;
+                    sc0 = (int32) hv[4 + j] & 63;
+                    sc1 = (int32) hv[5 + j] & 63;
+                    mn0 = (int32) hv[8 + j] & 63;
+                    mn1 = (int32) hv[9 + j] & 63;
+                } else {
+                    int32 j = 2 * g - 4;
+                    int32 k0 = (int32) hv[12 + j] & 255;
+                    int32 k1 = (int32) hv[13 + j] & 255;
+                    int32 d0 = (int32) hv[4 + j] & 255;
+                    int32 d1 = (int32) hv[5 + j] & 255;
+                    int32 m0 = (int32) hv[8 + j] & 255;
+                    int32 m1 = (int32) hv[9 + j] & 255;
+                    sc0 = (k0 & 15) | ((d0 >> 2) & 48);
+                    sc1 = (k1 & 15) | ((d1 >> 2) & 48);
+                    mn0 = (k0 >> 4) | ((m0 >> 2) & 48);
+                    mn1 = (k1 >> 4) | ((m1 >> 2) & 48);
+                }
+                Vector<uint8,32> qh = packed.vload<32>((int64) ro + 16L).asUnsigned();
+                Vector<uint8,32> raw = packed.vload<32>(
+                    (int64) ro + 48L + (int64) (32 * g)).asUnsigned();
+                Vector<uint8,32> lo = (raw & 15)
+                    | (((qh >> (2 * g)) & 1) << 4);
+                Vector<uint8,32> hi = ((raw >> 4) & 15)
+                    | (((qh >> (2 * g + 1)) & 1) << 4);
+                uint32 xo = b * 320 + (uint32) (64 * g);
+                uint32 xr = b * 320 + 288;
+                c0 = RefCols.q4kColAcc(c0, xp, xo, xr, lo, hi, sc0, sc1, mn0, mn1, d, dmin);
+                if (ncols > 1) { c1 = RefCols.q4kColAcc(c1, xp, xo + xps, xr + xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                if (ncols > 2) { c2 = RefCols.q4kColAcc(c2, xp, xo + 2 * xps, xr + 2 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                if (ncols > 3) { c3 = RefCols.q4kColAcc(c3, xp, xo + 3 * xps, xr + 3 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                if (ncols > 4) { c4 = RefCols.q4kColAcc(c4, xp, xo + 4 * xps, xr + 4 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                if (ncols > 5) { c5 = RefCols.q4kColAcc(c5, xp, xo + 5 * xps, xr + 5 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                if (ncols > 6) { c6 = RefCols.q4kColAcc(c6, xp, xo + 6 * xps, xr + 6 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                if (ncols > 7) { c7 = RefCols.q4kColAcc(c7, xp, xo + 7 * xps, xr + 7 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                b = b + wv / 4;
+            }
+        }
+        RefCols.colsStore(y, row, rows, yOff, yStride, accum, ncols, lane,
+            c0, c1, c2, c3, c4, c5, c6, c7);
+    }
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void q6kQ8WaveMatVecColsKernel(KernelBuffer<float32> y,
+            KernelBuffer<int8> packed, KernelBuffer<int8> xp,
+            uint32 rows, int64 blocksPerRow, int64 yOff, uint32 accum,
+            uint32 ncols, uint32 yStride, uint32 xpStride) {
+        uint32 xps = (xpStride >> 4) << 4;   // provably 16-aligned column offsets: see q4kQ8WaveR2MatVecColsKernel
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 row = KernelThread.globalIdX() / wv;
+        uint32 prefix = (uint32) (((blocksPerRow * 2L + 3L) / 4L) * 4L);
+        uint32 rowBytes = prefix + (uint32) blocksPerRow * 208;
+        uint32 bpr = (uint32) blocksPerRow;
+        float32 c0 = 0.0f;
+        float32 c1 = 0.0f;
+        float32 c2 = 0.0f;
+        float32 c3 = 0.0f;
+        float32 c4 = 0.0f;
+        float32 c5 = 0.0f;
+        float32 c6 = 0.0f;
+        float32 c7 = 0.0f;
+        if (row < rows) {
+            uint32 rb = row * rowBytes;
+            int32 m = (int32) (lane % 4);
+            int32 g = m / 2;
+            int32 a = m - g * 2;
+            uint32 b = lane / 4;
+            while (b < bpr) {
+                uint32 xb = b * 320;
+                uint32 xa0 = xb + (uint32) (16 * (8 * g + a));
+                uint32 ro = rb + prefix + b * 208;
+                uint32 rqa = ro + (uint32) (64 * g + 16 * a);
+                uint32 rqh = ro + (uint32) (32 * g + 16 * a);
+                uint32 rsc = ro + (uint32) (8 * g);
+                Vector<int8,16> qlA = packed.vload<16>((int64) rqa);
+                Vector<int8,16> qlB = packed.vload<16>((int64) rqa + 32L);
+                Vector<int8,16> qh = packed.vload<16>((int64) rqh + 128L);
+                Vector<int8,8> scv = packed.vload<8>((int64) rsc + 192L);
+                float32 dsc = RefCols.scaleAtDev(packed,
+                    (int64) rb / 2L + (int64) b);
+                int32 s0 = (int32) scv[0];
+                int32 s1 = (int32) scv[2];
+                int32 s2 = (int32) scv[4];
+                int32 s3 = (int32) scv[6];
+                if (a != 0) {
+                    s0 = (int32) scv[1];
+                    s1 = (int32) scv[3];
+                    s2 = (int32) scv[5];
+                    s3 = (int32) scv[7];
+                }
+                Vector<int32,4> wA = qlA.asWords();
+                Vector<int32,4> wB = qlB.asWords();
+                Vector<int32,4> wH = qh.asWords();
+                Vector<uint8,16> q0 = ((wA & 252645135) | ((wH << 4) & 808464432)).asBytes().asUnsigned();
+                Vector<uint8,16> q1 = ((wB & 252645135) | ((wH << 2) & 808464432)).asBytes().asUnsigned();
+                Vector<uint8,16> q2 = (((wA >> 4) & 252645135) | (wH & 808464432)).asBytes().asUnsigned();
+                Vector<uint8,16> q3 = (((wB >> 4) & 252645135) | ((wH >> 2) & 808464432)).asBytes().asUnsigned();
+                c0 = RefCols.q6kColAcc(c0, xp, xb, xa0, q0, q1, q2, q3, s0, s1, s2, s3, dsc);
+                if (ncols > 1) { c1 = RefCols.q6kColAcc(c1, xp, xb + xps, xa0 + xps, q0, q1, q2, q3, s0, s1, s2, s3, dsc); }
+                if (ncols > 2) { c2 = RefCols.q6kColAcc(c2, xp, xb + 2 * xps, xa0 + 2 * xps, q0, q1, q2, q3, s0, s1, s2, s3, dsc); }
+                if (ncols > 3) { c3 = RefCols.q6kColAcc(c3, xp, xb + 3 * xps, xa0 + 3 * xps, q0, q1, q2, q3, s0, s1, s2, s3, dsc); }
+                if (ncols > 4) { c4 = RefCols.q6kColAcc(c4, xp, xb + 4 * xps, xa0 + 4 * xps, q0, q1, q2, q3, s0, s1, s2, s3, dsc); }
+                if (ncols > 5) { c5 = RefCols.q6kColAcc(c5, xp, xb + 5 * xps, xa0 + 5 * xps, q0, q1, q2, q3, s0, s1, s2, s3, dsc); }
+                if (ncols > 6) { c6 = RefCols.q6kColAcc(c6, xp, xb + 6 * xps, xa0 + 6 * xps, q0, q1, q2, q3, s0, s1, s2, s3, dsc); }
+                if (ncols > 7) { c7 = RefCols.q6kColAcc(c7, xp, xb + 7 * xps, xa0 + 7 * xps, q0, q1, q2, q3, s0, s1, s2, s3, dsc); }
+                b = b + wv / 4;
+            }
+        }
+        RefCols.colsStore(y, row, rows, yOff, yStride, accum, ncols, lane,
+            c0, c1, c2, c3, c4, c5, c6, c7);
+    }
+
+    @Kernel
+    // maxRegisters: ptxas's own occupancy target for this kernel was 80
+    // registers (three 256-thread blocks an SM), and the provably aligned
+    // column stride pushed it over by three, into an 8-byte spill the repo's
+    // gate refuses. The bound lets it allocate the 93 it wants; measured
+    // with ptxas -v on the dumped PTX (cajeta-llm 15.2.15.1, 2026-10-24).
+    @Occupancy(maxThreads = 256, maxRegisters = 128)
+    public static void q6kQ8WavePfMatVecColsKernel(KernelBuffer<float32> y,
+            KernelBuffer<int8> packed, KernelBuffer<int8> xp,
+            uint32 rows, int64 blocksPerRow, int64 yOff, uint32 accum,
+            uint32 ncols, uint32 yStride, uint32 xpStride) {
+        uint32 xps = (xpStride >> 4) << 4;   // provably 16-aligned column offsets: see q4kQ8WaveR2MatVecColsKernel
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 row = KernelThread.globalIdX() / wv;
+        uint32 prefix = (uint32) (((blocksPerRow * 2L + 3L) / 4L) * 4L);
+        uint32 rowBytes = prefix + (uint32) blocksPerRow * 208;
+        uint32 bpr = (uint32) blocksPerRow;
+        float32 c0 = 0.0f;
+        float32 c1 = 0.0f;
+        float32 c2 = 0.0f;
+        float32 c3 = 0.0f;
+        float32 c4 = 0.0f;
+        float32 c5 = 0.0f;
+        float32 c6 = 0.0f;
+        float32 c7 = 0.0f;
+        if (row < rows) {
+            uint32 rb = row * rowBytes;
+            int32 m = (int32) (lane % 4);
+            int32 g = m / 2;
+            int32 a = m - g * 2;
+            uint32 b = lane / 4;
+            uint32 stepB = wv / 4;
+            Vector<int8,16> nqlA = packed.vload<16>((int64) (rb + prefix + b * 208 + (uint32) (64 * g + 16 * a)));
+            Vector<int8,16> nqlB = packed.vload<16>((int64) (rb + prefix + b * 208 + (uint32) (64 * g + 16 * a)) + 32L);
+            Vector<int8,16> nqh = packed.vload<16>((int64) (rb + prefix + b * 208 + (uint32) (32 * g + 16 * a)) + 128L);
+            Vector<int8,8> nscv = packed.vload<8>((int64) (rb + prefix + b * 208 + (uint32) (8 * g)) + 192L);
+            Vector<int8,4> ndh = packed.vload<4>(((int64) (rb + 2 * b)) & (0L - 4L));
+            while (b < bpr) {
+                Vector<int8,16> qlA = nqlA;
+                Vector<int8,16> qlB = nqlB;
+                Vector<int8,16> qh = nqh;
+                Vector<int8,8> scv = nscv;
+                Vector<int8,4> dh = ndh;
+                uint32 bn = b + stepB;
+                int32 inr = (((int32) bn - (int32) bpr) >> 31) & 1;
+                uint32 bl = b + (uint32) (inr * (int32) stepB);
+                nqlA = packed.vload<16>((int64) (rb + prefix + bl * 208 + (uint32) (64 * g + 16 * a)));
+                nqlB = packed.vload<16>((int64) (rb + prefix + bl * 208 + (uint32) (64 * g + 16 * a)) + 32L);
+                nqh = packed.vload<16>((int64) (rb + prefix + bl * 208 + (uint32) (32 * g + 16 * a)) + 128L);
+                nscv = packed.vload<8>((int64) (rb + prefix + bl * 208 + (uint32) (8 * g)) + 192L);
+                ndh = packed.vload<4>(((int64) (rb + 2 * bl)) & (0L - 4L));
+                uint32 xb = b * 320;
+                uint32 xa0 = xb + (uint32) (16 * (8 * g + a));
+                float32 dsc = RefCols.halfOfWord(((int32) dh[0] & 255) | (((int32) dh[1] & 255) << 8)
+                    | (((int32) dh[2] & 255) << 16) | (((int32) dh[3] & 255) << 24), (int64) (rb + 2 * b));
+                int32 s0 = (int32) scv[0];
+                int32 s1 = (int32) scv[2];
+                int32 s2 = (int32) scv[4];
+                int32 s3 = (int32) scv[6];
+                if (a != 0) {
+                    s0 = (int32) scv[1];
+                    s1 = (int32) scv[3];
+                    s2 = (int32) scv[5];
+                    s3 = (int32) scv[7];
+                }
+                Vector<int32,4> wA = qlA.asWords();
+                Vector<int32,4> wB = qlB.asWords();
+                Vector<int32,4> wH = qh.asWords();
+                Vector<uint8,16> q0 = ((wA & 252645135) | ((wH << 4) & 808464432)).asBytes().asUnsigned();
+                Vector<uint8,16> q1 = ((wB & 252645135) | ((wH << 2) & 808464432)).asBytes().asUnsigned();
+                Vector<uint8,16> q2 = (((wA >> 4) & 252645135) | (wH & 808464432)).asBytes().asUnsigned();
+                Vector<uint8,16> q3 = (((wB >> 4) & 252645135) | ((wH >> 2) & 808464432)).asBytes().asUnsigned();
+                c0 = RefCols.q6kColAcc(c0, xp, xb, xa0, q0, q1, q2, q3, s0, s1, s2, s3, dsc);
+                if (ncols > 1) { c1 = RefCols.q6kColAcc(c1, xp, xb + xps, xa0 + xps, q0, q1, q2, q3, s0, s1, s2, s3, dsc); }
+                if (ncols > 2) { c2 = RefCols.q6kColAcc(c2, xp, xb + 2 * xps, xa0 + 2 * xps, q0, q1, q2, q3, s0, s1, s2, s3, dsc); }
+                if (ncols > 3) { c3 = RefCols.q6kColAcc(c3, xp, xb + 3 * xps, xa0 + 3 * xps, q0, q1, q2, q3, s0, s1, s2, s3, dsc); }
+                if (ncols > 4) { c4 = RefCols.q6kColAcc(c4, xp, xb + 4 * xps, xa0 + 4 * xps, q0, q1, q2, q3, s0, s1, s2, s3, dsc); }
+                if (ncols > 5) { c5 = RefCols.q6kColAcc(c5, xp, xb + 5 * xps, xa0 + 5 * xps, q0, q1, q2, q3, s0, s1, s2, s3, dsc); }
+                if (ncols > 6) { c6 = RefCols.q6kColAcc(c6, xp, xb + 6 * xps, xa0 + 6 * xps, q0, q1, q2, q3, s0, s1, s2, s3, dsc); }
+                if (ncols > 7) { c7 = RefCols.q6kColAcc(c7, xp, xb + 7 * xps, xa0 + 7 * xps, q0, q1, q2, q3, s0, s1, s2, s3, dsc); }
+                b = bn;
+            }
+        }
+        RefCols.colsStore(y, row, rows, yOff, yStride, accum, ncols, lane,
+            c0, c1, c2, c3, c4, c5, c6, c7);
+    }
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void q80Q8WaveMatVecColsKernel(KernelBuffer<float32> y,
+            KernelBuffer<int8> packed, KernelBuffer<int8> xp,
+            uint32 rows, int64 blocksPerRow, int64 yOff, uint32 accum,
+            uint32 ncols, uint32 yStride, uint32 xpStride) {
+        int64 xps = (int64) ((xpStride >> 4) << 4);
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 row = KernelThread.globalIdX() / wv;
+        int64 prefix = ((blocksPerRow * 2L + 3L) / 4L) * 4L;
+        int64 rowBytes = prefix + blocksPerRow * 32L;
+        float32 c0 = 0.0f;
+        float32 c1 = 0.0f;
+        float32 c2 = 0.0f;
+        float32 c3 = 0.0f;
+        float32 c4 = 0.0f;
+        float32 c5 = 0.0f;
+        float32 c6 = 0.0f;
+        float32 c7 = 0.0f;
+        if (row < rows) {
+            int64 i = (int64) row;
+            int64 wb = (int64) lane;
+            Vector<int32,8> zv = heap Vector<int32,8>(0, 0, 0, 0, 0, 0, 0, 0);
+            int64 s1 = 0L;
+            int64 s2 = 0L;
+            int64 s3 = 0L;
+            if (ncols > 1) { s1 = xps; }
+            if (ncols > 2) { s2 = 2L * xps; }
+            if (ncols > 3) { s3 = 3L * xps; }
+            int64 s4 = 4L * xps;
+            int64 s5 = 5L * xps;
+            int64 s6 = 6L * xps;
+            int64 s7 = 7L * xps;
+            while (wb < blocksPerRow) {
+                int64 ro = i * rowBytes + prefix + wb * 32L;
+                float32 d = RefCols.scaleAtDev(packed, i * rowBytes / 2L + wb);
+                Vector<int8,32> w = packed.vload<32>(ro, align: 4);
+                int64 ab = wb / 8L;
+                int64 xo = ab * 320L + (wb % 8L) * 32L;
+                int64 xr = ab * 320L + 288L;
+                // Signed x signed dots here, on the local `w` (see q80ColFinish).
+                Vector<int8,32> a0 = xp.vload<32>(xo);
+                Vector<int8,32> a1 = xp.vload<32>(xo + s1);
+                Vector<int8,32> a2 = xp.vload<32>(xo + s2);
+                Vector<int8,32> a3 = xp.vload<32>(xo + s3);
+                float32 x0 = RefCols.q8kColScale(xp, xr);
+                float32 x1 = RefCols.q8kColScale(xp, xr + s1);
+                float32 x2 = RefCols.q8kColScale(xp, xr + s2);
+                float32 x3 = RefCols.q8kColScale(xp, xr + s3);
+                c0 = RefCols.q80ColFinishXs(c0, x0, w.dotAccum(a0, zv), d);
+                c1 = RefCols.q80ColFinishXs(c1, x1, w.dotAccum(a1, zv), d);
+                c2 = RefCols.q80ColFinishXs(c2, x2, w.dotAccum(a2, zv), d);
+                c3 = RefCols.q80ColFinishXs(c3, x3, w.dotAccum(a3, zv), d);
+                if (ncols > 4) {
+                    Vector<int8,32> a4 = xp.vload<32>(xo + s4);
+                    c4 = RefCols.q80ColFinish(c4, xp, xr + s4, w.dotAccum(a4, zv), d);
+                }
+                if (ncols > 5) {
+                    Vector<int8,32> a5 = xp.vload<32>(xo + s5);
+                    c5 = RefCols.q80ColFinish(c5, xp, xr + s5, w.dotAccum(a5, zv), d);
+                }
+                if (ncols > 6) {
+                    Vector<int8,32> a6 = xp.vload<32>(xo + s6);
+                    c6 = RefCols.q80ColFinish(c6, xp, xr + s6, w.dotAccum(a6, zv), d);
+                }
+                if (ncols > 7) {
+                    Vector<int8,32> a7 = xp.vload<32>(xo + s7);
+                    c7 = RefCols.q80ColFinish(c7, xp, xr + s7, w.dotAccum(a7, zv), d);
+                }
+                wb = wb + (int64) wv;
+            }
+        }
+        RefCols.colsStore(y, row, rows, yOff, yStride, accum, ncols, lane,
+            c0, c1, c2, c3, c4, c5, c6, c7);
+    }
+
+    @Device
+    static void colsStore(KernelBuffer<float32> y, uint32 row, uint32 rows,
+            int64 yOff, uint32 yStride, uint32 accum, uint32 ncols, uint32 lane,
+            float32 c0, float32 c1, float32 c2, float32 c3, float32 c4,
+            float32 c5, float32 c6, float32 c7) {
+        float32 t0 = Wave.reduceSumF32(c0);
+        float32 t1 = 0.0f;
+        float32 t2 = 0.0f;
+        float32 t3 = 0.0f;
+        float32 t4 = 0.0f;
+        float32 t5 = 0.0f;
+        float32 t6 = 0.0f;
+        float32 t7 = 0.0f;
+        if (ncols > 1) { t1 = Wave.reduceSumF32(c1); }
+        if (ncols > 2) { t2 = Wave.reduceSumF32(c2); }
+        if (ncols > 3) { t3 = Wave.reduceSumF32(c3); }
+        if (ncols > 4) { t4 = Wave.reduceSumF32(c4); }
+        if (ncols > 5) { t5 = Wave.reduceSumF32(c5); }
+        if (ncols > 6) { t6 = Wave.reduceSumF32(c6); }
+        if (ncols > 7) { t7 = Wave.reduceSumF32(c7); }
+        if (lane == 0 && row < rows) {
+            int64 o = yOff + (int64) row;
+            int64 st = (int64) yStride;
+            if (accum != 0) {
+                y[o] = y[o] + t0;
+                if (ncols > 1) { y[o + st] = y[o + st] + t1; }
+                if (ncols > 2) { y[o + 2L * st] = y[o + 2L * st] + t2; }
+                if (ncols > 3) { y[o + 3L * st] = y[o + 3L * st] + t3; }
+                if (ncols > 4) { y[o + 4L * st] = y[o + 4L * st] + t4; }
+                if (ncols > 5) { y[o + 5L * st] = y[o + 5L * st] + t5; }
+                if (ncols > 6) { y[o + 6L * st] = y[o + 6L * st] + t6; }
+                if (ncols > 7) { y[o + 7L * st] = y[o + 7L * st] + t7; }
+            } else {
+                y[o] = t0;
+                if (ncols > 1) { y[o + st] = t1; }
+                if (ncols > 2) { y[o + 2L * st] = t2; }
+                if (ncols > 3) { y[o + 3L * st] = t3; }
+                if (ncols > 4) { y[o + 4L * st] = t4; }
+                if (ncols > 5) { y[o + 5L * st] = t5; }
+                if (ncols > 6) { y[o + 6L * st] = t6; }
+                if (ncols > 7) { y[o + 7L * st] = t7; }
+            }
+        }
+        return;
+    }
+
+    @Device
+    static float32 f16AtDev(KernelBuffer<int8> raw, int64 off) {
+        int32 h = ((int32) raw[off] & 255)
+            | (((int32) raw[off + 1L] & 255) << 8);
+        return RefCols.halfBitsToF32Branchless(h);
+    }
+
+    @Device
+    public static float32 halfBitsToF32Branchless(int32 h) {
+        int32 sgn = (h >> 15) << 31;
+        int32 exp = (h >> 10) & 31;
+        int32 man = h & 1023;
+        int32 norm = sgn | ((exp + 112) << 23) | (man << 13);
+        int32 inf = sgn | (255 << 23) | (man << 13);
+        int32 sub = Cajeta.f32ToBits((float32) man * 5.9604644775390625e-8f) | sgn;
+        int32 m0 = (exp - 1) >> 31;
+        int32 m31 = (30 - exp) >> 31;
+        int32 mn = (m0 | m31) ^ (0 - 1);
+        return Cajeta.bitsToF32((norm & mn) | (inf & m31) | (sub & m0));
+    }
+
+    @Device
+    static float32 halfOfWord(int32 w, int64 so) {
+        int32 sh = (int32) (so & 2L) * 8;
+        return RefCols.halfBitsToF32Branchless((w >> sh) & 65535);
+    }
+
+    @Device
+    static float32 q2kColAcc(float32 acc, KernelBuffer<int8> xp, int64 ab, int64 xr,
+            Vector<uint8,16> w0, Vector<uint8,16> w1, Vector<uint8,16> w2, Vector<uint8,16> w3,
+            Vector<uint8,16> m0, Vector<uint8,16> m1, Vector<uint8,16> m2, Vector<uint8,16> m3,
+            float32 d, float32 dmin) {
+        return RefCols.q2kColAccA(acc, xp.vload<16>(ab, align: 16), xp.vload<16>(ab + 32L, align: 16),
+            xp.vload<16>(ab + 64L, align: 16), xp.vload<16>(ab + 96L, align: 16), RefCols.q8kColScale(xp, xr),
+            w0, w1, w2, w3, m0, m1, m2, m3, d, dmin);
+    }
+
+    @Device
+    static float32 q2kColAccA(float32 acc, Vector<int8,16> a0, Vector<int8,16> a1,
+            Vector<int8,16> a2, Vector<int8,16> a3, float32 xs,
+            Vector<uint8,16> w0, Vector<uint8,16> w1, Vector<uint8,16> w2, Vector<uint8,16> w3,
+            Vector<uint8,16> m0, Vector<uint8,16> m1, Vector<uint8,16> m2, Vector<uint8,16> m3,
+            float32 d, float32 dmin) {
+        int32 dot = w3.dotSum(a3, w2.dotSum(a2, w1.dotSum(a1, w0.dotSum(a0, 0))));
+        int32 msum = m3.dotSum(a3, m2.dotSum(a2, m1.dotSum(a1, m0.dotSum(a0, 0))));
+        return acc + xs * (d * (float32) dot - dmin * (float32) msum);
+    }
+
+    @Device
+    static Vector<uint8,16> q2kMinSplat(Vector<int32,4> z4, int32 m) {
+        int32 r = m | (m << 8);
+        return (z4 | (r | (r << 16))).asBytes().asUnsigned();
+    }
+
+    @Device
+    static Vector<uint8,16> q2kScaledPlane(Vector<int32,4> qw, int32 sc) {
+        return ((qw & 50529027) * sc).asBytes().asUnsigned();
+    }
+
+    @Device
+    static Vector<int32,4> q3kCenteredPlane(Vector<int32,4> lw, Vector<int32,4> hw) {
+        return lw | ((hw ^ 16843009) * 252);
+    }
+
+    @Device
+    static float32 q3kColAcc(float32 acc, KernelBuffer<int8> xp, int64 ab, int64 xr,
+            Vector<int32,4> v0, Vector<int32,4> v1, Vector<int32,4> v2, Vector<int32,4> v3,
+            int32 sc0, int32 sc1, int32 sc2, int32 sc3, float32 d) {
+        return RefCols.q3kColAccA(acc, xp.vload<16>(ab, align: 16), xp.vload<16>(ab + 32L, align: 16),
+            xp.vload<16>(ab + 64L, align: 16), xp.vload<16>(ab + 96L, align: 16), RefCols.q8kColScale(xp, xr),
+            v0, v1, v2, v3, sc0, sc1, sc2, sc3, d);
+    }
+
+    @Device
+    static float32 q3kColAccA(float32 acc, Vector<int8,16> a0, Vector<int8,16> a1,
+            Vector<int8,16> a2, Vector<int8,16> a3, float32 xs,
+            Vector<int32,4> v0, Vector<int32,4> v1, Vector<int32,4> v2, Vector<int32,4> v3,
+            int32 sc0, int32 sc1, int32 sc2, int32 sc3, float32 d) {
+        Vector<int8,16> b0 = v0.asBytes();
+        Vector<int8,16> b1 = v1.asBytes();
+        Vector<int8,16> b2 = v2.asBytes();
+        Vector<int8,16> b3 = v3.asBytes();
+        int32 dot = b0.dotSum(a0, 0) * sc0 + b1.dotSum(a1, 0) * sc1
+            + b2.dotSum(a2, 0) * sc2 + b3.dotSum(a3, 0) * sc3;
+        return acc + d * xs * (float32) dot;
+    }
+
+    @Device
+    static float32 q4kColAcc(float32 acc, KernelBuffer<int8> xp, uint32 xo,
+            uint32 xr, Vector<uint8,32> lo, Vector<uint8,32> hi,
+            int32 sc0, int32 sc1, int32 mn0, int32 mn1, float32 d,
+            float32 dmin) {
+        Vector<int32,8> zv = heap Vector<int32,8>(0, 0, 0, 0, 0, 0, 0, 0);
+        Vector<int8,32> a0 = xp.vload<32>((int64) xo);
+        Vector<int8,32> a1 = xp.vload<32>((int64) xo + 32L);
+        Vector<int8,4> dv = xp.vload<4>((int64) xr);
+        float32 xs = Cajeta.bitsToF32(((int32) dv[0] & 255)
+            | (((int32) dv[1] & 255) << 8)
+            | (((int32) dv[2] & 255) << 16)
+            | (((int32) dv[3] & 255) << 24));
+        Vector<uint8,32> ones = (a0 ^ a0).asUnsigned() | 1;
+        Vector<int32,8> os0 = ones.dotAccum(a0, zv);
+        Vector<int32,8> os1 = ones.dotAccum(a1, zv);
+        int32 as0 = os0[0] + os0[1] + os0[2] + os0[3]
+            + os0[4] + os0[5] + os0[6] + os0[7];
+        int32 as1 = os1[0] + os1[1] + os1[2] + os1[3]
+            + os1[4] + os1[5] + os1[6] + os1[7];
+        Vector<int32,8> dl = lo.dotAccum(a0, zv);
+        Vector<int32,8> dh = hi.dotAccum(a1, zv);
+        int32 sumi = (dl[0] + dl[1] + dl[2] + dl[3]
+            + dl[4] + dl[5] + dl[6] + dl[7]) * sc0
+                   + (dh[0] + dh[1] + dh[2] + dh[3]
+                       + dh[4] + dh[5] + dh[6] + dh[7]) * sc1;
+        int32 dmins = as0 * mn0 + as1 * mn1;
+        return acc + d * xs * (float32) sumi - dmin * xs * (float32) dmins;
+    }
+
+    @Device
+    static float32 q6kColAcc(float32 acc, KernelBuffer<int8> xp, uint32 xb,
+            uint32 xa0, Vector<uint8,16> q0, Vector<uint8,16> q1,
+            Vector<uint8,16> q2, Vector<uint8,16> q3, int32 s0, int32 s1,
+            int32 s2, int32 s3, float32 dsc) {
+        Vector<int32,4> z4 = heap Vector<int32,4>(0, 0, 0, 0);
+        Vector<int8,4> dvs = xp.vload<4>((int64) xb + 288L);
+        Vector<int8,16> a_0 = xp.vload<16>((int64) xa0);
+        Vector<int8,16> a_1 = xp.vload<16>((int64) xa0 + 32L);
+        Vector<int8,16> a_2 = xp.vload<16>((int64) xa0 + 64L);
+        Vector<int8,16> a_3 = xp.vload<16>((int64) xa0 + 96L);
+        float32 xs = Cajeta.bitsToF32(((int32) dvs[0] & 255)
+            | (((int32) dvs[1] & 255) << 8)
+            | (((int32) dvs[2] & 255) << 16)
+            | (((int32) dvs[3] & 255) << 24));
+        Vector<uint8,16> one = (a_0 ^ a_0).asUnsigned() | 1;
+        Vector<int32,4> sv_0 = one.dotAccum(a_0, z4);
+        Vector<int32,4> sv_1 = one.dotAccum(a_1, z4);
+        Vector<int32,4> sv_2 = one.dotAccum(a_2, z4);
+        Vector<int32,4> sv_3 = one.dotAccum(a_3, z4);
+        int32 as_0 = sv_0[0] + sv_0[1] + sv_0[2] + sv_0[3];
+        int32 as_1 = sv_1[0] + sv_1[1] + sv_1[2] + sv_1[3];
+        int32 as_2 = sv_2[0] + sv_2[1] + sv_2[2] + sv_2[3];
+        int32 as_3 = sv_3[0] + sv_3[1] + sv_3[2] + sv_3[3];
+        float32 d = dsc * xs;
+        Vector<int32,4> dv0 = q0.dotAccum(a_0, z4);
+        Vector<int32,4> dv1 = q1.dotAccum(a_1, z4);
+        Vector<int32,4> dv2 = q2.dotAccum(a_2, z4);
+        Vector<int32,4> dv3 = q3.dotAccum(a_3, z4);
+        int32 t0 = dv0[0] + dv0[1] + dv0[2] + dv0[3] - 32 * as_0;
+        int32 t1 = dv1[0] + dv1[1] + dv1[2] + dv1[3] - 32 * as_1;
+        int32 t2 = dv2[0] + dv2[1] + dv2[2] + dv2[3] - 32 * as_2;
+        int32 t3 = dv3[0] + dv3[1] + dv3[2] + dv3[3] - 32 * as_3;
+        float32 r = acc + d * (float32) (s0 * t0);
+        r = r + d * (float32) (s1 * t1);
+        r = r + d * (float32) (s2 * t2);
+        r = r + d * (float32) (s3 * t3);
+        return r;
+    }
+
+    @Device
+    static float32 q80ColFinish(float32 acc, KernelBuffer<int8> xp, int64 xr,
+            Vector<int32,8> totW, float32 d) {
+        return RefCols.q80ColFinishXs(acc, RefCols.q8kColScale(xp, xr), totW, d);
+    }
+
+    @Device
+    static float32 q80ColFinishXs(float32 acc, float32 xs, Vector<int32,8> totW, float32 d) {
+        int32 sumi = totW[0] + totW[1] + totW[2] + totW[3]
+                   + totW[4] + totW[5] + totW[6] + totW[7];
+        return acc + d * xs * (float32) sumi;
+    }
+
+    @Device
+    static float32 q8kColScale(KernelBuffer<int8> xp, int64 xr) {
+        Vector<int8,4> dv = xp.vload<4>(xr, align: 4);
+        return Cajeta.bitsToF32(((int32) dv[0] & 255)
+            | (((int32) dv[1] & 255) << 8)
+            | (((int32) dv[2] & 255) << 16)
+            | (((int32) dv[3] & 255) << 24));
+    }
+
+    @Device
+    static float32 scaleAtDev(KernelBuffer<int8> scales, int64 idx) {
+        int64 so = idx * 2L;
+        Vector<int8,4> dh = scales.vload<4>(so - (so & 3L));
+        int32 w = ((int32) dh[0] & 255) | (((int32) dh[1] & 255) << 8)
+            | (((int32) dh[2] & 255) << 16) | (((int32) dh[3] & 255) << 24);
+        int32 sh = (int32) (so & 2L) * 8;
+        return RefCols.halfBitsToF32Branchless((w >> sh) & 65535);
+    }
+
+    public static void run_0(KernelBuffer<float32> y, KernelBuffer<int8> p, KernelBuffer<int8> xp, int64 rows, int64 bpr,
+            int64 ncols, int64 yStride, int64 xpStride, int64 wpb, int64 wv) {
+        KernelStream s #= KernelStream.current();
+        q4kQ8WaveMatVecColsKernel.launch(s, grid: [(uint32) ((rows + wpb - 1L) / wpb)], block: [(uint32) (wpb * wv)])
+            (y, p, xp, (uint32) rows, bpr, 0L, 0, (uint32) ncols, (uint32) yStride, (uint32) xpStride);
+    }
+
+    public static void run_1(KernelBuffer<float32> y, KernelBuffer<int8> p, KernelBuffer<int8> xp, int64 rows, int64 bpr,
+            int64 ncols, int64 yStride, int64 xpStride, int64 wpb, int64 wv) {
+        KernelStream s #= KernelStream.current();
+        q4kQ8WavePfMatVecColsKernel.launch(s, grid: [(uint32) ((rows + wpb - 1L) / wpb)], block: [(uint32) (wpb * wv)])
+            (y, p, xp, (uint32) rows, bpr, 0L, 0, (uint32) ncols, (uint32) yStride, (uint32) xpStride);
+    }
+
+    public static void run_2(KernelBuffer<float32> y, KernelBuffer<int8> p, KernelBuffer<int8> xp, int64 rows, int64 bpr,
+            int64 ncols, int64 yStride, int64 xpStride, int64 wpb, int64 wv) {
+        KernelStream s #= KernelStream.current();
+        q5kQ8WaveMatVecColsKernel.launch(s, grid: [(uint32) ((rows + wpb - 1L) / wpb)], block: [(uint32) (wpb * wv)])
+            (y, p, xp, (uint32) rows, bpr, 0L, 0, (uint32) ncols, (uint32) yStride, (uint32) xpStride);
+    }
+
+    public static void run_3(KernelBuffer<float32> y, KernelBuffer<int8> p, KernelBuffer<int8> xp, int64 rows, int64 bpr,
+            int64 ncols, int64 yStride, int64 xpStride, int64 wpb, int64 wv) {
+        KernelStream s #= KernelStream.current();
+        q6kQ8WaveMatVecColsKernel.launch(s, grid: [(uint32) ((rows + wpb - 1L) / wpb)], block: [(uint32) (wpb * wv)])
+            (y, p, xp, (uint32) rows, bpr, 0L, 0, (uint32) ncols, (uint32) yStride, (uint32) xpStride);
+    }
+
+    public static void run_4(KernelBuffer<float32> y, KernelBuffer<int8> p, KernelBuffer<int8> xp, int64 rows, int64 bpr,
+            int64 ncols, int64 yStride, int64 xpStride, int64 wpb, int64 wv) {
+        KernelStream s #= KernelStream.current();
+        q6kQ8WavePfMatVecColsKernel.launch(s, grid: [(uint32) ((rows + wpb - 1L) / wpb)], block: [(uint32) (wpb * wv)])
+            (y, p, xp, (uint32) rows, bpr, 0L, 0, (uint32) ncols, (uint32) yStride, (uint32) xpStride);
+    }
+
+    public static void run_5(KernelBuffer<float32> y, KernelBuffer<int8> p, KernelBuffer<int8> xp, int64 rows, int64 bpr,
+            int64 ncols, int64 yStride, int64 xpStride, int64 wpb, int64 wv) {
+        KernelStream s #= KernelStream.current();
+        q3kQ8WaveMatVecColsKernel.launch(s, grid: [(uint32) ((rows + wpb - 1L) / wpb)], block: [(uint32) (wpb * wv)])
+            (y, p, xp, (uint32) rows, bpr, 0L, 0, (uint32) ncols, (uint32) yStride, (uint32) xpStride);
+    }
+
+    public static void run_6(KernelBuffer<float32> y, KernelBuffer<int8> p, KernelBuffer<int8> xp, int64 rows, int64 bpr,
+            int64 ncols, int64 yStride, int64 xpStride, int64 wpb, int64 wv) {
+        KernelStream s #= KernelStream.current();
+        q2kQ8WaveMatVecColsKernel.launch(s, grid: [(uint32) ((rows + wpb - 1L) / wpb)], block: [(uint32) (wpb * wv)])
+            (y, p, xp, (uint32) rows, bpr, 0L, 0, (uint32) ncols, (uint32) yStride, (uint32) xpStride);
+    }
+
+    public static void run_7(KernelBuffer<float32> y, KernelBuffer<int8> p, KernelBuffer<int8> xp, int64 rows, int64 bpr,
+            int64 ncols, int64 yStride, int64 xpStride, int64 wpb, int64 wv) {
+        KernelStream s #= KernelStream.current();
+        q80Q8WaveMatVecColsKernel.launch(s, grid: [(uint32) ((rows + wpb - 1L) / wpb)], block: [(uint32) (wpb * wv)])
+            (y, p, xp, (uint32) rows, bpr, 0L, 0, (uint32) ncols, (uint32) yStride, (uint32) xpStride);
+    }
+}
