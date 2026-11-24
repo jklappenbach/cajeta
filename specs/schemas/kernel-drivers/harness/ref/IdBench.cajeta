@@ -226,13 +226,13 @@ public class IdBench {
         yr.download(gr);
         yn.download(gn);
         float64 rel = WaveBench.normRel(gr, gn, np * outDim);
-        int64[] best #= heap int64[4];
+        int64[] best #= heap int64[5];
         int64 q = 0L;
-        while (q < 4L) { best[q] = 9000000000000L; q = q + 1L; }
+        while (q < 5L) { best[q] = 9000000000000L; q = q + 1L; }
         int64 round = 0L;
         while (round < 15L) {
             q = 0L;
-            while (q < 4L) {
+            while (q < 5L) {
                 int64 t0 = Clock.nanoTime();
                 int64 k = 0L;
                 while (k < reps) {
@@ -240,6 +240,7 @@ public class IdBench {
                     if (q == 1L) { rb.launchMaps(yr, w, ww, xp, e128, t128, x128, meta, n128, outDim, cols, outDim); }
                     if (q == 2L) { da.runIdOn(s, yn, w, xp, e64, t64, x64, meta, n64, outDim, cols, outDim); }
                     if (q == 3L) { db.runIdOn(s, yn, w, xp, e128, t128, x128, meta, n128, outDim, cols, outDim); }
+                    if (q == 4L) { RefIdMw.launch(yr, w, ww, xp, e64, t64, x64, meta, n64, outDim, cols, outDim); }
                     k = k + 1L;
                 }
                 s.sync();
@@ -250,9 +251,10 @@ public class IdBench {
             round = round + 1L;
         }
         int64 bestR = best[0] < best[1] ? best[0] : best[1];
+        if (best[4] < bestR) { bestR = best[4]; }
         int64 bestN = best[2] < best[3] ? best[2] : best[3];
         System.stdout.println("Q4_K E" + experts + " rows " + np + " " + outDim + "x" + cols + " normRel " + rel + " IdTile64_us " + (best[0] / 1000L)
-            + " IdTile128_us " + (best[1] / 1000L) + " drv64_us " + (best[2] / 1000L) + " drv128_us " + (best[3] / 1000L) + " best_ratio_pct " + (bestN * 100L / bestR));
+            + " IdTile128_us " + (best[1] / 1000L) + " drv64_us " + (best[2] / 1000L)  + " drv128_us " + (best[3] / 1000L) + " IdMw_us " + (best[4] / 1000L) + " best_ratio_pct " + (bestN * 100L / bestR));
         return rel > 0.00001 ? 1L : 0L;
     }
 

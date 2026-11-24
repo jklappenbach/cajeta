@@ -1,0 +1,79 @@
+package ref;
+
+import cajeta.lang.System;
+import cajeta.time.Clock;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.ml.kernels.gemm.BlockGemmTile;
+import dev.cajeta.ml.kernels.quant.Q4kBlock;
+
+/** kernel-drivers 8.3.3: cajeta-llm's multi-wave Q4_K GEMM `MwTile` (lifted, one launch) against the tile driver's Q4_K members on the same data, best member against best, by difference over the output scale (MwTile folds the scales in float). */
+public class MwBench {
+    static void run(int64 q, KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int32> ww, KernelBuffer<int8> xp,
+            int64 tokens, int64 outDim, int64 cols, KernelBuffer<float32> part) {
+        KernelStream s #= KernelStream.current();
+        if (q == 0L) { heap MwTile<64, 64, 32, 32, 128>().launchW(y, w, ww, xp, tokens, outDim, cols); }
+        if (q == 1L) { heap MwTile<128, 128, 64, 32, 128>().launchW(y, w, ww, xp, tokens, outDim, cols); }
+        if (q == 2L) { heap BlockGemmTile<Q4kBlock, 64, 64, 32, 32, 128>().runOn(s, y, w, xp, tokens, outDim, cols, part, 1L, 0); }
+        if (q == 3L) { heap BlockGemmTile<Q4kBlock, 128, 128, 32, 64, 128>().runOn(s, y, w, xp, tokens, outDim, cols, part, 1L, 0); }
+    }
+
+    static int64 shape(int64 tokens, int64 outDim, int64 cols, int64 reps) {
+        int64 bpr = cols / 256L;
+        int8[] file #= Bench.weight(outDim * bpr);
+        int8[] hx #= Bench.acts(tokens * bpr);
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) (outDim * bpr * 144L));
+        w.upload(file);
+        KernelBuffer<int32> ww #= w.wordView();
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (tokens * bpr * 320L));
+        xp.upload(hx);
+        KernelBuffer<float32> yr = heap KernelBuffer<float32>((uint64) (tokens * outDim));
+        KernelBuffer<float32> yn = heap KernelBuffer<float32>((uint64) (tokens * outDim));
+        KernelBuffer<float32> part = heap KernelBuffer<float32>((uint64) 16L);
+        float32[] gr #= heap float32[tokens * outDim];
+        float32[] gn #= heap float32[tokens * outDim];
+        KernelStream s #= KernelStream.current();
+        MwBench.run(1L, yr, w, ww, xp, tokens, outDim, cols, part);
+        MwBench.run(3L, yn, w, ww, xp, tokens, outDim, cols, part);
+        s.sync();
+        yr.download(gr);
+        yn.download(gn);
+        float64 rel = WaveBench.normRel(gr, gn, tokens * outDim);
+        int64[] best #= heap int64[4];
+        int64 q = 0L;
+        while (q < 4L) { best[q] = 9000000000000L; q = q + 1L; }
+        int64 round = 0L;
+        while (round < 15L) {
+            q = 0L;
+            while (q < 4L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { MwBench.run(q, q < 2L ? yr : yn, w, ww, xp, tokens, outDim, cols, part); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best[q]) { best[q] = (t1 - t0) / reps; }
+                q = q + 1L;
+            }
+            round = round + 1L;
+        }
+        int64 bestR = best[0] < best[1] ? best[0] : best[1];
+        int64 bestN = best[2] < best[3] ? best[2] : best[3];
+        System.stdout.println("" + tokens + "x" + outDim + "x" + cols + " normRel " + rel + " mw64_us " + (best[0] / 1000L) + " mw128_us " + (best[1] / 1000L)
+            + " drv64_us " + (best[2] / 1000L) + " drv128_us " + (best[3] / 1000L) + " best_ratio_pct " + (bestN * 100L / bestR));
+        return rel > 0.00001 ? 1L : 0L;
+    }
+
+    public static int32 main() {
+        int64 bad = 0L;
+        bad = bad + MwBench.shape(128L, 256L, 512L, 2L);
+        bad = bad + MwBench.shape(512L, 1024L, 4096L, 20L);
+        bad = bad + MwBench.shape(512L, 4096L, 4096L, 20L);
+        bad = bad + MwBench.shape(512L, 14336L, 4096L, 6L);
+        bad = bad + MwBench.shape(512L, 4096L, 14336L, 6L);
+        bad = bad + MwBench.shape(512L, 2048L, 2560L, 20L);
+        bad = bad + MwBench.shape(512L, 10240L, 2560L, 8L);
+        bad = bad + MwBench.shape(2048L, 4096L, 4096L, 4L);
+        System.stdout.println(bad == 0L ? "ALL CLOSE" : "DIFFERENT");
+        return bad == 0L ? 0 : 1;
+    }
+}

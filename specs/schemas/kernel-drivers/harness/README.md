@@ -50,3 +50,7 @@ timed beside it.
 `ref/Q6IdTile` on host-built chunk maps (ragged expert counts, some empty), bitwise over every output row, the
 stored and the never-stored, both members; and the Q4_K Id members against the lifted `ref/IdTile` by difference
 over the output scale, best member against best (`IdTile` folds the scales in float).
+
+`MwBench` (plan 8.3.3) times cajeta-llm's multi-wave Q4_K GEMM `ref/MwTile` (lifted, one launch in place of its
+sliced sweep) against the tile driver's Q4_K members, best against best, by difference over the output scale;
+`IdBench`'s Q4_K rows also time the hand-written Id kernel `ref/RefIdMw` (`q4kWmmaIdMwKernel`, `IdHandTile`).
