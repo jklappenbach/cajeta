@@ -1,0 +1,310 @@
+package ref;
+
+import cajeta.lang.Cajeta;
+import cajeta.lang.System;
+import cajeta.time.Clock;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.ml.kernels.attn.AttnDecodeWave;
+
+/** kernel-drivers 9.3.6: the GPU decode-attention driver's batch entry against cajeta-llm's batched flash decode on the same data. */
+public class AttnBatchBench {
+
+    static int64 b0(int32 nKv, int32 n, int64 reps) {
+        int64 hd = 128L;
+        int32 group = 4;
+        int64 nH = (int64) nKv * (int64) group;
+        int64 kvDim = (int64) nKv * hd;
+        int32 maxSplits = 8;
+        int32[] rt #= heap int32[(int64) n * 4L];
+        int64 blocks = 0L;
+        int32 r = 0;
+        while (r < n) {
+            int32 count = 100 + 377 * r;
+            int32 last = count - 1 + 13 * r;
+            rt[(int64) (r * 4)] = (int32) blocks;
+            rt[(int64) (r * 4 + 1)] = last;
+            rt[(int64) (r * 4 + 2)] = count;
+            rt[(int64) (r * 4 + 3)] = 1 + (r * 3) % maxSplits;
+            blocks = blocks + ((int64) (last + 1) + 63L) / 64L;
+            r = r + 1;
+        }
+        int64 rows = blocks * 64L;
+        float16[] kh #= heap float16[rows * kvDim];
+        float16[] vh #= heap float16[rows * kvDim];
+        int64 i = 0L;
+        while (i < rows * kvDim) { kh[i] = (float16) AttnBench.rnd(i); vh[i] = (float16) AttnBench.rnd(i + 7777777L); i = i + 1L; }
+        float32[] qh #= heap float32[(int64) n * nH * hd];
+        i = 0L;
+        while (i < (int64) n * nH * hd) { qh[i] = AttnBench.rnd(i + 31L) * 3.0f; i = i + 1L; }
+        int32[] tab #= heap int32[blocks];
+        i = 0L;
+        while (i < blocks) { tab[i] = (int32) ((i * 7L) % blocks); i = i + 1L; }
+        KernelBuffer<float16> k = heap KernelBuffer<float16>((uint64) (rows * kvDim));
+        KernelBuffer<float16> v = heap KernelBuffer<float16>((uint64) (rows * kvDim));
+        KernelBuffer<float32> q = heap KernelBuffer<float32>((uint64) ((int64) n * nH * hd));
+        KernelBuffer<int32> pt = heap KernelBuffer<int32>((uint64) blocks);
+        KernelBuffer<int32> rtab = heap KernelBuffer<int32>((uint64) ((int64) n * 4L));
+        k.upload(kh);
+        v.upload(vh);
+        q.upload(qh);
+        pt.upload(tab);
+        rtab.upload(rt);
+        int64 partStride = nH * 64L * (hd + 2L);
+        int64 pn = partStride * (int64) n;
+        KernelBuffer<float32> pr = heap KernelBuffer<float32>((uint64) pn);
+        KernelBuffer<float32> pd = heap KernelBuffer<float32>((uint64) pn);
+        float32[] zero #= heap float32[pn];
+        pr.upload(zero);
+        pd.upload(zero);
+        float32 scale = 0.0883883f;
+        AttnDecodeWave<4, 4, 16, 4, 16> a = heap AttnDecodeWave<4, 4, 16, 4, 16>();
+        KernelStream s #= KernelStream.current();
+        RefAttnW.run_attnFlashDecodeGqa4BatchKernel(pr, q, k, v, pt, nKv, rtab, n, maxSplits, (int32) (nH * hd), (int32) partStride, scale);
+        a.runBatchOn(s, pd, q, k, v, pt, nKv, group, rtab, n, maxSplits, (int32) (nH * hd), (int32) partStride, scale);
+        s.sync();
+        float32[] gr #= heap float32[pn];
+        float32[] gd #= heap float32[pn];
+        pr.download(gr);
+        pd.download(gd);
+        int64 bad = 0L;
+        float64 md = 0.0;
+        float64 big = 0.0;
+        i = 0L;
+        while (i < pn) {
+            if (Cajeta.f32ToBits(gr[i]) != Cajeta.f32ToBits(gd[i])) { bad = bad + 1L; }
+            float64 d = (float64) gr[i] - (float64) gd[i];
+            if (d < 0.0) { d = 0.0 - d; }
+            float64 g = (float64) gr[i];
+            if (g < 0.0) { g = 0.0 - g; }
+            if (d > md) { md = d; }
+            if (g > big) { big = g; }
+            i = i + 1L;
+        }
+        float64 rel = md / big;
+        int64 bestR = 9000000000000L;
+        int64 bestA = 9000000000000L;
+        int64 round = 0L;
+        while (round < 25L) {
+            int64 t0 = Clock.nanoTime();
+            int64 rr = 0L;
+            while (rr < reps) { RefAttnW.run_attnFlashDecodeGqa4BatchKernel(pr, q, k, v, pt, nKv, rtab, n, maxSplits, (int32) (nH * hd), (int32) partStride, scale); rr = rr + 1L; }
+            s.sync();
+            int64 t1 = Clock.nanoTime();
+            rr = 0L;
+            while (rr < reps) { a.runBatchOn(s, pd, q, k, v, pt, nKv, group, rtab, n, maxSplits, (int32) (nH * hd), (int32) partStride, scale); rr = rr + 1L; }
+            s.sync();
+            int64 t2 = Clock.nanoTime();
+            if ((t1 - t0) / reps < bestR) { bestR = (t1 - t0) / reps; }
+            if ((t2 - t1) / reps < bestA) { bestA = (t2 - t1) / reps; }
+            round = round + 1L;
+        }
+        System.stdout.println("attnFlashDecodeGqa4BatchKernel nKv " + nKv + " rows " + n + " bitDiff " + bad + " rel " + rel + " ref_ns " + bestR + " drv_ns " + bestA
+            + " ratio_pct " + (bestA * 100L / bestR));
+        int64 fail = 0L;
+        if (false && bad != 0L) { fail = 1L; }
+        if (rel > 0.000002) { fail = 1L; }
+        return fail;
+    }
+
+    static int64 b1(int32 nKv, int32 n, int64 reps) {
+        int64 hd = 128L;
+        int32 group = 8;
+        int64 nH = (int64) nKv * (int64) group;
+        int64 kvDim = (int64) nKv * hd;
+        int32 maxSplits = 8;
+        int32[] rt #= heap int32[(int64) n * 4L];
+        int64 blocks = 0L;
+        int32 r = 0;
+        while (r < n) {
+            int32 count = 100 + 377 * r;
+            int32 last = count - 1 + 13 * r;
+            rt[(int64) (r * 4)] = (int32) blocks;
+            rt[(int64) (r * 4 + 1)] = last;
+            rt[(int64) (r * 4 + 2)] = count;
+            rt[(int64) (r * 4 + 3)] = 1 + (r * 3) % maxSplits;
+            blocks = blocks + ((int64) (last + 1) + 63L) / 64L;
+            r = r + 1;
+        }
+        int64 rows = blocks * 64L;
+        float16[] kh #= heap float16[rows * kvDim];
+        float16[] vh #= heap float16[rows * kvDim];
+        int64 i = 0L;
+        while (i < rows * kvDim) { kh[i] = (float16) AttnBench.rnd(i); vh[i] = (float16) AttnBench.rnd(i + 7777777L); i = i + 1L; }
+        float32[] qh #= heap float32[(int64) n * nH * hd];
+        i = 0L;
+        while (i < (int64) n * nH * hd) { qh[i] = AttnBench.rnd(i + 31L) * 3.0f; i = i + 1L; }
+        int32[] tab #= heap int32[blocks];
+        i = 0L;
+        while (i < blocks) { tab[i] = (int32) ((i * 7L) % blocks); i = i + 1L; }
+        KernelBuffer<float16> k = heap KernelBuffer<float16>((uint64) (rows * kvDim));
+        KernelBuffer<float16> v = heap KernelBuffer<float16>((uint64) (rows * kvDim));
+        KernelBuffer<float32> q = heap KernelBuffer<float32>((uint64) ((int64) n * nH * hd));
+        KernelBuffer<int32> pt = heap KernelBuffer<int32>((uint64) blocks);
+        KernelBuffer<int32> rtab = heap KernelBuffer<int32>((uint64) ((int64) n * 4L));
+        k.upload(kh);
+        v.upload(vh);
+        q.upload(qh);
+        pt.upload(tab);
+        rtab.upload(rt);
+        int64 partStride = nH * 64L * (hd + 2L);
+        int64 pn = partStride * (int64) n;
+        KernelBuffer<float32> pr = heap KernelBuffer<float32>((uint64) pn);
+        KernelBuffer<float32> pd = heap KernelBuffer<float32>((uint64) pn);
+        float32[] zero #= heap float32[pn];
+        pr.upload(zero);
+        pd.upload(zero);
+        float32 scale = 0.0883883f;
+        AttnDecodeWave<4, 4, 16, 4, 16> a = heap AttnDecodeWave<4, 4, 16, 4, 16>();
+        KernelStream s #= KernelStream.current();
+        RefAttnW.run_attnFlashDecodeGqa8BatchKernel(pr, q, k, v, pt, nKv, rtab, n, maxSplits, (int32) (nH * hd), (int32) partStride, scale);
+        a.runBatchOn(s, pd, q, k, v, pt, nKv, group, rtab, n, maxSplits, (int32) (nH * hd), (int32) partStride, scale);
+        s.sync();
+        float32[] gr #= heap float32[pn];
+        float32[] gd #= heap float32[pn];
+        pr.download(gr);
+        pd.download(gd);
+        int64 bad = 0L;
+        float64 md = 0.0;
+        float64 big = 0.0;
+        i = 0L;
+        while (i < pn) {
+            if (Cajeta.f32ToBits(gr[i]) != Cajeta.f32ToBits(gd[i])) { bad = bad + 1L; }
+            float64 d = (float64) gr[i] - (float64) gd[i];
+            if (d < 0.0) { d = 0.0 - d; }
+            float64 g = (float64) gr[i];
+            if (g < 0.0) { g = 0.0 - g; }
+            if (d > md) { md = d; }
+            if (g > big) { big = g; }
+            i = i + 1L;
+        }
+        float64 rel = md / big;
+        int64 bestR = 9000000000000L;
+        int64 bestA = 9000000000000L;
+        int64 round = 0L;
+        while (round < 25L) {
+            int64 t0 = Clock.nanoTime();
+            int64 rr = 0L;
+            while (rr < reps) { RefAttnW.run_attnFlashDecodeGqa8BatchKernel(pr, q, k, v, pt, nKv, rtab, n, maxSplits, (int32) (nH * hd), (int32) partStride, scale); rr = rr + 1L; }
+            s.sync();
+            int64 t1 = Clock.nanoTime();
+            rr = 0L;
+            while (rr < reps) { a.runBatchOn(s, pd, q, k, v, pt, nKv, group, rtab, n, maxSplits, (int32) (nH * hd), (int32) partStride, scale); rr = rr + 1L; }
+            s.sync();
+            int64 t2 = Clock.nanoTime();
+            if ((t1 - t0) / reps < bestR) { bestR = (t1 - t0) / reps; }
+            if ((t2 - t1) / reps < bestA) { bestA = (t2 - t1) / reps; }
+            round = round + 1L;
+        }
+        System.stdout.println("attnFlashDecodeGqa8BatchKernel nKv " + nKv + " rows " + n + " bitDiff " + bad + " rel " + rel + " ref_ns " + bestR + " drv_ns " + bestA
+            + " ratio_pct " + (bestA * 100L / bestR));
+        int64 fail = 0L;
+        if (true && bad != 0L) { fail = 1L; }
+        if (rel > 0.000002) { fail = 1L; }
+        return fail;
+    }
+
+    static int64 b2(int32 nKv, int32 n, int64 reps) {
+        int64 hd = 256L;
+        int32 group = 2;
+        int64 nH = (int64) nKv * (int64) group;
+        int64 kvDim = (int64) nKv * hd;
+        int32 maxSplits = 8;
+        int32[] rt #= heap int32[(int64) n * 4L];
+        int64 blocks = 0L;
+        int32 r = 0;
+        while (r < n) {
+            int32 count = 100 + 377 * r;
+            int32 last = count - 1 + 13 * r;
+            rt[(int64) (r * 4)] = (int32) blocks;
+            rt[(int64) (r * 4 + 1)] = last;
+            rt[(int64) (r * 4 + 2)] = count;
+            rt[(int64) (r * 4 + 3)] = 1 + (r * 3) % maxSplits;
+            blocks = blocks + ((int64) (last + 1) + 63L) / 64L;
+            r = r + 1;
+        }
+        int64 rows = blocks * 64L;
+        float16[] kh #= heap float16[rows * kvDim];
+        float16[] vh #= heap float16[rows * kvDim];
+        int64 i = 0L;
+        while (i < rows * kvDim) { kh[i] = (float16) AttnBench.rnd(i); vh[i] = (float16) AttnBench.rnd(i + 7777777L); i = i + 1L; }
+        float32[] qh #= heap float32[(int64) n * nH * hd];
+        i = 0L;
+        while (i < (int64) n * nH * hd) { qh[i] = AttnBench.rnd(i + 31L) * 3.0f; i = i + 1L; }
+        int32[] tab #= heap int32[blocks];
+        i = 0L;
+        while (i < blocks) { tab[i] = (int32) ((i * 7L) % blocks); i = i + 1L; }
+        KernelBuffer<float16> k = heap KernelBuffer<float16>((uint64) (rows * kvDim));
+        KernelBuffer<float16> v = heap KernelBuffer<float16>((uint64) (rows * kvDim));
+        KernelBuffer<float32> q = heap KernelBuffer<float32>((uint64) ((int64) n * nH * hd));
+        KernelBuffer<int32> pt = heap KernelBuffer<int32>((uint64) blocks);
+        KernelBuffer<int32> rtab = heap KernelBuffer<int32>((uint64) ((int64) n * 4L));
+        k.upload(kh);
+        v.upload(vh);
+        q.upload(qh);
+        pt.upload(tab);
+        rtab.upload(rt);
+        int64 partStride = nH * 64L * (hd + 2L);
+        int64 pn = partStride * (int64) n;
+        KernelBuffer<float32> pr = heap KernelBuffer<float32>((uint64) pn);
+        KernelBuffer<float32> pd = heap KernelBuffer<float32>((uint64) pn);
+        float32[] zero #= heap float32[pn];
+        pr.upload(zero);
+        pd.upload(zero);
+        float32 scale = 0.0883883f;
+        AttnDecodeWave<2, 8, 16, 4, 32> a = heap AttnDecodeWave<2, 8, 16, 4, 32>();
+        KernelStream s #= KernelStream.current();
+        RefAttnW.run_attnFlashDecodeGqa2Hd256BatchKernel(pr, q, k, v, pt, nKv, rtab, n, maxSplits, (int32) (nH * hd), (int32) partStride, scale);
+        a.runBatchOn(s, pd, q, k, v, pt, nKv, group, rtab, n, maxSplits, (int32) (nH * hd), (int32) partStride, scale);
+        s.sync();
+        float32[] gr #= heap float32[pn];
+        float32[] gd #= heap float32[pn];
+        pr.download(gr);
+        pd.download(gd);
+        int64 bad = 0L;
+        float64 md = 0.0;
+        float64 big = 0.0;
+        i = 0L;
+        while (i < pn) {
+            if (Cajeta.f32ToBits(gr[i]) != Cajeta.f32ToBits(gd[i])) { bad = bad + 1L; }
+            float64 d = (float64) gr[i] - (float64) gd[i];
+            if (d < 0.0) { d = 0.0 - d; }
+            float64 g = (float64) gr[i];
+            if (g < 0.0) { g = 0.0 - g; }
+            if (d > md) { md = d; }
+            if (g > big) { big = g; }
+            i = i + 1L;
+        }
+        float64 rel = md / big;
+        int64 bestR = 9000000000000L;
+        int64 bestA = 9000000000000L;
+        int64 round = 0L;
+        while (round < 25L) {
+            int64 t0 = Clock.nanoTime();
+            int64 rr = 0L;
+            while (rr < reps) { RefAttnW.run_attnFlashDecodeGqa2Hd256BatchKernel(pr, q, k, v, pt, nKv, rtab, n, maxSplits, (int32) (nH * hd), (int32) partStride, scale); rr = rr + 1L; }
+            s.sync();
+            int64 t1 = Clock.nanoTime();
+            rr = 0L;
+            while (rr < reps) { a.runBatchOn(s, pd, q, k, v, pt, nKv, group, rtab, n, maxSplits, (int32) (nH * hd), (int32) partStride, scale); rr = rr + 1L; }
+            s.sync();
+            int64 t2 = Clock.nanoTime();
+            if ((t1 - t0) / reps < bestR) { bestR = (t1 - t0) / reps; }
+            if ((t2 - t1) / reps < bestA) { bestA = (t2 - t1) / reps; }
+            round = round + 1L;
+        }
+        System.stdout.println("attnFlashDecodeGqa2Hd256BatchKernel nKv " + nKv + " rows " + n + " bitDiff " + bad + " rel " + rel + " ref_ns " + bestR + " drv_ns " + bestA
+            + " ratio_pct " + (bestA * 100L / bestR));
+        int64 fail = 0L;
+        if (false && bad != 0L) { fail = 1L; }
+        if (rel > 0.000002) { fail = 1L; }
+        return fail;
+    }
+
+    public static int32 main() {
+        int64 bad = AttnBatchBench.b0(8, 6, 20L) + AttnBatchBench.b1(4, 6, 20L) + AttnBatchBench.b2(4, 6, 20L);
+        bad = bad + AttnBatchBench.b0(8, 16, 10L) + AttnBatchBench.b1(4, 16, 10L) + AttnBatchBench.b2(4, 16, 10L);
+        System.stdout.println(bad == 0L ? "ALL WITHIN" : "OUTSIDE");
+        return bad == 0L ? 0 : 1;
+    }
+}

@@ -30,3 +30,5 @@ cajeta-llm's `q{4,5,6,3,2}kQ8X8VecKernel` (`ref/RefVec*`), every K format, on th
 `AttnBench` is the cpu decode attention (plan 9.3) against `ref/RefAttn` (`attnDecodeCpuGqaKernel`).
 
 `AttnWaveBench` is the GPU decode attention (plan 9.3.3) against `ref/RefAttnW` (llm's Gqa4, Gqa8 and Gqa2Hd256 flash decode); Gqa8 bitwise, the others by difference over the output scale (spec 7.7).
+
+`AttnBatchBench` (GPU) and `AttnCpuBatchBench` (cpu) are the batched decode attention (plan 9.3.6).

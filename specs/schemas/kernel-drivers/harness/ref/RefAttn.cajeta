@@ -120,4 +120,48 @@ public final class RefAttn {
         attnDecodeCpuGqaKernel.launch(s, grid: [(uint32) (nKv * splits)], block: [1])
             (part, q, kPool, vPool, pgTab, 0, (uint32) nKv, (uint32) group, (uint32) count, 0, (uint32) splits, scale);
     }
+
+    @Kernel(targets = {"cpu"}) @FastMath
+    @Occupancy(maxThreads = 256)
+    public static void attnDecodeCpuGqaBatchKernel(KernelBuffer<float32> part,
+            KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+            KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, uint32 nKv, uint32 group, KernelBuffer<int32> rowTab,
+            uint32 maxSplits, uint32 qStride, uint32 partStride, float32 scale, uint32 n) {
+        uint32 gi = KernelThread.globalIdX();
+        uint32 r = gi / (nKv * maxSplits);
+        uint32 wv = gi % (nKv * maxSplits);
+        if (r < n) {
+            uint32 slotBase = (uint32) rowTab[(int64) (r * 4)];
+            uint32 count = (uint32) rowTab[(int64) (r * 4 + 2)];
+            uint32 from = (uint32) rowTab[(int64) (r * 4 + 1)] + 1 - count;
+            uint32 splits = (uint32) rowTab[(int64) (r * 4 + 3)];
+            if (wv < nKv * splits) {
+                uint32 kvh = wv / splits;
+                uint32 sp = wv % splits;
+                uint32 chunk = (count + splits - 1) / splits;
+                uint32 t0 = sp * chunk;
+                uint32 t1 = t0 + chunk;
+                if (t1 > count) { t1 = count; }
+                if (t0 > count) { t0 = count; }
+                int64 kvDim = (int64) (nKv * 128);
+                int64 kOff0 = (int64) (kvh * 128);
+                uint32 h = 0;
+                while (h < group) {
+                    uint32 hh = kvh * group + h;
+                    RefAttn.cpuDecodeHead(part, q, kPool, vPool, pgTab, slotBase, (int64) (r * qStride + hh * 128), kOff0, kvDim,
+                        (int64) from, (int64) t0, (int64) t1, (int64) (r * partStride + (hh * splits + sp) * 130), scale);
+                    h = h + 1;
+                }
+            }
+        }
+    }
+
+    public static void runBatch(KernelBuffer<float32> part, KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+            KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, int32 nKv, int32 group, KernelBuffer<int32> rowTab, int32 n,
+            int32 maxSplits, int32 qStride, int32 partStride, float32 scale) {
+        KernelStream s #= KernelStream.current();
+        attnDecodeCpuGqaBatchKernel.launch(s, grid: [(uint32) (n * nKv * maxSplits)], block: [1])
+            (part, q, kPool, vPool, pgTab, (uint32) nKv, (uint32) group, rowTab, (uint32) maxSplits, (uint32) qStride,
+             (uint32) partStride, scale, (uint32) n);
+    }
 }
