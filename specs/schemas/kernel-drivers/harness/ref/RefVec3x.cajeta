@@ -1,0 +1,485 @@
+package ref;
+
+import cajeta.lang.Cajeta;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Vector;
+
+/** cajeta-llm's cpu Q4_K prefill kernel, lifted unchanged. */
+public final class RefVec3x {
+    public RefVec3x() { return; }
+
+    @Device
+    static void rowsStore(KernelBuffer<float32> y, int64 yi, float32 v, uint32 accum) {
+        if (accum != 0) { y[yi] = y[yi] + v; } else { y[yi] = v; }
+    }
+
+    /** Rows `r0 .. r0+7` of `v` to `y[yi ..)`, only those below `rows`, set or added. */
+    @Device
+    static void x8Store(KernelBuffer<float32> y, int64 yi, Vector<float32,8> v, uint32 rows, int64 r0,
+            uint32 accum) {
+        if (r0 + 8L <= (int64) rows) {
+            if (accum != 0) { y.vstore(yi, y.vload<8>(yi) + v); } else { y.vstore(yi, v); }
+            return;
+        }
+        int64 n = (int64) rows - r0;
+        if (n > 0L) { RefVec3x.rowsStore(y, yi, v[0], accum); }
+        if (n > 1L) { RefVec3x.rowsStore(y, yi + 1L, v[1], accum); }
+        if (n > 2L) { RefVec3x.rowsStore(y, yi + 2L, v[2], accum); }
+        if (n > 3L) { RefVec3x.rowsStore(y, yi + 3L, v[3], accum); }
+        if (n > 4L) { RefVec3x.rowsStore(y, yi + 4L, v[4], accum); }
+        if (n > 5L) { RefVec3x.rowsStore(y, yi + 5L, v[5], accum); }
+        if (n > 6L) { RefVec3x.rowsStore(y, yi + 6L, v[6], accum); }
+    }
+
+    @Device
+    static void q4kX8VecGroup(KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp,
+            uint32 rows, uint32 gr, int64 blocksPerRow, uint32 accum,
+            int64 wBase, int64 xBase, int64 yBase) {
+        int64 r0 = (int64) gr * 8L;
+        int64 wg = wBase + (int64) gr * blocksPerRow * 1216L;
+        Vector<int32,8> z8 = heap Vector<int32,8>(0, 0, 0, 0, 0, 0, 0, 0);
+        Vector<float32,8> zf = z8.toF32();
+        int64 x0 = xBase;
+        Vector<float32,8> acc0 = zf;
+        int64 b = 0;
+        while (b < blocksPerRow) {
+            int64 wo = wg + b * 1216L;
+            int64 xo = b * 320L;
+            Vector<int32,8> dw = w.vload<32>(wo).asWords();
+            Vector<int32,8> mw = w.vload<32>(wo + 32L).asWords();
+            Vector<float32,8> dv = heap Vector<float32,8>(Cajeta.bitsToF32(dw[0]), Cajeta.bitsToF32(dw[1]), Cajeta.bitsToF32(dw[2]), Cajeta.bitsToF32(dw[3]), Cajeta.bitsToF32(dw[4]), Cajeta.bitsToF32(dw[5]), Cajeta.bitsToF32(dw[6]), Cajeta.bitsToF32(dw[7]));
+            Vector<float32,8> mv = heap Vector<float32,8>(Cajeta.bitsToF32(mw[0]), Cajeta.bitsToF32(mw[1]), Cajeta.bitsToF32(mw[2]), Cajeta.bitsToF32(mw[3]), Cajeta.bitsToF32(mw[4]), Cajeta.bitsToF32(mw[5]), Cajeta.bitsToF32(mw[6]), Cajeta.bitsToF32(mw[7]));
+            Vector<uint8,32> sA = w.vload<32>(wo + 64L).asUnsigned();
+            Vector<uint8,32> sB = w.vload<32>(wo + 96L).asUnsigned();
+            Vector<uint8,32> nA = w.vload<32>(wo + 128L).asUnsigned();
+            Vector<uint8,32> nB = w.vload<32>(wo + 160L).asUnsigned();
+            Vector<int32,8> si0 = z8;
+            Vector<uint16,16> h0 = sA.widenLo();
+            Vector<int32,8> scl0 = h0.widenLo().asSigned();
+            Vector<int32,8> sch0 = h0.widenHi().asSigned();
+            Vector<int32,8> tl0g0 = z8;
+            Vector<int32,8> th0g0 = z8;
+            Vector<uint8,32> rq00 = w.vload<32>(wo + 192L).asUnsigned();
+            Vector<uint8,32> lq00 = rq00 & 15;
+            Vector<uint8,32> hq00 = (rq00 >> 4) & 15;
+            Vector<int32,1> wal0g0q0 = xp.vload<4>(x0 + xo + 0L).asWords();
+            int32 sal0g0q0 = wal0g0q0[0];
+            Vector<int8,32> al0g0q0 = heap Vector<int32,8>(sal0g0q0, sal0g0q0, sal0g0q0, sal0g0q0, sal0g0q0, sal0g0q0, sal0g0q0, sal0g0q0).asBytes();
+            tl0g0 = lq00.dotAccum(al0g0q0, tl0g0);
+            Vector<int32,1> wah0g0q0 = xp.vload<4>(x0 + xo + 32L).asWords();
+            int32 sah0g0q0 = wah0g0q0[0];
+            Vector<int8,32> ah0g0q0 = heap Vector<int32,8>(sah0g0q0, sah0g0q0, sah0g0q0, sah0g0q0, sah0g0q0, sah0g0q0, sah0g0q0, sah0g0q0).asBytes();
+            th0g0 = hq00.dotAccum(ah0g0q0, th0g0);
+            Vector<uint8,32> rq01 = w.vload<32>(wo + 224L).asUnsigned();
+            Vector<uint8,32> lq01 = rq01 & 15;
+            Vector<uint8,32> hq01 = (rq01 >> 4) & 15;
+            Vector<int32,1> wal0g0q1 = xp.vload<4>(x0 + xo + 4L).asWords();
+            int32 sal0g0q1 = wal0g0q1[0];
+            Vector<int8,32> al0g0q1 = heap Vector<int32,8>(sal0g0q1, sal0g0q1, sal0g0q1, sal0g0q1, sal0g0q1, sal0g0q1, sal0g0q1, sal0g0q1).asBytes();
+            tl0g0 = lq01.dotAccum(al0g0q1, tl0g0);
+            Vector<int32,1> wah0g0q1 = xp.vload<4>(x0 + xo + 36L).asWords();
+            int32 sah0g0q1 = wah0g0q1[0];
+            Vector<int8,32> ah0g0q1 = heap Vector<int32,8>(sah0g0q1, sah0g0q1, sah0g0q1, sah0g0q1, sah0g0q1, sah0g0q1, sah0g0q1, sah0g0q1).asBytes();
+            th0g0 = hq01.dotAccum(ah0g0q1, th0g0);
+            Vector<uint8,32> rq02 = w.vload<32>(wo + 256L).asUnsigned();
+            Vector<uint8,32> lq02 = rq02 & 15;
+            Vector<uint8,32> hq02 = (rq02 >> 4) & 15;
+            Vector<int32,1> wal0g0q2 = xp.vload<4>(x0 + xo + 8L).asWords();
+            int32 sal0g0q2 = wal0g0q2[0];
+            Vector<int8,32> al0g0q2 = heap Vector<int32,8>(sal0g0q2, sal0g0q2, sal0g0q2, sal0g0q2, sal0g0q2, sal0g0q2, sal0g0q2, sal0g0q2).asBytes();
+            tl0g0 = lq02.dotAccum(al0g0q2, tl0g0);
+            Vector<int32,1> wah0g0q2 = xp.vload<4>(x0 + xo + 40L).asWords();
+            int32 sah0g0q2 = wah0g0q2[0];
+            Vector<int8,32> ah0g0q2 = heap Vector<int32,8>(sah0g0q2, sah0g0q2, sah0g0q2, sah0g0q2, sah0g0q2, sah0g0q2, sah0g0q2, sah0g0q2).asBytes();
+            th0g0 = hq02.dotAccum(ah0g0q2, th0g0);
+            Vector<uint8,32> rq03 = w.vload<32>(wo + 288L).asUnsigned();
+            Vector<uint8,32> lq03 = rq03 & 15;
+            Vector<uint8,32> hq03 = (rq03 >> 4) & 15;
+            Vector<int32,1> wal0g0q3 = xp.vload<4>(x0 + xo + 12L).asWords();
+            int32 sal0g0q3 = wal0g0q3[0];
+            Vector<int8,32> al0g0q3 = heap Vector<int32,8>(sal0g0q3, sal0g0q3, sal0g0q3, sal0g0q3, sal0g0q3, sal0g0q3, sal0g0q3, sal0g0q3).asBytes();
+            tl0g0 = lq03.dotAccum(al0g0q3, tl0g0);
+            Vector<int32,1> wah0g0q3 = xp.vload<4>(x0 + xo + 44L).asWords();
+            int32 sah0g0q3 = wah0g0q3[0];
+            Vector<int8,32> ah0g0q3 = heap Vector<int32,8>(sah0g0q3, sah0g0q3, sah0g0q3, sah0g0q3, sah0g0q3, sah0g0q3, sah0g0q3, sah0g0q3).asBytes();
+            th0g0 = hq03.dotAccum(ah0g0q3, th0g0);
+            Vector<uint8,32> rq04 = w.vload<32>(wo + 320L).asUnsigned();
+            Vector<uint8,32> lq04 = rq04 & 15;
+            Vector<uint8,32> hq04 = (rq04 >> 4) & 15;
+            Vector<int32,1> wal0g0q4 = xp.vload<4>(x0 + xo + 16L).asWords();
+            int32 sal0g0q4 = wal0g0q4[0];
+            Vector<int8,32> al0g0q4 = heap Vector<int32,8>(sal0g0q4, sal0g0q4, sal0g0q4, sal0g0q4, sal0g0q4, sal0g0q4, sal0g0q4, sal0g0q4).asBytes();
+            tl0g0 = lq04.dotAccum(al0g0q4, tl0g0);
+            Vector<int32,1> wah0g0q4 = xp.vload<4>(x0 + xo + 48L).asWords();
+            int32 sah0g0q4 = wah0g0q4[0];
+            Vector<int8,32> ah0g0q4 = heap Vector<int32,8>(sah0g0q4, sah0g0q4, sah0g0q4, sah0g0q4, sah0g0q4, sah0g0q4, sah0g0q4, sah0g0q4).asBytes();
+            th0g0 = hq04.dotAccum(ah0g0q4, th0g0);
+            Vector<uint8,32> rq05 = w.vload<32>(wo + 352L).asUnsigned();
+            Vector<uint8,32> lq05 = rq05 & 15;
+            Vector<uint8,32> hq05 = (rq05 >> 4) & 15;
+            Vector<int32,1> wal0g0q5 = xp.vload<4>(x0 + xo + 20L).asWords();
+            int32 sal0g0q5 = wal0g0q5[0];
+            Vector<int8,32> al0g0q5 = heap Vector<int32,8>(sal0g0q5, sal0g0q5, sal0g0q5, sal0g0q5, sal0g0q5, sal0g0q5, sal0g0q5, sal0g0q5).asBytes();
+            tl0g0 = lq05.dotAccum(al0g0q5, tl0g0);
+            Vector<int32,1> wah0g0q5 = xp.vload<4>(x0 + xo + 52L).asWords();
+            int32 sah0g0q5 = wah0g0q5[0];
+            Vector<int8,32> ah0g0q5 = heap Vector<int32,8>(sah0g0q5, sah0g0q5, sah0g0q5, sah0g0q5, sah0g0q5, sah0g0q5, sah0g0q5, sah0g0q5).asBytes();
+            th0g0 = hq05.dotAccum(ah0g0q5, th0g0);
+            Vector<uint8,32> rq06 = w.vload<32>(wo + 384L).asUnsigned();
+            Vector<uint8,32> lq06 = rq06 & 15;
+            Vector<uint8,32> hq06 = (rq06 >> 4) & 15;
+            Vector<int32,1> wal0g0q6 = xp.vload<4>(x0 + xo + 24L).asWords();
+            int32 sal0g0q6 = wal0g0q6[0];
+            Vector<int8,32> al0g0q6 = heap Vector<int32,8>(sal0g0q6, sal0g0q6, sal0g0q6, sal0g0q6, sal0g0q6, sal0g0q6, sal0g0q6, sal0g0q6).asBytes();
+            tl0g0 = lq06.dotAccum(al0g0q6, tl0g0);
+            Vector<int32,1> wah0g0q6 = xp.vload<4>(x0 + xo + 56L).asWords();
+            int32 sah0g0q6 = wah0g0q6[0];
+            Vector<int8,32> ah0g0q6 = heap Vector<int32,8>(sah0g0q6, sah0g0q6, sah0g0q6, sah0g0q6, sah0g0q6, sah0g0q6, sah0g0q6, sah0g0q6).asBytes();
+            th0g0 = hq06.dotAccum(ah0g0q6, th0g0);
+            Vector<uint8,32> rq07 = w.vload<32>(wo + 416L).asUnsigned();
+            Vector<uint8,32> lq07 = rq07 & 15;
+            Vector<uint8,32> hq07 = (rq07 >> 4) & 15;
+            Vector<int32,1> wal0g0q7 = xp.vload<4>(x0 + xo + 28L).asWords();
+            int32 sal0g0q7 = wal0g0q7[0];
+            Vector<int8,32> al0g0q7 = heap Vector<int32,8>(sal0g0q7, sal0g0q7, sal0g0q7, sal0g0q7, sal0g0q7, sal0g0q7, sal0g0q7, sal0g0q7).asBytes();
+            tl0g0 = lq07.dotAccum(al0g0q7, tl0g0);
+            Vector<int32,1> wah0g0q7 = xp.vload<4>(x0 + xo + 60L).asWords();
+            int32 sah0g0q7 = wah0g0q7[0];
+            Vector<int8,32> ah0g0q7 = heap Vector<int32,8>(sah0g0q7, sah0g0q7, sah0g0q7, sah0g0q7, sah0g0q7, sah0g0q7, sah0g0q7, sah0g0q7).asBytes();
+            th0g0 = hq07.dotAccum(ah0g0q7, th0g0);
+            si0 = si0 + tl0g0 * scl0 + th0g0 * sch0;
+            Vector<uint16,16> h1 = sA.widenHi();
+            Vector<int32,8> scl1 = h1.widenLo().asSigned();
+            Vector<int32,8> sch1 = h1.widenHi().asSigned();
+            Vector<int32,8> tl0g1 = z8;
+            Vector<int32,8> th0g1 = z8;
+            Vector<uint8,32> rq10 = w.vload<32>(wo + 448L).asUnsigned();
+            Vector<uint8,32> lq10 = rq10 & 15;
+            Vector<uint8,32> hq10 = (rq10 >> 4) & 15;
+            Vector<int32,1> wal0g1q0 = xp.vload<4>(x0 + xo + 64L).asWords();
+            int32 sal0g1q0 = wal0g1q0[0];
+            Vector<int8,32> al0g1q0 = heap Vector<int32,8>(sal0g1q0, sal0g1q0, sal0g1q0, sal0g1q0, sal0g1q0, sal0g1q0, sal0g1q0, sal0g1q0).asBytes();
+            tl0g1 = lq10.dotAccum(al0g1q0, tl0g1);
+            Vector<int32,1> wah0g1q0 = xp.vload<4>(x0 + xo + 96L).asWords();
+            int32 sah0g1q0 = wah0g1q0[0];
+            Vector<int8,32> ah0g1q0 = heap Vector<int32,8>(sah0g1q0, sah0g1q0, sah0g1q0, sah0g1q0, sah0g1q0, sah0g1q0, sah0g1q0, sah0g1q0).asBytes();
+            th0g1 = hq10.dotAccum(ah0g1q0, th0g1);
+            Vector<uint8,32> rq11 = w.vload<32>(wo + 480L).asUnsigned();
+            Vector<uint8,32> lq11 = rq11 & 15;
+            Vector<uint8,32> hq11 = (rq11 >> 4) & 15;
+            Vector<int32,1> wal0g1q1 = xp.vload<4>(x0 + xo + 68L).asWords();
+            int32 sal0g1q1 = wal0g1q1[0];
+            Vector<int8,32> al0g1q1 = heap Vector<int32,8>(sal0g1q1, sal0g1q1, sal0g1q1, sal0g1q1, sal0g1q1, sal0g1q1, sal0g1q1, sal0g1q1).asBytes();
+            tl0g1 = lq11.dotAccum(al0g1q1, tl0g1);
+            Vector<int32,1> wah0g1q1 = xp.vload<4>(x0 + xo + 100L).asWords();
+            int32 sah0g1q1 = wah0g1q1[0];
+            Vector<int8,32> ah0g1q1 = heap Vector<int32,8>(sah0g1q1, sah0g1q1, sah0g1q1, sah0g1q1, sah0g1q1, sah0g1q1, sah0g1q1, sah0g1q1).asBytes();
+            th0g1 = hq11.dotAccum(ah0g1q1, th0g1);
+            Vector<uint8,32> rq12 = w.vload<32>(wo + 512L).asUnsigned();
+            Vector<uint8,32> lq12 = rq12 & 15;
+            Vector<uint8,32> hq12 = (rq12 >> 4) & 15;
+            Vector<int32,1> wal0g1q2 = xp.vload<4>(x0 + xo + 72L).asWords();
+            int32 sal0g1q2 = wal0g1q2[0];
+            Vector<int8,32> al0g1q2 = heap Vector<int32,8>(sal0g1q2, sal0g1q2, sal0g1q2, sal0g1q2, sal0g1q2, sal0g1q2, sal0g1q2, sal0g1q2).asBytes();
+            tl0g1 = lq12.dotAccum(al0g1q2, tl0g1);
+            Vector<int32,1> wah0g1q2 = xp.vload<4>(x0 + xo + 104L).asWords();
+            int32 sah0g1q2 = wah0g1q2[0];
+            Vector<int8,32> ah0g1q2 = heap Vector<int32,8>(sah0g1q2, sah0g1q2, sah0g1q2, sah0g1q2, sah0g1q2, sah0g1q2, sah0g1q2, sah0g1q2).asBytes();
+            th0g1 = hq12.dotAccum(ah0g1q2, th0g1);
+            Vector<uint8,32> rq13 = w.vload<32>(wo + 544L).asUnsigned();
+            Vector<uint8,32> lq13 = rq13 & 15;
+            Vector<uint8,32> hq13 = (rq13 >> 4) & 15;
+            Vector<int32,1> wal0g1q3 = xp.vload<4>(x0 + xo + 76L).asWords();
+            int32 sal0g1q3 = wal0g1q3[0];
+            Vector<int8,32> al0g1q3 = heap Vector<int32,8>(sal0g1q3, sal0g1q3, sal0g1q3, sal0g1q3, sal0g1q3, sal0g1q3, sal0g1q3, sal0g1q3).asBytes();
+            tl0g1 = lq13.dotAccum(al0g1q3, tl0g1);
+            Vector<int32,1> wah0g1q3 = xp.vload<4>(x0 + xo + 108L).asWords();
+            int32 sah0g1q3 = wah0g1q3[0];
+            Vector<int8,32> ah0g1q3 = heap Vector<int32,8>(sah0g1q3, sah0g1q3, sah0g1q3, sah0g1q3, sah0g1q3, sah0g1q3, sah0g1q3, sah0g1q3).asBytes();
+            th0g1 = hq13.dotAccum(ah0g1q3, th0g1);
+            Vector<uint8,32> rq14 = w.vload<32>(wo + 576L).asUnsigned();
+            Vector<uint8,32> lq14 = rq14 & 15;
+            Vector<uint8,32> hq14 = (rq14 >> 4) & 15;
+            Vector<int32,1> wal0g1q4 = xp.vload<4>(x0 + xo + 80L).asWords();
+            int32 sal0g1q4 = wal0g1q4[0];
+            Vector<int8,32> al0g1q4 = heap Vector<int32,8>(sal0g1q4, sal0g1q4, sal0g1q4, sal0g1q4, sal0g1q4, sal0g1q4, sal0g1q4, sal0g1q4).asBytes();
+            tl0g1 = lq14.dotAccum(al0g1q4, tl0g1);
+            Vector<int32,1> wah0g1q4 = xp.vload<4>(x0 + xo + 112L).asWords();
+            int32 sah0g1q4 = wah0g1q4[0];
+            Vector<int8,32> ah0g1q4 = heap Vector<int32,8>(sah0g1q4, sah0g1q4, sah0g1q4, sah0g1q4, sah0g1q4, sah0g1q4, sah0g1q4, sah0g1q4).asBytes();
+            th0g1 = hq14.dotAccum(ah0g1q4, th0g1);
+            Vector<uint8,32> rq15 = w.vload<32>(wo + 608L).asUnsigned();
+            Vector<uint8,32> lq15 = rq15 & 15;
+            Vector<uint8,32> hq15 = (rq15 >> 4) & 15;
+            Vector<int32,1> wal0g1q5 = xp.vload<4>(x0 + xo + 84L).asWords();
+            int32 sal0g1q5 = wal0g1q5[0];
+            Vector<int8,32> al0g1q5 = heap Vector<int32,8>(sal0g1q5, sal0g1q5, sal0g1q5, sal0g1q5, sal0g1q5, sal0g1q5, sal0g1q5, sal0g1q5).asBytes();
+            tl0g1 = lq15.dotAccum(al0g1q5, tl0g1);
+            Vector<int32,1> wah0g1q5 = xp.vload<4>(x0 + xo + 116L).asWords();
+            int32 sah0g1q5 = wah0g1q5[0];
+            Vector<int8,32> ah0g1q5 = heap Vector<int32,8>(sah0g1q5, sah0g1q5, sah0g1q5, sah0g1q5, sah0g1q5, sah0g1q5, sah0g1q5, sah0g1q5).asBytes();
+            th0g1 = hq15.dotAccum(ah0g1q5, th0g1);
+            Vector<uint8,32> rq16 = w.vload<32>(wo + 640L).asUnsigned();
+            Vector<uint8,32> lq16 = rq16 & 15;
+            Vector<uint8,32> hq16 = (rq16 >> 4) & 15;
+            Vector<int32,1> wal0g1q6 = xp.vload<4>(x0 + xo + 88L).asWords();
+            int32 sal0g1q6 = wal0g1q6[0];
+            Vector<int8,32> al0g1q6 = heap Vector<int32,8>(sal0g1q6, sal0g1q6, sal0g1q6, sal0g1q6, sal0g1q6, sal0g1q6, sal0g1q6, sal0g1q6).asBytes();
+            tl0g1 = lq16.dotAccum(al0g1q6, tl0g1);
+            Vector<int32,1> wah0g1q6 = xp.vload<4>(x0 + xo + 120L).asWords();
+            int32 sah0g1q6 = wah0g1q6[0];
+            Vector<int8,32> ah0g1q6 = heap Vector<int32,8>(sah0g1q6, sah0g1q6, sah0g1q6, sah0g1q6, sah0g1q6, sah0g1q6, sah0g1q6, sah0g1q6).asBytes();
+            th0g1 = hq16.dotAccum(ah0g1q6, th0g1);
+            Vector<uint8,32> rq17 = w.vload<32>(wo + 672L).asUnsigned();
+            Vector<uint8,32> lq17 = rq17 & 15;
+            Vector<uint8,32> hq17 = (rq17 >> 4) & 15;
+            Vector<int32,1> wal0g1q7 = xp.vload<4>(x0 + xo + 92L).asWords();
+            int32 sal0g1q7 = wal0g1q7[0];
+            Vector<int8,32> al0g1q7 = heap Vector<int32,8>(sal0g1q7, sal0g1q7, sal0g1q7, sal0g1q7, sal0g1q7, sal0g1q7, sal0g1q7, sal0g1q7).asBytes();
+            tl0g1 = lq17.dotAccum(al0g1q7, tl0g1);
+            Vector<int32,1> wah0g1q7 = xp.vload<4>(x0 + xo + 124L).asWords();
+            int32 sah0g1q7 = wah0g1q7[0];
+            Vector<int8,32> ah0g1q7 = heap Vector<int32,8>(sah0g1q7, sah0g1q7, sah0g1q7, sah0g1q7, sah0g1q7, sah0g1q7, sah0g1q7, sah0g1q7).asBytes();
+            th0g1 = hq17.dotAccum(ah0g1q7, th0g1);
+            si0 = si0 + tl0g1 * scl1 + th0g1 * sch1;
+            Vector<uint16,16> h2 = sB.widenLo();
+            Vector<int32,8> scl2 = h2.widenLo().asSigned();
+            Vector<int32,8> sch2 = h2.widenHi().asSigned();
+            Vector<int32,8> tl0g2 = z8;
+            Vector<int32,8> th0g2 = z8;
+            Vector<uint8,32> rq20 = w.vload<32>(wo + 704L).asUnsigned();
+            Vector<uint8,32> lq20 = rq20 & 15;
+            Vector<uint8,32> hq20 = (rq20 >> 4) & 15;
+            Vector<int32,1> wal0g2q0 = xp.vload<4>(x0 + xo + 128L).asWords();
+            int32 sal0g2q0 = wal0g2q0[0];
+            Vector<int8,32> al0g2q0 = heap Vector<int32,8>(sal0g2q0, sal0g2q0, sal0g2q0, sal0g2q0, sal0g2q0, sal0g2q0, sal0g2q0, sal0g2q0).asBytes();
+            tl0g2 = lq20.dotAccum(al0g2q0, tl0g2);
+            Vector<int32,1> wah0g2q0 = xp.vload<4>(x0 + xo + 160L).asWords();
+            int32 sah0g2q0 = wah0g2q0[0];
+            Vector<int8,32> ah0g2q0 = heap Vector<int32,8>(sah0g2q0, sah0g2q0, sah0g2q0, sah0g2q0, sah0g2q0, sah0g2q0, sah0g2q0, sah0g2q0).asBytes();
+            th0g2 = hq20.dotAccum(ah0g2q0, th0g2);
+            Vector<uint8,32> rq21 = w.vload<32>(wo + 736L).asUnsigned();
+            Vector<uint8,32> lq21 = rq21 & 15;
+            Vector<uint8,32> hq21 = (rq21 >> 4) & 15;
+            Vector<int32,1> wal0g2q1 = xp.vload<4>(x0 + xo + 132L).asWords();
+            int32 sal0g2q1 = wal0g2q1[0];
+            Vector<int8,32> al0g2q1 = heap Vector<int32,8>(sal0g2q1, sal0g2q1, sal0g2q1, sal0g2q1, sal0g2q1, sal0g2q1, sal0g2q1, sal0g2q1).asBytes();
+            tl0g2 = lq21.dotAccum(al0g2q1, tl0g2);
+            Vector<int32,1> wah0g2q1 = xp.vload<4>(x0 + xo + 164L).asWords();
+            int32 sah0g2q1 = wah0g2q1[0];
+            Vector<int8,32> ah0g2q1 = heap Vector<int32,8>(sah0g2q1, sah0g2q1, sah0g2q1, sah0g2q1, sah0g2q1, sah0g2q1, sah0g2q1, sah0g2q1).asBytes();
+            th0g2 = hq21.dotAccum(ah0g2q1, th0g2);
+            Vector<uint8,32> rq22 = w.vload<32>(wo + 768L).asUnsigned();
+            Vector<uint8,32> lq22 = rq22 & 15;
+            Vector<uint8,32> hq22 = (rq22 >> 4) & 15;
+            Vector<int32,1> wal0g2q2 = xp.vload<4>(x0 + xo + 136L).asWords();
+            int32 sal0g2q2 = wal0g2q2[0];
+            Vector<int8,32> al0g2q2 = heap Vector<int32,8>(sal0g2q2, sal0g2q2, sal0g2q2, sal0g2q2, sal0g2q2, sal0g2q2, sal0g2q2, sal0g2q2).asBytes();
+            tl0g2 = lq22.dotAccum(al0g2q2, tl0g2);
+            Vector<int32,1> wah0g2q2 = xp.vload<4>(x0 + xo + 168L).asWords();
+            int32 sah0g2q2 = wah0g2q2[0];
+            Vector<int8,32> ah0g2q2 = heap Vector<int32,8>(sah0g2q2, sah0g2q2, sah0g2q2, sah0g2q2, sah0g2q2, sah0g2q2, sah0g2q2, sah0g2q2).asBytes();
+            th0g2 = hq22.dotAccum(ah0g2q2, th0g2);
+            Vector<uint8,32> rq23 = w.vload<32>(wo + 800L).asUnsigned();
+            Vector<uint8,32> lq23 = rq23 & 15;
+            Vector<uint8,32> hq23 = (rq23 >> 4) & 15;
+            Vector<int32,1> wal0g2q3 = xp.vload<4>(x0 + xo + 140L).asWords();
+            int32 sal0g2q3 = wal0g2q3[0];
+            Vector<int8,32> al0g2q3 = heap Vector<int32,8>(sal0g2q3, sal0g2q3, sal0g2q3, sal0g2q3, sal0g2q3, sal0g2q3, sal0g2q3, sal0g2q3).asBytes();
+            tl0g2 = lq23.dotAccum(al0g2q3, tl0g2);
+            Vector<int32,1> wah0g2q3 = xp.vload<4>(x0 + xo + 172L).asWords();
+            int32 sah0g2q3 = wah0g2q3[0];
+            Vector<int8,32> ah0g2q3 = heap Vector<int32,8>(sah0g2q3, sah0g2q3, sah0g2q3, sah0g2q3, sah0g2q3, sah0g2q3, sah0g2q3, sah0g2q3).asBytes();
+            th0g2 = hq23.dotAccum(ah0g2q3, th0g2);
+            Vector<uint8,32> rq24 = w.vload<32>(wo + 832L).asUnsigned();
+            Vector<uint8,32> lq24 = rq24 & 15;
+            Vector<uint8,32> hq24 = (rq24 >> 4) & 15;
+            Vector<int32,1> wal0g2q4 = xp.vload<4>(x0 + xo + 144L).asWords();
+            int32 sal0g2q4 = wal0g2q4[0];
+            Vector<int8,32> al0g2q4 = heap Vector<int32,8>(sal0g2q4, sal0g2q4, sal0g2q4, sal0g2q4, sal0g2q4, sal0g2q4, sal0g2q4, sal0g2q4).asBytes();
+            tl0g2 = lq24.dotAccum(al0g2q4, tl0g2);
+            Vector<int32,1> wah0g2q4 = xp.vload<4>(x0 + xo + 176L).asWords();
+            int32 sah0g2q4 = wah0g2q4[0];
+            Vector<int8,32> ah0g2q4 = heap Vector<int32,8>(sah0g2q4, sah0g2q4, sah0g2q4, sah0g2q4, sah0g2q4, sah0g2q4, sah0g2q4, sah0g2q4).asBytes();
+            th0g2 = hq24.dotAccum(ah0g2q4, th0g2);
+            Vector<uint8,32> rq25 = w.vload<32>(wo + 864L).asUnsigned();
+            Vector<uint8,32> lq25 = rq25 & 15;
+            Vector<uint8,32> hq25 = (rq25 >> 4) & 15;
+            Vector<int32,1> wal0g2q5 = xp.vload<4>(x0 + xo + 148L).asWords();
+            int32 sal0g2q5 = wal0g2q5[0];
+            Vector<int8,32> al0g2q5 = heap Vector<int32,8>(sal0g2q5, sal0g2q5, sal0g2q5, sal0g2q5, sal0g2q5, sal0g2q5, sal0g2q5, sal0g2q5).asBytes();
+            tl0g2 = lq25.dotAccum(al0g2q5, tl0g2);
+            Vector<int32,1> wah0g2q5 = xp.vload<4>(x0 + xo + 180L).asWords();
+            int32 sah0g2q5 = wah0g2q5[0];
+            Vector<int8,32> ah0g2q5 = heap Vector<int32,8>(sah0g2q5, sah0g2q5, sah0g2q5, sah0g2q5, sah0g2q5, sah0g2q5, sah0g2q5, sah0g2q5).asBytes();
+            th0g2 = hq25.dotAccum(ah0g2q5, th0g2);
+            Vector<uint8,32> rq26 = w.vload<32>(wo + 896L).asUnsigned();
+            Vector<uint8,32> lq26 = rq26 & 15;
+            Vector<uint8,32> hq26 = (rq26 >> 4) & 15;
+            Vector<int32,1> wal0g2q6 = xp.vload<4>(x0 + xo + 152L).asWords();
+            int32 sal0g2q6 = wal0g2q6[0];
+            Vector<int8,32> al0g2q6 = heap Vector<int32,8>(sal0g2q6, sal0g2q6, sal0g2q6, sal0g2q6, sal0g2q6, sal0g2q6, sal0g2q6, sal0g2q6).asBytes();
+            tl0g2 = lq26.dotAccum(al0g2q6, tl0g2);
+            Vector<int32,1> wah0g2q6 = xp.vload<4>(x0 + xo + 184L).asWords();
+            int32 sah0g2q6 = wah0g2q6[0];
+            Vector<int8,32> ah0g2q6 = heap Vector<int32,8>(sah0g2q6, sah0g2q6, sah0g2q6, sah0g2q6, sah0g2q6, sah0g2q6, sah0g2q6, sah0g2q6).asBytes();
+            th0g2 = hq26.dotAccum(ah0g2q6, th0g2);
+            Vector<uint8,32> rq27 = w.vload<32>(wo + 928L).asUnsigned();
+            Vector<uint8,32> lq27 = rq27 & 15;
+            Vector<uint8,32> hq27 = (rq27 >> 4) & 15;
+            Vector<int32,1> wal0g2q7 = xp.vload<4>(x0 + xo + 156L).asWords();
+            int32 sal0g2q7 = wal0g2q7[0];
+            Vector<int8,32> al0g2q7 = heap Vector<int32,8>(sal0g2q7, sal0g2q7, sal0g2q7, sal0g2q7, sal0g2q7, sal0g2q7, sal0g2q7, sal0g2q7).asBytes();
+            tl0g2 = lq27.dotAccum(al0g2q7, tl0g2);
+            Vector<int32,1> wah0g2q7 = xp.vload<4>(x0 + xo + 188L).asWords();
+            int32 sah0g2q7 = wah0g2q7[0];
+            Vector<int8,32> ah0g2q7 = heap Vector<int32,8>(sah0g2q7, sah0g2q7, sah0g2q7, sah0g2q7, sah0g2q7, sah0g2q7, sah0g2q7, sah0g2q7).asBytes();
+            th0g2 = hq27.dotAccum(ah0g2q7, th0g2);
+            si0 = si0 + tl0g2 * scl2 + th0g2 * sch2;
+            Vector<uint16,16> h3 = sB.widenHi();
+            Vector<int32,8> scl3 = h3.widenLo().asSigned();
+            Vector<int32,8> sch3 = h3.widenHi().asSigned();
+            Vector<int32,8> tl0g3 = z8;
+            Vector<int32,8> th0g3 = z8;
+            Vector<uint8,32> rq30 = w.vload<32>(wo + 960L).asUnsigned();
+            Vector<uint8,32> lq30 = rq30 & 15;
+            Vector<uint8,32> hq30 = (rq30 >> 4) & 15;
+            Vector<int32,1> wal0g3q0 = xp.vload<4>(x0 + xo + 192L).asWords();
+            int32 sal0g3q0 = wal0g3q0[0];
+            Vector<int8,32> al0g3q0 = heap Vector<int32,8>(sal0g3q0, sal0g3q0, sal0g3q0, sal0g3q0, sal0g3q0, sal0g3q0, sal0g3q0, sal0g3q0).asBytes();
+            tl0g3 = lq30.dotAccum(al0g3q0, tl0g3);
+            Vector<int32,1> wah0g3q0 = xp.vload<4>(x0 + xo + 224L).asWords();
+            int32 sah0g3q0 = wah0g3q0[0];
+            Vector<int8,32> ah0g3q0 = heap Vector<int32,8>(sah0g3q0, sah0g3q0, sah0g3q0, sah0g3q0, sah0g3q0, sah0g3q0, sah0g3q0, sah0g3q0).asBytes();
+            th0g3 = hq30.dotAccum(ah0g3q0, th0g3);
+            Vector<uint8,32> rq31 = w.vload<32>(wo + 992L).asUnsigned();
+            Vector<uint8,32> lq31 = rq31 & 15;
+            Vector<uint8,32> hq31 = (rq31 >> 4) & 15;
+            Vector<int32,1> wal0g3q1 = xp.vload<4>(x0 + xo + 196L).asWords();
+            int32 sal0g3q1 = wal0g3q1[0];
+            Vector<int8,32> al0g3q1 = heap Vector<int32,8>(sal0g3q1, sal0g3q1, sal0g3q1, sal0g3q1, sal0g3q1, sal0g3q1, sal0g3q1, sal0g3q1).asBytes();
+            tl0g3 = lq31.dotAccum(al0g3q1, tl0g3);
+            Vector<int32,1> wah0g3q1 = xp.vload<4>(x0 + xo + 228L).asWords();
+            int32 sah0g3q1 = wah0g3q1[0];
+            Vector<int8,32> ah0g3q1 = heap Vector<int32,8>(sah0g3q1, sah0g3q1, sah0g3q1, sah0g3q1, sah0g3q1, sah0g3q1, sah0g3q1, sah0g3q1).asBytes();
+            th0g3 = hq31.dotAccum(ah0g3q1, th0g3);
+            Vector<uint8,32> rq32 = w.vload<32>(wo + 1024L).asUnsigned();
+            Vector<uint8,32> lq32 = rq32 & 15;
+            Vector<uint8,32> hq32 = (rq32 >> 4) & 15;
+            Vector<int32,1> wal0g3q2 = xp.vload<4>(x0 + xo + 200L).asWords();
+            int32 sal0g3q2 = wal0g3q2[0];
+            Vector<int8,32> al0g3q2 = heap Vector<int32,8>(sal0g3q2, sal0g3q2, sal0g3q2, sal0g3q2, sal0g3q2, sal0g3q2, sal0g3q2, sal0g3q2).asBytes();
+            tl0g3 = lq32.dotAccum(al0g3q2, tl0g3);
+            Vector<int32,1> wah0g3q2 = xp.vload<4>(x0 + xo + 232L).asWords();
+            int32 sah0g3q2 = wah0g3q2[0];
+            Vector<int8,32> ah0g3q2 = heap Vector<int32,8>(sah0g3q2, sah0g3q2, sah0g3q2, sah0g3q2, sah0g3q2, sah0g3q2, sah0g3q2, sah0g3q2).asBytes();
+            th0g3 = hq32.dotAccum(ah0g3q2, th0g3);
+            Vector<uint8,32> rq33 = w.vload<32>(wo + 1056L).asUnsigned();
+            Vector<uint8,32> lq33 = rq33 & 15;
+            Vector<uint8,32> hq33 = (rq33 >> 4) & 15;
+            Vector<int32,1> wal0g3q3 = xp.vload<4>(x0 + xo + 204L).asWords();
+            int32 sal0g3q3 = wal0g3q3[0];
+            Vector<int8,32> al0g3q3 = heap Vector<int32,8>(sal0g3q3, sal0g3q3, sal0g3q3, sal0g3q3, sal0g3q3, sal0g3q3, sal0g3q3, sal0g3q3).asBytes();
+            tl0g3 = lq33.dotAccum(al0g3q3, tl0g3);
+            Vector<int32,1> wah0g3q3 = xp.vload<4>(x0 + xo + 236L).asWords();
+            int32 sah0g3q3 = wah0g3q3[0];
+            Vector<int8,32> ah0g3q3 = heap Vector<int32,8>(sah0g3q3, sah0g3q3, sah0g3q3, sah0g3q3, sah0g3q3, sah0g3q3, sah0g3q3, sah0g3q3).asBytes();
+            th0g3 = hq33.dotAccum(ah0g3q3, th0g3);
+            Vector<uint8,32> rq34 = w.vload<32>(wo + 1088L).asUnsigned();
+            Vector<uint8,32> lq34 = rq34 & 15;
+            Vector<uint8,32> hq34 = (rq34 >> 4) & 15;
+            Vector<int32,1> wal0g3q4 = xp.vload<4>(x0 + xo + 208L).asWords();
+            int32 sal0g3q4 = wal0g3q4[0];
+            Vector<int8,32> al0g3q4 = heap Vector<int32,8>(sal0g3q4, sal0g3q4, sal0g3q4, sal0g3q4, sal0g3q4, sal0g3q4, sal0g3q4, sal0g3q4).asBytes();
+            tl0g3 = lq34.dotAccum(al0g3q4, tl0g3);
+            Vector<int32,1> wah0g3q4 = xp.vload<4>(x0 + xo + 240L).asWords();
+            int32 sah0g3q4 = wah0g3q4[0];
+            Vector<int8,32> ah0g3q4 = heap Vector<int32,8>(sah0g3q4, sah0g3q4, sah0g3q4, sah0g3q4, sah0g3q4, sah0g3q4, sah0g3q4, sah0g3q4).asBytes();
+            th0g3 = hq34.dotAccum(ah0g3q4, th0g3);
+            Vector<uint8,32> rq35 = w.vload<32>(wo + 1120L).asUnsigned();
+            Vector<uint8,32> lq35 = rq35 & 15;
+            Vector<uint8,32> hq35 = (rq35 >> 4) & 15;
+            Vector<int32,1> wal0g3q5 = xp.vload<4>(x0 + xo + 212L).asWords();
+            int32 sal0g3q5 = wal0g3q5[0];
+            Vector<int8,32> al0g3q5 = heap Vector<int32,8>(sal0g3q5, sal0g3q5, sal0g3q5, sal0g3q5, sal0g3q5, sal0g3q5, sal0g3q5, sal0g3q5).asBytes();
+            tl0g3 = lq35.dotAccum(al0g3q5, tl0g3);
+            Vector<int32,1> wah0g3q5 = xp.vload<4>(x0 + xo + 244L).asWords();
+            int32 sah0g3q5 = wah0g3q5[0];
+            Vector<int8,32> ah0g3q5 = heap Vector<int32,8>(sah0g3q5, sah0g3q5, sah0g3q5, sah0g3q5, sah0g3q5, sah0g3q5, sah0g3q5, sah0g3q5).asBytes();
+            th0g3 = hq35.dotAccum(ah0g3q5, th0g3);
+            Vector<uint8,32> rq36 = w.vload<32>(wo + 1152L).asUnsigned();
+            Vector<uint8,32> lq36 = rq36 & 15;
+            Vector<uint8,32> hq36 = (rq36 >> 4) & 15;
+            Vector<int32,1> wal0g3q6 = xp.vload<4>(x0 + xo + 216L).asWords();
+            int32 sal0g3q6 = wal0g3q6[0];
+            Vector<int8,32> al0g3q6 = heap Vector<int32,8>(sal0g3q6, sal0g3q6, sal0g3q6, sal0g3q6, sal0g3q6, sal0g3q6, sal0g3q6, sal0g3q6).asBytes();
+            tl0g3 = lq36.dotAccum(al0g3q6, tl0g3);
+            Vector<int32,1> wah0g3q6 = xp.vload<4>(x0 + xo + 248L).asWords();
+            int32 sah0g3q6 = wah0g3q6[0];
+            Vector<int8,32> ah0g3q6 = heap Vector<int32,8>(sah0g3q6, sah0g3q6, sah0g3q6, sah0g3q6, sah0g3q6, sah0g3q6, sah0g3q6, sah0g3q6).asBytes();
+            th0g3 = hq36.dotAccum(ah0g3q6, th0g3);
+            Vector<uint8,32> rq37 = w.vload<32>(wo + 1184L).asUnsigned();
+            Vector<uint8,32> lq37 = rq37 & 15;
+            Vector<uint8,32> hq37 = (rq37 >> 4) & 15;
+            Vector<int32,1> wal0g3q7 = xp.vload<4>(x0 + xo + 220L).asWords();
+            int32 sal0g3q7 = wal0g3q7[0];
+            Vector<int8,32> al0g3q7 = heap Vector<int32,8>(sal0g3q7, sal0g3q7, sal0g3q7, sal0g3q7, sal0g3q7, sal0g3q7, sal0g3q7, sal0g3q7).asBytes();
+            tl0g3 = lq37.dotAccum(al0g3q7, tl0g3);
+            Vector<int32,1> wah0g3q7 = xp.vload<4>(x0 + xo + 252L).asWords();
+            int32 sah0g3q7 = wah0g3q7[0];
+            Vector<int8,32> ah0g3q7 = heap Vector<int32,8>(sah0g3q7, sah0g3q7, sah0g3q7, sah0g3q7, sah0g3q7, sah0g3q7, sah0g3q7, sah0g3q7).asBytes();
+            th0g3 = hq37.dotAccum(ah0g3q7, th0g3);
+            si0 = si0 + tl0g3 * scl3 + th0g3 * sch3;
+            Vector<uint16,16> m0 = nA.widenLo();
+            Vector<uint16,16> m1 = nA.widenHi();
+            Vector<uint16,16> m2 = nB.widenLo();
+            Vector<uint16,16> m3 = nB.widenHi();
+            Vector<int32,8> mn0 = m0.widenLo().asSigned();
+            Vector<int32,8> mn1 = m0.widenHi().asSigned();
+            Vector<int32,8> mn2 = m1.widenLo().asSigned();
+            Vector<int32,8> mn3 = m1.widenHi().asSigned();
+            Vector<int32,8> mn4 = m2.widenLo().asSigned();
+            Vector<int32,8> mn5 = m2.widenHi().asSigned();
+            Vector<int32,8> mn6 = m3.widenLo().asSigned();
+            Vector<int32,8> mn7 = m3.widenHi().asSigned();
+            Vector<int32,8> gs0 = xp.vload<32>(x0 + xo + 256L).asWords();
+            Vector<int32,8> dm0 = mn0 * gs0[0] + mn1 * gs0[1] + mn2 * gs0[2] + mn3 * gs0[3] + mn4 * gs0[4] + mn5 * gs0[5] + mn6 * gs0[6] + mn7 * gs0[7];
+            Vector<int32,1> xw0 = xp.vload<4>(x0 + xo + 288L).asWords();
+            float32 xs0 = Cajeta.bitsToF32(xw0[0]);
+            acc0 = acc0 + dv * xs0 * si0.toF32() - mv * xs0 * dm0.toF32();
+            b = b + 1;
+        }
+        RefVec3x.x8Store(y, yBase + r0, acc0, rows, r0, accum);
+    }
+
+    @Kernel(targets = {"cpu"})
+    @Occupancy(maxThreads = 256)
+    public static void q4kQ8X8Vec3Kernel(KernelBuffer<float32> yA, KernelBuffer<float32> yB,
+            KernelBuffer<float32> yC, KernelBuffer<int8> wA, KernelBuffer<int8> wB, KernelBuffer<int8> wC,
+            KernelBuffer<int8> xp, uint32 rowsA, uint32 rowsB, uint32 rowsC, uint32 gA, uint32 gB, uint32 gC,
+            int64 blocksPerRow) {
+        uint32 gi = KernelThread.globalIdX();
+        if (gi < gA) {
+            RefVec3x.q4kX8VecGroup(yA, wA, xp, rowsA, gi, blocksPerRow, 0, 0L, 0L, 0L);
+        } else if (gi < gA + gB) {
+            RefVec3x.q4kX8VecGroup(yB, wB, xp, rowsB, gi - gA, blocksPerRow, 0, 0L, 0L, 0L);
+        } else if (gi < gA + gB + gC) {
+            RefVec3x.q4kX8VecGroup(yC, wC, xp, rowsC, gi - gA - gB, blocksPerRow, 0, 0L, 0L, 0L);
+        }
+    }
+
+    public static void launch(KernelBuffer<float32> yA, KernelBuffer<float32> yB, KernelBuffer<float32> yC,
+            KernelBuffer<int8> wA, KernelBuffer<int8> wB, KernelBuffer<int8> wC, KernelBuffer<int8> xp,
+            int64 rowsA, int64 rowsB, int64 rowsC, int64 bpr, int64 block) {
+        uint32 gA = (uint32) ((rowsA + 7L) / 8L);
+        uint32 gB = (uint32) ((rowsB + 7L) / 8L);
+        uint32 gC = wC == null ? 0 : (uint32) ((rowsC + 7L) / 8L);
+        uint32 n = gA + gB + gC;
+        KernelStream s #= KernelStream.current();
+        q4kQ8X8Vec3Kernel.launch(s, grid: [(n + (uint32) block - 1) / (uint32) block], block: [(uint32) block])
+            (yA, yB, wC == null ? yB : yC, wA, wB, wC == null ? wB : wC, xp, (uint32) rowsA, (uint32) rowsB,
+             (uint32) rowsC, gA, gB, gC, bpr);
+    }
+}

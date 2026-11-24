@@ -22,3 +22,5 @@ difference without failing on it: the driver keeps scales and mins as two tables
 
 `VecBench` is the decode mat-vec (plan 9.1): the cpu row driver's one-token kernel against
 cajeta-llm's `q{4,5,6,3,2}kQ8X8VecKernel` (`ref/RefVec*`), every K format, on the 8B and 4B shapes.
+
+`Vec3Bench` is the fused three-output decode (plan 9.1.3) against `ref/RefVec3x` (`q4kQ8X8Vec3Kernel`).
