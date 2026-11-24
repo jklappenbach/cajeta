@@ -1,0 +1,123 @@
+package ref;
+
+import cajeta.lang.Math;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Vector;
+
+/** cajeta-llm's cpu decode attention at head size 128, lifted unchanged. */
+public final class RefAttn {
+    public RefAttn() { return; }
+
+    @Device
+    public static uint32 row(KernelBuffer<int32> tab, uint32 base, uint32 t) {
+        return ((uint32) tab[(int64) (base + (t >> 6))] << 6) + (t & 63);
+    }
+
+    @Device
+    static void cpuDecodeHead(KernelBuffer<float32> part, KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+            KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, uint32 pgBase, int64 qo, int64 kOff0, int64 kvDim, int64 from, int64 t0, int64 t1, int64 pBase,
+            float32 scale) {
+        Vector<float32,16> q0 = q.vload<16>(qo);
+        Vector<float32,16> q1 = q.vload<16>(qo + 16L);
+        Vector<float32,16> q2 = q.vload<16>(qo + 32L);
+        Vector<float32,16> q3 = q.vload<16>(qo + 48L);
+        Vector<float32,16> q4 = q.vload<16>(qo + 64L);
+        Vector<float32,16> q5 = q.vload<16>(qo + 80L);
+        Vector<float32,16> q6 = q.vload<16>(qo + 96L);
+        Vector<float32,16> q7 = q.vload<16>(qo + 112L);
+        Vector<float32,16> a0 = q0 * 0.0f;
+        Vector<float32,16> a1 = a0;
+        Vector<float32,16> a2 = a0;
+        Vector<float32,16> a3 = a0;
+        Vector<float32,16> a4 = a0;
+        Vector<float32,16> a5 = a0;
+        Vector<float32,16> a6 = a0;
+        Vector<float32,16> a7 = a0;
+        float32 m = 0.0f - 3.0e38f;
+        float32 l = 0.0f;
+        int64 t = t0;
+        while (t < t1) {
+            int64 ko = (int64) RefAttn.row(pgTab, pgBase, (uint32) (from + t)) * kvDim + kOff0;
+            Vector<float32,16> d = q0 * kPool.vload<16>(ko).toF32()
+                + q1 * kPool.vload<16>(ko + 16L).toF32()
+                + q2 * kPool.vload<16>(ko + 32L).toF32()
+                + q3 * kPool.vload<16>(ko + 48L).toF32()
+                + q4 * kPool.vload<16>(ko + 64L).toF32()
+                + q5 * kPool.vload<16>(ko + 80L).toF32()
+                + q6 * kPool.vload<16>(ko + 96L).toF32()
+                + q7 * kPool.vload<16>(ko + 112L).toF32();
+            float32 sc = (((d[0] + d[1]) + (d[2] + d[3])) + ((d[4] + d[5]) + (d[6] + d[7]))
+                + (((d[8] + d[9]) + (d[10] + d[11])) + ((d[12] + d[13]) + (d[14] + d[15])))) * scale;
+            if (sc > m) {
+                float32 c = Math.exp(m - sc);
+                a0 = a0 * c;
+                a1 = a1 * c;
+                a2 = a2 * c;
+                a3 = a3 * c;
+                a4 = a4 * c;
+                a5 = a5 * c;
+                a6 = a6 * c;
+                a7 = a7 * c;
+                l = l * c;
+                m = sc;
+            }
+            float32 p = Math.exp(sc - m);
+            l = l + p;
+            a0 = a0 + vPool.vload<16>(ko).toF32() * p;
+            a1 = a1 + vPool.vload<16>(ko + 16L).toF32() * p;
+            a2 = a2 + vPool.vload<16>(ko + 32L).toF32() * p;
+            a3 = a3 + vPool.vload<16>(ko + 48L).toF32() * p;
+            a4 = a4 + vPool.vload<16>(ko + 64L).toF32() * p;
+            a5 = a5 + vPool.vload<16>(ko + 80L).toF32() * p;
+            a6 = a6 + vPool.vload<16>(ko + 96L).toF32() * p;
+            a7 = a7 + vPool.vload<16>(ko + 112L).toF32() * p;
+            t = t + 1L;
+        }
+        part.vstore(pBase, a0);
+        part.vstore(pBase + 16L, a1);
+        part.vstore(pBase + 32L, a2);
+        part.vstore(pBase + 48L, a3);
+        part.vstore(pBase + 64L, a4);
+        part.vstore(pBase + 80L, a5);
+        part.vstore(pBase + 96L, a6);
+        part.vstore(pBase + 112L, a7);
+        part[pBase + 128L] = m;
+        part[pBase + 129L] = l;
+    }
+
+    @Kernel(targets = {"cpu"}) @FastMath
+    @Occupancy(maxThreads = 256)
+    public static void attnDecodeCpuGqaKernel(KernelBuffer<float32> part,
+            KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+            KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, uint32 pgBase, uint32 nKv, uint32 group, uint32 count,
+            uint32 from, uint32 splits, float32 scale) {
+        uint32 gi = KernelThread.globalIdX();
+        if (gi < nKv * splits) {
+            uint32 kvh = gi / splits;
+            uint32 sp = gi % splits;
+            uint32 chunk = (count + splits - 1) / splits;
+            uint32 t0 = sp * chunk;
+            uint32 t1 = t0 + chunk;
+            if (t1 > count) { t1 = count; }
+            if (t0 > count) { t0 = count; }
+            int64 kvDim = (int64) (nKv * 128);
+            int64 kOff0 = (int64) (kvh * 128);
+            uint32 h = 0;
+            while (h < group) {
+                uint32 hh = kvh * group + h;
+                RefAttn.cpuDecodeHead(part, q, kPool, vPool, pgTab, pgBase, (int64) (hh * 128), kOff0, kvDim, (int64) from, (int64) t0,
+                    (int64) t1, (int64) ((hh * splits + sp) * 130), scale);
+                h = h + 1;
+            }
+        }
+    }
+
+    public static void run(KernelBuffer<float32> part, KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+            KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, int32 nKv, int32 group, int32 count, int32 splits, float32 scale) {
+        KernelStream s #= KernelStream.current();
+        attnDecodeCpuGqaKernel.launch(s, grid: [(uint32) (nKv * splits)], block: [1])
+            (part, q, kPool, vPool, pgTab, 0, (uint32) nKv, (uint32) group, (uint32) count, 0, (uint32) splits, scale);
+    }
+}

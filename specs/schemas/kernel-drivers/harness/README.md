@@ -26,3 +26,5 @@ cajeta-llm's `q{4,5,6,3,2}kQ8X8VecKernel` (`ref/RefVec*`), every K format, on th
 `Vec3Bench` is the fused three-output decode (plan 9.1.3) against `ref/RefVec3x` (`q4kQ8X8Vec3Kernel`).
 
 `WaveBench` is the GPU decode mat-vec (plan 9.1.4): every member of `BlockGemvWave` against cajeta-llm's GPU decode kernels (`ref/RefWave`), best against best per shape; Q4_K and Q5_K pairs bitwise, the others by difference over the output scale.
+
+`AttnBench` is the cpu decode attention (plan 9.3) against `ref/RefAttn` (`attnDecodeCpuGqaKernel`).

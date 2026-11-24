@@ -1,0 +1,88 @@
+package ref;
+
+import cajeta.lang.Cajeta;
+import cajeta.lang.System;
+import cajeta.time.Clock;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.ml.kernels.attn.AttnDecodeRows;
+
+/** kernel-drivers 9.3: the cpu decode-attention driver against cajeta-llm's attnDecodeCpuGqaKernel on the same data. */
+public class AttnBench {
+    static float32 rnd(int64 i) {
+        int64 x = (i * 2654435761L + 12345L) % 2147483648L;
+        return (float32) ((x >> 8) % 2001L - 1000L) * 0.001f;
+    }
+
+    static int64 shape(int32 nKv, int32 group, int32 count, int32 splits, int64 reps) {
+        int64 hd = 128L;
+        int64 rows = ((int64) count + 63L) / 64L * 64L;
+        int64 kvDim = (int64) nKv * hd;
+        int64 nH = (int64) nKv * (int64) group;
+        float16[] kh #= heap float16[rows * kvDim];
+        float16[] vh #= heap float16[rows * kvDim];
+        int64 i = 0L;
+        while (i < rows * kvDim) { kh[i] = (float16) AttnBench.rnd(i); vh[i] = (float16) AttnBench.rnd(i + 7777777L); i = i + 1L; }
+        float32[] qh #= heap float32[nH * hd];
+        i = 0L;
+        while (i < nH * hd) { qh[i] = AttnBench.rnd(i + 31L) * 3.0f; i = i + 1L; }
+        int32[] tab #= heap int32[rows / 64L];
+        i = 0L;
+        while (i < rows / 64L) { tab[i] = (int32) i; i = i + 1L; }
+        KernelBuffer<float16> k = heap KernelBuffer<float16>((uint64) (rows * kvDim));
+        KernelBuffer<float16> v = heap KernelBuffer<float16>((uint64) (rows * kvDim));
+        KernelBuffer<float32> q = heap KernelBuffer<float32>((uint64) (nH * hd));
+        KernelBuffer<int32> pt = heap KernelBuffer<int32>((uint64) (rows / 64L));
+        k.upload(kh);
+        v.upload(vh);
+        q.upload(qh);
+        pt.upload(tab);
+        int64 pn = nH * (int64) splits * (hd + 2L);
+        KernelBuffer<float32> pr = heap KernelBuffer<float32>((uint64) pn);
+        KernelBuffer<float32> pd = heap KernelBuffer<float32>((uint64) pn);
+        float32 scale = 0.0883883f;
+        AttnDecodeRows<128> drv = heap AttnDecodeRows<128>();
+        KernelStream s #= KernelStream.current();
+        RefAttn.run(pr, q, k, v, pt, nKv, group, count, splits, scale);
+        drv.runOn(s, pd, q, k, v, pt, 0, nKv, group, count, 0, splits, scale);
+        s.sync();
+        float32[] gr #= heap float32[pn];
+        float32[] gd #= heap float32[pn];
+        pr.download(gr);
+        pd.download(gd);
+        int64 bad = 0L;
+        i = 0L;
+        while (i < pn) { if (Cajeta.f32ToBits(gr[i]) != Cajeta.f32ToBits(gd[i])) { bad = bad + 1L; } i = i + 1L; }
+        int64 bestR = 9000000000000L;
+        int64 bestN = 9000000000000L;
+        int64 round = 0L;
+        while (round < 25L) {
+            int64 t0 = Clock.nanoTime();
+            int64 r = 0L;
+            while (r < reps) { RefAttn.run(pr, q, k, v, pt, nKv, group, count, splits, scale); r = r + 1L; }
+            s.sync();
+            int64 t1 = Clock.nanoTime();
+            r = 0L;
+            while (r < reps) { drv.runOn(s, pd, q, k, v, pt, 0, nKv, group, count, 0, splits, scale); r = r + 1L; }
+            s.sync();
+            int64 t2 = Clock.nanoTime();
+            if ((t1 - t0) / reps < bestR) { bestR = (t1 - t0) / reps; }
+            if ((t2 - t1) / reps < bestN) { bestN = (t2 - t1) / reps; }
+            round = round + 1L;
+        }
+        System.stdout.println("attn nKv " + nKv + " group " + group + " count " + count + " splits " + splits + " bitDiff " + bad + "/" + pn
+            + " ref_ns " + bestR + " drv_ns " + bestN + " ratio_pct " + (bestN * 100L / bestR));
+        return bad;
+    }
+
+    public static int32 main() {
+        int64 bad = AttnBench.shape(2, 4, 37, 3, 2L);
+        bad = bad + AttnBench.shape(8, 4, 512, 4, 40L);
+        bad = bad + AttnBench.shape(8, 4, 2048, 8, 20L);
+        bad = bad + AttnBench.shape(8, 4, 8192, 16, 10L);
+        bad = bad + AttnBench.shape(8, 4, 8192, 32, 10L);
+        bad = bad + AttnBench.shape(8, 1, 2048, 8, 20L);
+        System.stdout.println(bad == 0L ? "ALL EQUAL" : "DIFFERENT");
+        return bad == 0L ? 0 : 1;
+    }
+}
