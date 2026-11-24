@@ -1,0 +1,982 @@
+package ref;
+
+import cajeta.lang.Math;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Vector;
+import cajeta.xpu.Wave;
+import cajeta.xpu.Workgroup;
+
+/** cajeta-llm's GPU decode attention kernels, lifted unchanged. */
+public final class RefAttnW {
+    public RefAttnW() { return; }
+
+    @Device
+    public static uint32 row(KernelBuffer<int32> tab, uint32 base, uint32 t) {
+        return ((uint32) tab[(int64) (base + (t >> 6))] << 6) + (t & 63);
+    }
+
+    @Kernel @FastMath @Wave(width = 32)
+    public static void attnFlashDecodeGqa4Kernel(KernelBuffer<float32> part,
+            KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+            KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, uint32 pgBase, uint32 nKv, uint32 count,
+            uint32 from, uint32 splits, float32 scale) {
+        uint32 lane = KernelThread.x();
+        uint32 wv = Workgroup.x();
+        if (wv < nKv * splits) {
+            uint32 kvh = wv / splits;
+            uint32 sp = wv % splits;
+            uint32 chunk = (count + splits - 1) / splits;
+            uint32 t0 = sp * chunk;
+            uint32 t1 = t0 + chunk;
+            if (t1 > count) { t1 = count; }
+            uint32 kvDim = nKv * 128;
+            uint32 h0 = kvh * 4;
+            uint32 qRow = h0 * 128 + lane * 4;
+            float32 qa0 = q[qRow];
+            float32 qa1 = q[qRow + 1];
+            float32 qa2 = q[qRow + 2];
+            float32 qa3 = q[qRow + 3];
+            float32 qb0 = q[qRow + 128];
+            float32 qb1 = q[qRow + 129];
+            float32 qb2 = q[qRow + 130];
+            float32 qb3 = q[qRow + 131];
+            float32 qc0 = q[qRow + 256];
+            float32 qc1 = q[qRow + 257];
+            float32 qc2 = q[qRow + 258];
+            float32 qc3 = q[qRow + 259];
+            float32 qd0 = q[qRow + 384];
+            float32 qd1 = q[qRow + 385];
+            float32 qd2 = q[qRow + 386];
+            float32 qd3 = q[qRow + 387];
+            uint32 kBase = kvh * 128 + lane * 4;
+            float32 mA = 0.0f - 3.0e38f;
+            float32 mB = 0.0f - 3.0e38f;
+            float32 mC = 0.0f - 3.0e38f;
+            float32 mD = 0.0f - 3.0e38f;
+            float32 lA = 0.0f;
+            float32 lB = 0.0f;
+            float32 lC = 0.0f;
+            float32 lD = 0.0f;
+            float32 aa0 = 0.0f;
+            float32 aa1 = 0.0f;
+            float32 aa2 = 0.0f;
+            float32 aa3 = 0.0f;
+            float32 ab0 = 0.0f;
+            float32 ab1 = 0.0f;
+            float32 ab2 = 0.0f;
+            float32 ab3 = 0.0f;
+            float32 ac0 = 0.0f;
+            float32 ac1 = 0.0f;
+            float32 ac2 = 0.0f;
+            float32 ac3 = 0.0f;
+            float32 ad0 = 0.0f;
+            float32 ad1 = 0.0f;
+            float32 ad2 = 0.0f;
+            float32 ad3 = 0.0f;
+            if (t0 < t1) {
+                uint32 kRow0 = RefAttnW.row(pgTab, pgBase, from + t0) * kvDim + kBase;
+                float32 k0 = (float32) kPool[kRow0];
+                float32 k1 = (float32) kPool[kRow0 + 1];
+                float32 k2 = (float32) kPool[kRow0 + 2];
+                float32 k3 = (float32) kPool[kRow0 + 3];
+                mA = Wave.reduceSumF32(
+                    qa0 * k0 + qa1 * k1 + qa2 * k2 + qa3 * k3) * scale;
+                mB = Wave.reduceSumF32(
+                    qb0 * k0 + qb1 * k1 + qb2 * k2 + qb3 * k3) * scale;
+                mC = Wave.reduceSumF32(
+                    qc0 * k0 + qc1 * k1 + qc2 * k2 + qc3 * k3) * scale;
+                mD = Wave.reduceSumF32(
+                    qd0 * k0 + qd1 * k1 + qd2 * k2 + qd3 * k3) * scale;
+                lA = 1.0f;
+                lB = 1.0f;
+                lC = 1.0f;
+                lD = 1.0f;
+                float32 v0 = (float32) vPool[kRow0];
+                float32 v1 = (float32) vPool[kRow0 + 1];
+                float32 v2 = (float32) vPool[kRow0 + 2];
+                float32 v3 = (float32) vPool[kRow0 + 3];
+                aa0 = v0;
+                aa1 = v1;
+                aa2 = v2;
+                aa3 = v3;
+                ab0 = v0;
+                ab1 = v1;
+                ab2 = v2;
+                ab3 = v3;
+                ac0 = v0;
+                ac1 = v1;
+                ac2 = v2;
+                ac3 = v3;
+                ad0 = v0;
+                ad1 = v1;
+                ad2 = v2;
+                ad3 = v3;
+                uint32 t = t0 + 1;
+                while (t < t1) {
+                    uint32 kRow = RefAttnW.row(pgTab, pgBase, from + t) * kvDim + kBase;
+                    k0 = (float32) kPool[kRow];
+                    k1 = (float32) kPool[kRow + 1];
+                    k2 = (float32) kPool[kRow + 2];
+                    k3 = (float32) kPool[kRow + 3];
+                    float32 uA = Wave.reduceSumF32(
+                        qa0 * k0 + qa1 * k1 + qa2 * k2 + qa3 * k3) * scale;
+                    float32 uB = Wave.reduceSumF32(
+                        qb0 * k0 + qb1 * k1 + qb2 * k2 + qb3 * k3) * scale;
+                    float32 uC = Wave.reduceSumF32(
+                        qc0 * k0 + qc1 * k1 + qc2 * k2 + qc3 * k3) * scale;
+                    float32 uD = Wave.reduceSumF32(
+                        qd0 * k0 + qd1 * k1 + qd2 * k2 + qd3 * k3) * scale;
+                    float32 v0t = (float32) vPool[kRow];
+                    float32 v1t = (float32) vPool[kRow + 1];
+                    float32 v2t = (float32) vPool[kRow + 2];
+                    float32 v3t = (float32) vPool[kRow + 3];
+                    if (uA > mA) {
+                        float32 c = Math.exp(mA - uA);
+                        aa0 = aa0 * c + v0t;
+                        aa1 = aa1 * c + v1t;
+                        aa2 = aa2 * c + v2t;
+                        aa3 = aa3 * c + v3t;
+                        lA = lA * c + 1.0f;
+                        mA = uA;
+                    } else {
+                        float32 w = Math.exp(uA - mA);
+                        aa0 = aa0 + w * v0t;
+                        aa1 = aa1 + w * v1t;
+                        aa2 = aa2 + w * v2t;
+                        aa3 = aa3 + w * v3t;
+                        lA = lA + w;
+                    }
+                    if (uB > mB) {
+                        float32 c = Math.exp(mB - uB);
+                        ab0 = ab0 * c + v0t;
+                        ab1 = ab1 * c + v1t;
+                        ab2 = ab2 * c + v2t;
+                        ab3 = ab3 * c + v3t;
+                        lB = lB * c + 1.0f;
+                        mB = uB;
+                    } else {
+                        float32 w = Math.exp(uB - mB);
+                        ab0 = ab0 + w * v0t;
+                        ab1 = ab1 + w * v1t;
+                        ab2 = ab2 + w * v2t;
+                        ab3 = ab3 + w * v3t;
+                        lB = lB + w;
+                    }
+                    if (uC > mC) {
+                        float32 c = Math.exp(mC - uC);
+                        ac0 = ac0 * c + v0t;
+                        ac1 = ac1 * c + v1t;
+                        ac2 = ac2 * c + v2t;
+                        ac3 = ac3 * c + v3t;
+                        lC = lC * c + 1.0f;
+                        mC = uC;
+                    } else {
+                        float32 w = Math.exp(uC - mC);
+                        ac0 = ac0 + w * v0t;
+                        ac1 = ac1 + w * v1t;
+                        ac2 = ac2 + w * v2t;
+                        ac3 = ac3 + w * v3t;
+                        lC = lC + w;
+                    }
+                    if (uD > mD) {
+                        float32 c = Math.exp(mD - uD);
+                        ad0 = ad0 * c + v0t;
+                        ad1 = ad1 * c + v1t;
+                        ad2 = ad2 * c + v2t;
+                        ad3 = ad3 * c + v3t;
+                        lD = lD * c + 1.0f;
+                        mD = uD;
+                    } else {
+                        float32 w = Math.exp(uD - mD);
+                        ad0 = ad0 + w * v0t;
+                        ad1 = ad1 + w * v1t;
+                        ad2 = ad2 + w * v2t;
+                        ad3 = ad3 + w * v3t;
+                        lD = lD + w;
+                    }
+                    t = t + 1;
+                }
+            }
+            uint32 pA = ((h0) * splits + sp) * 130 + lane * 4;
+            uint32 pB = ((h0 + 1) * splits + sp) * 130 + lane * 4;
+            uint32 pC = ((h0 + 2) * splits + sp) * 130 + lane * 4;
+            uint32 pD = ((h0 + 3) * splits + sp) * 130 + lane * 4;
+            part[pA] = aa0;
+            part[pA + 1] = aa1;
+            part[pA + 2] = aa2;
+            part[pA + 3] = aa3;
+            part[pB] = ab0;
+            part[pB + 1] = ab1;
+            part[pB + 2] = ab2;
+            part[pB + 3] = ab3;
+            part[pC] = ac0;
+            part[pC + 1] = ac1;
+            part[pC + 2] = ac2;
+            part[pC + 3] = ac3;
+            part[pD] = ad0;
+            part[pD + 1] = ad1;
+            part[pD + 2] = ad2;
+            part[pD + 3] = ad3;
+            if (lane == 0) {
+                uint32 mBase = (h0 * splits + sp) * 130 + 128;
+                part[mBase] = mA;
+                part[mBase + 1] = lA;
+                uint32 mB2 = ((h0 + 1) * splits + sp) * 130 + 128;
+                part[mB2] = mB;
+                part[mB2 + 1] = lB;
+                uint32 mC2 = ((h0 + 2) * splits + sp) * 130 + 128;
+                part[mC2] = mC;
+                part[mC2 + 1] = lC;
+                uint32 mD2 = ((h0 + 3) * splits + sp) * 130 + 128;
+                part[mD2] = mD;
+                part[mD2 + 1] = lD;
+            }
+        }
+    }
+
+    @Kernel @FastMath @Wave(width = 32)
+    public static void attnFlashDecodeGqa8Kernel(KernelBuffer<float32> part,
+            KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+            KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, uint32 pgBase, uint32 nKv, uint32 count,
+            uint32 from, uint32 splits, float32 scale) {
+        uint32 lane = KernelThread.x();
+        uint32 wv = Workgroup.x();
+        if (wv < nKv * 2 * splits) {
+            uint32 pair = wv / splits;
+            uint32 sp = wv % splits;
+            uint32 kvh = pair / 2;
+            uint32 half = pair - kvh * 2;
+            uint32 chunk = (count + splits - 1) / splits;
+            uint32 t0 = sp * chunk;
+            uint32 t1 = t0 + chunk;
+            if (t1 > count) { t1 = count; }
+            uint32 kvDim = nKv * 128;
+            uint32 h0 = kvh * 8 + half * 4;
+            uint32 qRow = h0 * 128 + lane * 4;
+            float32 qa0 = q[qRow];
+            float32 qa1 = q[qRow + 1];
+            float32 qa2 = q[qRow + 2];
+            float32 qa3 = q[qRow + 3];
+            float32 qb0 = q[qRow + 128];
+            float32 qb1 = q[qRow + 129];
+            float32 qb2 = q[qRow + 130];
+            float32 qb3 = q[qRow + 131];
+            float32 qc0 = q[qRow + 256];
+            float32 qc1 = q[qRow + 257];
+            float32 qc2 = q[qRow + 258];
+            float32 qc3 = q[qRow + 259];
+            float32 qd0 = q[qRow + 384];
+            float32 qd1 = q[qRow + 385];
+            float32 qd2 = q[qRow + 386];
+            float32 qd3 = q[qRow + 387];
+            uint32 kBase = kvh * 128 + lane * 4;
+            float32 mA = 0.0f - 3.0e38f;
+            float32 mB = 0.0f - 3.0e38f;
+            float32 mC = 0.0f - 3.0e38f;
+            float32 mD = 0.0f - 3.0e38f;
+            float32 lA = 0.0f;
+            float32 lB = 0.0f;
+            float32 lC = 0.0f;
+            float32 lD = 0.0f;
+            float32 aa0 = 0.0f;
+            float32 aa1 = 0.0f;
+            float32 aa2 = 0.0f;
+            float32 aa3 = 0.0f;
+            float32 ab0 = 0.0f;
+            float32 ab1 = 0.0f;
+            float32 ab2 = 0.0f;
+            float32 ab3 = 0.0f;
+            float32 ac0 = 0.0f;
+            float32 ac1 = 0.0f;
+            float32 ac2 = 0.0f;
+            float32 ac3 = 0.0f;
+            float32 ad0 = 0.0f;
+            float32 ad1 = 0.0f;
+            float32 ad2 = 0.0f;
+            float32 ad3 = 0.0f;
+            if (t0 < t1) {
+                uint32 kRow0 = RefAttnW.row(pgTab, pgBase, from + t0) * kvDim + kBase;
+                // Half planes (unit 57): the lane's four K values are
+                // one 8-byte load, widened in registers.
+                Vector<float32,4> kv = kPool.vload<4>((int64) kRow0).toF32();
+                float32 k0 = kv[0];
+                float32 k1 = kv[1];
+                float32 k2 = kv[2];
+                float32 k3 = kv[3];
+                mA = Wave.reduceSumF32(
+                    qa0 * k0 + qa1 * k1 + qa2 * k2 + qa3 * k3) * scale;
+                mB = Wave.reduceSumF32(
+                    qb0 * k0 + qb1 * k1 + qb2 * k2 + qb3 * k3) * scale;
+                mC = Wave.reduceSumF32(
+                    qc0 * k0 + qc1 * k1 + qc2 * k2 + qc3 * k3) * scale;
+                mD = Wave.reduceSumF32(
+                    qd0 * k0 + qd1 * k1 + qd2 * k2 + qd3 * k3) * scale;
+                lA = 1.0f;
+                lB = 1.0f;
+                lC = 1.0f;
+                lD = 1.0f;
+                Vector<float32,4> vv = vPool.vload<4>((int64) kRow0).toF32();
+                float32 v0 = vv[0];
+                float32 v1 = vv[1];
+                float32 v2 = vv[2];
+                float32 v3 = vv[3];
+                aa0 = v0;
+                aa1 = v1;
+                aa2 = v2;
+                aa3 = v3;
+                ab0 = v0;
+                ab1 = v1;
+                ab2 = v2;
+                ab3 = v3;
+                ac0 = v0;
+                ac1 = v1;
+                ac2 = v2;
+                ac3 = v3;
+                ad0 = v0;
+                ad1 = v1;
+                ad2 = v2;
+                ad3 = v3;
+                uint32 t = t0 + 1;
+                // Unit 57: four positions per trip with ALL eight loads issued
+                // first. One position per trip left the wave waiting on a single
+                // 8-byte load per iteration behind four reductions and four exps:
+                // 13 us for 1 MB. Memory-level parallelism, not bytes, is the
+                // limit of this kernel.
+                while (t + 4 <= t1) {
+                    uint32 r0 = RefAttnW.row(pgTab, pgBase, from + t) * kvDim + kBase;
+                    uint32 rB = RefAttnW.row(pgTab, pgBase, from + t + 1) * kvDim + kBase;
+                    uint32 rC = RefAttnW.row(pgTab, pgBase, from + t + 2) * kvDim + kBase;
+                    uint32 rD = RefAttnW.row(pgTab, pgBase, from + t + 3) * kvDim + kBase;
+                    Vector<float32,4> kA = kPool.vload<4>((int64) r0).toF32();
+                    Vector<float32,4> kB = kPool.vload<4>((int64) rB).toF32();
+                    Vector<float32,4> kC = kPool.vload<4>((int64) rC).toF32();
+                    Vector<float32,4> kD = kPool.vload<4>((int64) rD).toF32();
+                    Vector<float32,4> vA = vPool.vload<4>((int64) r0).toF32();
+                    Vector<float32,4> vB = vPool.vload<4>((int64) rB).toF32();
+                    Vector<float32,4> vC = vPool.vload<4>((int64) rC).toF32();
+                    Vector<float32,4> vD = vPool.vload<4>((int64) rD).toF32();
+                    float32 uA = Wave.reduceSumF32(
+                        qa0 * kA[0] + qa1 * kA[1] + qa2 * kA[2] + qa3 * kA[3]) * scale;
+                    float32 uB = Wave.reduceSumF32(
+                        qb0 * kA[0] + qb1 * kA[1] + qb2 * kA[2] + qb3 * kA[3]) * scale;
+                    float32 uC = Wave.reduceSumF32(
+                        qc0 * kA[0] + qc1 * kA[1] + qc2 * kA[2] + qc3 * kA[3]) * scale;
+                    float32 uD = Wave.reduceSumF32(
+                        qd0 * kA[0] + qd1 * kA[1] + qd2 * kA[2] + qd3 * kA[3]) * scale;
+                    if (uA > mA) {
+                        float32 c = Math.exp(mA - uA);
+                        aa0 = aa0 * c + vA[0];
+                        aa1 = aa1 * c + vA[1];
+                        aa2 = aa2 * c + vA[2];
+                        aa3 = aa3 * c + vA[3];
+                        lA = lA * c + 1.0f;
+                        mA = uA;
+                    } else {
+                        float32 w = Math.exp(uA - mA);
+                        aa0 = aa0 + w * vA[0];
+                        aa1 = aa1 + w * vA[1];
+                        aa2 = aa2 + w * vA[2];
+                        aa3 = aa3 + w * vA[3];
+                        lA = lA + w;
+                    }
+                    if (uB > mB) {
+                        float32 c = Math.exp(mB - uB);
+                        ab0 = ab0 * c + vA[0];
+                        ab1 = ab1 * c + vA[1];
+                        ab2 = ab2 * c + vA[2];
+                        ab3 = ab3 * c + vA[3];
+                        lB = lB * c + 1.0f;
+                        mB = uB;
+                    } else {
+                        float32 w = Math.exp(uB - mB);
+                        ab0 = ab0 + w * vA[0];
+                        ab1 = ab1 + w * vA[1];
+                        ab2 = ab2 + w * vA[2];
+                        ab3 = ab3 + w * vA[3];
+                        lB = lB + w;
+                    }
+                    if (uC > mC) {
+                        float32 c = Math.exp(mC - uC);
+                        ac0 = ac0 * c + vA[0];
+                        ac1 = ac1 * c + vA[1];
+                        ac2 = ac2 * c + vA[2];
+                        ac3 = ac3 * c + vA[3];
+                        lC = lC * c + 1.0f;
+                        mC = uC;
+                    } else {
+                        float32 w = Math.exp(uC - mC);
+                        ac0 = ac0 + w * vA[0];
+                        ac1 = ac1 + w * vA[1];
+                        ac2 = ac2 + w * vA[2];
+                        ac3 = ac3 + w * vA[3];
+                        lC = lC + w;
+                    }
+                    if (uD > mD) {
+                        float32 c = Math.exp(mD - uD);
+                        ad0 = ad0 * c + vA[0];
+                        ad1 = ad1 * c + vA[1];
+                        ad2 = ad2 * c + vA[2];
+                        ad3 = ad3 * c + vA[3];
+                        lD = lD * c + 1.0f;
+                        mD = uD;
+                    } else {
+                        float32 w = Math.exp(uD - mD);
+                        ad0 = ad0 + w * vA[0];
+                        ad1 = ad1 + w * vA[1];
+                        ad2 = ad2 + w * vA[2];
+                        ad3 = ad3 + w * vA[3];
+                        lD = lD + w;
+                    }
+                    float32 uA = Wave.reduceSumF32(
+                        qa0 * kB[0] + qa1 * kB[1] + qa2 * kB[2] + qa3 * kB[3]) * scale;
+                    float32 uB = Wave.reduceSumF32(
+                        qb0 * kB[0] + qb1 * kB[1] + qb2 * kB[2] + qb3 * kB[3]) * scale;
+                    float32 uC = Wave.reduceSumF32(
+                        qc0 * kB[0] + qc1 * kB[1] + qc2 * kB[2] + qc3 * kB[3]) * scale;
+                    float32 uD = Wave.reduceSumF32(
+                        qd0 * kB[0] + qd1 * kB[1] + qd2 * kB[2] + qd3 * kB[3]) * scale;
+                    if (uA > mA) {
+                        float32 c = Math.exp(mA - uA);
+                        aa0 = aa0 * c + vB[0];
+                        aa1 = aa1 * c + vB[1];
+                        aa2 = aa2 * c + vB[2];
+                        aa3 = aa3 * c + vB[3];
+                        lA = lA * c + 1.0f;
+                        mA = uA;
+                    } else {
+                        float32 w = Math.exp(uA - mA);
+                        aa0 = aa0 + w * vB[0];
+                        aa1 = aa1 + w * vB[1];
+                        aa2 = aa2 + w * vB[2];
+                        aa3 = aa3 + w * vB[3];
+                        lA = lA + w;
+                    }
+                    if (uB > mB) {
+                        float32 c = Math.exp(mB - uB);
+                        ab0 = ab0 * c + vB[0];
+                        ab1 = ab1 * c + vB[1];
+                        ab2 = ab2 * c + vB[2];
+                        ab3 = ab3 * c + vB[3];
+                        lB = lB * c + 1.0f;
+                        mB = uB;
+                    } else {
+                        float32 w = Math.exp(uB - mB);
+                        ab0 = ab0 + w * vB[0];
+                        ab1 = ab1 + w * vB[1];
+                        ab2 = ab2 + w * vB[2];
+                        ab3 = ab3 + w * vB[3];
+                        lB = lB + w;
+                    }
+                    if (uC > mC) {
+                        float32 c = Math.exp(mC - uC);
+                        ac0 = ac0 * c + vB[0];
+                        ac1 = ac1 * c + vB[1];
+                        ac2 = ac2 * c + vB[2];
+                        ac3 = ac3 * c + vB[3];
+                        lC = lC * c + 1.0f;
+                        mC = uC;
+                    } else {
+                        float32 w = Math.exp(uC - mC);
+                        ac0 = ac0 + w * vB[0];
+                        ac1 = ac1 + w * vB[1];
+                        ac2 = ac2 + w * vB[2];
+                        ac3 = ac3 + w * vB[3];
+                        lC = lC + w;
+                    }
+                    if (uD > mD) {
+                        float32 c = Math.exp(mD - uD);
+                        ad0 = ad0 * c + vB[0];
+                        ad1 = ad1 * c + vB[1];
+                        ad2 = ad2 * c + vB[2];
+                        ad3 = ad3 * c + vB[3];
+                        lD = lD * c + 1.0f;
+                        mD = uD;
+                    } else {
+                        float32 w = Math.exp(uD - mD);
+                        ad0 = ad0 + w * vB[0];
+                        ad1 = ad1 + w * vB[1];
+                        ad2 = ad2 + w * vB[2];
+                        ad3 = ad3 + w * vB[3];
+                        lD = lD + w;
+                    }
+                    float32 uA = Wave.reduceSumF32(
+                        qa0 * kC[0] + qa1 * kC[1] + qa2 * kC[2] + qa3 * kC[3]) * scale;
+                    float32 uB = Wave.reduceSumF32(
+                        qb0 * kC[0] + qb1 * kC[1] + qb2 * kC[2] + qb3 * kC[3]) * scale;
+                    float32 uC = Wave.reduceSumF32(
+                        qc0 * kC[0] + qc1 * kC[1] + qc2 * kC[2] + qc3 * kC[3]) * scale;
+                    float32 uD = Wave.reduceSumF32(
+                        qd0 * kC[0] + qd1 * kC[1] + qd2 * kC[2] + qd3 * kC[3]) * scale;
+                    if (uA > mA) {
+                        float32 c = Math.exp(mA - uA);
+                        aa0 = aa0 * c + vC[0];
+                        aa1 = aa1 * c + vC[1];
+                        aa2 = aa2 * c + vC[2];
+                        aa3 = aa3 * c + vC[3];
+                        lA = lA * c + 1.0f;
+                        mA = uA;
+                    } else {
+                        float32 w = Math.exp(uA - mA);
+                        aa0 = aa0 + w * vC[0];
+                        aa1 = aa1 + w * vC[1];
+                        aa2 = aa2 + w * vC[2];
+                        aa3 = aa3 + w * vC[3];
+                        lA = lA + w;
+                    }
+                    if (uB > mB) {
+                        float32 c = Math.exp(mB - uB);
+                        ab0 = ab0 * c + vC[0];
+                        ab1 = ab1 * c + vC[1];
+                        ab2 = ab2 * c + vC[2];
+                        ab3 = ab3 * c + vC[3];
+                        lB = lB * c + 1.0f;
+                        mB = uB;
+                    } else {
+                        float32 w = Math.exp(uB - mB);
+                        ab0 = ab0 + w * vC[0];
+                        ab1 = ab1 + w * vC[1];
+                        ab2 = ab2 + w * vC[2];
+                        ab3 = ab3 + w * vC[3];
+                        lB = lB + w;
+                    }
+                    if (uC > mC) {
+                        float32 c = Math.exp(mC - uC);
+                        ac0 = ac0 * c + vC[0];
+                        ac1 = ac1 * c + vC[1];
+                        ac2 = ac2 * c + vC[2];
+                        ac3 = ac3 * c + vC[3];
+                        lC = lC * c + 1.0f;
+                        mC = uC;
+                    } else {
+                        float32 w = Math.exp(uC - mC);
+                        ac0 = ac0 + w * vC[0];
+                        ac1 = ac1 + w * vC[1];
+                        ac2 = ac2 + w * vC[2];
+                        ac3 = ac3 + w * vC[3];
+                        lC = lC + w;
+                    }
+                    if (uD > mD) {
+                        float32 c = Math.exp(mD - uD);
+                        ad0 = ad0 * c + vC[0];
+                        ad1 = ad1 * c + vC[1];
+                        ad2 = ad2 * c + vC[2];
+                        ad3 = ad3 * c + vC[3];
+                        lD = lD * c + 1.0f;
+                        mD = uD;
+                    } else {
+                        float32 w = Math.exp(uD - mD);
+                        ad0 = ad0 + w * vC[0];
+                        ad1 = ad1 + w * vC[1];
+                        ad2 = ad2 + w * vC[2];
+                        ad3 = ad3 + w * vC[3];
+                        lD = lD + w;
+                    }
+                    float32 uA = Wave.reduceSumF32(
+                        qa0 * kD[0] + qa1 * kD[1] + qa2 * kD[2] + qa3 * kD[3]) * scale;
+                    float32 uB = Wave.reduceSumF32(
+                        qb0 * kD[0] + qb1 * kD[1] + qb2 * kD[2] + qb3 * kD[3]) * scale;
+                    float32 uC = Wave.reduceSumF32(
+                        qc0 * kD[0] + qc1 * kD[1] + qc2 * kD[2] + qc3 * kD[3]) * scale;
+                    float32 uD = Wave.reduceSumF32(
+                        qd0 * kD[0] + qd1 * kD[1] + qd2 * kD[2] + qd3 * kD[3]) * scale;
+                    if (uA > mA) {
+                        float32 c = Math.exp(mA - uA);
+                        aa0 = aa0 * c + vD[0];
+                        aa1 = aa1 * c + vD[1];
+                        aa2 = aa2 * c + vD[2];
+                        aa3 = aa3 * c + vD[3];
+                        lA = lA * c + 1.0f;
+                        mA = uA;
+                    } else {
+                        float32 w = Math.exp(uA - mA);
+                        aa0 = aa0 + w * vD[0];
+                        aa1 = aa1 + w * vD[1];
+                        aa2 = aa2 + w * vD[2];
+                        aa3 = aa3 + w * vD[3];
+                        lA = lA + w;
+                    }
+                    if (uB > mB) {
+                        float32 c = Math.exp(mB - uB);
+                        ab0 = ab0 * c + vD[0];
+                        ab1 = ab1 * c + vD[1];
+                        ab2 = ab2 * c + vD[2];
+                        ab3 = ab3 * c + vD[3];
+                        lB = lB * c + 1.0f;
+                        mB = uB;
+                    } else {
+                        float32 w = Math.exp(uB - mB);
+                        ab0 = ab0 + w * vD[0];
+                        ab1 = ab1 + w * vD[1];
+                        ab2 = ab2 + w * vD[2];
+                        ab3 = ab3 + w * vD[3];
+                        lB = lB + w;
+                    }
+                    if (uC > mC) {
+                        float32 c = Math.exp(mC - uC);
+                        ac0 = ac0 * c + vD[0];
+                        ac1 = ac1 * c + vD[1];
+                        ac2 = ac2 * c + vD[2];
+                        ac3 = ac3 * c + vD[3];
+                        lC = lC * c + 1.0f;
+                        mC = uC;
+                    } else {
+                        float32 w = Math.exp(uC - mC);
+                        ac0 = ac0 + w * vD[0];
+                        ac1 = ac1 + w * vD[1];
+                        ac2 = ac2 + w * vD[2];
+                        ac3 = ac3 + w * vD[3];
+                        lC = lC + w;
+                    }
+                    if (uD > mD) {
+                        float32 c = Math.exp(mD - uD);
+                        ad0 = ad0 * c + vD[0];
+                        ad1 = ad1 * c + vD[1];
+                        ad2 = ad2 * c + vD[2];
+                        ad3 = ad3 * c + vD[3];
+                        lD = lD * c + 1.0f;
+                        mD = uD;
+                    } else {
+                        float32 w = Math.exp(uD - mD);
+                        ad0 = ad0 + w * vD[0];
+                        ad1 = ad1 + w * vD[1];
+                        ad2 = ad2 + w * vD[2];
+                        ad3 = ad3 + w * vD[3];
+                        lD = lD + w;
+                    }
+                    t = t + 4;
+                }
+                                while (t < t1) {
+                    uint32 kRow = RefAttnW.row(pgTab, pgBase, from + t) * kvDim + kBase;
+                    Vector<float32,4> kt = kPool.vload<4>((int64) kRow).toF32();
+                    k0 = kt[0];
+                    k1 = kt[1];
+                    k2 = kt[2];
+                    k3 = kt[3];
+                    float32 uA = Wave.reduceSumF32(
+                        qa0 * k0 + qa1 * k1 + qa2 * k2 + qa3 * k3) * scale;
+                    float32 uB = Wave.reduceSumF32(
+                        qb0 * k0 + qb1 * k1 + qb2 * k2 + qb3 * k3) * scale;
+                    float32 uC = Wave.reduceSumF32(
+                        qc0 * k0 + qc1 * k1 + qc2 * k2 + qc3 * k3) * scale;
+                    float32 uD = Wave.reduceSumF32(
+                        qd0 * k0 + qd1 * k1 + qd2 * k2 + qd3 * k3) * scale;
+                    Vector<float32,4> vt = vPool.vload<4>((int64) kRow).toF32();
+                    float32 v0t = vt[0];
+                    float32 v1t = vt[1];
+                    float32 v2t = vt[2];
+                    float32 v3t = vt[3];
+                    if (uA > mA) {
+                        float32 c = Math.exp(mA - uA);
+                        aa0 = aa0 * c + v0t;
+                        aa1 = aa1 * c + v1t;
+                        aa2 = aa2 * c + v2t;
+                        aa3 = aa3 * c + v3t;
+                        lA = lA * c + 1.0f;
+                        mA = uA;
+                    } else {
+                        float32 w = Math.exp(uA - mA);
+                        aa0 = aa0 + w * v0t;
+                        aa1 = aa1 + w * v1t;
+                        aa2 = aa2 + w * v2t;
+                        aa3 = aa3 + w * v3t;
+                        lA = lA + w;
+                    }
+                    if (uB > mB) {
+                        float32 c = Math.exp(mB - uB);
+                        ab0 = ab0 * c + v0t;
+                        ab1 = ab1 * c + v1t;
+                        ab2 = ab2 * c + v2t;
+                        ab3 = ab3 * c + v3t;
+                        lB = lB * c + 1.0f;
+                        mB = uB;
+                    } else {
+                        float32 w = Math.exp(uB - mB);
+                        ab0 = ab0 + w * v0t;
+                        ab1 = ab1 + w * v1t;
+                        ab2 = ab2 + w * v2t;
+                        ab3 = ab3 + w * v3t;
+                        lB = lB + w;
+                    }
+                    if (uC > mC) {
+                        float32 c = Math.exp(mC - uC);
+                        ac0 = ac0 * c + v0t;
+                        ac1 = ac1 * c + v1t;
+                        ac2 = ac2 * c + v2t;
+                        ac3 = ac3 * c + v3t;
+                        lC = lC * c + 1.0f;
+                        mC = uC;
+                    } else {
+                        float32 w = Math.exp(uC - mC);
+                        ac0 = ac0 + w * v0t;
+                        ac1 = ac1 + w * v1t;
+                        ac2 = ac2 + w * v2t;
+                        ac3 = ac3 + w * v3t;
+                        lC = lC + w;
+                    }
+                    if (uD > mD) {
+                        float32 c = Math.exp(mD - uD);
+                        ad0 = ad0 * c + v0t;
+                        ad1 = ad1 * c + v1t;
+                        ad2 = ad2 * c + v2t;
+                        ad3 = ad3 * c + v3t;
+                        lD = lD * c + 1.0f;
+                        mD = uD;
+                    } else {
+                        float32 w = Math.exp(uD - mD);
+                        ad0 = ad0 + w * v0t;
+                        ad1 = ad1 + w * v1t;
+                        ad2 = ad2 + w * v2t;
+                        ad3 = ad3 + w * v3t;
+                        lD = lD + w;
+                    }
+                    t = t + 1;
+                }
+            }
+            uint32 pA = ((h0) * splits + sp) * 130 + lane * 4;
+            uint32 pB = ((h0 + 1) * splits + sp) * 130 + lane * 4;
+            uint32 pC = ((h0 + 2) * splits + sp) * 130 + lane * 4;
+            uint32 pD = ((h0 + 3) * splits + sp) * 130 + lane * 4;
+            part[pA] = aa0;
+            part[pA + 1] = aa1;
+            part[pA + 2] = aa2;
+            part[pA + 3] = aa3;
+            part[pB] = ab0;
+            part[pB + 1] = ab1;
+            part[pB + 2] = ab2;
+            part[pB + 3] = ab3;
+            part[pC] = ac0;
+            part[pC + 1] = ac1;
+            part[pC + 2] = ac2;
+            part[pC + 3] = ac3;
+            part[pD] = ad0;
+            part[pD + 1] = ad1;
+            part[pD + 2] = ad2;
+            part[pD + 3] = ad3;
+            if (lane == 0) {
+                uint32 mBase = (h0 * splits + sp) * 130 + 128;
+                part[mBase] = mA;
+                part[mBase + 1] = lA;
+                uint32 mB2 = ((h0 + 1) * splits + sp) * 130 + 128;
+                part[mB2] = mB;
+                part[mB2 + 1] = lB;
+                uint32 mC2 = ((h0 + 2) * splits + sp) * 130 + 128;
+                part[mC2] = mC;
+                part[mC2 + 1] = lC;
+                uint32 mD2 = ((h0 + 3) * splits + sp) * 130 + 128;
+                part[mD2] = mD;
+                part[mD2 + 1] = lD;
+            }
+        }
+    }
+
+    @Kernel @FastMath @Wave(width = 32)
+    public static void attnFlashDecodeGqa2Hd256Kernel(KernelBuffer<float32> part,
+            KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+            KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, uint32 pgBase, uint32 nKv, uint32 count,
+            uint32 from, uint32 splits, float32 scale) {
+        uint32 lane = KernelThread.x();
+        uint32 wv = Workgroup.x();
+        if (wv < nKv * splits) {
+            uint32 kvh = wv / splits;
+            uint32 sp = wv % splits;
+            uint32 chunk = (count + splits - 1) / splits;
+            uint32 t0 = sp * chunk;
+            uint32 t1 = t0 + chunk;
+            if (t1 > count) { t1 = count; }
+            uint32 kvDim = nKv * 256;
+            uint32 h0 = kvh * 2;
+            uint32 qRow = h0 * 256 + lane * 8;
+            float32 qa0 = q[qRow + 0];
+            float32 qa1 = q[qRow + 1];
+            float32 qa2 = q[qRow + 2];
+            float32 qa3 = q[qRow + 3];
+            float32 qa4 = q[qRow + 4];
+            float32 qa5 = q[qRow + 5];
+            float32 qa6 = q[qRow + 6];
+            float32 qa7 = q[qRow + 7];
+            float32 qb0 = q[qRow + 256];
+            float32 qb1 = q[qRow + 257];
+            float32 qb2 = q[qRow + 258];
+            float32 qb3 = q[qRow + 259];
+            float32 qb4 = q[qRow + 260];
+            float32 qb5 = q[qRow + 261];
+            float32 qb6 = q[qRow + 262];
+            float32 qb7 = q[qRow + 263];
+            uint32 kBase = kvh * 256 + lane * 8;
+            float32 mA = 0.0f - 3.0e38f;
+            float32 lA = 0.0f;
+            float32 aa0 = 0.0f;
+            float32 aa1 = 0.0f;
+            float32 aa2 = 0.0f;
+            float32 aa3 = 0.0f;
+            float32 aa4 = 0.0f;
+            float32 aa5 = 0.0f;
+            float32 aa6 = 0.0f;
+            float32 aa7 = 0.0f;
+            float32 mB = 0.0f - 3.0e38f;
+            float32 lB = 0.0f;
+            float32 ab0 = 0.0f;
+            float32 ab1 = 0.0f;
+            float32 ab2 = 0.0f;
+            float32 ab3 = 0.0f;
+            float32 ab4 = 0.0f;
+            float32 ab5 = 0.0f;
+            float32 ab6 = 0.0f;
+            float32 ab7 = 0.0f;
+            if (t0 < t1) {
+                uint32 kRow0 = RefAttnW.row(pgTab, pgBase, from + t0) * kvDim + kBase;
+                float32 k0 = (float32) kPool[kRow0 + 0];
+                float32 k1 = (float32) kPool[kRow0 + 1];
+                float32 k2 = (float32) kPool[kRow0 + 2];
+                float32 k3 = (float32) kPool[kRow0 + 3];
+                float32 k4 = (float32) kPool[kRow0 + 4];
+                float32 k5 = (float32) kPool[kRow0 + 5];
+                float32 k6 = (float32) kPool[kRow0 + 6];
+                float32 k7 = (float32) kPool[kRow0 + 7];
+                mA = Wave.reduceSumF32(qa0 * k0 + qa1 * k1 + qa2 * k2 + qa3 * k3 + qa4 * k4 + qa5 * k5 + qa6 * k6 + qa7 * k7) * scale;
+                lA = 1.0f;
+                mB = Wave.reduceSumF32(qb0 * k0 + qb1 * k1 + qb2 * k2 + qb3 * k3 + qb4 * k4 + qb5 * k5 + qb6 * k6 + qb7 * k7) * scale;
+                lB = 1.0f;
+                float32 v0 = (float32) vPool[kRow0 + 0];
+                float32 v1 = (float32) vPool[kRow0 + 1];
+                float32 v2 = (float32) vPool[kRow0 + 2];
+                float32 v3 = (float32) vPool[kRow0 + 3];
+                float32 v4 = (float32) vPool[kRow0 + 4];
+                float32 v5 = (float32) vPool[kRow0 + 5];
+                float32 v6 = (float32) vPool[kRow0 + 6];
+                float32 v7 = (float32) vPool[kRow0 + 7];
+                aa0 = v0;
+                aa1 = v1;
+                aa2 = v2;
+                aa3 = v3;
+                aa4 = v4;
+                aa5 = v5;
+                aa6 = v6;
+                aa7 = v7;
+                ab0 = v0;
+                ab1 = v1;
+                ab2 = v2;
+                ab3 = v3;
+                ab4 = v4;
+                ab5 = v5;
+                ab6 = v6;
+                ab7 = v7;
+                uint32 t = t0 + 1;
+                while (t < t1) {
+                    uint32 kRow = RefAttnW.row(pgTab, pgBase, from + t) * kvDim + kBase;
+                    k0 = (float32) kPool[kRow + 0];
+                    k1 = (float32) kPool[kRow + 1];
+                    k2 = (float32) kPool[kRow + 2];
+                    k3 = (float32) kPool[kRow + 3];
+                    k4 = (float32) kPool[kRow + 4];
+                    k5 = (float32) kPool[kRow + 5];
+                    k6 = (float32) kPool[kRow + 6];
+                    k7 = (float32) kPool[kRow + 7];
+                    float32 uA = Wave.reduceSumF32(qa0 * k0 + qa1 * k1 + qa2 * k2 + qa3 * k3 + qa4 * k4 + qa5 * k5 + qa6 * k6 + qa7 * k7) * scale;
+                    float32 uB = Wave.reduceSumF32(qb0 * k0 + qb1 * k1 + qb2 * k2 + qb3 * k3 + qb4 * k4 + qb5 * k5 + qb6 * k6 + qb7 * k7) * scale;
+                    float32 v0t = (float32) vPool[kRow + 0];
+                    float32 v1t = (float32) vPool[kRow + 1];
+                    float32 v2t = (float32) vPool[kRow + 2];
+                    float32 v3t = (float32) vPool[kRow + 3];
+                    float32 v4t = (float32) vPool[kRow + 4];
+                    float32 v5t = (float32) vPool[kRow + 5];
+                    float32 v6t = (float32) vPool[kRow + 6];
+                    float32 v7t = (float32) vPool[kRow + 7];
+                    if (uA > mA) {
+                        float32 ca = Math.exp(mA - uA);
+                        aa0 = aa0 * ca + v0t;
+                        aa1 = aa1 * ca + v1t;
+                        aa2 = aa2 * ca + v2t;
+                        aa3 = aa3 * ca + v3t;
+                        aa4 = aa4 * ca + v4t;
+                        aa5 = aa5 * ca + v5t;
+                        aa6 = aa6 * ca + v6t;
+                        aa7 = aa7 * ca + v7t;
+                        lA = lA * ca + 1.0f;
+                        mA = uA;
+                    } else {
+                        float32 ea = Math.exp(uA - mA);
+                        aa0 = aa0 + ea * v0t;
+                        aa1 = aa1 + ea * v1t;
+                        aa2 = aa2 + ea * v2t;
+                        aa3 = aa3 + ea * v3t;
+                        aa4 = aa4 + ea * v4t;
+                        aa5 = aa5 + ea * v5t;
+                        aa6 = aa6 + ea * v6t;
+                        aa7 = aa7 + ea * v7t;
+                        lA = lA + ea;
+                    }
+                    if (uB > mB) {
+                        float32 cb = Math.exp(mB - uB);
+                        ab0 = ab0 * cb + v0t;
+                        ab1 = ab1 * cb + v1t;
+                        ab2 = ab2 * cb + v2t;
+                        ab3 = ab3 * cb + v3t;
+                        ab4 = ab4 * cb + v4t;
+                        ab5 = ab5 * cb + v5t;
+                        ab6 = ab6 * cb + v6t;
+                        ab7 = ab7 * cb + v7t;
+                        lB = lB * cb + 1.0f;
+                        mB = uB;
+                    } else {
+                        float32 eb = Math.exp(uB - mB);
+                        ab0 = ab0 + eb * v0t;
+                        ab1 = ab1 + eb * v1t;
+                        ab2 = ab2 + eb * v2t;
+                        ab3 = ab3 + eb * v3t;
+                        ab4 = ab4 + eb * v4t;
+                        ab5 = ab5 + eb * v5t;
+                        ab6 = ab6 + eb * v6t;
+                        ab7 = ab7 + eb * v7t;
+                        lB = lB + eb;
+                    }
+                    t = t + 1;
+                }
+            }
+            uint32 pA = ((h0 + 0) * splits + sp) * 258;
+            part[pA + lane * 8 + 0] = aa0;
+            part[pA + lane * 8 + 1] = aa1;
+            part[pA + lane * 8 + 2] = aa2;
+            part[pA + lane * 8 + 3] = aa3;
+            part[pA + lane * 8 + 4] = aa4;
+            part[pA + lane * 8 + 5] = aa5;
+            part[pA + lane * 8 + 6] = aa6;
+            part[pA + lane * 8 + 7] = aa7;
+            uint32 pB = ((h0 + 1) * splits + sp) * 258;
+            part[pB + lane * 8 + 0] = ab0;
+            part[pB + lane * 8 + 1] = ab1;
+            part[pB + lane * 8 + 2] = ab2;
+            part[pB + lane * 8 + 3] = ab3;
+            part[pB + lane * 8 + 4] = ab4;
+            part[pB + lane * 8 + 5] = ab5;
+            part[pB + lane * 8 + 6] = ab6;
+            part[pB + lane * 8 + 7] = ab7;
+            if (lane == 0) {
+                part[pA + 256] = mA;
+                part[pA + 257] = lA;
+                part[pB + 256] = mB;
+                part[pB + 257] = lB;
+            }
+        }
+    }
+
+    public static void run_attnFlashDecodeGqa4Kernel(KernelBuffer<float32> part, KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+            KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, int32 nKv, int32 count, int32 splits, float32 scale) {
+        KernelStream s #= KernelStream.current();
+        attnFlashDecodeGqa4Kernel.launch(s, grid: [(uint32) (nKv * splits)], block: [32])(part, q, kPool, vPool, pgTab, 0, (uint32) nKv, (uint32) count, 0, (uint32) splits, scale);
+    }
+
+    public static void run_attnFlashDecodeGqa8Kernel(KernelBuffer<float32> part, KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+            KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, int32 nKv, int32 count, int32 splits, float32 scale) {
+        KernelStream s #= KernelStream.current();
+        attnFlashDecodeGqa8Kernel.launch(s, grid: [(uint32) (nKv * 2 * splits)], block: [32])(part, q, kPool, vPool, pgTab, 0, (uint32) nKv, (uint32) count, 0, (uint32) splits, scale);
+    }
+
+    public static void run_attnFlashDecodeGqa2Hd256Kernel(KernelBuffer<float32> part, KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+            KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, int32 nKv, int32 count, int32 splits, float32 scale) {
+        KernelStream s #= KernelStream.current();
+        attnFlashDecodeGqa2Hd256Kernel.launch(s, grid: [(uint32) (nKv * splits)], block: [32])(part, q, kPool, vPool, pgTab, 0, (uint32) nKv, (uint32) count, 0, (uint32) splits, scale);
+    }
+}
