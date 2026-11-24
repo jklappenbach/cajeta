@@ -1,0 +1,220 @@
+package ref;
+
+import cajeta.lang.Cajeta;
+import cajeta.xpu.Group;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Vector;
+import cajeta.xpu.Wave;
+
+/** cajeta-llm's GPU Q8_0 and Q5_0 decode mat-vecs and their split row layout, lifted unchanged (llm 0730a8b). */
+public final class RefWave32 {
+    public RefWave32() { return; }
+
+    @Device
+    static float32 halfBranchless(int32 h) {
+        int32 sgn = (h >> 15) << 31;
+        int32 exp = (h >> 10) & 31;
+        int32 man = h & 1023;
+        int32 norm = sgn | ((exp + 112) << 23) | (man << 13);
+        int32 inf = sgn | (255 << 23) | (man << 13);
+        int32 sub = Cajeta.f32ToBits((float32) man * 5.9604644775390625e-8f) | sgn;
+        int32 m0 = (exp - 1) >> 31;
+        int32 m31 = (30 - exp) >> 31;
+        int32 mn = (m0 | m31) ^ (0 - 1);
+        return Cajeta.bitsToF32((norm & mn) | (inf & m31) | (sub & m0));
+    }
+
+    @Device
+    static float32 scaleAtDev(KernelBuffer<int8> scales, int64 idx) {
+        int64 so = idx * 2L;
+        Vector<int8,4> dh = scales.vload<4>(so - (so & 3L));
+        int32 w = ((int32) dh[0] & 255) | (((int32) dh[1] & 255) << 8)
+            | (((int32) dh[2] & 255) << 16) | (((int32) dh[3] & 255) << 24);
+        int32 sh = (int32) (so & 2L) * 8;
+        return RefWave32.halfBranchless((w >> sh) & 65535);
+    }
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void q80Q8WaveMatVecKernel(KernelBuffer<float32> y,
+            KernelBuffer<int8> packed, KernelBuffer<int8> xp,
+            uint32 rows, int64 blocksPerRow, int64 yOff) {
+        // Wave-relative (xpu-kernel-adaptor Unit 9): the workgroup may carry
+        // several rows, one per wave, and the kernel is correct at any wave
+        // width; the literal 32 this assumed was one workgroup per row.
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 row = KernelThread.globalIdX() / wv;
+        int64 prefix = ((blocksPerRow * 2L + 3L) / 4L) * 4L;
+        int64 rowBytes = prefix + blocksPerRow * 32L;
+        float32 acc = 0.0f;
+        if (row < rows) {
+            int64 i = (int64) row;
+            Vector<int32,8> zv = heap Vector<int32,8>(0, 0, 0, 0, 0, 0, 0, 0);
+            int64 wb = (int64) lane;
+            while (wb < blocksPerRow) {
+                int64 ro = i * rowBytes + prefix + wb * 32L;
+                float32 d = RefWave32.scaleAtDev(packed,
+                    i * rowBytes / 2L + wb);
+                Vector<int8,32> w = packed.vload<32>(ro, align: 4);
+                int64 ab = wb / 8L;
+                Vector<int8,32> a = xp.vload<32>(ab * 320L
+                    + (wb % 8L) * 32L, align: 16);
+                Vector<int32,8> totW = w.dotAccum(a, zv);
+                int32 sumi = totW[0] + totW[1] + totW[2] + totW[3]
+                           + totW[4] + totW[5] + totW[6] + totW[7];
+                Vector<int8,4> dv = xp.vload<4>(ab * 320L + 288L, align: 4);
+                float32 xs = Cajeta.bitsToF32(((int32) dv[0] & 255)
+                    | (((int32) dv[1] & 255) << 8)
+                    | (((int32) dv[2] & 255) << 16)
+                    | (((int32) dv[3] & 255) << 24));
+                acc = acc + d * xs * (float32) sumi;
+                wb = wb + (int64) wv;
+            }
+        }
+        // 2026-08-26: ONE subgroup reduction, not a five-barrier LDS
+        // tree. The workgroup IS one wave, so the tree moved through
+        // memory what the hardware reduces across lanes — cheap when the
+        // k-loop is long, and it is not: at K=4096 a wave runs TWO
+        // iterations and then pays the whole tail. Measured on the two
+        // formats that carry 95% of this model's decode traffic, cold
+        // pool, interleaved min-of-5, GiB/s:
+        //   q4_K 14336x4096  180.9 -> 193.8      q4_K 4096x14336 171.6 -> 177.2
+        //   q4_K  4096x4096  155.2 -> 157.1      q4_K 1024x4096  129.4 -> 131.4
+        //   q6_K  4096x14336 136.5 -> 137.5      q6_K 1024x4096  124.8 -> 127.5
+        //   q6_K 128256x4096 158.7 -> 161.0
+        // A hand-written shuffle butterfly was tried in 2026-08 and was
+        // both wrong and exactly as fast — but at half this kernel's
+        // current rate, where the tail was half the share it is now.
+        float32 tot = Wave.reduceSumF32(acc);
+        if (lane == 0 && row < rows) {
+            y[yOff + (int64) row] = tot;
+        }
+    }
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void q50Q8WaveMatVecKernel(KernelBuffer<float32> y,
+            KernelBuffer<int8> packed, KernelBuffer<int8> xp,
+            uint32 rows, int64 blocksPerRow, int64 yOff) {
+        // Wave-relative (xpu-kernel-adaptor Unit 9): the workgroup may carry
+        // several rows, one per wave, and the kernel is correct at any wave
+        // width; the literal 32 this assumed was one workgroup per row.
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 row = KernelThread.globalIdX() / wv;
+        int64 prefix = ((blocksPerRow * 2L + 3L) / 4L) * 4L;
+        int64 rowBytes = prefix + blocksPerRow * 20L;
+        float32 acc = 0.0f;
+        if (row < rows) {
+            int64 i = (int64) row;
+            Vector<int32,4> z4 = heap Vector<int32,4>(0, 0, 0, 0);
+            int64 wb = (int64) lane;
+            while (wb < blocksPerRow) {
+            int64 ro = i * rowBytes + prefix + wb * 20L;
+            float32 d = RefWave32.scaleAtDev(packed, i * rowBytes / 2L + wb);
+            Vector<int8,4> qhb = packed.vload<4>(ro);
+            int32 qh = ((int32) qhb[0] & 255)
+                | (((int32) qhb[1] & 255) << 8)
+                | (((int32) qhb[2] & 255) << 16)
+                | (((int32) qhb[3] & 255) << 24);
+            Vector<int8,16> qs = packed.vload<16>(ro + 4L);
+            Vector<uint8,16> lo = (qs & 15).asUnsigned();
+            Vector<uint8,16> hi = ((qs >> 4) & 15).asUnsigned();
+            int64 ab = wb / 8L;
+            int64 xb = ab * 320L + (wb % 8L) * 32L;
+            Vector<int8,16> a0 = xp.vload<16>(xb);
+            Vector<int8,16> a1 = xp.vload<16>(xb + 16L);
+            Vector<uint8,16> ones = (lo ^ lo) | 1;
+            Vector<int32,4> t0 = lo.dotAccum(a0, z4);
+            Vector<int32,4> t1 = hi.dotAccum(a1, z4);
+            Vector<int32,4> s0 = ones.dotAccum(a0, z4);
+            Vector<int32,4> s1 = ones.dotAccum(a1, z4);
+            int32 dot = t0[0] + t0[1] + t0[2] + t0[3]
+                      + t1[0] + t1[1] + t1[2] + t1[3];
+            int32 asum = s0[0] + s0[1] + s0[2] + s0[3]
+                       + s1[0] + s1[1] + s1[2] + s1[3];
+            int32 hs = 0;
+            hs = hs + (((qh >> 0) & 1) * (int32) a0[0]);
+            hs = hs + (((qh >> 1) & 1) * (int32) a0[1]);
+            hs = hs + (((qh >> 2) & 1) * (int32) a0[2]);
+            hs = hs + (((qh >> 3) & 1) * (int32) a0[3]);
+            hs = hs + (((qh >> 4) & 1) * (int32) a0[4]);
+            hs = hs + (((qh >> 5) & 1) * (int32) a0[5]);
+            hs = hs + (((qh >> 6) & 1) * (int32) a0[6]);
+            hs = hs + (((qh >> 7) & 1) * (int32) a0[7]);
+            hs = hs + (((qh >> 8) & 1) * (int32) a0[8]);
+            hs = hs + (((qh >> 9) & 1) * (int32) a0[9]);
+            hs = hs + (((qh >> 10) & 1) * (int32) a0[10]);
+            hs = hs + (((qh >> 11) & 1) * (int32) a0[11]);
+            hs = hs + (((qh >> 12) & 1) * (int32) a0[12]);
+            hs = hs + (((qh >> 13) & 1) * (int32) a0[13]);
+            hs = hs + (((qh >> 14) & 1) * (int32) a0[14]);
+            hs = hs + (((qh >> 15) & 1) * (int32) a0[15]);
+            hs = hs + (((qh >> 16) & 1) * (int32) a1[0]);
+            hs = hs + (((qh >> 17) & 1) * (int32) a1[1]);
+            hs = hs + (((qh >> 18) & 1) * (int32) a1[2]);
+            hs = hs + (((qh >> 19) & 1) * (int32) a1[3]);
+            hs = hs + (((qh >> 20) & 1) * (int32) a1[4]);
+            hs = hs + (((qh >> 21) & 1) * (int32) a1[5]);
+            hs = hs + (((qh >> 22) & 1) * (int32) a1[6]);
+            hs = hs + (((qh >> 23) & 1) * (int32) a1[7]);
+            hs = hs + (((qh >> 24) & 1) * (int32) a1[8]);
+            hs = hs + (((qh >> 25) & 1) * (int32) a1[9]);
+            hs = hs + (((qh >> 26) & 1) * (int32) a1[10]);
+            hs = hs + (((qh >> 27) & 1) * (int32) a1[11]);
+            hs = hs + (((qh >> 28) & 1) * (int32) a1[12]);
+            hs = hs + (((qh >> 29) & 1) * (int32) a1[13]);
+            hs = hs + (((qh >> 30) & 1) * (int32) a1[14]);
+            hs = hs + (((qh >> 31) & 1) * (int32) a1[15]);
+            Vector<int8,4> dv = xp.vload<4>(ab * 320L + 288L);
+            float32 xs = Cajeta.bitsToF32(((int32) dv[0] & 255)
+                | (((int32) dv[1] & 255) << 8)
+                | (((int32) dv[2] & 255) << 16)
+                | (((int32) dv[3] & 255) << 24));
+            acc = acc + d * xs
+                * (float32) (dot + 16 * hs - 16 * asum);
+            wb = wb + (int64) wv;
+            }
+        }
+        float32 tot = Wave.reduceSumF32(acc);
+        if (lane == 0 && row < rows) {
+            y[yOff + (int64) row] = tot;
+        }
+    }
+
+    /** llm's split of `rows` rows of `bpr` blocks of `bb` bytes with the f16 at byte 0: the row's scales first, padded to a word, then the payloads. */
+    public static void split(int8[] raw, int64 rows, int64 bpr, int64 bb, int8[] out) {
+        int64 pb = bb - 2L;
+        int64 prefix = ((bpr * 2L + 3L) / 4L) * 4L;
+        int64 rowBytes = prefix + bpr * pb;
+        int64 i = 0L;
+        while (i < rows) {
+            int64 rb = i * rowBytes;
+            int64 z = 0L;
+            while (z < prefix) { out[rb + z] = (int8) 0; z = z + 1L; }
+            int64 b = 0L;
+            while (b < bpr) {
+                int64 ro = (i * bpr + b) * bb;
+                out[rb + 2L * b] = raw[ro];
+                out[rb + 2L * b + 1L] = raw[ro + 1L];
+                int64 k = 0L;
+                while (k < pb) { out[rb + prefix + b * pb + k] = raw[ro + 2L + k]; k = k + 1L; }
+                b = b + 1L;
+            }
+            i = i + 1L;
+        }
+    }
+
+    public static void run_q80(KernelBuffer<float32> y, KernelBuffer<int8> p, KernelBuffer<int8> xp, int64 rows, int64 nb, int64 wpb, int64 wv) {
+        KernelStream s #= KernelStream.current();
+        q80Q8WaveMatVecKernel.launch(s, grid: [(uint32) ((rows + wpb - 1L) / wpb)], block: [(uint32) (wpb * wv)])(y, p, xp, (uint32) rows, nb, 0L);
+    }
+
+    public static void run_q50(KernelBuffer<float32> y, KernelBuffer<int8> p, KernelBuffer<int8> xp, int64 rows, int64 nb, int64 wpb, int64 wv) {
+        KernelStream s #= KernelStream.current();
+        q50Q8WaveMatVecKernel.launch(s, grid: [(uint32) ((rows + wpb - 1L) / wpb)], block: [(uint32) (wpb * wv)])(y, p, xp, (uint32) rows, nb, 0L);
+    }
+}

@@ -1,0 +1,133 @@
+package ref;
+
+import cajeta.lang.Cajeta;
+import cajeta.lang.System;
+import cajeta.time.Clock;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.ml.kernels.gemm.Block32GemvWave;
+import dev.cajeta.ml.kernels.quant.Q50Block;
+import dev.cajeta.ml.kernels.quant.Q80Block;
+
+/** kernel-drivers 8.3.1.3: the GPU decode members over the Q8_0 and Q5_0 pieces against cajeta-llm's `q80Q8WaveMatVecKernel` and `q50Q8WaveMatVecKernel` (`ref/RefWave32`), bitwise, best against best. */
+public class WaveBench32 {
+    static int64 bitDiff(float32[] a, float32[] b, int64 n) {
+        int64 bad = 0L;
+        int64 i = 0L;
+        while (i < n) { if (Cajeta.f32ToBits(a[i]) != Cajeta.f32ToBits(b[i])) { bad = bad + 1L; } i = i + 1L; }
+        return bad;
+    }
+
+    /** Driver member `m` (R = 1, 2, 4 for m = 0, 1, 2) of format `q5` on `wpb` waves a workgroup. */
+    static void drv(boolean q5, int64 m, KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp,
+            int64 rows, int64 nb, int64 wpb, int64 wv) {
+        if (q5) {
+            if (m == 0L) { heap Block32GemvWave<Q50Block, 1>().runOn(s, y, w, xp, rows, nb, 0L, false, wpb, wv); }
+            if (m == 1L) { heap Block32GemvWave<Q50Block, 2>().runOn(s, y, w, xp, rows, nb, 0L, false, wpb, wv); }
+            if (m == 2L) { heap Block32GemvWave<Q50Block, 4>().runOn(s, y, w, xp, rows, nb, 0L, false, wpb, wv); }
+        } else {
+            if (m == 0L) { heap Block32GemvWave<Q80Block, 1>().runOn(s, y, w, xp, rows, nb, 0L, false, wpb, wv); }
+            if (m == 1L) { heap Block32GemvWave<Q80Block, 2>().runOn(s, y, w, xp, rows, nb, 0L, false, wpb, wv); }
+            if (m == 2L) { heap Block32GemvWave<Q80Block, 4>().runOn(s, y, w, xp, rows, nb, 0L, false, wpb, wv); }
+        }
+    }
+
+    static void ref(boolean q5, KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp, int64 rows, int64 nb, int64 wpb, int64 wv) {
+        if (q5) { RefWave32.run_q50(y, w, xp, rows, nb, wpb, wv); } else { RefWave32.run_q80(y, w, xp, rows, nb, wpb, wv); }
+    }
+
+    static int64 shape(boolean q5, int64 rows, int64 cols, int64 reps) {
+        int64 nb = cols / 32L;
+        int64 bb = q5 ? 22L : 34L;
+        int8[] file #= Bench32.weight(rows * nb, bb);
+        int8[] hx #= Bench32.acts((nb + 7L) / 8L);
+        Block32GemvWave<Q80Block, 1> p8 = heap Block32GemvWave<Q80Block, 1>();
+        Block32GemvWave<Q50Block, 1> p5 = heap Block32GemvWave<Q50Block, 1>();
+        int64 rbN = q5 ? p5.rowBytes(nb) : p8.rowBytes(nb);
+        int64 rbR = ((nb * 2L + 3L) / 4L) * 4L + nb * (bb - 2L);
+        int8[] hn #= heap int8[rows * rbN];
+        int8[] hr #= heap int8[rows * rbR];
+        if (q5) { p5.pack(file, 0L, rows, nb, hn, 0L); } else { p8.pack(file, 0L, rows, nb, hn, 0L); }
+        RefWave32.split(file, rows, nb, bb, hr);
+        KernelBuffer<int8> wn = heap KernelBuffer<int8>((uint64) (rows * rbN));
+        KernelBuffer<int8> wr = heap KernelBuffer<int8>((uint64) (rows * rbR));
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (((nb + 7L) / 8L) * 320L));
+        KernelBuffer<float32> yr = heap KernelBuffer<float32>((uint64) rows);
+        KernelBuffer<float32> yn = heap KernelBuffer<float32>((uint64) rows);
+        wn.upload(hn);
+        wr.upload(hr);
+        xp.upload(hx);
+        int64 wv = (int64) Device.waveSize();
+        if (wv <= 0L) { wv = 32L; }
+        KernelStream s #= KernelStream.current();
+        float32[] gr #= heap float32[rows];
+        float32[] gn #= heap float32[rows];
+        WaveBench32.ref(q5, yr, wr, xp, rows, nb, 1L, wv);
+        s.sync();
+        yr.download(gr);
+        int64 bad = 0L;
+        int64 m = 0L;
+        while (m < 3L) {
+            WaveBench32.drv(q5, m, s, yn, wn, xp, rows, nb, 1L, wv);
+            s.sync();
+            yn.download(gn);
+            int64 d = WaveBench32.bitDiff(gr, gn, rows);
+            if (d != 0L) { bad = bad + 1L; System.stdout.println((q5 ? "Q5_0 " : "Q8_0 ") + rows + "x" + cols + " member " + m + " differs in " + d + " rows"); }
+            m = m + 1L;
+        }
+        int64 bestR = 9000000000000L;
+        int64 bestN = 9000000000000L;
+        int64 bestRw = 0L;
+        int64 bestNm = 0L;
+        int64 bestNw = 0L;
+        int64 round = 0L;
+        while (round < 15L) {
+            int64 wi = 0L;
+            while (wi < 3L) {
+                int64 wpb = wi == 0L ? 1L : (wi == 1L ? 2L : 4L);
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) { WaveBench32.ref(q5, yr, wr, xp, rows, nb, wpb, wv); k = k + 1L; }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < bestR) { bestR = (t1 - t0) / reps; bestRw = wpb; }
+                m = 0L;
+                while (m < 3L) {
+                    int64 t2 = Clock.nanoTime();
+                    k = 0L;
+                    while (k < reps) { WaveBench32.drv(q5, m, s, yn, wn, xp, rows, nb, wpb, wv); k = k + 1L; }
+                    s.sync();
+                    int64 t3 = Clock.nanoTime();
+                    if ((t3 - t2) / reps < bestN) { bestN = (t3 - t2) / reps; bestNm = m; bestNw = wpb; }
+                    m = m + 1L;
+                }
+                wi = wi + 1L;
+            }
+            round = round + 1L;
+        }
+        System.stdout.println((q5 ? "Q5_0 " : "Q8_0 ") + rows + "x" + cols + " bitDiff " + bad + " y0 " + gr[0] + " ref_ns " + bestR + " (wpb " + bestRw
+            + ") drv_ns " + bestN + " (R " + (bestNm == 0L ? 1L : (bestNm == 1L ? 2L : 4L)) + ", wpb " + bestNw + ") ratio_pct " + (bestN * 100L / bestR));
+        return bad;
+    }
+
+    static int64 both(int64 rows, int64 cols, int64 reps) {
+        return WaveBench32.shape(false, rows, cols, reps) + WaveBench32.shape(true, rows, cols, reps);
+    }
+
+    public static int32 main() {
+        int64 bad = 0L;
+        bad = bad + WaveBench32.both(37L, 800L, 2L);
+        bad = bad + WaveBench32.both(4096L, 4096L, 50L);
+        bad = bad + WaveBench32.both(1024L, 4096L, 100L);
+        bad = bad + WaveBench32.both(14336L, 4096L, 20L);
+        bad = bad + WaveBench32.both(4096L, 14336L, 20L);
+        bad = bad + WaveBench32.both(1024L, 2560L, 100L);
+        bad = bad + WaveBench32.both(2048L, 2560L, 100L);
+        bad = bad + WaveBench32.both(10240L, 2560L, 30L);
+        bad = bad + WaveBench32.both(2560L, 10240L, 30L);
+        bad = bad + WaveBench32.both(262144L, 2560L, 2L);
+        System.stdout.println(bad == 0L ? "ALL EQUAL" : "DIFFERENT");
+        return bad == 0L ? 0 : 1;
+    }
+}

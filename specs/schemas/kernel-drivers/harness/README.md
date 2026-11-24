@@ -36,3 +36,7 @@ cajeta-llm's `q{4,5,6,3,2}kQ8X8VecKernel` (`ref/RefVec*`), every K format, on th
 `Bench32` is the 32-value family (plan 8.3.1): the cpu row driver over `Q80Block` and `Q50Block` against
 cajeta-llm's `q80Q8X8RowsKernel`, `q80Q8X8VecKernel`, `q50Q8X8RowsKernel` and `q50Q8X8VecKernel` and
 their packs (`ref/RefQ80`, generated from llm 0730a8b), prefill and decode, packs compared byte for byte.
+
+`WaveBench32` is the GPU decode of the same family (plan 8.3.1.3): every `Block32GemvWave` member against
+`q80Q8WaveMatVecKernel` and `q50Q8WaveMatVecKernel` on llm's split row layout (`ref/RefWave32`), bitwise,
+each side timed at 1, 2 and 4 waves a workgroup and compared best against best.
