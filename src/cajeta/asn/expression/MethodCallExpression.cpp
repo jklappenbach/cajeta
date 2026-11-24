@@ -52,6 +52,7 @@
 #include "Identifier.h"
 #include "LiteralExpression.h"
 #include "cajeta/xpu/core/XpuAttributes.h"
+#include "cajeta/xpu/core/KernelManifest.h"
 #include "NewExpression.h"
 #include "cajeta/type/Scope.h"
 #include "cajeta/field/Field.h"
@@ -1858,6 +1859,16 @@ namespace cajeta {
             }
         }
 
+        if (methodCallName == "registeredName" && parameters.empty()
+                && children.size() == 1) {
+            if (auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(children[0])) {
+                if (findKernelByBareName(module, recvId->getTextValue())) {
+                    resolvedType = CajetaType::of("String");
+                    return;
+                }
+            }
+        }
+
         if (methodCallName == "waveWidth" && parameters.empty()
                 && children.size() == 1) {
             if (auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(children[0])) {
@@ -2005,6 +2016,24 @@ namespace cajeta {
         // manifest, or 0 when none is loaded. A template kernel is asked by its bare
         // name and answers for its instantiations, which share their @Wave and so
         // their width.
+        // `k.registeredName()`: the name kernel `k` of this class registers under, an
+        // instantiation's own name inside a class template.
+        if (methodCallName == "registeredName" && parameters.empty()
+                && children.size() == 1 && explicitMethodTypeArgs.empty()) {
+            if (auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(children[0])) {
+                if (MethodPtr kernel = findKernelByBareName(module, recvId->getTextValue())) {
+                    if (kernel->isMethodTemplate()) {
+                        throw Exception("'" + recvId->getTextValue() + ".registeredName()': a generic "
+                            "kernel has one name per launch type, not one name", "XPU-N02");
+                    }
+                    TextLiteralExpression nameLit(
+                        "\"" + cajeta::xpu::kernelRegistryName(kernel) + "\"", LITERAL_TYPE_STRING);
+                    resolvedType = CajetaType::of("String");
+                    return nameLit.generateCode(module);
+                }
+            }
+        }
+
         if (methodCallName == "waveWidth" && parameters.empty()
                 && children.size() == 1 && explicitMethodTypeArgs.empty()) {
             if (auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(children[0])) {

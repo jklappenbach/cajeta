@@ -110,6 +110,8 @@ public final class Own<P> {
         if (i < n) { y[(int64) i] = Own.plus((int32) i, P.k()); }
     }
 
+    public String name() { return run.registeredName(); }
+
     public int32 at(int32 k) {
         KernelBuffer<int32> y = heap KernelBuffer<int32>((uint64) 64L);
         KernelStream s #= KernelStream.current();
@@ -122,6 +124,10 @@ public final class Own<P> {
 }
 public class M {
     public static int32 run() { Own<Two> a #= heap Own<Two>(); return a.at(40); }
+    public static int32 named() {
+        Own<Two> a #= heap Own<Two>();
+        return a.name().equals("Own_test_Two_run") ? 1 : 0;
+    }
 }
 )CJ";
 
@@ -174,6 +180,17 @@ TEST(XpuTemplatePiece, aKernelCallsItsOwnClassHelperByTheTemplatesNameOnCpu) {
     auto fn = jit->lookup<int (*)()>("run");
     ASSERT_NE(fn, nullptr);
     EXPECT_EQ(fn(), 42);
+}
+
+// kernel-drivers 6.1.2: host code in a class template names its instantiation's kernel.
+TEST(XpuTemplatePiece, aTemplateNamesItsInstantiationsKernel) {
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
+    auto jit = CajetaJit::compile(kOwnHelperSource, "test.M", o);
+    ASSERT_TRUE(jit);
+    auto fn = jit->lookup<int (*)()>("named");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 1);
 }
 
 TEST(XpuTemplatePiece, eachInstantiationComputesWithItsOwnPieceOnNvptx) {
