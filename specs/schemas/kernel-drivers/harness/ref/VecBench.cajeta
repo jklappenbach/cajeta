@@ -1,0 +1,355 @@
+package ref;
+
+import cajeta.lang.Cajeta;
+import cajeta.lang.System;
+import cajeta.time.Clock;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.ml.kernels.gemm.BlockGemmRows8;
+import dev.cajeta.ml.kernels.quant.Q2kBlock;
+import dev.cajeta.ml.kernels.quant.Q3kBlock;
+import dev.cajeta.ml.kernels.quant.Q4kBlock;
+import dev.cajeta.ml.kernels.quant.Q5kBlock;
+import dev.cajeta.ml.kernels.quant.Q6kBlock;
+
+/** kernel-drivers 9.1: the cpu row driver's one-token kernel against cajeta-llm's decode kernels, every K format, on the same data. */
+public class VecBench {
+    /** cajeta-llm's even block over `items` row groups: at most 64, the last round over the workers as full as it can be. */
+    static int64 evenBlock(int64 items) {
+        int64 w = (int64) Device.multiprocessorCount();
+        if (w < 2L) { return 64L; }
+        int64 best = 64L;
+        int64 bestCost = -1L;
+        int64 b = 64L;
+        while (b >= 16L) {
+            int64 nb = (items + b - 1L) / b;
+            int64 cost = (nb + w - 1L) / w * b;
+            if (bestCost < 0L || cost < bestCost) { bestCost = cost; best = b; }
+            b = b - 1L;
+        }
+        return best;
+    }
+
+    static int64 q4(int64 rows, int64 cols, int64 reps) {
+        int64 bpr = cols / 256L;
+        int8[] file #= Bench.weight(rows * bpr);
+        BlockGemmRows8<Q4kBlock> drv = heap BlockGemmRows8<Q4kBlock>();
+        int64 pb = drv.packedBytes(rows, bpr);
+        int64 pr = (((rows + 7L) / 8L) * bpr * 1216L);
+        int8[] wr #= heap int8[pr];
+        int8[] wn #= heap int8[pb];
+        RefPack.q4kInterleave8(file, 0L, rows, bpr, wr, 0L);
+        drv.pack(file, 0L, rows, bpr, wn, 0L);
+        int8[] hx #= Bench.acts(bpr);
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) pr);
+        KernelBuffer<int8> wd = heap KernelBuffer<int8>((uint64) pb);
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (bpr * 320L));
+        KernelBuffer<int32> s16 = heap KernelBuffer<int32>((uint64) (bpr * 16L));
+        KernelBuffer<float32> yr = heap KernelBuffer<float32>((uint64) rows);
+        KernelBuffer<float32> yn = heap KernelBuffer<float32>((uint64) rows);
+        w.upload(wr);
+        wd.upload(wn);
+        xp.upload(hx);
+        int64 blk = VecBench.evenBlock((rows + 7L) / 8L);
+        KernelStream s #= KernelStream.current();
+        float32[] gr #= heap float32[rows];
+        float32[] gn #= heap float32[rows];
+        int64 bad = 0L;
+        int32 pass = 0;
+        while (pass < 2) {
+            RefVec4.launch(yr, w, xp, s16, rows, bpr, bpr * 320L, pass == 1, blk);
+            drv.run(yn, wd, xp, rows, bpr, 1L, bpr * 320L, rows, pass == 1, blk, 32L);
+            s.sync();
+            yr.download(gr);
+            yn.download(gn);
+            int64 i = 0L;
+            while (i < rows) { if (Cajeta.f32ToBits(gr[i]) != Cajeta.f32ToBits(gn[i])) { bad = bad + 1L; } i = i + 1L; }
+            pass = pass + 1;
+        }
+        int64 bestR = 9000000000000L;
+        int64 bestN = 9000000000000L;
+        int64 round = 0L;
+        while (round < 25L) {
+            int64 t0 = Clock.nanoTime();
+            int64 k = 0L;
+            while (k < reps) { RefVec4.launch(yr, w, xp, s16, rows, bpr, bpr * 320L, false, blk); k = k + 1L; }
+            s.sync();
+            int64 t1 = Clock.nanoTime();
+            k = 0L;
+            while (k < reps) { drv.run(yn, wd, xp, rows, bpr, 1L, bpr * 320L, rows, false, blk, 32L); k = k + 1L; }
+            s.sync();
+            int64 t2 = Clock.nanoTime();
+            if ((t1 - t0) / reps < bestR) { bestR = (t1 - t0) / reps; }
+            if ((t2 - t1) / reps < bestN) { bestN = (t2 - t1) / reps; }
+            round = round + 1L;
+        }
+        System.stdout.println("Q4_K " + rows + "x" + cols + " valueDiff " + bad + " y0 " + gr[0]
+            + " ref_us " + (bestR / 1000L) + " drv_us " + (bestN / 1000L) + " ratio_pct " + (bestN * 100L / bestR));
+        return bad;
+    }
+
+    static int64 q5(int64 rows, int64 cols, int64 reps) {
+        int64 bpr = cols / 256L;
+        int8[] file #= Bench5.weight(rows * bpr);
+        BlockGemmRows8<Q5kBlock> drv = heap BlockGemmRows8<Q5kBlock>();
+        int64 pb = drv.packedBytes(rows, bpr);
+        int64 pr = (((rows + 7L) / 8L) * bpr * 1472L);
+        int8[] wr #= heap int8[pr];
+        int8[] wn #= heap int8[pb];
+        RefPack.q5kInterleave8(file, 0L, rows, bpr, wr, 0L);
+        drv.pack(file, 0L, rows, bpr, wn, 0L);
+        int8[] hx #= Bench5.acts(bpr);
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) pr);
+        KernelBuffer<int8> wd = heap KernelBuffer<int8>((uint64) pb);
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (bpr * 320L));
+        KernelBuffer<int32> s16 = heap KernelBuffer<int32>((uint64) (bpr * 16L));
+        KernelBuffer<float32> yr = heap KernelBuffer<float32>((uint64) rows);
+        KernelBuffer<float32> yn = heap KernelBuffer<float32>((uint64) rows);
+        w.upload(wr);
+        wd.upload(wn);
+        xp.upload(hx);
+        int64 blk = VecBench.evenBlock((rows + 7L) / 8L);
+        KernelStream s #= KernelStream.current();
+        float32[] gr #= heap float32[rows];
+        float32[] gn #= heap float32[rows];
+        int64 bad = 0L;
+        int32 pass = 0;
+        while (pass < 2) {
+            RefVec5.launch(yr, w, xp, s16, rows, bpr, bpr * 320L, pass == 1, blk);
+            drv.run(yn, wd, xp, rows, bpr, 1L, bpr * 320L, rows, pass == 1, blk, 32L);
+            s.sync();
+            yr.download(gr);
+            yn.download(gn);
+            int64 i = 0L;
+            while (i < rows) { if (Cajeta.f32ToBits(gr[i]) != Cajeta.f32ToBits(gn[i])) { bad = bad + 1L; } i = i + 1L; }
+            pass = pass + 1;
+        }
+        int64 bestR = 9000000000000L;
+        int64 bestN = 9000000000000L;
+        int64 round = 0L;
+        while (round < 25L) {
+            int64 t0 = Clock.nanoTime();
+            int64 k = 0L;
+            while (k < reps) { RefVec5.launch(yr, w, xp, s16, rows, bpr, bpr * 320L, false, blk); k = k + 1L; }
+            s.sync();
+            int64 t1 = Clock.nanoTime();
+            k = 0L;
+            while (k < reps) { drv.run(yn, wd, xp, rows, bpr, 1L, bpr * 320L, rows, false, blk, 32L); k = k + 1L; }
+            s.sync();
+            int64 t2 = Clock.nanoTime();
+            if ((t1 - t0) / reps < bestR) { bestR = (t1 - t0) / reps; }
+            if ((t2 - t1) / reps < bestN) { bestN = (t2 - t1) / reps; }
+            round = round + 1L;
+        }
+        System.stdout.println("Q5_K " + rows + "x" + cols + " valueDiff " + bad + " y0 " + gr[0]
+            + " ref_us " + (bestR / 1000L) + " drv_us " + (bestN / 1000L) + " ratio_pct " + (bestN * 100L / bestR));
+        return bad;
+    }
+
+    static int64 q6(int64 rows, int64 cols, int64 reps) {
+        int64 bpr = cols / 256L;
+        int8[] file #= Bench6.weight(rows * bpr);
+        BlockGemmRows8<Q6kBlock> drv = heap BlockGemmRows8<Q6kBlock>();
+        int64 pb = drv.packedBytes(rows, bpr);
+        int64 pr = RefPack.q6kInterleave8Bytes(rows, bpr);
+        int8[] wr #= heap int8[pr];
+        int8[] wn #= heap int8[pb];
+        RefPack.q6kInterleave8(file, 0L, rows, bpr, wr, 0L);
+        drv.pack(file, 0L, rows, bpr, wn, 0L);
+        int8[] hx #= Bench6.acts(bpr);
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) pr);
+        KernelBuffer<int8> wd = heap KernelBuffer<int8>((uint64) pb);
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (bpr * 320L));
+        KernelBuffer<int32> s16 = heap KernelBuffer<int32>((uint64) (bpr * 16L));
+        KernelBuffer<float32> yr = heap KernelBuffer<float32>((uint64) rows);
+        KernelBuffer<float32> yn = heap KernelBuffer<float32>((uint64) rows);
+        w.upload(wr);
+        wd.upload(wn);
+        xp.upload(hx);
+        int64 blk = VecBench.evenBlock((rows + 7L) / 8L);
+        KernelStream s #= KernelStream.current();
+        float32[] gr #= heap float32[rows];
+        float32[] gn #= heap float32[rows];
+        int64 bad = 0L;
+        int32 pass = 0;
+        while (pass < 2) {
+            RefX8Q6.sums(s16, xp, bpr);
+            RefVec6.launch(yr, w, xp, s16, rows, bpr, bpr * 320L, pass == 1, blk);
+            drv.run(yn, wd, xp, rows, bpr, 1L, bpr * 320L, rows, pass == 1, blk, 32L);
+            s.sync();
+            yr.download(gr);
+            yn.download(gn);
+            int64 i = 0L;
+            while (i < rows) { if (Cajeta.f32ToBits(gr[i]) != Cajeta.f32ToBits(gn[i])) { bad = bad + 1L; } i = i + 1L; }
+            pass = pass + 1;
+        }
+        int64 bestR = 9000000000000L;
+        int64 bestN = 9000000000000L;
+        int64 round = 0L;
+        while (round < 25L) {
+            int64 t0 = Clock.nanoTime();
+            int64 k = 0L;
+            while (k < reps) { RefX8Q6.sums(s16, xp, bpr); RefVec6.launch(yr, w, xp, s16, rows, bpr, bpr * 320L, false, blk); k = k + 1L; }
+            s.sync();
+            int64 t1 = Clock.nanoTime();
+            k = 0L;
+            while (k < reps) { drv.run(yn, wd, xp, rows, bpr, 1L, bpr * 320L, rows, false, blk, 32L); k = k + 1L; }
+            s.sync();
+            int64 t2 = Clock.nanoTime();
+            if ((t1 - t0) / reps < bestR) { bestR = (t1 - t0) / reps; }
+            if ((t2 - t1) / reps < bestN) { bestN = (t2 - t1) / reps; }
+            round = round + 1L;
+        }
+        System.stdout.println("Q6_K " + rows + "x" + cols + " valueDiff " + bad + " y0 " + gr[0]
+            + " ref_us " + (bestR / 1000L) + " drv_us " + (bestN / 1000L) + " ratio_pct " + (bestN * 100L / bestR));
+        return bad;
+    }
+
+    static int64 q3(int64 rows, int64 cols, int64 reps) {
+        int64 bpr = cols / 256L;
+        int8[] file #= Bench3.weight(rows * bpr);
+        BlockGemmRows8<Q3kBlock> drv = heap BlockGemmRows8<Q3kBlock>();
+        int64 pb = drv.packedBytes(rows, bpr);
+        int64 pr = RefPack.q3kInterleave8Bytes(rows, bpr);
+        int8[] wr #= heap int8[pr];
+        int8[] wn #= heap int8[pb];
+        RefPack.q3kInterleave8(file, 0L, rows, bpr, wr, 0L);
+        drv.pack(file, 0L, rows, bpr, wn, 0L);
+        int8[] hx #= Bench3.acts(bpr);
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) pr);
+        KernelBuffer<int8> wd = heap KernelBuffer<int8>((uint64) pb);
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (bpr * 320L));
+        KernelBuffer<int32> s16 = heap KernelBuffer<int32>((uint64) (bpr * 16L));
+        KernelBuffer<float32> yr = heap KernelBuffer<float32>((uint64) rows);
+        KernelBuffer<float32> yn = heap KernelBuffer<float32>((uint64) rows);
+        w.upload(wr);
+        wd.upload(wn);
+        xp.upload(hx);
+        int64 blk = VecBench.evenBlock((rows + 7L) / 8L);
+        KernelStream s #= KernelStream.current();
+        float32[] gr #= heap float32[rows];
+        float32[] gn #= heap float32[rows];
+        int64 bad = 0L;
+        int32 pass = 0;
+        while (pass < 2) {
+            RefX8Q6.sums(s16, xp, bpr);
+            RefVec3.launch(yr, w, xp, s16, rows, bpr, bpr * 320L, pass == 1, blk);
+            drv.run(yn, wd, xp, rows, bpr, 1L, bpr * 320L, rows, pass == 1, blk, 32L);
+            s.sync();
+            yr.download(gr);
+            yn.download(gn);
+            int64 i = 0L;
+            while (i < rows) { if (Cajeta.f32ToBits(gr[i]) != Cajeta.f32ToBits(gn[i])) { bad = bad + 1L; } i = i + 1L; }
+            pass = pass + 1;
+        }
+        int64 bestR = 9000000000000L;
+        int64 bestN = 9000000000000L;
+        int64 round = 0L;
+        while (round < 25L) {
+            int64 t0 = Clock.nanoTime();
+            int64 k = 0L;
+            while (k < reps) { RefX8Q6.sums(s16, xp, bpr); RefVec3.launch(yr, w, xp, s16, rows, bpr, bpr * 320L, false, blk); k = k + 1L; }
+            s.sync();
+            int64 t1 = Clock.nanoTime();
+            k = 0L;
+            while (k < reps) { drv.run(yn, wd, xp, rows, bpr, 1L, bpr * 320L, rows, false, blk, 32L); k = k + 1L; }
+            s.sync();
+            int64 t2 = Clock.nanoTime();
+            if ((t1 - t0) / reps < bestR) { bestR = (t1 - t0) / reps; }
+            if ((t2 - t1) / reps < bestN) { bestN = (t2 - t1) / reps; }
+            round = round + 1L;
+        }
+        System.stdout.println("Q3_K " + rows + "x" + cols + " valueDiff " + bad + " y0 " + gr[0]
+            + " ref_us " + (bestR / 1000L) + " drv_us " + (bestN / 1000L) + " ratio_pct " + (bestN * 100L / bestR));
+        return bad;
+    }
+
+    static int64 q2(int64 rows, int64 cols, int64 reps) {
+        int64 bpr = cols / 256L;
+        int8[] file #= Bench2.weight(rows * bpr);
+        BlockGemmRows8<Q2kBlock> drv = heap BlockGemmRows8<Q2kBlock>();
+        int64 pb = drv.packedBytes(rows, bpr);
+        int64 pr = RefPack.q2kInterleave8Bytes(rows, bpr);
+        int8[] wr #= heap int8[pr];
+        int8[] wn #= heap int8[pb];
+        RefPack.q2kInterleave8(file, 0L, rows, bpr, wr, 0L);
+        drv.pack(file, 0L, rows, bpr, wn, 0L);
+        int8[] hx #= Bench2.acts(bpr);
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) pr);
+        KernelBuffer<int8> wd = heap KernelBuffer<int8>((uint64) pb);
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (bpr * 320L));
+        KernelBuffer<int32> s16 = heap KernelBuffer<int32>((uint64) (bpr * 16L));
+        KernelBuffer<float32> yr = heap KernelBuffer<float32>((uint64) rows);
+        KernelBuffer<float32> yn = heap KernelBuffer<float32>((uint64) rows);
+        w.upload(wr);
+        wd.upload(wn);
+        xp.upload(hx);
+        int64 blk = VecBench.evenBlock((rows + 7L) / 8L);
+        KernelStream s #= KernelStream.current();
+        float32[] gr #= heap float32[rows];
+        float32[] gn #= heap float32[rows];
+        int64 bad = 0L;
+        int32 pass = 0;
+        while (pass < 2) {
+            RefX8Q6.sums(s16, xp, bpr);
+            RefVec2.launch(yr, w, xp, s16, rows, bpr, bpr * 320L, pass == 1, blk);
+            drv.run(yn, wd, xp, rows, bpr, 1L, bpr * 320L, rows, pass == 1, blk, 32L);
+            s.sync();
+            yr.download(gr);
+            yn.download(gn);
+            int64 i = 0L;
+            while (i < rows) { if (Cajeta.f32ToBits(gr[i]) != Cajeta.f32ToBits(gn[i])) { bad = bad + 1L; } i = i + 1L; }
+            pass = pass + 1;
+        }
+        int64 bestR = 9000000000000L;
+        int64 bestN = 9000000000000L;
+        int64 round = 0L;
+        while (round < 25L) {
+            int64 t0 = Clock.nanoTime();
+            int64 k = 0L;
+            while (k < reps) { RefX8Q6.sums(s16, xp, bpr); RefVec2.launch(yr, w, xp, s16, rows, bpr, bpr * 320L, false, blk); k = k + 1L; }
+            s.sync();
+            int64 t1 = Clock.nanoTime();
+            k = 0L;
+            while (k < reps) { drv.run(yn, wd, xp, rows, bpr, 1L, bpr * 320L, rows, false, blk, 32L); k = k + 1L; }
+            s.sync();
+            int64 t2 = Clock.nanoTime();
+            if ((t1 - t0) / reps < bestR) { bestR = (t1 - t0) / reps; }
+            if ((t2 - t1) / reps < bestN) { bestN = (t2 - t1) / reps; }
+            round = round + 1L;
+        }
+        System.stdout.println("Q2_K " + rows + "x" + cols + " valueDiff " + bad + " y0 " + gr[0]
+            + " ref_us " + (bestR / 1000L) + " drv_us " + (bestN / 1000L) + " ratio_pct " + (bestN * 100L / bestR));
+        return bad;
+    }
+
+    public static int32 main() {
+        int64 bad = 0L;
+        int64[] rs #= heap int64[9];
+        int64[] cs #= heap int64[9];
+        rs[0] = 1024L; cs[0] = 4096L;
+        rs[1] = 4096L; cs[1] = 4096L;
+        rs[2] = 14336L; cs[2] = 4096L;
+        rs[3] = 4096L; cs[3] = 14336L;
+        rs[4] = 1024L; cs[4] = 2560L;
+        rs[5] = 2048L; cs[5] = 2560L;
+        rs[6] = 2560L; cs[6] = 2048L;
+        rs[7] = 10240L; cs[7] = 2560L;
+        rs[8] = 2560L; cs[8] = 10240L;
+        int64 i = 0L;
+        bad = bad + VecBench.q4(13L, 512L, 2L) + VecBench.q5(13L, 512L, 2L) + VecBench.q6(13L, 512L, 2L)
+            + VecBench.q3(13L, 512L, 2L) + VecBench.q2(13L, 512L, 2L);
+        while (i < 9L) { bad = bad + VecBench.q4(rs[i], cs[i], 40L); i = i + 1L; }
+        i = 0L;
+        while (i < 9L) { bad = bad + VecBench.q5(rs[i], cs[i], 40L); i = i + 1L; }
+        i = 0L;
+        while (i < 9L) { bad = bad + VecBench.q6(rs[i], cs[i], 40L); i = i + 1L; }
+        i = 0L;
+        while (i < 9L) { bad = bad + VecBench.q3(rs[i], cs[i], 40L); i = i + 1L; }
+        i = 0L;
+        while (i < 9L) { bad = bad + VecBench.q2(rs[i], cs[i], 40L); i = i + 1L; }
+        System.stdout.println(bad == 0L ? "ALL EQUAL" : "DIFFERENT");
+        return bad == 0L ? 0 : 1;
+    }
+}

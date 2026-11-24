@@ -131,6 +131,52 @@ public class M {
 }
 )CJ";
 
+// A kernel in a class template calling its piece's width-generic @Device method at two widths.
+const char* kWidthSource = R"CJ(
+package test;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Vector;
+public final class Dbl {
+    @Device
+    public static Vector<int32,N> twice<uint32 N>(Vector<int32,N> v) { return v + v; }
+}
+public final class Wide<P> {
+    public Wide() { return; }
+
+    @Kernel
+    public static void run(KernelBuffer<int32> y, KernelBuffer<int32> x, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            Vector<int32,8> v = x.vload<8>((int64) (8 * i));
+            Vector<int32,4> u = x.vload<4>((int64) (8 * i));
+            Vector<int32,8> v2 = P.twice<8>(v);
+            Vector<int32,4> u2 = P.twice<4>(u);
+            y[(int64) i] = v2[7] + u2[3];
+        }
+    }
+
+    public int32 at(int32 k) {
+        int32[] xh = heap int32[512L];
+        int64 i = 0L;
+        while (i < 512L) { xh[i] = (int32) i; i = i + 1L; }
+        KernelBuffer<int32> x = heap KernelBuffer<int32>((uint64) 512L);
+        KernelBuffer<int32> y = heap KernelBuffer<int32>((uint64) 64L);
+        x.upload(xh);
+        KernelStream s #= KernelStream.current();
+        run.launch(s, grid: [1], block: [64])(y, x, 64);
+        s.sync();
+        int32[] got = heap int32[64L];
+        y.download(got);
+        return got[k];
+    }
+}
+public class M {
+    public static int32 run() { Wide<Dbl> a #= heap Wide<Dbl>(); return a.at(3); }
+}
+)CJ";
+
 int runOn(cajeta::xpu::Backend backend) {
     CajetaJit::Options o;
     o.xpuBackends = {backend};
@@ -191,6 +237,17 @@ TEST(XpuTemplatePiece, aTemplateNamesItsInstantiationsKernel) {
     auto fn = jit->lookup<int (*)()>("named");
     ASSERT_NE(fn, nullptr);
     EXPECT_EQ(fn(), 1);
+}
+
+// kernel-drivers 9.1: x[24..31] doubled gives 62 at lane 7, x[24..27] doubled 54 at lane 3.
+TEST(XpuTemplatePiece, aPieceMethodGenericOverTheVectorWidthServesTwoWidthsOnCpu) {
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
+    auto jit = CajetaJit::compile(kWidthSource, "test.M", o);
+    ASSERT_TRUE(jit);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 116);
 }
 
 TEST(XpuTemplatePiece, eachInstantiationComputesWithItsOwnPieceOnNvptx) {

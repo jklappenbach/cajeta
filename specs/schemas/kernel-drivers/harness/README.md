@@ -19,3 +19,6 @@ split row layout; the driver reads the file's blocks.
 `Bench3`/`TileBench3` (Q3_K) and `Bench2`/`TileBench2` (Q2_K) follow the same pattern (plan 8.2).
 `Q3Tile` reads the split row layout, `Q2Tile` the file's blocks. `Bench2` reports the pack size
 difference without failing on it: the driver keeps scales and mins as two tables.
+
+`VecBench` is the decode mat-vec (plan 9.1): the cpu row driver's one-token kernel against
+cajeta-llm's `q{4,5,6,3,2}kQ8X8VecKernel` (`ref/RefVec*`), every K format, on the 8B and 4B shapes.

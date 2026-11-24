@@ -128,3 +128,24 @@ TEST(MethodConstParamTests, mixedTypeAndConstParams) {
         "}\n";
     EXPECT_EQ(runI32(src), 7);
 }
+
+// kernel-drivers 9.1: a method's own const parameter is a Vector length in its signature;
+// each call width is its own instantiation.
+TEST(MethodConstParamTests, constParamIsAVectorLengthInTheSignature) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.Vector;\n"
+        "public class Util {\n"
+        "    public static Vector<int32,N> twice<uint32 N>(Vector<int32,N> v) { return v + v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Vector<int32,4> a = heap Vector<int32,4>(1, 2, 3, 4);\n"
+        "        Vector<int32,8> b = heap Vector<int32,8>(1, 2, 3, 4, 5, 6, 7, 8);\n"
+        "        Vector<int32,4> a2 = Util.twice<4>(a);\n"
+        "        Vector<int32,8> b2 = Util.twice<8>(b);\n"
+        "        return a2[3] * 100 + b2[7];\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 816);
+}

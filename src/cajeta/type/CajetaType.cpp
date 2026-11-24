@@ -64,6 +64,10 @@ namespace cajeta {
         if (auto c = std::dynamic_pointer_cast<CajetaConstantType>(resolved)) {
             return c->getValue();
         }
+        // A method template's own `<uint32 N>` at declaration: the call instantiates the real width.
+        if (auto k = std::dynamic_pointer_cast<CajetaClass>(resolved); k && k->isPlaceholder()) {
+            return 1;
+        }
         throw Exception(
             std::string(what) + " must be a positive integer literal constant "
             "or a bound const generic parameter",

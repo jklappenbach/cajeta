@@ -7433,7 +7433,7 @@ private:
             const auto& tps = origin ? origin->getTypeParameters() : cls->getTypeParameters();
             const auto& targs = cls->getTypeArguments();
             for (std::size_t i = 0; i < tps.size() && i < targs.size(); ++i)
-                if (!tps[i].isNonType && tps[i].name == canon && targs[i]) return targs[i];
+                if (tps[i].name == canon && targs[i]) return targs[i];
         }
         return t;
     }
@@ -7454,7 +7454,9 @@ private:
         targs.reserve(tps.size());
         for (std::size_t i = 0; i < tps.size(); ++i) {
             CajetaTypePtr bound = bindHelperTypeArg(explicitArgs[i]);
-            if (!bound || (!deviceScalarType(bound, ctx) && !deviceVectorType(bound, ctx) &&
+            const bool constArg = tps[i].isNonType &&
+                std::dynamic_pointer_cast<CajetaConstantType>(bound) != nullptr;
+            if (!bound || (!constArg && !deviceScalarType(bound, ctx) && !deviceVectorType(bound, ctx) &&
                            !std::dynamic_pointer_cast<CajetaClass>(bound)))
                 unsupported("@Device helper " + m->getName() + ": type argument '" +
                             (explicitArgs[i] ? explicitArgs[i]->toCanonical() : std::string("?")) +
