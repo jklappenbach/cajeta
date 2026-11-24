@@ -61,6 +61,13 @@ public class Bench32 {
         return bad;
     }
 
+    static int64 diffArrays(float32[] a, float32[] b, int64 n) {
+        int64 bad = 0L;
+        int64 i = 0L;
+        while (i < n) { if (Cajeta.f32ToBits(a[i]) != Cajeta.f32ToBits(b[i])) { bad = bad + 1L; } i = i + 1L; }
+        return bad;
+    }
+
     static int64 packDiff(int8[] a, int8[] b, int64 n) {
         int64 bad = 0L;
         int64 i = 0L;

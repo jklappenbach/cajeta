@@ -40,3 +40,8 @@ their packs (`ref/RefQ80`, generated from llm 0730a8b), prefill and decode, pack
 `WaveBench32` is the GPU decode of the same family (plan 8.3.1.3): every `Block32GemvWave` member against
 `q80Q8WaveMatVecKernel` and `q50Q8WaveMatVecKernel` on llm's split row layout (`ref/RefWave32`), bitwise,
 each side timed at 1, 2 and 4 waves a workgroup and compared best against best.
+
+`TileBench32` is the GPU prefill tile of the family (plan 8.3.1.4): `Block32GemmTile` over Q8_0 against the
+lifted `ref/Q8Tile`, bitwise on both members, the two kernels timed on one weight buffer since the packs are
+byte-identical (separate copies of the same bytes moved the 64x64 member by up to 13 points); Q5_0's tile is
+timed beside it.

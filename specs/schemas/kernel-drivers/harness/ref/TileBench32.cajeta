@@ -1,0 +1,129 @@
+package ref;
+
+import cajeta.lang.Cajeta;
+import cajeta.lang.System;
+import cajeta.time.Clock;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.ml.kernels.gemm.Block32GemmTile;
+import dev.cajeta.ml.kernels.gemm.Block32GemvWave;
+import dev.cajeta.ml.kernels.quant.Q50Block;
+import dev.cajeta.ml.kernels.quant.Q80Block;
+
+/** kernel-drivers 8.3.1.4: the GPU tile over the Q8_0 pieces against the lifted `Q8Tile` (llm's split rows), bitwise, both members, timed on one buffer (the two packs are byte-identical); Q5_0's tile timed beside it (llm has none). */
+public class TileBench32 {
+    static int64 shape(int64 tokens, int64 outDim, int64 cols, int64 reps) {
+        int64 nb = cols / 32L;
+        int8[] f8 #= Bench32.weight(outDim * nb, 34L);
+        int8[] f5 #= Bench32.weight(outDim * nb, 22L);
+        int8[] hx #= Bench32.acts(tokens * (cols / 256L));
+        Block32GemvWave<Q80Block, 1> l8 = heap Block32GemvWave<Q80Block, 1>();
+        Block32GemvWave<Q50Block, 1> l5 = heap Block32GemvWave<Q50Block, 1>();
+        int64 b8 = outDim * l8.rowBytes(nb) + 32L;
+        int64 b5 = outDim * l5.rowBytes(nb) + 32L;
+        int8[] p8 #= heap int8[b8];
+        int8[] p5 #= heap int8[b5];
+        int8[] pr #= heap int8[b8];
+        l8.pack(f8, 0L, outDim, nb, p8, 0L);
+        l5.pack(f5, 0L, outDim, nb, p5, 0L);
+        RefWave32.split(f8, outDim, nb, 34L, pr);
+        int64 packBad = 0L;
+        int64 i = 0L;
+        while (i < b8) { if (p8[i] != pr[i]) { packBad = packBad + 1L; } i = i + 1L; }
+        KernelBuffer<int8> w8 = heap KernelBuffer<int8>((uint64) b8);
+        KernelBuffer<int8> w5 = heap KernelBuffer<int8>((uint64) b5);
+        KernelBuffer<int8> wr = heap KernelBuffer<int8>((uint64) b8);
+        w8.upload(p8);
+        w5.upload(p5);
+        wr.upload(pr);
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (tokens * (cols / 256L) * 320L));
+        xp.upload(hx);
+        KernelBuffer<float32> yr = heap KernelBuffer<float32>((uint64) (tokens * outDim));
+        KernelBuffer<float32> yn = heap KernelBuffer<float32>((uint64) (tokens * outDim));
+        KernelBuffer<float32> part = heap KernelBuffer<float32>((uint64) 16L);
+        float32[] seed #= heap float32[tokens * outDim];
+        i = 0L;
+        while (i < tokens * outDim) { seed[i] = 0.25f * (float32) (i % 7L); i = i + 1L; }
+        float32[] gr #= heap float32[tokens * outDim];
+        float32[] gn #= heap float32[tokens * outDim];
+        Q8Tile<64, 64, 32, 32, 128> r64 = heap Q8Tile<64, 64, 32, 32, 128>();
+        Q8Tile<128, 128, 32, 64, 128> r128 = heap Q8Tile<128, 128, 32, 64, 128>();
+        Block32GemmTile<Q80Block, 64, 64, 32, 32, 128> d64 = heap Block32GemmTile<Q80Block, 64, 64, 32, 32, 128>();
+        Block32GemmTile<Q80Block, 128, 128, 32, 64, 128> d128 = heap Block32GemmTile<Q80Block, 128, 128, 32, 64, 128>();
+        Block32GemmTile<Q50Block, 64, 64, 32, 32, 128> e64 = heap Block32GemmTile<Q50Block, 64, 64, 32, 32, 128>();
+        Block32GemmTile<Q50Block, 128, 128, 32, 64, 128> e128 = heap Block32GemmTile<Q50Block, 128, 128, 32, 64, 128>();
+        KernelStream s #= KernelStream.current();
+        int64 bad = packBad;
+        int32 big = 0;
+        while (big < 2) {
+            uint32 ac = 0;
+            while (ac < 2) {
+                yr.upload(seed);
+                yn.upload(seed);
+                if (big == 0) {
+                    r64.launchAs(yr, wr, xp, tokens, outDim, cols, part, 1L, ac);
+                    d64.runOn(s, yn, w8, xp, tokens, outDim, cols, part, 1L, ac);
+                } else {
+                    r128.launchAs(yr, wr, xp, tokens, outDim, cols, part, 1L, ac);
+                    d128.runOn(s, yn, w8, xp, tokens, outDim, cols, part, 1L, ac);
+                }
+                s.sync();
+                yr.download(gr);
+                yn.download(gn);
+                bad = bad + Bench32.diffArrays(gr, gn, tokens * outDim);
+                ac = ac + 1;
+            }
+            int64 bestR = 9000000000000L;
+            int64 bestN = 9000000000000L;
+            int64 best5 = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) {
+                    if (big == 0) { r64.launchAs(yr, w8, xp, tokens, outDim, cols, part, 1L, 0); } else { r128.launchAs(yr, w8, xp, tokens, outDim, cols, part, 1L, 0); }
+                    k = k + 1L;
+                }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                k = 0L;
+                while (k < reps) {
+                    if (big == 0) { d64.runOn(s, yn, w8, xp, tokens, outDim, cols, part, 1L, 0); } else { d128.runOn(s, yn, w8, xp, tokens, outDim, cols, part, 1L, 0); }
+                    k = k + 1L;
+                }
+                s.sync();
+                int64 t2 = Clock.nanoTime();
+                k = 0L;
+                while (k < reps) {
+                    if (big == 0) { e64.runOn(s, yn, w5, xp, tokens, outDim, cols, part, 1L, 0); } else { e128.runOn(s, yn, w5, xp, tokens, outDim, cols, part, 1L, 0); }
+                    k = k + 1L;
+                }
+                s.sync();
+                int64 t3 = Clock.nanoTime();
+                if ((t1 - t0) / reps < bestR) { bestR = (t1 - t0) / reps; }
+                if ((t2 - t1) / reps < bestN) { bestN = (t2 - t1) / reps; }
+                if ((t3 - t2) / reps < best5) { best5 = (t3 - t2) / reps; }
+                round = round + 1L;
+            }
+            System.stdout.println("" + tokens + "x" + outDim + "x" + cols + " tile " + (big == 0 ? 64 : 128) + " packDiff " + packBad + " valueDiff " + bad
+                + " y0 " + gr[0] + " q8tile_us " + (bestR / 1000L) + " drv_q80_us " + (bestN / 1000L) + " drv_q50_us " + (best5 / 1000L)
+                + " ratio_pct " + (bestN * 100L / bestR));
+            big = big + 1;
+        }
+        return bad;
+    }
+
+    public static int32 main() {
+        int64 bad = 0L;
+        bad = bad + TileBench32.shape(128L, 256L, 512L, 2L);
+        bad = bad + TileBench32.shape(512L, 1024L, 4096L, 20L);
+        bad = bad + TileBench32.shape(512L, 4096L, 4096L, 20L);
+        bad = bad + TileBench32.shape(512L, 14336L, 4096L, 6L);
+        bad = bad + TileBench32.shape(512L, 4096L, 14336L, 6L);
+        bad = bad + TileBench32.shape(512L, 2048L, 2560L, 20L);
+        bad = bad + TileBench32.shape(512L, 10240L, 2560L, 8L);
+        System.stdout.println(bad == 0L ? "ALL EQUAL" : "DIFFERENT");
+        return bad == 0L ? 0 : 1;
+    }
+}
