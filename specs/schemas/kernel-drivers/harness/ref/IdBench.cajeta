@@ -1,0 +1,275 @@
+package ref;
+
+import cajeta.lang.Cajeta;
+import cajeta.lang.System;
+import cajeta.time.Clock;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.ml.kernels.gemm.BlockGemmTile;
+import dev.cajeta.ml.kernels.quant.Q4kBlock;
+import dev.cajeta.ml.kernels.quant.Q5kBlock;
+import dev.cajeta.ml.kernels.quant.Q6kBlock;
+
+/** kernel-drivers 8.3.2: the GPU tile driver's MoE Id kernel over the Q5_K and Q6_K pieces against the lifted `Q5IdTile` and `Q6IdTile` on the same chunk maps, bitwise over every output row (stored or not), both members. */
+public class IdBench {
+    /** Expert row counts: `experts` counts averaging about `avg`, some zero. */
+    static #int64[] counts(int64 experts, int64 avg) {
+        int64[] c #= heap int64[experts];
+        int64 seed = 31337L;
+        int64 e = 0L;
+        while (e < experts) {
+            seed = (seed * 1103515245L + 12345L) % 2147483648L;
+            c[e] = (seed >> 8) % (2L * avg + 1L);
+            if (e % 7L == 3L) { c[e] = 0L; }
+            e = e + 1L;
+        }
+        return #c;
+    }
+
+    /** The TM-row chunk map of `c` as `mapE, mapT0, mapM1` in `out` (3 * n entries), returning n. */
+    static int64 chunks(int64[] c, int64 experts, int64 tm, int32[] out) {
+        int64 n = 0L;
+        int64 start = 0L;
+        int64 e = 0L;
+        while (e < experts) {
+            int64 k = 0L;
+            while (k * tm < c[e]) {
+                out[3L * n] = (int32) e;
+                out[3L * n + 1L] = (int32) (start + k * tm);
+                out[3L * n + 2L] = (int32) (start + c[e]);
+                n = n + 1L;
+                k = k + 1L;
+            }
+            start = start + c[e];
+            e = e + 1L;
+        }
+        return n;
+    }
+
+    static #KernelBuffer<int32> column(int32[] m, int64 n, int64 which) {
+        int32[] v #= heap int32[n + 1L];
+        int64 i = 0L;
+        while (i < n) { v[i] = m[3L * i + which]; i = i + 1L; }
+        KernelBuffer<int32> b #= heap KernelBuffer<int32>((uint64) (n + 1L));
+        b.upload(v);
+        return #b;
+    }
+
+    /** Q6_K rows in cajeta-llm's resident split layout. */
+    static #int8[] resident6(int8[] file, int64 rows, int64 bpr) {
+        int64 prefix = ((bpr * 2L + 3L) / 4L) * 4L;
+        int64 resRow = prefix + bpr * 208L;
+        int8[] res #= heap int8[rows * resRow];
+        int64 rr = 0L;
+        while (rr < rows) {
+            int64 bb = 0L;
+            while (bb < bpr) {
+                int64 ro = (rr * bpr + bb) * 210L;
+                res[rr * resRow + bb * 2L] = file[ro + 208L];
+                res[rr * resRow + bb * 2L + 1L] = file[ro + 209L];
+                int64 kk = 0L;
+                while (kk < 208L) { res[rr * resRow + prefix + bb * 208L + kk] = file[ro + kk]; kk = kk + 1L; }
+                bb = bb + 1L;
+            }
+            rr = rr + 1L;
+        }
+        return #res;
+    }
+
+    static int64 shape(boolean six, int64 experts, int64 avg, int64 outDim, int64 cols, int64 reps) {
+        int64 bpr = cols / 256L;
+        int64[] c #= IdBench.counts(experts, avg);
+        int64 np = 0L;
+        int64 e = 0L;
+        while (e < experts) { np = np + c[e]; e = e + 1L; }
+        int32[] m64 #= heap int32[3L * (np / 64L + experts + 1L)];
+        int32[] m128 #= heap int32[3L * (np / 128L + experts + 1L)];
+        int64 n64 = IdBench.chunks(c, experts, 64L, m64);
+        int64 n128 = IdBench.chunks(c, experts, 128L, m128);
+        KernelBuffer<int32> e64 #= IdBench.column(m64, n64, 0L);
+        KernelBuffer<int32> t64 #= IdBench.column(m64, n64, 1L);
+        KernelBuffer<int32> x64 #= IdBench.column(m64, n64, 2L);
+        KernelBuffer<int32> e128 #= IdBench.column(m128, n128, 0L);
+        KernelBuffer<int32> t128 #= IdBench.column(m128, n128, 1L);
+        KernelBuffer<int32> x128 #= IdBench.column(m128, n128, 2L);
+        int32[] hm #= heap int32[2];
+        hm[0] = (int32) n64;
+        hm[1] = (int32) n128;
+        KernelBuffer<int32> meta = heap KernelBuffer<int32>((uint64) 2L);
+        meta.upload(hm);
+        int64 rowsAll = np + 128L;
+        int8[] file #= heap int8[1];
+        if (six) { file #= Bench6.weight(experts * outDim * bpr); } else { file #= Bench5.weight(experts * outDim * bpr); }
+        int8[] hx #= Bench6.acts(rowsAll * bpr);
+        int64 bb = six ? 210L : 176L;
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) (experts * outDim * bpr * bb));
+        w.upload(file);
+        KernelBuffer<int8> wres = heap KernelBuffer<int8>((uint64) 16L);
+        if (six) {
+            int8[] res #= IdBench.resident6(file, experts * outDim, bpr);
+            wres #= heap KernelBuffer<int8>((uint64) res.count());
+            wres.upload(res);
+        }
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (rowsAll * bpr * 320L));
+        xp.upload(hx);
+        KernelBuffer<float32> yr = heap KernelBuffer<float32>((uint64) (rowsAll * outDim));
+        KernelBuffer<float32> yn = heap KernelBuffer<float32>((uint64) (rowsAll * outDim));
+        float32[] seed #= heap float32[rowsAll * outDim];
+        int64 i = 0L;
+        while (i < rowsAll * outDim) { seed[i] = 7.0f; i = i + 1L; }
+        float32[] gr #= heap float32[rowsAll * outDim];
+        float32[] gn #= heap float32[rowsAll * outDim];
+        BlockGemmTile<Q5kBlock, 64, 64, 32, 32, 128> d5a = heap BlockGemmTile<Q5kBlock, 64, 64, 32, 32, 128>();
+        BlockGemmTile<Q5kBlock, 128, 128, 32, 64, 128> d5b = heap BlockGemmTile<Q5kBlock, 128, 128, 32, 64, 128>();
+        BlockGemmTile<Q6kBlock, 64, 64, 32, 32, 128> d6a = heap BlockGemmTile<Q6kBlock, 64, 64, 32, 32, 128>();
+        BlockGemmTile<Q6kBlock, 128, 128, 32, 64, 128> d6b = heap BlockGemmTile<Q6kBlock, 128, 128, 32, 64, 128>();
+        Q5IdTile<64, 64, 32, 32, 128> r5a = heap Q5IdTile<64, 64, 32, 32, 128>();
+        Q5IdTile<128, 128, 32, 64, 128> r5b = heap Q5IdTile<128, 128, 32, 64, 128>();
+        Q6IdTile<64, 64, 32, 32, 128> r6a = heap Q6IdTile<64, 64, 32, 32, 128>();
+        Q6IdTile<128, 128, 32, 64, 128> r6b = heap Q6IdTile<128, 128, 32, 64, 128>();
+        KernelStream s #= KernelStream.current();
+        int64 bad = 0L;
+        int32 big = 0;
+        while (big < 2) {
+            yr.upload(seed);
+            yn.upload(seed);
+            if (six) {
+                if (big == 0) { r6a.launchMaps(yr, wres, xp, e64, t64, x64, meta, n64, outDim, cols, outDim); d6a.runIdOn(s, yn, w, xp, e64, t64, x64, meta, n64, outDim, cols, outDim); }
+                else { r6b.launchMaps(yr, wres, xp, e128, t128, x128, meta, n128, outDim, cols, outDim); d6b.runIdOn(s, yn, w, xp, e128, t128, x128, meta, n128, outDim, cols, outDim); }
+            } else {
+                if (big == 0) { r5a.launchMaps(yr, w, xp, e64, t64, x64, meta, n64, outDim, cols, outDim); d5a.runIdOn(s, yn, w, xp, e64, t64, x64, meta, n64, outDim, cols, outDim); }
+                else { r5b.launchMaps(yr, w, xp, e128, t128, x128, meta, n128, outDim, cols, outDim); d5b.runIdOn(s, yn, w, xp, e128, t128, x128, meta, n128, outDim, cols, outDim); }
+            }
+            s.sync();
+            yr.download(gr);
+            yn.download(gn);
+            int64 d = Bench32.diffArrays(gr, gn, rowsAll * outDim);
+            int64 stored = 0L;
+            i = 0L;
+            while (i < rowsAll * outDim) { if (gr[i] != 7.0f) { stored = stored + 1L; } i = i + 1L; }
+            bad = bad + d;
+            int64 bestR = 9000000000000L;
+            int64 bestN = 9000000000000L;
+            int64 round = 0L;
+            while (round < 15L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) {
+                    if (six) { if (big == 0) { r6a.launchMaps(yr, wres, xp, e64, t64, x64, meta, n64, outDim, cols, outDim); } else { r6b.launchMaps(yr, wres, xp, e128, t128, x128, meta, n128, outDim, cols, outDim); } }
+                    else { if (big == 0) { r5a.launchMaps(yr, w, xp, e64, t64, x64, meta, n64, outDim, cols, outDim); } else { r5b.launchMaps(yr, w, xp, e128, t128, x128, meta, n128, outDim, cols, outDim); } }
+                    k = k + 1L;
+                }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                k = 0L;
+                while (k < reps) {
+                    if (six) { if (big == 0) { d6a.runIdOn(s, yn, w, xp, e64, t64, x64, meta, n64, outDim, cols, outDim); } else { d6b.runIdOn(s, yn, w, xp, e128, t128, x128, meta, n128, outDim, cols, outDim); } }
+                    else { if (big == 0) { d5a.runIdOn(s, yn, w, xp, e64, t64, x64, meta, n64, outDim, cols, outDim); } else { d5b.runIdOn(s, yn, w, xp, e128, t128, x128, meta, n128, outDim, cols, outDim); } }
+                    k = k + 1L;
+                }
+                s.sync();
+                int64 t2 = Clock.nanoTime();
+                if ((t1 - t0) / reps < bestR) { bestR = (t1 - t0) / reps; }
+                if ((t2 - t1) / reps < bestN) { bestN = (t2 - t1) / reps; }
+                round = round + 1L;
+            }
+            System.stdout.println((six ? "Q6_K" : "Q5_K") + " E" + experts + " rows " + np + " " + outDim + "x" + cols + " tile " + (big == 0 ? 64 : 128)
+                + " chunks " + (big == 0 ? n64 : n128) + " stored " + stored + " valueDiff " + d + " ref_us " + (bestR / 1000L) + " drv_us " + (bestN / 1000L)
+                + " ratio_pct " + (bestN * 100L / bestR));
+            big = big + 1;
+        }
+        return bad;
+    }
+
+    /** Q4_K: the driver's Id members against llm's `IdTile` (a float fold, so by difference over the output scale), best member against best. */
+    static int64 q4(int64 experts, int64 avg, int64 outDim, int64 cols, int64 reps) {
+        int64 bpr = cols / 256L;
+        int64[] c #= IdBench.counts(experts, avg);
+        int64 np = 0L;
+        int64 e = 0L;
+        while (e < experts) { np = np + c[e]; e = e + 1L; }
+        int32[] m64 #= heap int32[3L * (np / 64L + experts + 1L)];
+        int32[] m128 #= heap int32[3L * (np / 128L + experts + 1L)];
+        int64 n64 = IdBench.chunks(c, experts, 64L, m64);
+        int64 n128 = IdBench.chunks(c, experts, 128L, m128);
+        KernelBuffer<int32> e64 #= IdBench.column(m64, n64, 0L);
+        KernelBuffer<int32> t64 #= IdBench.column(m64, n64, 1L);
+        KernelBuffer<int32> x64 #= IdBench.column(m64, n64, 2L);
+        KernelBuffer<int32> e128 #= IdBench.column(m128, n128, 0L);
+        KernelBuffer<int32> t128 #= IdBench.column(m128, n128, 1L);
+        KernelBuffer<int32> x128 #= IdBench.column(m128, n128, 2L);
+        int32[] hm #= heap int32[2];
+        hm[0] = (int32) n64;
+        hm[1] = (int32) n128;
+        KernelBuffer<int32> meta = heap KernelBuffer<int32>((uint64) 2L);
+        meta.upload(hm);
+        int64 rowsAll = np + 128L;
+        int8[] file #= Bench.weight(experts * outDim * bpr);
+        int8[] hx #= Bench6.acts(rowsAll * bpr);
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) (experts * outDim * bpr * 144L));
+        w.upload(file);
+        KernelBuffer<int32> ww #= w.wordView();
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (rowsAll * bpr * 320L));
+        xp.upload(hx);
+        KernelBuffer<float32> yr = heap KernelBuffer<float32>((uint64) (rowsAll * outDim));
+        KernelBuffer<float32> yn = heap KernelBuffer<float32>((uint64) (rowsAll * outDim));
+        float32[] gr #= heap float32[rowsAll * outDim];
+        float32[] gn #= heap float32[rowsAll * outDim];
+        IdTile<64, 128, 64, 16, 128> ra = heap IdTile<64, 128, 64, 16, 128>();
+        IdTile<128, 128, 64, 32, 128> rb = heap IdTile<128, 128, 64, 32, 128>();
+        BlockGemmTile<Q4kBlock, 64, 64, 32, 32, 128> da = heap BlockGemmTile<Q4kBlock, 64, 64, 32, 32, 128>();
+        BlockGemmTile<Q4kBlock, 128, 128, 32, 64, 128> db = heap BlockGemmTile<Q4kBlock, 128, 128, 32, 64, 128>();
+        KernelStream s #= KernelStream.current();
+        ra.launchMaps(yr, w, ww, xp, e64, t64, x64, meta, n64, outDim, cols, outDim);
+        da.runIdOn(s, yn, w, xp, e64, t64, x64, meta, n64, outDim, cols, outDim);
+        s.sync();
+        yr.download(gr);
+        yn.download(gn);
+        float64 rel = WaveBench.normRel(gr, gn, np * outDim);
+        int64[] best #= heap int64[4];
+        int64 q = 0L;
+        while (q < 4L) { best[q] = 9000000000000L; q = q + 1L; }
+        int64 round = 0L;
+        while (round < 15L) {
+            q = 0L;
+            while (q < 4L) {
+                int64 t0 = Clock.nanoTime();
+                int64 k = 0L;
+                while (k < reps) {
+                    if (q == 0L) { ra.launchMaps(yr, w, ww, xp, e64, t64, x64, meta, n64, outDim, cols, outDim); }
+                    if (q == 1L) { rb.launchMaps(yr, w, ww, xp, e128, t128, x128, meta, n128, outDim, cols, outDim); }
+                    if (q == 2L) { da.runIdOn(s, yn, w, xp, e64, t64, x64, meta, n64, outDim, cols, outDim); }
+                    if (q == 3L) { db.runIdOn(s, yn, w, xp, e128, t128, x128, meta, n128, outDim, cols, outDim); }
+                    k = k + 1L;
+                }
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                if ((t1 - t0) / reps < best[q]) { best[q] = (t1 - t0) / reps; }
+                q = q + 1L;
+            }
+            round = round + 1L;
+        }
+        int64 bestR = best[0] < best[1] ? best[0] : best[1];
+        int64 bestN = best[2] < best[3] ? best[2] : best[3];
+        System.stdout.println("Q4_K E" + experts + " rows " + np + " " + outDim + "x" + cols + " normRel " + rel + " IdTile64_us " + (best[0] / 1000L)
+            + " IdTile128_us " + (best[1] / 1000L) + " drv64_us " + (best[2] / 1000L) + " drv128_us " + (best[3] / 1000L) + " best_ratio_pct " + (bestN * 100L / bestR));
+        return rel > 0.00001 ? 1L : 0L;
+    }
+
+    public static int32 main() {
+        int64 bad = 0L;
+        bad = bad + IdBench.shape(false, 5L, 40L, 128L, 512L, 1L);
+        bad = bad + IdBench.shape(true, 5L, 40L, 128L, 512L, 1L);
+        bad = bad + IdBench.shape(false, 32L, 32L, 768L, 2048L, 10L);
+        bad = bad + IdBench.shape(false, 32L, 32L, 2048L, 768L, 10L);
+        bad = bad + IdBench.shape(false, 8L, 128L, 768L, 2048L, 10L);
+        bad = bad + IdBench.shape(true, 32L, 32L, 768L, 2048L, 10L);
+        bad = bad + IdBench.shape(true, 32L, 32L, 2048L, 768L, 10L);
+        bad = bad + IdBench.shape(true, 8L, 128L, 768L, 2048L, 10L);
+        bad = bad + IdBench.q4(32L, 32L, 768L, 2048L, 10L);
+        bad = bad + IdBench.q4(32L, 32L, 2048L, 768L, 10L);
+        bad = bad + IdBench.q4(8L, 128L, 768L, 2048L, 10L);
+        System.stdout.println(bad == 0L ? "ALL EQUAL" : "DIFFERENT");
+        return bad == 0L ? 0 : 1;
+    }
+}

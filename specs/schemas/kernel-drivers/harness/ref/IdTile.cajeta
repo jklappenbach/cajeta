@@ -1,0 +1,338 @@
+package ref;
+
+import cajeta.lang.Cajeta;
+import cajeta.lang.String;
+import cajeta.xpu.Barrier;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.Group;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Shared;
+import cajeta.xpu.Vector;
+import cajeta.xpu.WaveVector;
+
+/**
+ * Lifted from cajeta-llm 0730a8b (route interface and batch launch dropped, the stream the current one).
+ * The MoE Id GEMM over a chunk map as a family (xpu-tile-shape-selection
+ * 4.8.1.4, §7.15), the LDS-staged design written once over its shape. A
+ * workgroup of {@code (TM / WM) * (TN / WN)} waves computes one TM-row
+ * chunk of a map entry against a TN-row tile of the entry's expert; each
+ * wave owns a WM x WN wave tile as {@code [WN / 16][WM / 16]} accumulators,
+ * column tile first, and KS is the k-run staged per barrier (128, half a
+ * Q4_K block). The map's rows are TM, so the member reads the chunk map
+ * of its own row count and the count from that map's meta slot. A wave
+ * whose rows start past the entry's end skips the MMA work but keeps
+ * every barrier, and the ragged tail lands guarded through a per-wave
+ * LDS tile. Each wave stages one 16-row group of the scale folds, which
+ * `@Requires` pins, and only the waves below TM / 16 stage the activation
+ * folds when TM is below TN.
+ */
+@Unfused
+@Instantiate({IdTile<128, 128, 64, 32, 128>, IdTile<64, 128, 64, 16, 128>})
+@Requires((TM == 64 || TM == 128) && TM <= TN && (TM / WM) * (TN / WN) * 16 == TN && TM % WM == 0 && TN % WN == 0 && WM % 16 == 0 && (WN == 16 || WN == 32) && KS == 128)
+public final class IdTile<uint32 TM, uint32 TN, uint32 WM, uint32 WN, uint32 KS> {
+    int32 block = 0;
+
+    public IdTile() { return; }
+
+    public #String kernel() {
+        return "IdTile_" + TM + "_" + TN + "_" + WM + "_" + WN + "_" + KS + "_q4kId";
+    }
+    public int32 tileM() { return (int32) TM; }
+    public int32 tileN() { return (int32) TN; }
+    public int32 threads() {
+        this.resolve();
+        return this.block;
+    }
+    public int32 chunkRows() { return (int32) TM; }
+
+    /** Rows on the TN grid, whole 256-value blocks, a non-empty batch. */
+    public boolean fits(int64 np, int64 outDim, int64 cols) {
+        return np > 0L && outDim % (int64) TN == 0L && cols % 256L == 0L;
+    }
+
+    void resolve() {
+        if (this.block != 0) { return; }
+        String kn #= this.kernel();
+        int32 wave = Group.laneBlockOf(kn);
+        int32 waves = (int32) ((TM / WM) * (TN / WN));
+        this.block = wave > 0 ? waves * wave : waves * 32;
+        return;
+    }
+
+    /** One launch over a TM-row chunk map; `nChunksMax` bounds the grid and
+     *  the map's meta slot holds the count. Requires outDim % TN == 0. */
+    public void launchMaps(KernelBuffer<float32> y, KernelBuffer<int8> slab,
+            KernelBuffer<int32> slabW, KernelBuffer<int8> xp, KernelBuffer<int32> mapE,
+            KernelBuffer<int32> mapT0, KernelBuffer<int32> mapM1, KernelBuffer<int32> meta,
+            int64 nChunksMax, int64 outDim, int64 cols, int64 rowsPerExpert) {
+        this.resolve();
+        int64 tilesN = outDim / (int64) TN;
+        KernelStream s #= KernelStream.current();
+        q4kId.launch(s, grid: [(uint32) (nChunksMax * tilesN)], block: [(uint32) this.block])
+            (y, slab, slabW, xp, mapE, mapT0, mapM1, meta, (uint32) outDim, (uint32) tilesN,
+             cols / 256L, rowsPerExpert);
+        return;
+    }
+
+    @Kernel @FastMath
+    @Occupancy(maxWaves = (TM / WM) * (TN / WN))
+    public static void q4kId(KernelBuffer<float32> y,
+            KernelBuffer<int8> packed, KernelBuffer<int32> packedW,
+            KernelBuffer<int8> xp, KernelBuffer<int32> mapE,
+            KernelBuffer<int32> mapT0, KernelBuffer<int32> mapM1,
+            KernelBuffer<int32> meta, uint32 outDim, uint32 tilesN,
+            int64 blocksPerRow, int64 rowsPerExpert) {
+        Shared<float32> xsAll = shared float32[TM];
+        Shared<float32> rgAll = shared float32[TM * 8];
+        Shared<float32> cfAll = shared float32[TN * 8];
+        Shared<float32> cgAll = shared float32[TN * 8];
+        Shared<int8> aTile = shared int8[TM * 144];
+        Shared<float32> fs = shared float32[(TM / WM) * (TN / WN) * 256];
+        int32 wv = Group.width();
+        uint32 wvu = (uint32) wv;
+        uint32 waves = (TM / WM) * (TN / WN);
+        uint32 nThreads = waves * wvu;
+        uint32 tid = KernelThread.x();
+        uint32 lane = tid % wvu;
+        uint32 wid = tid / wvu;
+        uint32 lane16 = lane % 16;
+        uint32 wg = KernelThread.globalIdX() / nThreads;
+        uint32 mapIdx = wg / tilesN;
+        uint32 tileI = wg % tilesN;
+        uint32 i0 = tileI * TN + wid * 16;
+        uint32 nChunks = (uint32) meta[(int64) (TM / 128)];
+        uint32 wr = wid / (TN / WN);
+        uint32 wc = wid % (TN / WN);
+        uint32 cw = tileI * TN + WN * wc;
+        if (mapIdx < nChunks && i0 < outDim) {
+            uint32 t0 = (uint32) mapT0[(int64) mapIdx];
+            uint32 mEnd = (uint32) mapM1[(int64) mapIdx];
+            uint32 tw = t0 + WM * wr;
+            int64 rowBytes = blocksPerRow * 144L;
+            int64 xRowBytes = blocksPerRow * 320L;
+            int64 wOff = (int64) mapE[(int64) mapIdx] * rowsPerExpert * rowBytes;
+            int64 myRo = wOff + (int64) (i0 + lane16) * rowBytes;
+            int64 wRo = wOff + (int64) (cw + lane16) * rowBytes;
+            int64 wRo1 = wRo + rowBytes * 16L;
+            uint32 aBase = wr * (WM * 144);
+
+            CooperativeMatrix<int8,16,16,0> ma;
+            CooperativeMatrix<int8,16,16,1>[WN / 16] mb;
+            CooperativeMatrix<int32,16,16,2>[WN / 16][WM / 16] mc;
+            CooperativeMatrix<float32,16,16,2>[WN / 16][WM / 16] facc;
+            for (uint32 n = 0; n < WN / 16; n = n + 1) {
+                for (uint32 i = 0; i < WM / 16; i = i + 1) { facc[n][i].splat(0.0f); }
+            }
+
+            int64 b = 0;
+            while (b < blocksPerRow) {
+                if (lane < 16) {
+                    if (TM == TN || wid < TM / 16) {
+                        int64 xb = (int64) (t0 + wid * 16 + lane) * xRowBytes + b * 320L;
+                        float32 xv = Cajeta.bitsToF32(
+                            ((int32) xp[xb + 288L] & 255)
+                            | (((int32) xp[xb + 289L] & 255) << 8)
+                            | (((int32) xp[xb + 290L] & 255) << 16)
+                            | (((int32) xp[xb + 291L] & 255) << 24));
+                        xsAll[wid * 16 + lane] = xv;
+                    }
+                    int64 ro = myRo + b * 144L;
+                    float32 dv = RefPack.halfBitsToF32(
+                        ((int32) packed[ro] & 255)
+                        | (((int32) packed[ro + 1L] & 255) << 8));
+                    float32 dmv = RefPack.halfBitsToF32(
+                        ((int32) packed[ro + 2L] & 255)
+                        | (((int32) packed[ro + 3L] & 255) << 8));
+                    int32 d0 = (int32) packed[ro + 4L] & 255;
+                    int32 d1 = (int32) packed[ro + 5L] & 255;
+                    int32 d2 = (int32) packed[ro + 6L] & 255;
+                    int32 d3 = (int32) packed[ro + 7L] & 255;
+                    int32 m0 = (int32) packed[ro + 8L] & 255;
+                    int32 m1 = (int32) packed[ro + 9L] & 255;
+                    int32 m2 = (int32) packed[ro + 10L] & 255;
+                    int32 m3 = (int32) packed[ro + 11L] & 255;
+                    int32 k0 = (int32) packed[ro + 12L] & 255;
+                    int32 k1 = (int32) packed[ro + 13L] & 255;
+                    int32 k2 = (int32) packed[ro + 14L] & 255;
+                    int32 k3 = (int32) packed[ro + 15L] & 255;
+                    uint32 cb = (wid * 16 + lane) * 8;
+                    cfAll[cb] = dv * (float32) (d0 & 63);
+                    cfAll[cb + 1] = dv * (float32) (d1 & 63);
+                    cfAll[cb + 2] = dv * (float32) (d2 & 63);
+                    cfAll[cb + 3] = dv * (float32) (d3 & 63);
+                    cfAll[cb + 4] = dv * (float32) ((k0 & 15) | ((d0 >> 2) & 48));
+                    cfAll[cb + 5] = dv * (float32) ((k1 & 15) | ((d1 >> 2) & 48));
+                    cfAll[cb + 6] = dv * (float32) ((k2 & 15) | ((d2 >> 2) & 48));
+                    cfAll[cb + 7] = dv * (float32) ((k3 & 15) | ((d3 >> 2) & 48));
+                    cgAll[cb] = 0.0f - dmv * (float32) (m0 & 63);
+                    cgAll[cb + 1] = 0.0f - dmv * (float32) (m1 & 63);
+                    cgAll[cb + 2] = 0.0f - dmv * (float32) (m2 & 63);
+                    cgAll[cb + 3] = 0.0f - dmv * (float32) (m3 & 63);
+                    cgAll[cb + 4] = 0.0f - dmv * (float32) ((k0 >> 4) | ((m0 >> 2) & 48));
+                    cgAll[cb + 5] = 0.0f - dmv * (float32) ((k1 >> 4) | ((m1 >> 2) & 48));
+                    cgAll[cb + 6] = 0.0f - dmv * (float32) ((k2 >> 4) | ((m2 >> 2) & 48));
+                    cgAll[cb + 7] = 0.0f - dmv * (float32) ((k3 >> 4) | ((m3 >> 2) & 48));
+                } else {
+                    uint32 tk = lane - 16;
+                    if (tk < 16 && (TM == TN || wid < TM / 16)) {
+                        int64 xb = (int64) (t0 + wid * 16 + tk) * xRowBytes + b * 320L;
+                        float32 xv = Cajeta.bitsToF32(
+                            ((int32) xp[xb + 288L] & 255)
+                            | (((int32) xp[xb + 289L] & 255) << 8)
+                            | (((int32) xp[xb + 290L] & 255) << 16)
+                            | (((int32) xp[xb + 291L] & 255) << 24));
+                        uint32 sbi = 0;
+                        while (sbi < 8) {
+                            int64 at = xb + 256L + (int64) (sbi * 4);
+                            int32 ps = ((int32) xp[at] & 255)
+                                | (((int32) xp[at + 1L] & 255) << 8)
+                                | (((int32) xp[at + 2L] & 255) << 16)
+                                | (((int32) xp[at + 3L] & 255) << 24);
+                            rgAll[(wid * 8 + sbi) * 16 + tk] = xv * (float32) ps;
+                            sbi = sbi + 1;
+                        }
+                    }
+                }
+
+                uint32 H = 0;
+                while (H < 2) {
+                    uint32 c = tid;
+                    while (c < TM * 8) {
+                        uint32 row = c / 8;
+                        uint32 chunk = c % 8;
+                        int64 src = (int64) (t0 + row) * xRowBytes + b * 320L
+                            + (int64) (128 * H + chunk * 16);
+                        aTile.vstore((int64) (row * 144 + chunk * 16), xp.vload<16>(src));
+                        c = c + nThreads;
+                    }
+                    Barrier.workgroup();
+
+                    if (tw < mEnd) {
+                    uint32 gg = 0;
+                    while (gg < 2) {
+                        uint32 g2 = 2 * H + gg;
+                        int64 nb = (wRo + b * 144L + 16L + (int64) (32 * g2)) / 4L;
+                        int64 nbB = (wRo1 + b * 144L + 16L + (int64) (32 * g2)) / 4L;
+                        Vector<int32,4> wlo = packedW.vload<4>(nb);
+                        Vector<int32,4> whi = packedW.vload<4>(nb + 4L);
+                        Vector<int32,4> wloB = wlo;
+                        Vector<int32,4> whiB = whi;
+                        if (WN > 16) {
+                            wloB = packedW.vload<4>(nbB);
+                            whiB = packedW.vload<4>(nbB + 4L);
+                        }
+                        int32 w0 = wlo[0];
+                        int32 w1 = wlo[1];
+                        int32 w2 = wlo[2];
+                        int32 w3 = wlo[3];
+                        int32 w4 = whi[0];
+                        int32 w5 = whi[1];
+                        int32 w6 = whi[2];
+                        int32 w7 = whi[3];
+                        int32 w8 = wloB[0];
+                        int32 w9 = wloB[1];
+                        int32 w10 = wloB[2];
+                        int32 w11 = wloB[3];
+                        int32 w12 = whiB[0];
+                        int32 w13 = whiB[1];
+                        int32 w14 = whiB[2];
+                        int32 w15 = whiB[3];
+                        uint32 jj = 0;
+                        while (jj < 2) {
+                            uint32 j = 2 * g2 + jj;
+                            int32 sh = (int32) (jj * 4);
+                            uint32 cbase = (WN * wc + lane16) * 8 + j;
+                            WaveVector<float32, 16> cfv0 = WaveVector.ofSlice(cfAll, cbase - lane16 * 8, 8);
+                            WaveVector<float32, 16> cfv1 = WaveVector.ofSlice(cfAll,
+                                cbase + 128 * (WN / 16 - 1) - lane16 * 8, 8);
+                            WaveVector<float32, 16> cgv0 = WaveVector.ofSlice(cgAll, cbase - lane16 * 8, 8);
+                            WaveVector<float32, 16> cgv1 = WaveVector.ofSlice(cgAll,
+                                cbase + 128 * (WN / 16 - 1) - lane16 * 8, 8);
+                            uint32 rbase = (wr * (WM / 16) * 8 + j) * 16;
+                            uint32 xbase = WM * wr;
+                            uint32 kL0 = 32 * (2 * gg + jj);
+                            uint32 kL1 = kL0 + 16;
+                            for (uint32 n = 0; n < WN / 16; n = n + 1) {
+                                for (uint32 i = 0; i < WM / 16; i = i + 1) { mc[n][i].splat(0); }
+                            }
+                            int32 q0 = (w0 >> sh) & 252645135;
+                            int32 q1 = (w1 >> sh) & 252645135;
+                            int32 q2 = (w2 >> sh) & 252645135;
+                            int32 q3 = (w3 >> sh) & 252645135;
+                            mb[0].fromWords(q0, q1, q2, q3);
+                            if (WN > 16) {
+                                q0 = (w8 >> sh) & 252645135;
+                                q1 = (w9 >> sh) & 252645135;
+                                q2 = (w10 >> sh) & 252645135;
+                                q3 = (w11 >> sh) & 252645135;
+                                mb[WN / 16 - 1].fromWords(q0, q1, q2, q3);
+                            }
+                            for (uint32 i = 0; i < WM / 16; i = i + 1) {
+                                ma.load(aTile, aBase + i * 2304 + kL0, 0, 144);
+                                for (uint32 n = 0; n < WN / 16; n = n + 1) { mc[n][i].mma(ma, mb[n]); }
+                            }
+                            q0 = (w4 >> sh) & 252645135;
+                            q1 = (w5 >> sh) & 252645135;
+                            q2 = (w6 >> sh) & 252645135;
+                            q3 = (w7 >> sh) & 252645135;
+                            mb[0].fromWords(q0, q1, q2, q3);
+                            if (WN > 16) {
+                                q0 = (w12 >> sh) & 252645135;
+                                q1 = (w13 >> sh) & 252645135;
+                                q2 = (w14 >> sh) & 252645135;
+                                q3 = (w15 >> sh) & 252645135;
+                                mb[WN / 16 - 1].fromWords(q0, q1, q2, q3);
+                            }
+                            for (uint32 i = 0; i < WM / 16; i = i + 1) {
+                                ma.load(aTile, aBase + i * 2304 + kL1, 0, 144);
+                                for (uint32 n = 0; n < WN / 16; n = n + 1) { mc[n][i].mma(ma, mb[n]); }
+                            }
+                            for (uint32 i = 0; i < WM / 16; i = i + 1) {
+                                mc[0][i].scaledAccumInto2(facc[0][i], xsAll[xbase + 16 * i],
+                                    cfv0, rgAll[rbase + 128 * i], cgv0);
+                            }
+                            if (WN > 16) {
+                                for (uint32 i = 0; i < WM / 16; i = i + 1) {
+                                    mc[WN / 16 - 1][i].scaledAccumInto2(facc[WN / 16 - 1][i],
+                                        xsAll[xbase + 16 * i], cfv1, rgAll[rbase + 128 * i], cgv1);
+                                }
+                            }
+                            jj = jj + 1;
+                        }
+                        gg = gg + 1;
+                    }
+                    }
+                    Barrier.workgroup();
+                    H = H + 1;
+                }
+                b = b + 1;
+            }
+
+            for (uint32 i = 0; i < WM / 16; i = i + 1) {
+                uint32 tb = tw + 16 * i;
+                if (tb < mEnd) {
+                    if (tb + 16 <= mEnd) {
+                        for (uint32 n = 0; n < WN / 16; n = n + 1) {
+                            facc[n][i].store(y, (uint32) ((int64) tb * (int64) outDim
+                                + (int64) (cw + 16 * n)), 0, outDim);
+                        }
+                    } else {
+                        for (uint32 n = 0; n < WN / 16; n = n + 1) {
+                            facc[n][i].store(fs, wid * 256, 0, 16);
+                            uint32 sa = lane;
+                            while (sa < 256) {
+                                if (tb + sa / 16 < mEnd) {
+                                    y[(int64) (tb + sa / 16) * (int64) outDim
+                                        + (int64) (cw + 16 * n + sa % 16)] = fs[wid * 256 + sa];
+                                }
+                                sa = sa + wvu;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

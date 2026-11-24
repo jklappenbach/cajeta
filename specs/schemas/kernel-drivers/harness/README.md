@@ -45,3 +45,8 @@ each side timed at 1, 2 and 4 waves a workgroup and compared best against best.
 lifted `ref/Q8Tile`, bitwise on both members, the two kernels timed on one weight buffer since the packs are
 byte-identical (separate copies of the same bytes moved the 64x64 member by up to 13 points); Q5_0's tile is
 timed beside it.
+
+`IdBench` is the MoE Id GEMM (plan 8.3.2): `BlockGemmTile`'s `idTile` against the lifted `ref/Q5IdTile` and
+`ref/Q6IdTile` on host-built chunk maps (ragged expert counts, some empty), bitwise over every output row, the
+stored and the never-stored, both members; and the Q4_K Id members against the lifted `ref/IdTile` by difference
+over the output scale, best member against best (`IdTile` folds the scales in float).
