@@ -130,4 +130,100 @@ public final class RefPack {
         }
         return Cajeta.bitsToF32(bits);
     }
+
+    public static void q5kInterleave8(int8[] packed, int64 srcOff, int64 rows, int64 bpr,
+            int8[] out, int64 outOff) {
+        int64 n = ((rows + 7L) / 8L) * bpr * 1472L;
+        if (rows % 8L != 0L) {
+            int64 z = 0;
+            while (z < n) { out[outOff + z] = (int8) 0; z = z + 1; }
+        }
+        float32[] ds #= heap float32[2];
+        int32[] sc #= heap int32[8];
+        int32[] mn #= heap int32[8];
+        int64 r = 0;
+        while (r < rows) {
+            int64 g8 = r / 8L;
+            int64 lane = r % 8L;
+            int64 b = 0;
+            while (b < bpr) {
+                int64 ro = srcOff + (r * bpr + b) * 176L;
+                int64 wo = outOff + (g8 * bpr + b) * 1472L;
+                RefPack.headK4(packed, ro, ds, sc, mn);
+                RefPack.putF32(out, wo + lane * 4L, ds[0]);
+                RefPack.putF32(out, wo + 32L + lane * 4L, ds[1]);
+                int64 sb = 0;
+                while (sb < 8L) {
+                    out[wo + 64L + 8L * sb + lane] = (int8) sc[sb];
+                    out[wo + 128L + 8L * sb + lane] = (int8) mn[sb];
+                    sb = sb + 1L;
+                }
+                int64 k = 0;
+                while (k < 128L) {
+                    out[wo + 192L + 32L * (k / 4L) + 4L * lane + k % 4L] = packed[ro + 48L + k];
+                    k = k + 1L;
+                }
+                k = 0;
+                while (k < 32L) {
+                    out[wo + 1216L + 32L * (k / 4L) + 4L * lane + k % 4L] = packed[ro + 16L + k];
+                    k = k + 1L;
+                }
+                b = b + 1L;
+            }
+            r = r + 1L;
+        }
+    }
+
+    /** Bytes of {@link #q6kInterleave8}'s layout for `rows` Q6_K rows of `bpr` blocks. */
+    public static int64 q6kInterleave8Bytes(int64 rows, int64 bpr) {
+        return ((rows + 7L) / 8L) * bpr * 1696L;
+    }
+
+    /**
+     * Q6_K rows (file layout) in groups of eight, each block of a group in 1696 bytes: the eight rows' d as f32,
+     * their int8 scales at `[32 + 8*sb + r]`, then for l-quad lq (half n = lq/8, l = 4*(lq%8)) the rows' quads of
+     * ql[64n + l], ql[64n + 32 + l] and qh[32n + l] at `160 + 96*lq + {0, 32, 64} + 4r`. Rows past `rows` are zero.
+     */
+    public static void q6kInterleave8(int8[] packed, int64 srcOff, int64 rows, int64 bpr,
+            int8[] out, int64 outOff) {
+        int64 n = ((rows + 7L) / 8L) * bpr * 1696L;
+        if (rows % 8L != 0L) {
+            int64 z = 0;
+            while (z < n) { out[outOff + z] = (int8) 0; z = z + 1; }
+        }
+        int64 r = 0;
+        while (r < rows) {
+            int64 g8 = r / 8L;
+            int64 lane = r % 8L;
+            int64 b = 0;
+            while (b < bpr) {
+                int64 ro = srcOff + (r * bpr + b) * 210L;
+                int64 wo = outOff + (g8 * bpr + b) * 1696L;
+                int32 dh = ((int32) packed[ro + 208L] & 255) | (((int32) packed[ro + 209L] & 255) << 8);
+                RefPack.putF32(out, wo + lane * 4L, RefPack.halfBitsToF32(dh));
+                int64 sb = 0;
+                while (sb < 16L) {
+                    out[wo + 32L + 8L * sb + lane] = packed[ro + 192L + sb];
+                    sb = sb + 1L;
+                }
+                int64 lq = 0;
+                while (lq < 16L) {
+                    int64 hn = lq / 8L;
+                    int64 l = 4L * (lq % 8L);
+                    int64 di = wo + 160L + 96L * lq + 4L * lane;
+                    int64 i = 0;
+                    while (i < 4L) {
+                        out[di + i] = packed[ro + 64L * hn + l + i];
+                        out[di + 32L + i] = packed[ro + 64L * hn + 32L + l + i];
+                        out[di + 64L + i] = packed[ro + 128L + 32L * hn + l + i];
+                        i = i + 1L;
+                    }
+                    lq = lq + 1L;
+                }
+                b = b + 1L;
+            }
+            r = r + 1L;
+        }
+    }
+
 }

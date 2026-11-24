@@ -8,7 +8,7 @@ import cajeta.xpu.KernelStream;
 import dev.cajeta.ml.kernels.gemm.BlockGemmRows8;
 import dev.cajeta.ml.kernels.quant.Q5kBlock;
 
-/** kernel-drivers 3.2.2: the cpu driver over the Q4_K pieces and the lifted reference on the same data. */
+/** kernel-drivers 7.1.2: the cpu driver over the Q5_K pieces and the lifted reference on the same data. */
 public class Bench5 {
     static void putI32(int8[] out, int64 o, int32 v) {
         out[o] = (int8) (v & 255);

@@ -11,3 +11,7 @@ or `DIFFERENT`.
 
 `Bench5` and `TileBench5` are the same two harnesses for Q5_K (plan 7.2 and 7.3), against
 `ref/RefX8Q5` (`q5kQ8X8RowsKernel`) and `ref/Q5Tile`. They need cajeta with `Unroll.from`.
+
+`Bench6` and `TileBench6` are the same for Q6_K (plan 8.1), against `ref/RefX8Q6`
+(`q6kQ8X8RowsKernel`, timed with its 16-value group sums) and `ref/Q6Tile`, which reads cajeta-llm's
+split row layout; the driver reads the file's blocks.
