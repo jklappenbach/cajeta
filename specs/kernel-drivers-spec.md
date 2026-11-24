@@ -119,3 +119,9 @@ epilogue, which the source asks for and the cpu never needs.
   quantizations move to the drivers. No hand-written kernel is removed until the RTX 4090 row of
   5.3 is in. 5.3's vulkan row is the harness: cajeta-llm routes vulkan prefill to its own
   cooperative-matrix kernels, which the plan's Unit 10 decides separately.
+- **7.6** (2026-11-24) The GPU decode mat-vec driver computes every format with the pieces'
+  arithmetic. It equals cajeta-llm's Q4_K and Q5_K GPU decode kernels bit for bit. For Q6_K, Q3_K
+  and Q2_K, whose hand kernels split a block into 16-byte slices and round in a different order,
+  it is held to a small relative tolerance at kernel level and to cajeta-llm's logits KL tests on
+  the models. This amends 7.1 for those three GPU decode kernels only.
+
