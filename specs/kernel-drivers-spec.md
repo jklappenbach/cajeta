@@ -130,3 +130,8 @@ epilogue, which the source asks for and the cpu never needs.
   `attnFlashDecodeGqa2Hd256Kernel`, whose source arithmetic is the same but which the compiler
   rounds differently under `@FastMath` (a few ulps), it is held to a relative tolerance at kernel
   level and to cajeta-llm's logits KL on the models.
+- **7.8** (2026-11-24) The GPU MoE Id GEMM driver equals cajeta-llm's `Q5IdTile` and `Q6IdTile`
+  bit for bit. For Q4_K, whose hand kernel `IdTile` folds the scales in float where the driver
+  folds them in integers, the driver's member is held to a relative tolerance at kernel level and
+  to cajeta-llm's logits KL on a MoE model before cajeta-llm routes it; `IdTile` stays until the
+  RTX 4090 rows confirm the member.
