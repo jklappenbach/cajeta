@@ -12,7 +12,7 @@ import dev.cajeta.ml.kernels.gemm.BlockGemvF16Cols;
 import dev.cajeta.ml.kernels.quant.Q6kBlock;
 import dev.cajeta.ml.kernels.quant.Q80Block;
 
-/** kernel-drivers 9.1.7.3: the f16 batched decode members (`BlockGemvF16Cols`, `Block32GemvF16Cols`) against cajeta-llm's f16 column kernels (`ref/RefF16`), Q6_K and Q8_0, whole and half block, on llm's packed tokens, bitwise, best launch against best; Q8_0 on one weight buffer (the layouts are the same bytes). */
+/** kernel-drivers 9.1.7.3: the f16 batched decode members (`BlockGemvF16Cols`, `Block32GemvF16Cols`) against cajeta-llm's f16 column kernels (`ref/RefF16`), Q6_K and Q8_0, whole and half block, on llm's packed tokens, bitwise, best launch against best, both on one weight buffer (the drivers' packs are llm's resident bytes). */
 public class F16Bench {
     static void drv(int32 f, int32 half, KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<float16> x,
             int64 rows, int64 cols, int64 ncols, int64 xs, int64 wpb, int64 wv) {
@@ -27,10 +27,15 @@ public class F16Bench {
         String nm = f == 0 ? "Q6_K" : "Q8_0";
         int8[] dw #= heap int8[1];
         int8[] rw #= heap int8[1];
+        int64 packDiff = 0L;
         if (f == 0) {
             int8[] file #= Bench6.weight(rows * bpr);
-            dw #= ColsBench.copy(file);
+            BlockGemvF16Cols<Q6kBlock, 0> lay = heap BlockGemvF16Cols<Q6kBlock, 0>();
+            dw #= heap int8[rows * lay.rowBytes(bpr)];
+            lay.pack(file, 0L, rows, bpr, dw, 0L);
             rw #= ColsBench.split(file, rows, bpr, 210L, 208L);
+            int64 i = 0L;
+            while (i < dw.count()) { if (dw[i] != rw[i]) { packDiff = packDiff + 1L; } i = i + 1L; }
         } else {
             int64 nb = cols / 32L;
             int8[] file #= Bench32.weight(rows * nb, 34L);
@@ -44,7 +49,7 @@ public class F16Bench {
         KernelBuffer<int8> wr = heap KernelBuffer<int8>((uint64) rw.count());
         wr.upload(rw);
         KernelBuffer<int8> wl = wr;
-        if (f == 1) { wl = wd; }
+        wl = wd;
         float32[] hx #= heap float32[ncols * cols];
         int64 seed = 733L;
         int64 i = 0L;
@@ -70,7 +75,7 @@ public class F16Bench {
         float32[] gn #= heap float32[ncols * rows];
         yr.download(gr);
         yn.download(gn);
-        int64 bits = WaveBench.bitDiff(gr, gn, ncols * rows);
+        int64 bits = WaveBench.bitDiff(gr, gn, ncols * rows) + packDiff;
         int64 bestR = 9000000000000L;
         int64 bestN = 9000000000000L;
         int64 round = 0L;
