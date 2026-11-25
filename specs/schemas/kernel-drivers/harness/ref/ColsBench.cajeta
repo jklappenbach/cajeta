@@ -16,11 +16,19 @@ import dev.cajeta.ml.kernels.quant.Q5kBlock;
 import dev.cajeta.ml.kernels.quant.Q6kBlock;
 import dev.cajeta.ml.kernels.quant.Q80Block;
 
-/** kernel-drivers 9.1.8: the GPU batched decode (2, 4, 8 tokens) of both decode drivers against cajeta-llm's column kernels (`ref/RefCols`), every format, best launch against best; Q4_K, Q5_K and Q8_0 bitwise, the others by difference over the output scale (spec 7.6). */
+/** kernel-drivers 9.1.8: the GPU batched decode (2, 4, 8 tokens) of both decode drivers against cajeta-llm's column kernels (`ref/RefCols`), every format, best launch against best on one weight buffer where the layouts match (every llm arm of Q4_K and Q6_K, `ref/RefColsR`); Q4_K, Q5_K and Q8_0 bitwise, the others by difference over the output scale (spec 7.6). */
 public class ColsBench {
-    /** Format `f`: 0 Q4_K, 1 Q5_K, 2 Q6_K, 3 Q3_K, 4 Q2_K, 5 Q8_0. */
-    static void drv(int32 f, KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp,
+    /** Format `f`: 0 Q4_K, 1 Q5_K, 2 Q6_K, 3 Q3_K, 4 Q2_K, 5 Q8_0; member `r` 1 or 2 rows a wave (K formats). */
+    static void drv(int32 f, int32 r, KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp,
             int64 rows, int64 cols, int64 ncols, int64 xps, int64 wpb, int64 wv) {
+        if (r == 2) {
+            if (f == 0) { heap BlockGemvWave<Q4kBlock, 2, 0>().runColsOn(s, y, w, xp, rows, cols, 0L, ncols, rows, xps, false, wpb, wv); }
+            if (f == 1) { heap BlockGemvWave<Q5kBlock, 2, 0>().runColsOn(s, y, w, xp, rows, cols, 0L, ncols, rows, xps, false, wpb, wv); }
+            if (f == 2) { heap BlockGemvWave<Q6kBlock, 2, 0>().runColsOn(s, y, w, xp, rows, cols, 0L, ncols, rows, xps, false, wpb, wv); }
+            if (f == 3) { heap BlockGemvWave<Q3kBlock, 2, 0>().runColsOn(s, y, w, xp, rows, cols, 0L, ncols, rows, xps, false, wpb, wv); }
+            if (f == 4) { heap BlockGemvWave<Q2kBlock, 2, 0>().runColsOn(s, y, w, xp, rows, cols, 0L, ncols, rows, xps, false, wpb, wv); }
+            return;
+        }
         if (f == 0) { heap BlockGemvWave<Q4kBlock, 1, 0>().runColsOn(s, y, w, xp, rows, cols, 0L, ncols, rows, xps, false, wpb, wv); }
         if (f == 1) { heap BlockGemvWave<Q5kBlock, 1, 0>().runColsOn(s, y, w, xp, rows, cols, 0L, ncols, rows, xps, false, wpb, wv); }
         if (f == 2) { heap BlockGemvWave<Q6kBlock, 1, 0>().runColsOn(s, y, w, xp, rows, cols, 0L, ncols, rows, xps, false, wpb, wv); }
@@ -29,13 +37,21 @@ public class ColsBench {
         if (f == 5) { heap Block32GemvWave<Q80Block, 1>().runColsOn(s, y, w, xp, rows, cols / 32L, 0L, ncols, rows, xps, false, wpb, wv); }
     }
 
-    /** llm's kernel `v` (0 plain, 1 its Pf form where it has one) of format `f`. */
+    /** llm's kernel `v` of format `f`: 0 plain, 1 Pf; Q4_K 2 two rows, 3 two rows four columns, 4 two-wave group, 5 four rows; Q6_K 2 two rows. */
     static void ref(int32 f, int32 v, KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp,
             int64 rows, int64 cols, int64 ncols, int64 xps, int64 wpb, int64 wv) {
         int64 bpr = cols / 256L;
-        if (f == 0) { if (v == 0) { RefCols.run_0(y, w, xp, rows, bpr, ncols, rows, xps, wpb, wv); } else { RefCols.run_1(y, w, xp, rows, bpr, ncols, rows, xps, wpb, wv); } }
+        if (f == 0) {
+            if (v == 0) { RefCols.run_0(y, w, xp, rows, bpr, ncols, rows, xps, wpb, wv); }
+            else if (v == 1) { RefCols.run_1(y, w, xp, rows, bpr, ncols, rows, xps, wpb, wv); }
+            else { RefColsR.runQ4(v - 2, y, w, xp, rows, bpr, ncols, rows, xps, wpb, wv); }
+        }
         if (f == 1) { RefCols.run_2(y, w, xp, rows, bpr, ncols, rows, xps, wpb, wv); }
-        if (f == 2) { if (v == 0) { RefCols.run_3(y, w, xp, rows, bpr, ncols, rows, xps, wpb, wv); } else { RefCols.run_4(y, w, xp, rows, bpr, ncols, rows, xps, wpb, wv); } }
+        if (f == 2) {
+            if (v == 0) { RefCols.run_3(y, w, xp, rows, bpr, ncols, rows, xps, wpb, wv); }
+            else if (v == 1) { RefCols.run_4(y, w, xp, rows, bpr, ncols, rows, xps, wpb, wv); }
+            else { RefColsR.runQ6(y, w, xp, rows, bpr, ncols, rows, xps, wpb, wv); }
+        }
         if (f == 3) { RefCols.run_5(y, w, xp, rows, bpr, ncols, rows, xps, wpb, wv); }
         if (f == 4) { RefCols.run_6(y, w, xp, rows, bpr, ncols, rows, xps, wpb, wv); }
         if (f == 5) { RefCols.run_7(y, w, xp, rows, cols / 32L, ncols, rows, xps, wpb, wv); }
@@ -104,6 +120,8 @@ public class ColsBench {
         KernelBuffer<int8> wr = heap KernelBuffer<int8>((uint64) rw.count());
         wd.upload(dw);
         wr.upload(rw);
+        KernelBuffer<int8> wl = wr;
+        if (f == 0 || f == 1 || f == 4) { wl = wd; }
         KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (ncols * bpr * 320L));
         xp.upload(hx);
         KernelBuffer<float32> yr = heap KernelBuffer<float32>((uint64) (ncols * rows));
@@ -114,8 +132,8 @@ public class ColsBench {
         KernelStream s #= KernelStream.current();
         float32[] gr #= heap float32[ncols * rows];
         float32[] gn #= heap float32[ncols * rows];
-        ColsBench.ref(f, 0, yr, wr, xp, rows, cols, ncols, xps, 1L, wv);
-        ColsBench.drv(f, s, yn, wd, xp, rows, cols, ncols, xps, 1L, wv);
+        ColsBench.ref(f, 0, yr, wl, xp, rows, cols, ncols, xps, 1L, wv);
+        ColsBench.drv(f, 1, s, yn, wd, xp, rows, cols, ncols, xps, 1L, wv);
         s.sync();
         yr.download(gr);
         yn.download(gn);
@@ -125,7 +143,27 @@ public class ColsBench {
         boolean exact = f == 0 || f == 1 || f == 5;
         if (exact && bits != 0L) { bad = 1L; }
         if (!exact && rel > 0.000001) { bad = 1L; }
-        int32 variants = (f == 0 || f == 2) ? 2 : 1;
+        if (f != 5) {
+            ColsBench.drv(f, 2, s, yn, wd, xp, rows, cols, ncols, xps, 1L, wv);
+            s.sync();
+            yn.download(gn);
+            if (exact && WaveBench.bitDiff(gr, gn, ncols * rows) != 0L) { bad = 1L; }
+            if (!exact && WaveBench.normRel(gr, gn, ncols * rows) > 0.000001) { bad = 1L; }
+        }
+        int32 variants = f == 0 ? (ncols <= 4L ? 6 : 3) : (f == 2 ? 3 : 1);
+        int64 armBad = 0L;
+        float32[] ga #= heap float32[ncols * rows];
+        int32 va = 1;
+        while (va < variants) {
+            ColsBench.ref(f, va, yr, wl, xp, rows, cols, ncols, xps, 1L, wv);
+            s.sync();
+            yr.download(ga);
+            if (WaveBench.normRel(gr, ga, ncols * rows) > 0.000001) { armBad = armBad + 1L; }
+            va = va + 1;
+        }
+        if (armBad != 0L) { bad = 1L; }
+        int32 bestV = 0;
+        int32 bestD = 1;
         int64 bestR = 9000000000000L;
         int64 bestN = 9000000000000L;
         int64 round = 0L;
@@ -137,24 +175,28 @@ public class ColsBench {
                 while (v < variants) {
                     int64 t0 = Clock.nanoTime();
                     int64 k = 0L;
-                    while (k < reps) { ColsBench.ref(f, v, yr, wr, xp, rows, cols, ncols, xps, wpb, wv); k = k + 1L; }
+                    while (k < reps) { ColsBench.ref(f, v, yr, wl, xp, rows, cols, ncols, xps, wpb, wv); k = k + 1L; }
                     s.sync();
                     int64 t1 = Clock.nanoTime();
-                    if ((t1 - t0) / reps < bestR) { bestR = (t1 - t0) / reps; }
+                    if ((t1 - t0) / reps < bestR) { bestR = (t1 - t0) / reps; bestV = v; }
                     v = v + 1;
                 }
-                int64 t2 = Clock.nanoTime();
-                int64 k = 0L;
-                while (k < reps) { ColsBench.drv(f, s, yn, wd, xp, rows, cols, ncols, xps, wpb, wv); k = k + 1L; }
-                s.sync();
-                int64 t3 = Clock.nanoTime();
-                if ((t3 - t2) / reps < bestN) { bestN = (t3 - t2) / reps; }
+                int32 dr = 1;
+                while (dr <= (f == 5 ? 1 : 2)) {
+                    int64 t2 = Clock.nanoTime();
+                    int64 k = 0L;
+                    while (k < reps) { ColsBench.drv(f, dr, s, yn, wd, xp, rows, cols, ncols, xps, wpb, wv); k = k + 1L; }
+                    s.sync();
+                    int64 t3 = Clock.nanoTime();
+                    if ((t3 - t2) / reps < bestN) { bestN = (t3 - t2) / reps; bestD = dr; }
+                    dr = dr + 1;
+                }
                 wi = wi + 1L;
             }
             round = round + 1L;
         }
         System.stdout.println(nm + " " + rows + "x" + cols + " ncols " + ncols + " bitDiff " + bits + " normRel " + rel + " ref_ns " + bestR
-            + " drv_ns " + bestN + " ratio_pct " + (bestN * 100L / bestR));
+            + " drv_ns " + bestN + " drv_r " + bestD + " llm_arm " + bestV + " arm_bad " + armBad + " ratio_pct " + (bestN * 100L / bestR));
         return bad;
     }
 

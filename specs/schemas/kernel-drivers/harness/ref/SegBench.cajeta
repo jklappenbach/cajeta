@@ -10,22 +10,34 @@ import cajeta.xpu.KernelStream;
 import dev.cajeta.ml.kernels.gemm.BlockGemvWave;
 import dev.cajeta.ml.kernels.quant.Q4kBlock;
 
-/** kernel-drivers 9.1.8.4: the driver's three-weight column launch (`runCols3On`) against cajeta-llm's Seg Plain and Seg Pf kernels (`ref/RefSeg`), Q4_K, best launch against best, bitwise; `sep_ns` is the driver's three separate column launches. */
+/** kernel-drivers 9.1.8.4: the driver's three-weight column launch (`runCols3On`) against cajeta-llm's Seg Plain and Seg Pf kernels (`ref/RefSeg`), Q4_K, best launch against best (the driver's one- and two-row members), bitwise; `sep_ns` is the driver's three separate column launches. */
 public class SegBench {
-    static void drv(KernelStream s, KernelBuffer<float32> y0, KernelBuffer<float32> y1, KernelBuffer<float32> y2,
+    static void drv(int32 r, KernelStream s, KernelBuffer<float32> y0, KernelBuffer<float32> y1, KernelBuffer<float32> y2,
             KernelBuffer<int8> w0, KernelBuffer<int8> w1, KernelBuffer<int8> w2, KernelBuffer<int8> xp,
             int64 r0, int64 r1, int64 r2, int64 cols, int64 ncols, int64 xps, int64 wpb, int64 wv) {
-        heap BlockGemvWave<Q4kBlock, 1, 0>().runCols3On(s, y0, y1, y2, w0, w1, w2, xp, r0, r1, r2, cols, ncols, r0, r1, r2, xps,
-            false, wpb, wv);
+        if (r == 2) {
+            heap BlockGemvWave<Q4kBlock, 2, 0>().runCols3On(s, y0, y1, y2, w0, w1, w2, xp, r0, r1, r2, cols, ncols, r0, r1, r2, xps,
+                false, wpb, wv);
+        } else {
+            heap BlockGemvWave<Q4kBlock, 1, 0>().runCols3On(s, y0, y1, y2, w0, w1, w2, xp, r0, r1, r2, cols, ncols, r0, r1, r2, xps,
+                false, wpb, wv);
+        }
     }
 
-    static void sep(KernelStream s, KernelBuffer<float32> y0, KernelBuffer<float32> y1, KernelBuffer<float32> y2,
+    static void sep(int32 r, KernelStream s, KernelBuffer<float32> y0, KernelBuffer<float32> y1, KernelBuffer<float32> y2,
             KernelBuffer<int8> w0, KernelBuffer<int8> w1, KernelBuffer<int8> w2, KernelBuffer<int8> xp,
             int64 r0, int64 r1, int64 r2, int64 cols, int64 ncols, int64 xps, int64 wpb, int64 wv) {
-        BlockGemvWave<Q4kBlock, 1, 0> m = heap BlockGemvWave<Q4kBlock, 1, 0>();
-        m.runColsOn(s, y0, w0, xp, r0, cols, 0L, ncols, r0, xps, false, wpb, wv);
-        m.runColsOn(s, y1, w1, xp, r1, cols, 0L, ncols, r1, xps, false, wpb, wv);
-        if (r2 > 0L) { m.runColsOn(s, y2, w2, xp, r2, cols, 0L, ncols, r2, xps, false, wpb, wv); }
+        if (r == 2) {
+            BlockGemvWave<Q4kBlock, 2, 0> m = heap BlockGemvWave<Q4kBlock, 2, 0>();
+            m.runColsOn(s, y0, w0, xp, r0, cols, 0L, ncols, r0, xps, false, wpb, wv);
+            m.runColsOn(s, y1, w1, xp, r1, cols, 0L, ncols, r1, xps, false, wpb, wv);
+            if (r2 > 0L) { m.runColsOn(s, y2, w2, xp, r2, cols, 0L, ncols, r2, xps, false, wpb, wv); }
+        } else {
+            BlockGemvWave<Q4kBlock, 1, 0> m = heap BlockGemvWave<Q4kBlock, 1, 0>();
+            m.runColsOn(s, y0, w0, xp, r0, cols, 0L, ncols, r0, xps, false, wpb, wv);
+            m.runColsOn(s, y1, w1, xp, r1, cols, 0L, ncols, r1, xps, false, wpb, wv);
+            if (r2 > 0L) { m.runColsOn(s, y2, w2, xp, r2, cols, 0L, ncols, r2, xps, false, wpb, wv); }
+        }
     }
 
     static #KernelBuffer<int8> up(int64 rows, int64 bpr) {
@@ -63,13 +75,19 @@ public class SegBench {
         int64 xps = bpr * 320L;
         KernelStream s #= KernelStream.current();
         RefSeg.run(0, a0, a1, a2, w0, w1, w2, xp, r0, r1, r2, bpr, ncols, xps, 1L, wv);
-        SegBench.drv(s, b0, b1, b2, w0, w1, w2, xp, r0, r1, r2, cols, ncols, xps, 1L, wv);
-        s.sync();
-        int64 bits = SegBench.diff(a0, b0, ncols * r0) + SegBench.diff(a1, b1, ncols * r1);
-        if (r2 > 0L) { bits = bits + SegBench.diff(a2, b2, ncols * r2); }
+        int64 bits = 0L;
+        int32 dc = 1;
+        while (dc <= 2) {
+            SegBench.drv(dc, s, b0, b1, b2, w0, w1, w2, xp, r0, r1, r2, cols, ncols, xps, 1L, wv);
+            s.sync();
+            bits = bits + SegBench.diff(a0, b0, ncols * r0) + SegBench.diff(a1, b1, ncols * r1);
+            if (r2 > 0L) { bits = bits + SegBench.diff(a2, b2, ncols * r2); }
+            dc = dc + 1;
+        }
         int64 bestR = 9000000000000L;
         int64 bestN = 9000000000000L;
         int64 bestS = 9000000000000L;
+        int32 bestD = 1;
         int64 round = 0L;
         while (round < 15L) {
             int64 wi = 0L;
@@ -85,23 +103,27 @@ public class SegBench {
                     if ((t1 - t0) / reps < bestR) { bestR = (t1 - t0) / reps; }
                     v = v + 1;
                 }
-                int64 t2 = Clock.nanoTime();
-                int64 k = 0L;
-                while (k < reps) { SegBench.drv(s, b0, b1, b2, w0, w1, w2, xp, r0, r1, r2, cols, ncols, xps, wpb, wv); k = k + 1L; }
-                s.sync();
-                int64 t3 = Clock.nanoTime();
-                if ((t3 - t2) / reps < bestN) { bestN = (t3 - t2) / reps; }
-                k = 0L;
-                while (k < reps) { SegBench.sep(s, b0, b1, b2, w0, w1, w2, xp, r0, r1, r2, cols, ncols, xps, wpb, wv); k = k + 1L; }
-                s.sync();
-                int64 t4 = Clock.nanoTime();
-                if ((t4 - t3) / reps < bestS) { bestS = (t4 - t3) / reps; }
+                int32 dr = 1;
+                while (dr <= 2) {
+                    int64 t2 = Clock.nanoTime();
+                    int64 k = 0L;
+                    while (k < reps) { SegBench.drv(dr, s, b0, b1, b2, w0, w1, w2, xp, r0, r1, r2, cols, ncols, xps, wpb, wv); k = k + 1L; }
+                    s.sync();
+                    int64 t3 = Clock.nanoTime();
+                    if ((t3 - t2) / reps < bestN) { bestN = (t3 - t2) / reps; bestD = dr; }
+                    k = 0L;
+                    while (k < reps) { SegBench.sep(dr, s, b0, b1, b2, w0, w1, w2, xp, r0, r1, r2, cols, ncols, xps, wpb, wv); k = k + 1L; }
+                    s.sync();
+                    int64 t4 = Clock.nanoTime();
+                    if ((t4 - t3) / reps < bestS) { bestS = (t4 - t3) / reps; }
+                    dr = dr + 1;
+                }
                 wi = wi + 1L;
             }
             round = round + 1L;
         }
         System.stdout.println(nm + " " + r0 + "+" + r1 + "+" + r2 + "x" + cols + " ncols " + ncols + " bitDiff " + bits + " ref_ns " + bestR
-            + " drv_ns " + bestN + " sep_ns " + bestS + " ratio_pct " + (bestN * 100L / bestR));
+            + " drv_ns " + bestN + " drv_r " + bestD + " sep_ns " + bestS + " ratio_pct " + (bestN * 100L / bestR));
         return bits == 0L ? 0L : 1L;
     }
 
