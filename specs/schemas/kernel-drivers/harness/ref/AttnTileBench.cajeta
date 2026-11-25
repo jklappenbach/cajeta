@@ -1,0 +1,90 @@
+package ref;
+
+import cajeta.lang.Cajeta;
+import cajeta.lang.System;
+import cajeta.time.Clock;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.ml.kernels.attn.AttnPrefillTile;
+
+/** kernel-drivers 9.3.8: the GPU f16 prefill-attention tile (`AttnPrefillTile`) against cajeta-llm's attnFlashPrefillF16Kernel (head size 128) and attnFlashPrefillF16Hd256Kernel (256, ref/RefAttnT) on the same data, bitwise. */
+public class AttnTileBench {
+    static void drv(int64 hd, boolean chunk, KernelStream s, KernelBuffer<float32> out, KernelBuffer<float32> q, KernelBuffer<float16> k,
+            KernelBuffer<float16> v, KernelBuffer<int32> pt, int32 rows, int32 nH, int32 nKv, int32 startPos, float32 scale, int32 window) {
+        if (hd == 256L) { AttnPrefillTile.run256On(s, out, q, k, v, pt, 0, rows, nH, nKv, startPos, scale, window); }
+        else { AttnPrefillTile.run128On(s, out, q, k, v, pt, 0, rows, nH, nKv, startPos, scale); }
+    }
+
+    static int64 shape(int64 hd, boolean chunk, int32 nKv, int32 group, int32 rows, int32 startPos, int32 window, int64 reps) {
+        int64 pos = (((int64) startPos + (int64) rows) + 63L) / 64L * 64L;
+        int64 kvDim = (int64) nKv * hd;
+        int32 nH = nKv * group;
+        float16[] kh #= heap float16[pos * kvDim];
+        float16[] vh #= heap float16[pos * kvDim];
+        int64 i = 0L;
+        while (i < pos * kvDim) { kh[i] = (float16) AttnBench.rnd(i); vh[i] = (float16) AttnBench.rnd(i + 7777777L); i = i + 1L; }
+        int64 qn = (int64) rows * (int64) nH * hd;
+        float32[] qh #= heap float32[qn];
+        i = 0L;
+        while (i < qn) { qh[i] = AttnBench.rnd(i + 31L) * 3.0f; i = i + 1L; }
+        int32[] tab #= heap int32[pos / 64L];
+        i = 0L;
+        while (i < pos / 64L) { tab[i] = (int32) ((i * 7L) % (pos / 64L)); i = i + 1L; }
+        KernelBuffer<float16> k = heap KernelBuffer<float16>((uint64) (pos * kvDim));
+        KernelBuffer<float16> v = heap KernelBuffer<float16>((uint64) (pos * kvDim));
+        KernelBuffer<float32> q = heap KernelBuffer<float32>((uint64) qn);
+        KernelBuffer<int32> pt = heap KernelBuffer<int32>((uint64) (pos / 64L));
+        k.upload(kh);
+        v.upload(vh);
+        q.upload(qh);
+        pt.upload(tab);
+        KernelBuffer<float32> orf = heap KernelBuffer<float32>((uint64) qn);
+        KernelBuffer<float32> odr = heap KernelBuffer<float32>((uint64) qn);
+        float32 scale = hd == 256L ? 0.0625f : 0.0883883f;
+        KernelStream s #= KernelStream.current();
+        RefAttnT.run(hd, orf, q, k, v, pt, rows, nH, nKv, startPos, scale, window);
+        AttnTileBench.drv(hd, chunk, s, odr, q, k, v, pt, rows, nH, nKv, startPos, scale, window);
+        s.sync();
+        float32[] gr #= heap float32[qn];
+        float32[] gd #= heap float32[qn];
+        orf.download(gr);
+        odr.download(gd);
+        int64 bad = 0L;
+        i = 0L;
+        while (i < qn) { if (Cajeta.f32ToBits(gr[i]) != Cajeta.f32ToBits(gd[i])) { bad = bad + 1L; } i = i + 1L; }
+        int64 bestR = 9000000000000L;
+        int64 bestN = 9000000000000L;
+        int64 round = 0L;
+        while (round < 15L) {
+            int64 t0 = Clock.nanoTime();
+            int64 r = 0L;
+            while (r < reps) { RefAttnT.run(hd, orf, q, k, v, pt, rows, nH, nKv, startPos, scale, window); r = r + 1L; }
+            s.sync();
+            int64 t1 = Clock.nanoTime();
+            r = 0L;
+            while (r < reps) { AttnTileBench.drv(hd, chunk, s, odr, q, k, v, pt, rows, nH, nKv, startPos, scale, window); r = r + 1L; }
+            s.sync();
+            int64 t2 = Clock.nanoTime();
+            if ((t1 - t0) / reps < bestR) { bestR = (t1 - t0) / reps; }
+            if ((t2 - t1) / reps < bestN) { bestN = (t2 - t1) / reps; }
+            round = round + 1L;
+        }
+        System.stdout.println("tile hd " + hd + "" + " nKv " + nKv + " group " + group + " rows " + rows
+            + " start " + startPos + " window " + window + " bitDiff " + bad + "/" + qn + " ref_ns " + bestR + " drv_ns " + bestN
+            + " ratio_pct " + (bestN * 100L / bestR));
+        return bad;
+    }
+
+    public static int32 main() {
+        int64 bad = AttnTileBench.shape(128L, false, 2, 4, 37, 20, 0, 2L);
+        bad = bad + AttnTileBench.shape(128L, false, 8, 4, 512, 0, 0, 20L);
+        bad = bad + AttnTileBench.shape(128L, false, 8, 4, 2048, 0, 0, 5L);
+        bad = bad + AttnTileBench.shape(128L, false, 8, 4, 128, 1024, 0, 20L);
+        bad = bad + AttnTileBench.shape(256L, true, 2, 4, 37, 300, 0, 2L);
+        bad = bad + AttnTileBench.shape(256L, true, 4, 2, 512, 0, 0, 20L);
+        bad = bad + AttnTileBench.shape(256L, true, 4, 2, 2048, 0, 1024, 5L);
+        bad = bad + AttnTileBench.shape(256L, true, 4, 2, 128, 1024, 1024, 20L);
+        System.stdout.println(bad == 0L ? "ALL EQUAL" : "DIFFERENT");
+        return bad == 0L ? 0 : 1;
+    }
+}

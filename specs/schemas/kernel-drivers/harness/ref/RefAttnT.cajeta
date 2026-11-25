@@ -1,0 +1,491 @@
+package ref;
+
+import cajeta.lang.Math;
+import cajeta.xpu.Barrier;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Shared;
+import cajeta.xpu.Vector;
+import cajeta.xpu.Wave;
+
+/** cajeta-llm's f16 flash prefill attention kernels at head size 128 and 256, lifted unchanged (llm 0730a8b); the page lookup is {@link RefAttn#row}. */
+public final class RefAttnT {
+    public RefAttnT() { return; }
+
+    /**
+     * The online flash prefill at llama.cpp's precision: the tile, block
+     * walk and softmax of {@link #attnFlashPrefillOnlineKernel}, with the
+     * query, keys, probabilities and values all plain f16 into f32
+     * accumulators, as llama.cpp's mma flash attention takes them. The
+     * online kernel carries a 2^10 residual pair for the query and for the
+     * probabilities, which doubles every Q.K^T and P.V mma; here each runs
+     * once. The query is read into registers once (eight fragments a wave),
+     * and the keys and then the values of a block share one staging tile,
+     * so the kernel takes 45 KB of shared memory and two workgroups fit on
+     * an SM (the online kernel's 88 KB fits one).
+     */
+    @Kernel @FastMath @Wave(width = 32)
+    @Occupancy(maxThreads = 256, minResident = 2)
+    // The O rescale reads accumulator elements by row, and a SPIR-V
+    // fragment has no lane-to-element map.
+    public static void attnFlashPrefillF16Kernel(KernelBuffer<float32> out,
+            KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+            KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, uint32 pgBase, uint32 rows, uint32 nH,
+            uint32 nKv, uint32 startPos, float32 scale) {
+        // 45 KB, so two workgroups share an SM: kv stages the query, then
+        // each block's keys, then (once the scores are out) its values; ss
+        // holds the scores and finally the output; ps the probabilities.
+        Shared<float16> kv = shared float16[8704];
+        Shared<float32> ss = shared float32[4352];
+        Shared<float16> ps = shared float16[4608];
+        Shared<float32> alpha = shared float32[64];
+        Shared<float32> lrow = shared float32[64];
+        uint32 tid = KernelThread.x();
+        uint32 lane = tid % 32;
+        uint32 wid = tid / 32;
+        uint32 wg = KernelThread.globalIdX() / 256;
+        uint32 group = nH / nKv;
+        uint32 qt = 64 / group;
+        // Heavy tiles first, as in the online kernel. (Pairing a heavy tile
+        // with its light mirror in one workgroup measured slower, 46 vs 42
+        // us at 512 rows: the launch is latency-bound per block, not
+        // imbalanced, and two resident workgroups hide more of it.)
+        uint32 nTiles = (rows + qt - 1) / qt;
+        uint32 qb = (nTiles - 1) - wg / nKv;
+        uint32 kvh = wg % nKv;
+        uint32 r0 = qb * qt;
+        uint32 kvDim = nKv * 128;
+        uint32 wr = wid / 2;
+        uint32 wc = wid % 2;
+        if (r0 < rows) {
+            uint32 lastPos = startPos + r0 + qt - 1;
+            if (lastPos > startPos + rows - 1) { lastPos = startPos + rows - 1; }
+            uint32 kEnd = lastPos + 1;
+            uint32 sp = tid / 4;
+            uint32 sd = (tid % 4) * 32;
+            uint32 sq = r0 + sp / group;
+            uint32 sh = kvh * group + sp % group;
+            uint32 di = 0;
+            while (di < 32) {
+                float32 qv = 0.0f;
+                if (sq < rows) {
+                    qv = q[(int64) sq * (int64) (nH * 128) + (int64) (sh * 128)
+                        + (int64) (sd + di)] * scale;
+                }
+                kv[sp * 136 + sd + di] = (float16) qv;
+                di = di + 1;
+            }
+            Barrier.workgroup();
+
+            CooperativeMatrix<float16,16,16,0> q0;
+            CooperativeMatrix<float16,16,16,0> q1;
+            CooperativeMatrix<float16,16,16,0> q2;
+            CooperativeMatrix<float16,16,16,0> q3;
+            CooperativeMatrix<float16,16,16,0> q4;
+            CooperativeMatrix<float16,16,16,0> q5;
+            CooperativeMatrix<float16,16,16,0> q6;
+            CooperativeMatrix<float16,16,16,0> q7;
+            CooperativeMatrix<float16,16,16,1> kb;
+            CooperativeMatrix<float32,16,16,2> sacc;
+            CooperativeMatrix<float16,16,16,0> pa;
+            CooperativeMatrix<float16,16,16,1> vb;
+            CooperativeMatrix<float32,16,16,2> o0;
+            CooperativeMatrix<float32,16,16,2> o1;
+            CooperativeMatrix<float32,16,16,2> o2;
+            CooperativeMatrix<float32,16,16,2> o3;
+            uint32 qRow = wr * 2176;
+            q0.load(kv, qRow, 0, 136);
+            q1.load(kv, qRow + 16, 0, 136);
+            q2.load(kv, qRow + 32, 0, 136);
+            q3.load(kv, qRow + 48, 0, 136);
+            q4.load(kv, qRow + 64, 0, 136);
+            q5.load(kv, qRow + 80, 0, 136);
+            q6.load(kv, qRow + 96, 0, 136);
+            q7.load(kv, qRow + 112, 0, 136);
+            o0.splat(0.0f);
+            o1.splat(0.0f);
+            o2.splat(0.0f);
+            o3.splat(0.0f);
+            // Every wave holds its query before the first keys land on it.
+            Barrier.workgroup();
+            // K/V staging roles: key tid/4 of the block, dims (tid%4)*32..
+            uint32 kk = tid / 4;
+            uint32 kd = (tid % 4) * 32;
+            // Softmax roles: row tid/4, keys (tid%4)*16.. of the block.
+            uint32 rr = tid / 4;
+            uint32 rk = (tid % 4) * 16;
+            uint32 rpos = startPos + r0 + rr / group;
+            if (r0 + rr / group >= rows) { rpos = startPos + rows - 1; }
+            float32 mrun = -1.0e30f;
+            float32 lrun = 0.0f;
+            uint32 sBase = wr * 1088 + wc * 32;
+            uint32 pBase = wr * 1152;
+            uint32 oDim = wc * 64;
+
+            uint32 kb0 = 0;
+            while (kb0 < kEnd) {
+                uint32 kpos = kb0 + kk;
+                if (kpos >= kEnd) { kpos = kEnd - 1; }
+                int64 kOff = (int64) RefAttn.row(pgTab, pgBase, kpos) * (int64) kvDim
+                    + (int64) (kvh * 128) + (int64) kd;
+                int64 sOff = (int64) (kk * 136 + kd);
+                // The previous block's P.V reads kv; the barrier at the
+                // loop's end orders it before these stores.
+                kv.vstore(sOff, kPool.vload<8>(kOff));
+                kv.vstore(sOff + 8L, kPool.vload<8>(kOff + 8L));
+                kv.vstore(sOff + 16L, kPool.vload<8>(kOff + 16L));
+                kv.vstore(sOff + 24L, kPool.vload<8>(kOff + 24L));
+                Barrier.workgroup();
+                // S for this wave's 16 pairs x 32 keys: two tiles.
+                uint32 kt = 0;
+                while (kt < 2) {
+                    sacc.splat(0.0f);
+                    uint32 kcol = (wc * 32 + kt * 16) * 136;
+                    kb.load(kv, kcol, 1, 136);
+                    sacc.mma(q0, kb);
+                    kb.load(kv, kcol + 16, 1, 136);
+                    sacc.mma(q1, kb);
+                    kb.load(kv, kcol + 32, 1, 136);
+                    sacc.mma(q2, kb);
+                    kb.load(kv, kcol + 48, 1, 136);
+                    sacc.mma(q3, kb);
+                    kb.load(kv, kcol + 64, 1, 136);
+                    sacc.mma(q4, kb);
+                    kb.load(kv, kcol + 80, 1, 136);
+                    sacc.mma(q5, kb);
+                    kb.load(kv, kcol + 96, 1, 136);
+                    sacc.mma(q6, kb);
+                    kb.load(kv, kcol + 112, 1, 136);
+                    sacc.mma(q7, kb);
+                    sacc.store(ss, sBase + kt * 16, 0, 68);
+                    kt = kt + 1;
+                }
+                Barrier.workgroup();
+                // The online softmax over the row's 64 scores of this block.
+                float32 mx = -1.0e30f;
+                uint32 j = 0;
+                while (j < 16) {
+                    uint32 kabs = kb0 + rk + j;
+                    if (kabs <= rpos && kabs < kEnd) {
+                        float32 sv = ss[rr * 68 + rk + j];
+                        if (sv > mx) { mx = sv; }
+                    }
+                    j = j + 1;
+                }
+                float32 bmax = Wave.reduceMaxF32Segmented(mx, 4);
+                float32 mNew = mrun;
+                if (bmax > mNew) { mNew = bmax; }
+                float32 al = 0.0f;
+                if (mrun > -1.0e29f) { al = Math.exp(mrun - mNew); }
+                float32 psum = 0.0f;
+                j = 0;
+                while (j < 16) {
+                    uint32 kabs2 = kb0 + rk + j;
+                    float32 pv = 0.0f;
+                    if (kabs2 <= rpos && kabs2 < kEnd) {
+                        pv = Math.exp(ss[rr * 68 + rk + j] - mNew);
+                    }
+                    ps[rr * 72 + rk + j] = (float16) pv;
+                    psum = psum + pv;
+                    j = j + 1;
+                }
+                float32 bsum = Wave.reduceSumF32Segmented(psum, 4);
+                lrun = lrun * al + bsum;
+                mrun = mNew;
+                if (tid % 4 == 0) { alpha[rr] = al; }
+                // The keys are dead (every wave stored its scores before the
+                // last barrier): the values take their place.
+                kv.vstore(sOff, vPool.vload<8>(kOff));
+                kv.vstore(sOff + 8L, vPool.vload<8>(kOff + 8L));
+                kv.vstore(sOff + 16L, vPool.vload<8>(kOff + 16L));
+                kv.vstore(sOff + 24L, vPool.vload<8>(kOff + 24L));
+                Barrier.workgroup();
+                // O = alpha O + P V: the rescale walks this lane's elements.
+                uint32 n = o0.elements();
+                uint32 ei = 0;
+                while (ei < n) {
+                    float32 a = alpha[wr * 16 + o0.row(ei)];
+                    o0.set(ei, o0.get(ei) * a);
+                    o1.set(ei, o1.get(ei) * a);
+                    o2.set(ei, o2.get(ei) * a);
+                    o3.set(ei, o3.get(ei) * a);
+                    ei = ei + 1;
+                }
+                uint32 ks2 = 0;
+                while (ks2 < 4) {
+                    pa.load(ps, pBase + ks2 * 16, 0, 72);
+                    uint32 vrow = (ks2 * 16) * 136 + oDim;
+                    vb.load(kv, vrow, 0, 136);
+                    o0.mma(pa, vb);
+                    vb.load(kv, vrow + 16, 0, 136);
+                    o1.mma(pa, vb);
+                    vb.load(kv, vrow + 32, 0, 136);
+                    o2.mma(pa, vb);
+                    vb.load(kv, vrow + 48, 0, 136);
+                    o3.mma(pa, vb);
+                    ks2 = ks2 + 1;
+                }
+                Barrier.workgroup();
+                kb0 = kb0 + 64;
+            }
+
+            // The output: O / l per row, through the wave's LDS slot.
+            if (tid % 4 == 0) { lrow[rr] = lrun; }
+            Barrier.workgroup();
+            uint32 slot = wid * 256;
+            uint32 fj = 0;
+            while (fj < 4) {
+                if (fj == 0) { o0.store(ss, slot, 0, 16); }
+                else if (fj == 1) { o1.store(ss, slot, 0, 16); }
+                else if (fj == 2) { o2.store(ss, slot, 0, 16); }
+                else { o3.store(ss, slot, 0, 16); }
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 pr = wr * 16 + e / 16;
+                    uint32 qi = r0 + pr / group;
+                    if (qi < rows) {
+                        uint32 hh = kvh * group + pr % group;
+                        float32 inv = 1.0f / lrow[pr];
+                        out[(int64) qi * (int64) (nH * 128) + (int64) (hh * 128)
+                            + (int64) (oDim + fj * 16 + e % 16)] = ss[slot + e] * inv;
+                    }
+                    e = e + 32;
+                }
+                fj = fj + 1;
+            }
+        }
+    }
+
+    /** {@link #attnFlashPrefillF16Kernel} at hd 256: 32 query-head rows and one kv head a workgroup, keys in blocks of
+     *  32; a nonzero `window` cuts row r to its last `window` positions. Needs `32 % (nH / nKv) == 0`. */
+    @Kernel @FastMath @Wave(width = 32)
+    @Occupancy(maxThreads = 256, minResident = 2)
+    public static void attnFlashPrefillF16Hd256Kernel(KernelBuffer<float32> out,
+            KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+            KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, uint32 pgBase, uint32 rows, uint32 nH,
+            uint32 nKv, uint32 startPos, float32 scale, uint32 window) {
+        Shared<float16> kv = shared float16[8448];
+        Shared<float32> ss = shared float32[2304];
+        Shared<float16> ps = shared float16[1280];
+        Shared<float32> alpha = shared float32[32];
+        Shared<float32> lrow = shared float32[32];
+        uint32 tid = KernelThread.x();
+        uint32 lane = tid % 32;
+        uint32 wid = tid / 32;
+        uint32 wg = KernelThread.globalIdX() / 256;
+        uint32 group = nH / nKv;
+        uint32 qt = 32 / group;
+        uint32 nTiles = (rows + qt - 1) / qt;
+        uint32 qb = (nTiles - 1) - wg / nKv;
+        uint32 kvh = wg % nKv;
+        uint32 r0 = qb * qt;
+        uint32 kvDim = nKv * 256;
+        uint32 wr = wid / 4;
+        uint32 wc = wid % 4;
+        if (r0 < rows) {
+            uint32 lastPos = startPos + r0 + qt - 1;
+            if (lastPos > startPos + rows - 1) { lastPos = startPos + rows - 1; }
+            uint32 kEnd = lastPos + 1;
+            uint32 kStart = 0;
+            if (window > 0 && startPos + r0 + 1 > window) { kStart = startPos + r0 + 1 - window; }
+            uint32 sp = tid / 8;
+            uint32 sd = (tid % 8) * 32;
+            uint32 sq = r0 + sp / group;
+            uint32 sh = kvh * group + sp % group;
+            uint32 di = 0;
+            while (di < 32) {
+                float32 qv = 0.0f;
+                if (sq < rows) {
+                    qv = q[(int64) sq * (int64) (nH * 256) + (int64) (sh * 256) + (int64) (sd + di)] * scale;
+                }
+                kv[sp * 264 + sd + di] = (float16) qv;
+                di = di + 1;
+            }
+            Barrier.workgroup();
+
+            CooperativeMatrix<float16,16,16,0> q0;
+            CooperativeMatrix<float16,16,16,0> q1;
+            CooperativeMatrix<float16,16,16,0> q2;
+            CooperativeMatrix<float16,16,16,0> q3;
+            CooperativeMatrix<float16,16,16,0> q4;
+            CooperativeMatrix<float16,16,16,0> q5;
+            CooperativeMatrix<float16,16,16,0> q6;
+            CooperativeMatrix<float16,16,16,0> q7;
+            CooperativeMatrix<float16,16,16,1> kb;
+            CooperativeMatrix<float32,16,16,2> sacc;
+            CooperativeMatrix<float16,16,16,0> pa;
+            CooperativeMatrix<float16,16,16,1> vb;
+            CooperativeMatrix<float32,16,16,2> o0;
+            CooperativeMatrix<float32,16,16,2> o1;
+            CooperativeMatrix<float32,16,16,2> o2;
+            CooperativeMatrix<float32,16,16,2> o3;
+            // S roles: rows wr*16.., keys (wc%2)*16.., dims (wc/2)*128.. (two partials a tile).
+            uint32 skt = wc % 2;
+            uint32 sdh = wc / 2;
+            uint32 qRow = (wr * 16) * 264 + sdh * 128;
+            q0.load(kv, qRow, 0, 264);
+            q1.load(kv, qRow + 16, 0, 264);
+            q2.load(kv, qRow + 32, 0, 264);
+            q3.load(kv, qRow + 48, 0, 264);
+            q4.load(kv, qRow + 64, 0, 264);
+            q5.load(kv, qRow + 80, 0, 264);
+            q6.load(kv, qRow + 96, 0, 264);
+            q7.load(kv, qRow + 112, 0, 264);
+            o0.splat(0.0f);
+            o1.splat(0.0f);
+            o2.splat(0.0f);
+            o3.splat(0.0f);
+            Barrier.workgroup();
+            uint32 kk = tid / 8;
+            uint32 kd = (tid % 8) * 32;
+            uint32 rr = tid / 8;
+            uint32 rk = (tid % 8) * 4;
+            uint32 rq = r0 + rr / group;
+            if (rq >= rows) { rq = rows - 1; }
+            uint32 rpos = startPos + rq;
+            uint32 rlo = 0;
+            if (window > 0 && rpos + 1 > window) { rlo = rpos + 1 - window; }
+            float32 mrun = -1.0e30f;
+            float32 lrun = 0.0f;
+            uint32 sBase = sdh * 1152 + (wr * 16) * 36 + skt * 16;
+            uint32 pBase = (wr * 16) * 40;
+            uint32 oDim = wc * 64;
+
+            uint32 kb0 = kStart;
+            while (kb0 < kEnd) {
+                uint32 kpos = kb0 + kk;
+                if (kpos >= kEnd) { kpos = kEnd - 1; }
+                int64 kOff = (int64) RefAttn.row(pgTab, pgBase, kpos) * (int64) kvDim + (int64) (kvh * 256) + (int64) kd;
+                int64 sOff = (int64) (kk * 264 + kd);
+                kv.vstore(sOff, kPool.vload<8>(kOff));
+                kv.vstore(sOff + 8L, kPool.vload<8>(kOff + 8L));
+                kv.vstore(sOff + 16L, kPool.vload<8>(kOff + 16L));
+                kv.vstore(sOff + 24L, kPool.vload<8>(kOff + 24L));
+                Barrier.workgroup();
+                sacc.splat(0.0f);
+                uint32 kcol = (skt * 16) * 264 + sdh * 128;
+                kb.load(kv, kcol, 1, 264);
+                sacc.mma(q0, kb);
+                kb.load(kv, kcol + 16, 1, 264);
+                sacc.mma(q1, kb);
+                kb.load(kv, kcol + 32, 1, 264);
+                sacc.mma(q2, kb);
+                kb.load(kv, kcol + 48, 1, 264);
+                sacc.mma(q3, kb);
+                kb.load(kv, kcol + 64, 1, 264);
+                sacc.mma(q4, kb);
+                kb.load(kv, kcol + 80, 1, 264);
+                sacc.mma(q5, kb);
+                kb.load(kv, kcol + 96, 1, 264);
+                sacc.mma(q6, kb);
+                kb.load(kv, kcol + 112, 1, 264);
+                sacc.mma(q7, kb);
+                sacc.store(ss, sBase, 0, 36);
+                Barrier.workgroup();
+                float32 mx = -1.0e30f;
+                uint32 j = 0;
+                while (j < 4) {
+                    uint32 kabs = kb0 + rk + j;
+                    if (kabs <= rpos && kabs >= rlo && kabs < kEnd) {
+                        float32 sv = ss[rr * 36 + rk + j] + ss[1152 + rr * 36 + rk + j];
+                        if (sv > mx) { mx = sv; }
+                    }
+                    j = j + 1;
+                }
+                float32 bmax = Wave.reduceMaxF32Segmented(mx, 8);
+                float32 mNew = mrun;
+                if (bmax > mNew) { mNew = bmax; }
+                float32 al = 0.0f;
+                if (mrun > -1.0e29f) { al = Math.exp(mrun - mNew); }
+                float32 psum = 0.0f;
+                j = 0;
+                while (j < 4) {
+                    uint32 kabs2 = kb0 + rk + j;
+                    float32 pv = 0.0f;
+                    if (kabs2 <= rpos && kabs2 >= rlo && kabs2 < kEnd) {
+                        pv = Math.exp(ss[rr * 36 + rk + j] + ss[1152 + rr * 36 + rk + j] - mNew);
+                    }
+                    ps[rr * 40 + rk + j] = (float16) pv;
+                    psum = psum + pv;
+                    j = j + 1;
+                }
+                float32 bsum = Wave.reduceSumF32Segmented(psum, 8);
+                lrun = lrun * al + bsum;
+                mrun = mNew;
+                if (tid % 8 == 0) { alpha[rr] = al; }
+                kv.vstore(sOff, vPool.vload<8>(kOff));
+                kv.vstore(sOff + 8L, vPool.vload<8>(kOff + 8L));
+                kv.vstore(sOff + 16L, vPool.vload<8>(kOff + 16L));
+                kv.vstore(sOff + 24L, vPool.vload<8>(kOff + 24L));
+                Barrier.workgroup();
+                uint32 n = o0.elements();
+                uint32 ei = 0;
+                while (ei < n) {
+                    float32 a = alpha[wr * 16 + o0.row(ei)];
+                    o0.set(ei, o0.get(ei) * a);
+                    o1.set(ei, o1.get(ei) * a);
+                    o2.set(ei, o2.get(ei) * a);
+                    o3.set(ei, o3.get(ei) * a);
+                    ei = ei + 1;
+                }
+                uint32 ks2 = 0;
+                while (ks2 < 2) {
+                    pa.load(ps, pBase + ks2 * 16, 0, 40);
+                    uint32 vrow = (ks2 * 16) * 264 + oDim;
+                    vb.load(kv, vrow, 0, 264);
+                    o0.mma(pa, vb);
+                    vb.load(kv, vrow + 16, 0, 264);
+                    o1.mma(pa, vb);
+                    vb.load(kv, vrow + 32, 0, 264);
+                    o2.mma(pa, vb);
+                    vb.load(kv, vrow + 48, 0, 264);
+                    o3.mma(pa, vb);
+                    ks2 = ks2 + 1;
+                }
+                Barrier.workgroup();
+                kb0 = kb0 + 32;
+            }
+
+            if (tid % 8 == 0) { lrow[rr] = lrun; }
+            Barrier.workgroup();
+            uint32 slot = wid * 256;
+            uint32 fj = 0;
+            while (fj < 4) {
+                if (fj == 0) { o0.store(ss, slot, 0, 16); }
+                else if (fj == 1) { o1.store(ss, slot, 0, 16); }
+                else if (fj == 2) { o2.store(ss, slot, 0, 16); }
+                else { o3.store(ss, slot, 0, 16); }
+                uint32 e = lane;
+                while (e < 256) {
+                    uint32 pr = wr * 16 + e / 16;
+                    uint32 qi = r0 + pr / group;
+                    if (qi < rows) {
+                        uint32 hh = kvh * group + pr % group;
+                        float32 inv = 1.0f / lrow[pr];
+                        out[(int64) qi * (int64) (nH * 256) + (int64) (hh * 256)
+                            + (int64) (oDim + fj * 16 + e % 16)] = ss[slot + e] * inv;
+                    }
+                    e = e + 32;
+                }
+                fj = fj + 1;
+            }
+        }
+    }
+
+    /** llm's kernel at head size `hd` with llm's grid. */
+    public static void run(int64 hd, KernelBuffer<float32> out, KernelBuffer<float32> q, KernelBuffer<float16> k, KernelBuffer<float16> v,
+            KernelBuffer<int32> pt, int32 rows, int32 nH, int32 nKv, int32 startPos, float32 scale, int32 window) {
+        KernelStream s #= KernelStream.current();
+        int32 qt = (hd == 256L ? 32 : 64) / (nH / nKv);
+        int64 tiles = ((int64) rows + (int64) qt - 1L) / (int64) qt;
+        if (hd == 256L) {
+            attnFlashPrefillF16Hd256Kernel.launch(s, grid: [(uint32) (tiles * (int64) nKv)], block: [256])
+                (out, q, k, v, pt, 0, (uint32) rows, (uint32) nH, (uint32) nKv, (uint32) startPos, scale, (uint32) window);
+            return;
+        }
+        attnFlashPrefillF16Kernel.launch(s, grid: [(uint32) (tiles * (int64) nKv)], block: [256])
+            (out, q, k, v, pt, 0, (uint32) rows, (uint32) nH, (uint32) nKv, (uint32) startPos, scale);
+    }
+}
