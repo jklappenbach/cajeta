@@ -1,0 +1,199 @@
+package ref;
+
+import cajeta.lang.Math;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Vector;
+import cajeta.xpu.Wave;
+import cajeta.xpu.Workgroup;
+
+/** cajeta-llm's one-head-a-kv-head flash decode (attnFlashDecodeGqa1Kernel), lifted unchanged (llm 0730a8b); the page lookup is {@link RefAttn#row}. */
+public final class RefAttnS {
+    public RefAttnS() { return; }
+
+    /**
+     * Unit 9.6.6: flash decode for nH == nKv -- no KV sharing, hd 128.
+     * llama.cpp's fattn-vec / Vulkan D_split=8 shape on one wave: EIGHT
+     * lanes per K/V row, 16 dims each, so a wave holds four rows in
+     * flight per step and a lane runs the online-softmax recurrence
+     * over the rows its segment sees. The x4/x8 kernels put a whole
+     * wave on one row and reduce 32 lanes per position; with one
+     * q-head per kv-head there is nothing to amortize that over, and
+     * the two-launch pair this replaces ran its combine on nH
+     * workgroups. Each segment writes its own partial at
+     * `(h, sp * 4 + seg)`, so the reduce is the existing kernel over
+     * four times the splits. The loop is wave-uniform (the segmented
+     * reduce needs every lane); a lane past its chunk loads row 0 and
+     * discards it. A lane's first live row seeds the recurrence, so no
+     * sentinel-max exp runs under @FastMath; an empty segment writes
+     * l = 0, m = -3e38, which the reduce weighs to zero.
+     */
+    @Kernel @FastMath @Wave(width = 32)
+    public static void attnFlashDecodeGqa1Kernel(KernelBuffer<float32> part,
+            KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+            KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, uint32 pgBase, uint32 nH, uint32 count,
+            uint32 from, uint32 splits, float32 scale) {
+        uint32 lane = KernelThread.x();
+        uint32 wv = Workgroup.x();
+        if (wv < nH * splits) {
+            uint32 h = wv / splits;
+            uint32 sp = wv % splits;
+            uint32 chunk = (count + splits - 1) / splits;
+            uint32 t0 = sp * chunk;
+            uint32 t1 = t0 + chunk;
+            if (t1 > count) { t1 = count; }
+            uint32 seg = lane / 8;
+            uint32 ds = lane % 8;
+            uint32 kvDim = nH * 128;
+            uint32 dBase = h * 128 + ds * 16;
+            float32 q0 = q[dBase];
+            float32 q1 = q[dBase + 1];
+            float32 q2 = q[dBase + 2];
+            float32 q3 = q[dBase + 3];
+            float32 q4 = q[dBase + 4];
+            float32 q5 = q[dBase + 5];
+            float32 q6 = q[dBase + 6];
+            float32 q7 = q[dBase + 7];
+            float32 q8 = q[dBase + 8];
+            float32 q9 = q[dBase + 9];
+            float32 q10 = q[dBase + 10];
+            float32 q11 = q[dBase + 11];
+            float32 q12 = q[dBase + 12];
+            float32 q13 = q[dBase + 13];
+            float32 q14 = q[dBase + 14];
+            float32 q15 = q[dBase + 15];
+            float32 m = 0.0f - 3.0e38f;
+            float32 l = 0.0f;
+            float32 a0 = 0.0f;
+            float32 a1 = 0.0f;
+            float32 a2 = 0.0f;
+            float32 a3 = 0.0f;
+            float32 a4 = 0.0f;
+            float32 a5 = 0.0f;
+            float32 a6 = 0.0f;
+            float32 a7 = 0.0f;
+            float32 a8 = 0.0f;
+            float32 a9 = 0.0f;
+            float32 a10 = 0.0f;
+            float32 a11 = 0.0f;
+            float32 a12 = 0.0f;
+            float32 a13 = 0.0f;
+            float32 a14 = 0.0f;
+            float32 a15 = 0.0f;
+            uint32 tb = t0;
+            while (tb < t1) {
+                uint32 t = tb + seg;
+                boolean live = t < t1;
+                uint32 lr = 0;
+                if (live) { lr = RefAttn.row(pgTab, pgBase, from + t) * kvDim + dBase; }
+                Vector<float32,4> lk0 = kPool.vload<4>((int64) lr).toF32();
+                Vector<float32,4> lk1 = kPool.vload<4>((int64) lr + 4L).toF32();
+                Vector<float32,4> lk2 = kPool.vload<4>((int64) lr + 8L).toF32();
+                Vector<float32,4> lk3 = kPool.vload<4>((int64) lr + 12L).toF32();
+                float32 ld =
+                    q0 * lk0[0] + q1 * lk0[1] + q2 * lk0[2] + q3 * lk0[3]
+                    + q4 * lk1[0] + q5 * lk1[1] + q6 * lk1[2] + q7 * lk1[3]
+                    + q8 * lk2[0] + q9 * lk2[1] + q10 * lk2[2] + q11 * lk2[3]
+                    + q12 * lk3[0] + q13 * lk3[1] + q14 * lk3[2] + q15 * lk3[3];
+                float32 s = Wave.reduceSumF32Segmented(ld, 8) * scale;
+                Vector<float32,4> lv0 = vPool.vload<4>((int64) lr).toF32();
+                Vector<float32,4> lv1 = vPool.vload<4>((int64) lr + 4L).toF32();
+                Vector<float32,4> lv2 = vPool.vload<4>((int64) lr + 8L).toF32();
+                Vector<float32,4> lv3 = vPool.vload<4>((int64) lr + 12L).toF32();
+                if (live) {
+                    if (l == 0.0f) {
+                        m = s;
+                        l = 1.0f;
+                        a0 = lv0[0];
+                        a1 = lv0[1];
+                        a2 = lv0[2];
+                        a3 = lv0[3];
+                        a4 = lv1[0];
+                        a5 = lv1[1];
+                        a6 = lv1[2];
+                        a7 = lv1[3];
+                        a8 = lv2[0];
+                        a9 = lv2[1];
+                        a10 = lv2[2];
+                        a11 = lv2[3];
+                        a12 = lv3[0];
+                        a13 = lv3[1];
+                        a14 = lv3[2];
+                        a15 = lv3[3];
+                    } else if (s > m) {
+                        float32 c1 = Math.exp(m - s);
+                        a0 = a0 * c1 + lv0[0];
+                        a1 = a1 * c1 + lv0[1];
+                        a2 = a2 * c1 + lv0[2];
+                        a3 = a3 * c1 + lv0[3];
+                        a4 = a4 * c1 + lv1[0];
+                        a5 = a5 * c1 + lv1[1];
+                        a6 = a6 * c1 + lv1[2];
+                        a7 = a7 * c1 + lv1[3];
+                        a8 = a8 * c1 + lv2[0];
+                        a9 = a9 * c1 + lv2[1];
+                        a10 = a10 * c1 + lv2[2];
+                        a11 = a11 * c1 + lv2[3];
+                        a12 = a12 * c1 + lv3[0];
+                        a13 = a13 * c1 + lv3[1];
+                        a14 = a14 * c1 + lv3[2];
+                        a15 = a15 * c1 + lv3[3];
+                        l = l * c1 + 1.0f;
+                        m = s;
+                    } else {
+                        float32 w1 = Math.exp(s - m);
+                        a0 = a0 + w1 * lv0[0];
+                        a1 = a1 + w1 * lv0[1];
+                        a2 = a2 + w1 * lv0[2];
+                        a3 = a3 + w1 * lv0[3];
+                        a4 = a4 + w1 * lv1[0];
+                        a5 = a5 + w1 * lv1[1];
+                        a6 = a6 + w1 * lv1[2];
+                        a7 = a7 + w1 * lv1[3];
+                        a8 = a8 + w1 * lv2[0];
+                        a9 = a9 + w1 * lv2[1];
+                        a10 = a10 + w1 * lv2[2];
+                        a11 = a11 + w1 * lv2[3];
+                        a12 = a12 + w1 * lv3[0];
+                        a13 = a13 + w1 * lv3[1];
+                        a14 = a14 + w1 * lv3[2];
+                        a15 = a15 + w1 * lv3[3];
+                        l = l + w1;
+                    }
+                }
+                tb = tb + 4;
+            }
+            uint32 pb = (h * (splits * 4) + sp * 4 + seg) * 130 + ds * 16;
+            part[pb] = a0;
+            part[pb + 1] = a1;
+            part[pb + 2] = a2;
+            part[pb + 3] = a3;
+            part[pb + 4] = a4;
+            part[pb + 5] = a5;
+            part[pb + 6] = a6;
+            part[pb + 7] = a7;
+            part[pb + 8] = a8;
+            part[pb + 9] = a9;
+            part[pb + 10] = a10;
+            part[pb + 11] = a11;
+            part[pb + 12] = a12;
+            part[pb + 13] = a13;
+            part[pb + 14] = a14;
+            part[pb + 15] = a15;
+            if (ds == 0) {
+                uint32 mb = (h * (splits * 4) + sp * 4 + seg) * 130 + 128;
+                part[mb] = m;
+                part[mb + 1] = l;
+            }
+        }
+    }
+
+    /** llm's launch: a wave a (head, split). */
+    public static void run(KernelBuffer<float32> part, KernelBuffer<float32> q, KernelBuffer<float16> k, KernelBuffer<float16> v,
+            KernelBuffer<int32> pt, int32 nH, int32 count, int32 splits, float32 scale) {
+        KernelStream s #= KernelStream.current();
+        attnFlashDecodeGqa1Kernel.launch(s, grid: [(uint32) (nH * splits)], block: [32])
+            (part, q, k, v, pt, 0, (uint32) nH, (uint32) count, 0, (uint32) splits, scale);
+    }
+}
