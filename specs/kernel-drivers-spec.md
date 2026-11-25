@@ -135,3 +135,8 @@ epilogue, which the source asks for and the cpu never needs.
   folds them in integers, the driver's member is held to a relative tolerance at kernel level and
   to cajeta-llm's logits KL on a MoE model before cajeta-llm routes it; `IdTile` stays until the
   RTX 4090 rows confirm the member.
+- **7.9** (2026-11-25) The float-activation decode drivers equal cajeta-llm's float decode
+  kernels bit for bit (`q80F32WaveMatVecKernel`, `q40F32WaveMatVecKernel`,
+  `q50F32WaveMatVecKernel`, `q6kF32WaveMatVecKernel`, and the f16 column forms): each reproduces
+  that kernel's summation order, so 7.1 holds and no KL run is needed before cajeta-llm routes
+  them.
