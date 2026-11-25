@@ -23,6 +23,9 @@ struct cajeta_xpu_module {
     // coop-converting-store spec 2.5): 0 not asked, 1 none, 2 at placeG.
     int placeState;
     cajeta_cudeviceptr placeG;
+    // A Vulkan "$d2" variant whose pipeline would not build (a validation layer that
+    // predates the mixed-float dot refuses it): launches take the base kernel.
+    int vkRefused;
 };
 // An overflow is reported at registration (cajeta_xpu_register_module_impl).
 #define CAJETA_XPU_MAX_MODULES 1024

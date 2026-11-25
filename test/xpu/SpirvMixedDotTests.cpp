@@ -19,6 +19,7 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -148,4 +149,27 @@ TEST(SpirvMixedDotTests, aHalfDotSumMatchesTheHostOnVulkan) {
     ASSERT_NE(run, nullptr);
     int got = run();
     EXPECT_TRUE(got == 777 || got == 778) << "1000 + g: the first wrong cell, got " << got;
+}
+
+// A "$d2" build whose pipeline will not build (an older validation layer refuses the
+// mixed-float dot) is set aside, and the launch runs the plain build: exact, 777.
+TEST(SpirvMixedDotTests, aRefusedMixedDotBuildFallsBackToThePlainKernel) {
+    if (!cajeta::xpu::test::vulkanAvailable()) GTEST_SKIP() << "no Vulkan device";
+    std::string exact = kSource;
+    for (const std::string cut : {std::string("if (mixed) { tol = 0.000001f * (mag + 1.0f); }"),
+                                  std::string("if (mixed) { return 778; }")}) {
+        size_t at = exact.find(cut);
+        ASSERT_NE(at, std::string::npos) << cut;
+        exact.erase(at, cut.size());
+    }
+    setenv("CAJETA_XPU_VK_REFUSE_D2", "1", 1);
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(exact, "test.MD", o);
+    ASSERT_NE(jit, nullptr);
+    auto run = jit->lookup<int (*)()>("run");
+    ASSERT_NE(run, nullptr);
+    int got = run();
+    unsetenv("CAJETA_XPU_VK_REFUSE_D2");
+    EXPECT_EQ(got, 777) << "1000 + g: the first inexact cell, so the refused build ran";
 }

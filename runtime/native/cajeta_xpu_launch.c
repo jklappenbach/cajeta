@@ -1045,8 +1045,12 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
         }
     }
     // A device with the mixed-float dot launches the "<name>$d2" variant, whose f16 dotSum
-    // pairs are one OpFDot2MixAcc32VALVE each, when the compiler built one.
+    // pairs are one OpFDot2MixAcc32VALVE each, when the compiler built one and it builds.
     char d2Name[160];
+    const char* baseName = launchName;
+    const void* baseSpirv = spirv;
+    uint64_t baseLen = len;
+    struct cajeta_xpu_module* d2mod = NULL;
     if (__atomic_load_n(&caj_vk_last_virtual, __ATOMIC_ACQUIRE) == 0
             && (g_xpu_vk.caps & CAJ_VK_CAP_MIXEDDOT) && launchName != ptName) {
         snprintf(d2Name, sizeof(d2Name), "%s$d2", launchName);
@@ -1054,13 +1058,14 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
         struct cajeta_xpu_module* de = cajeta_xpu_find_module(d2Name, CAJ_XPU_VULKAN);
         pthread_mutex_unlock(&g_xpu_cuda_lock);
         const char* d2Lacks = NULL;
-        if (de && de->image && de->len >= 4
+        if (de && de->image && de->len >= 4 && !de->vkRefused
                 && !__cajeta_xpu_vk_spv_missing_capability((const uint32_t*) de->image,
                                                            (size_t) (de->len / 4), g_xpu_vk.caps,
                                                            &d2Lacks)) {
             launchName = d2Name;
             spirv = de->image;
             len = de->len;
+            d2mod = de;
         }
     }
     if (declaredWave >= 2 && !caj_vk_wave_runnable((uint32_t) declaredWave)) {
@@ -1184,6 +1189,20 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
             nb = n + 1;
             alignChecked = 1;
         }
+    }
+    if (built && d2mod
+            && !cajeta_xpu_vk_pipe_builds(spirv, len, launchName, bkinds, nb,
+                                          (unsigned) (blockX > 0 ? blockX : 1),
+                                          (unsigned) (blockY > 0 ? blockY : 1),
+                                          (unsigned) (blockZ > 0 ? blockZ : 1),
+                                          (unsigned) (sharedBytes > 0 ? sharedBytes : 0),
+                                          (int) specCount, specValues)) {
+        d2mod->vkRefused = 1;
+        fprintf(stderr, "cajeta: note: [xpu-rung] %s runs its base kernel: the mixed-float dot "
+                "variant's pipeline would not build\n", baseName);
+        launchName = baseName;
+        spirv = baseSpirv;
+        len = baseLen;
     }
     if (built)
         cajeta_xpu_vk_launch(spirv, len, launchName, bindings, bkinds, nb,
@@ -1490,6 +1509,7 @@ static void cajeta_xpu_register_module_impl(const char* kernelName,
         e->specState = 0;
         e->lastSpecCount = -1;
         e->placeState = 0;
+        e->vkRefused = 0;
     }
     g_xpu_registry_gen++;
     pthread_mutex_unlock(&g_xpu_cuda_lock);

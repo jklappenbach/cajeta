@@ -4608,6 +4608,22 @@ static void cajeta_xpu_vk_event_destroy(int64_t h) {
     free(e);
 }
 
+// Whether `entry`'s pipeline builds for this launch shape; a built one stays cached for the
+// launch. CAJETA_XPU_VK_REFUSE_D2 makes every "$d2" variant fail here (the fallback's test).
+static int cajeta_xpu_vk_pipe_builds(const void* spirv, uint64_t len, const char* entry,
+                                     const uint8_t* kinds, int n, unsigned bx, unsigned by,
+                                     unsigned bz, unsigned sharedBytes, int userSpecCount,
+                                     const int32_t* userSpecValues) {
+    if (!spirv || len < 4 || n <= 0 || n > 64) return 0;
+    if (entry && strstr(entry, "$d2") && getenv("CAJETA_XPU_VK_REFUSE_D2")) return 0;
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);
+    struct caj_vk_pipe* P = caj_vk_pipe_get(spirv, len, entry, kinds, n, bx > 0 ? bx : 1,
+                                            by > 0 ? by : 1, bz > 0 ? bz : 1, sharedBytes,
+                                            userSpecCount, userSpecValues);
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+    return P != NULL;
+}
+
 static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
                                 const char* entry, const int64_t* bindings,
                                 const uint8_t* kinds, int n,
@@ -4977,6 +4993,13 @@ static int64_t cajeta_xpu_vk_accel_build_triangles(const float* v, uint32_t t,
     (void) v; (void) t; (void) s; return 0;
 }
 static void cajeta_xpu_vk_accel_free(int64_t h) { (void) h; }
+static int cajeta_xpu_vk_pipe_builds(const void* s, uint64_t l, const char* e,
+                                     const uint8_t* k, int n, unsigned bx, unsigned by,
+                                     unsigned bz, unsigned sharedBytes, int userSpecCount,
+                                     const int32_t* userSpecValues) {
+    (void) s; (void) l; (void) e; (void) k; (void) n; (void) bx; (void) by; (void) bz;
+    (void) sharedBytes; (void) userSpecCount; (void) userSpecValues; return 0;
+}
 static int cajeta_xpu_vk_launch(const void* s, uint64_t l, const char* e,
                                 const int64_t* b, const uint8_t* k, int n,
                                 unsigned gx, unsigned gy, unsigned gz,
