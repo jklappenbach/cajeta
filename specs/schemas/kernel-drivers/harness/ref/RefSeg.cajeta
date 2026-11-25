@@ -1,0 +1,535 @@
+package ref;
+
+import cajeta.xpu.Group;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Vector;
+import cajeta.xpu.Wave;
+
+/** cajeta-llm's fused three-weight Q4_K column kernels (Seg Plain and Seg Pf) and their store, lifted unchanged (llm 0730a8b); the column step is {@link RefCols}'s. */
+public final class RefSeg {
+    public RefSeg() { return; }
+
+    /** The store half of {@link #colsStore}: lane 0 writes the reduced columns of `row`. */
+    @Device
+    static void colsStoreReduced(KernelBuffer<float32> y, uint32 row, uint32 rows,
+            uint32 yStride, uint32 accum, uint32 ncols, uint32 lane,
+            float32 t0, float32 t1, float32 t2, float32 t3, float32 t4,
+            float32 t5, float32 t6, float32 t7) {
+        if (lane == 0 && row < rows) {
+            int64 o = (int64) row;
+            int64 st = (int64) yStride;
+            if (accum != 0) {
+                y[o] = y[o] + t0;
+                if (ncols > 1) { y[o + st] = y[o + st] + t1; }
+                if (ncols > 2) { y[o + 2L * st] = y[o + 2L * st] + t2; }
+                if (ncols > 3) { y[o + 3L * st] = y[o + 3L * st] + t3; }
+                if (ncols > 4) { y[o + 4L * st] = y[o + 4L * st] + t4; }
+                if (ncols > 5) { y[o + 5L * st] = y[o + 5L * st] + t5; }
+                if (ncols > 6) { y[o + 6L * st] = y[o + 6L * st] + t6; }
+                if (ncols > 7) { y[o + 7L * st] = y[o + 7L * st] + t7; }
+            } else {
+                y[o] = t0;
+                if (ncols > 1) { y[o + st] = t1; }
+                if (ncols > 2) { y[o + 2L * st] = t2; }
+                if (ncols > 3) { y[o + 3L * st] = t3; }
+                if (ncols > 4) { y[o + 4L * st] = t4; }
+                if (ncols > 5) { y[o + 5L * st] = t5; }
+                if (ncols > 6) { y[o + 6L * st] = t6; }
+                if (ncols > 7) { y[o + 7L * st] = t7; }
+            }
+        }
+        return;
+    }
+
+    /** Up to three Q4_K weights in one launch: waves [0, rows0) run `w0` into `y0`, the next
+     *  `rows1` run `w1` into `y1`, the next `rows2` run `w2` into `y2`, each with the plain row
+     *  body; the wave reduces follow once, so every output equals the separate launches bit
+     *  for bit (15.2.12.3.7). */
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void q4kQ8WaveMatVecColsSegPlainKernel(KernelBuffer<float32> y0,
+            KernelBuffer<float32> y1, KernelBuffer<float32> y2,
+            KernelBuffer<int8> w0, KernelBuffer<int8> w1, KernelBuffer<int8> w2,
+            KernelBuffer<int8> xp, uint32 rows0, uint32 rows1, uint32 rows2,
+            int64 blocksPerRow, uint32 accum, uint32 ncols, uint32 yStride0,
+            uint32 yStride1, uint32 yStride2, uint32 xpStride) {
+        uint32 xps = (xpStride >> 4) << 4;
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 wave = KernelThread.globalIdX() / wv;
+        uint32 bpr = (uint32) blocksPerRow;
+        uint32 rowBytes = bpr * 144;
+        float32 c0 = 0.0f;
+        float32 c1 = 0.0f;
+        float32 c2 = 0.0f;
+        float32 c3 = 0.0f;
+        float32 c4 = 0.0f;
+        float32 c5 = 0.0f;
+        float32 c6 = 0.0f;
+        float32 c7 = 0.0f;
+        uint32 which = 0;
+        uint32 rowS = 0;
+        uint32 rowsS = 0;
+        if (wave < rows0) {
+            uint32 rw0 = wave;
+            uint32 rs0 = rows0;
+            if (rw0 < rs0) {
+                uint32 rb = rw0 * rowBytes;
+                int32 g = (int32) (lane % 4);
+                uint32 b = lane / 4;
+                int32 sh0 = 16 * (g & 1);
+                int32 sh1 = sh0 + 8;
+                int32 hiSel = 0 - (g >> 1);
+                int32 loSel = hiSel ^ (0 - 1);
+                while (b < bpr) {
+                    uint32 ro = rb + b * 144;
+                    uint32 rw = ro + (uint32) (32 * g);
+                    Vector<int8,16> hv = w0.vload<16>((int64) ro);
+                    Vector<uint8,32> raw = w0.vload<32>(
+                        (int64) rw + 16L).asUnsigned();
+                    float32 d = RefCols.halfBitsToF32Branchless(((int32) hv[0] & 255)
+                        | (((int32) hv[1] & 255) << 8));
+                    float32 dmin = RefCols.halfBitsToF32Branchless(((int32) hv[2] & 255)
+                        | (((int32) hv[3] & 255) << 8));
+                    Vector<int32,4> hw = hv.asWords();
+                    int32 scw = hw[1];
+                    int32 mnw = hw[2];
+                    int32 hiw = hw[3];
+                    int32 sA = (scw >> sh0) & 255;
+                    int32 sB = (scw >> sh1) & 255;
+                    int32 mC = (mnw >> sh0) & 255;
+                    int32 mD = (mnw >> sh1) & 255;
+                    int32 sc0 = sA & 63;
+                    int32 sc1 = sB & 63;
+                    int32 mn0 = mC & 63;
+                    int32 mn1 = mD & 63;
+                    int32 k0 = (hiw >> sh0) & 255;
+                    int32 k1 = (hiw >> sh1) & 255;
+                    sc0 = (((k0 & 15) | ((sA >> 2) & 48)) & hiSel) | (sc0 & loSel);
+                    sc1 = (((k1 & 15) | ((sB >> 2) & 48)) & hiSel) | (sc1 & loSel);
+                    mn0 = (((k0 >> 4) | ((mC >> 2) & 48)) & hiSel) | (mn0 & loSel);
+                    mn1 = (((k1 >> 4) | ((mD >> 2) & 48)) & hiSel) | (mn1 & loSel);
+                    Vector<int32,8> rv = raw.asWords();
+                    Vector<uint8,32> lo = (rv & 252645135).asBytes().asUnsigned();
+                    Vector<uint8,32> hi = ((rv >> 4) & 252645135).asBytes().asUnsigned();
+                    uint32 xo = b * 320 + (uint32) (64 * g);
+                    uint32 xr = b * 320 + 288;
+                    c0 = RefCols.q4kColAcc(c0, xp, xo, xr, lo, hi, sc0, sc1, mn0, mn1, d, dmin);
+                    if (ncols > 1) { c1 = RefCols.q4kColAcc(c1, xp, xo + xps, xr + xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 2) { c2 = RefCols.q4kColAcc(c2, xp, xo + 2 * xps, xr + 2 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 3) { c3 = RefCols.q4kColAcc(c3, xp, xo + 3 * xps, xr + 3 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 4) { c4 = RefCols.q4kColAcc(c4, xp, xo + 4 * xps, xr + 4 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 5) { c5 = RefCols.q4kColAcc(c5, xp, xo + 5 * xps, xr + 5 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 6) { c6 = RefCols.q4kColAcc(c6, xp, xo + 6 * xps, xr + 6 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 7) { c7 = RefCols.q4kColAcc(c7, xp, xo + 7 * xps, xr + 7 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    b = b + wv / 4;
+                }
+            }
+            which = 0;
+            rowS = rw0;
+            rowsS = rs0;
+        } else if (wave < rows0 + rows1) {
+            uint32 rw1 = wave - rows0;
+            uint32 rs1 = rows1;
+            if (rw1 < rs1) {
+                uint32 rb = rw1 * rowBytes;
+                int32 g = (int32) (lane % 4);
+                uint32 b = lane / 4;
+                int32 sh0 = 16 * (g & 1);
+                int32 sh1 = sh0 + 8;
+                int32 hiSel = 0 - (g >> 1);
+                int32 loSel = hiSel ^ (0 - 1);
+                while (b < bpr) {
+                    uint32 ro = rb + b * 144;
+                    uint32 rw = ro + (uint32) (32 * g);
+                    Vector<int8,16> hv = w1.vload<16>((int64) ro);
+                    Vector<uint8,32> raw = w1.vload<32>(
+                        (int64) rw + 16L).asUnsigned();
+                    float32 d = RefCols.halfBitsToF32Branchless(((int32) hv[0] & 255)
+                        | (((int32) hv[1] & 255) << 8));
+                    float32 dmin = RefCols.halfBitsToF32Branchless(((int32) hv[2] & 255)
+                        | (((int32) hv[3] & 255) << 8));
+                    Vector<int32,4> hw = hv.asWords();
+                    int32 scw = hw[1];
+                    int32 mnw = hw[2];
+                    int32 hiw = hw[3];
+                    int32 sA = (scw >> sh0) & 255;
+                    int32 sB = (scw >> sh1) & 255;
+                    int32 mC = (mnw >> sh0) & 255;
+                    int32 mD = (mnw >> sh1) & 255;
+                    int32 sc0 = sA & 63;
+                    int32 sc1 = sB & 63;
+                    int32 mn0 = mC & 63;
+                    int32 mn1 = mD & 63;
+                    int32 k0 = (hiw >> sh0) & 255;
+                    int32 k1 = (hiw >> sh1) & 255;
+                    sc0 = (((k0 & 15) | ((sA >> 2) & 48)) & hiSel) | (sc0 & loSel);
+                    sc1 = (((k1 & 15) | ((sB >> 2) & 48)) & hiSel) | (sc1 & loSel);
+                    mn0 = (((k0 >> 4) | ((mC >> 2) & 48)) & hiSel) | (mn0 & loSel);
+                    mn1 = (((k1 >> 4) | ((mD >> 2) & 48)) & hiSel) | (mn1 & loSel);
+                    Vector<int32,8> rv = raw.asWords();
+                    Vector<uint8,32> lo = (rv & 252645135).asBytes().asUnsigned();
+                    Vector<uint8,32> hi = ((rv >> 4) & 252645135).asBytes().asUnsigned();
+                    uint32 xo = b * 320 + (uint32) (64 * g);
+                    uint32 xr = b * 320 + 288;
+                    c0 = RefCols.q4kColAcc(c0, xp, xo, xr, lo, hi, sc0, sc1, mn0, mn1, d, dmin);
+                    if (ncols > 1) { c1 = RefCols.q4kColAcc(c1, xp, xo + xps, xr + xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 2) { c2 = RefCols.q4kColAcc(c2, xp, xo + 2 * xps, xr + 2 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 3) { c3 = RefCols.q4kColAcc(c3, xp, xo + 3 * xps, xr + 3 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 4) { c4 = RefCols.q4kColAcc(c4, xp, xo + 4 * xps, xr + 4 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 5) { c5 = RefCols.q4kColAcc(c5, xp, xo + 5 * xps, xr + 5 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 6) { c6 = RefCols.q4kColAcc(c6, xp, xo + 6 * xps, xr + 6 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 7) { c7 = RefCols.q4kColAcc(c7, xp, xo + 7 * xps, xr + 7 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    b = b + wv / 4;
+                }
+            }
+            which = 1;
+            rowS = rw1;
+            rowsS = rs1;
+        } else {
+            uint32 rw2 = wave - rows0 - rows1;
+            uint32 rs2 = rows2;
+            if (rw2 < rs2) {
+                uint32 rb = rw2 * rowBytes;
+                int32 g = (int32) (lane % 4);
+                uint32 b = lane / 4;
+                int32 sh0 = 16 * (g & 1);
+                int32 sh1 = sh0 + 8;
+                int32 hiSel = 0 - (g >> 1);
+                int32 loSel = hiSel ^ (0 - 1);
+                while (b < bpr) {
+                    uint32 ro = rb + b * 144;
+                    uint32 rw = ro + (uint32) (32 * g);
+                    Vector<int8,16> hv = w2.vload<16>((int64) ro);
+                    Vector<uint8,32> raw = w2.vload<32>(
+                        (int64) rw + 16L).asUnsigned();
+                    float32 d = RefCols.halfBitsToF32Branchless(((int32) hv[0] & 255)
+                        | (((int32) hv[1] & 255) << 8));
+                    float32 dmin = RefCols.halfBitsToF32Branchless(((int32) hv[2] & 255)
+                        | (((int32) hv[3] & 255) << 8));
+                    Vector<int32,4> hw = hv.asWords();
+                    int32 scw = hw[1];
+                    int32 mnw = hw[2];
+                    int32 hiw = hw[3];
+                    int32 sA = (scw >> sh0) & 255;
+                    int32 sB = (scw >> sh1) & 255;
+                    int32 mC = (mnw >> sh0) & 255;
+                    int32 mD = (mnw >> sh1) & 255;
+                    int32 sc0 = sA & 63;
+                    int32 sc1 = sB & 63;
+                    int32 mn0 = mC & 63;
+                    int32 mn1 = mD & 63;
+                    int32 k0 = (hiw >> sh0) & 255;
+                    int32 k1 = (hiw >> sh1) & 255;
+                    sc0 = (((k0 & 15) | ((sA >> 2) & 48)) & hiSel) | (sc0 & loSel);
+                    sc1 = (((k1 & 15) | ((sB >> 2) & 48)) & hiSel) | (sc1 & loSel);
+                    mn0 = (((k0 >> 4) | ((mC >> 2) & 48)) & hiSel) | (mn0 & loSel);
+                    mn1 = (((k1 >> 4) | ((mD >> 2) & 48)) & hiSel) | (mn1 & loSel);
+                    Vector<int32,8> rv = raw.asWords();
+                    Vector<uint8,32> lo = (rv & 252645135).asBytes().asUnsigned();
+                    Vector<uint8,32> hi = ((rv >> 4) & 252645135).asBytes().asUnsigned();
+                    uint32 xo = b * 320 + (uint32) (64 * g);
+                    uint32 xr = b * 320 + 288;
+                    c0 = RefCols.q4kColAcc(c0, xp, xo, xr, lo, hi, sc0, sc1, mn0, mn1, d, dmin);
+                    if (ncols > 1) { c1 = RefCols.q4kColAcc(c1, xp, xo + xps, xr + xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 2) { c2 = RefCols.q4kColAcc(c2, xp, xo + 2 * xps, xr + 2 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 3) { c3 = RefCols.q4kColAcc(c3, xp, xo + 3 * xps, xr + 3 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 4) { c4 = RefCols.q4kColAcc(c4, xp, xo + 4 * xps, xr + 4 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 5) { c5 = RefCols.q4kColAcc(c5, xp, xo + 5 * xps, xr + 5 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 6) { c6 = RefCols.q4kColAcc(c6, xp, xo + 6 * xps, xr + 6 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 7) { c7 = RefCols.q4kColAcc(c7, xp, xo + 7 * xps, xr + 7 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    b = b + wv / 4;
+                }
+            }
+            which = 2;
+            rowS = rw2;
+            rowsS = rs2;
+        }
+        float32 t0 = Wave.reduceSumF32(c0);
+        float32 t1 = 0.0f;
+        float32 t2 = 0.0f;
+        float32 t3 = 0.0f;
+        float32 t4 = 0.0f;
+        float32 t5 = 0.0f;
+        float32 t6 = 0.0f;
+        float32 t7 = 0.0f;
+        if (ncols > 1) { t1 = Wave.reduceSumF32(c1); }
+        if (ncols > 2) { t2 = Wave.reduceSumF32(c2); }
+        if (ncols > 3) { t3 = Wave.reduceSumF32(c3); }
+        if (ncols > 4) { t4 = Wave.reduceSumF32(c4); }
+        if (ncols > 5) { t5 = Wave.reduceSumF32(c5); }
+        if (ncols > 6) { t6 = Wave.reduceSumF32(c6); }
+        if (ncols > 7) { t7 = Wave.reduceSumF32(c7); }
+        if (which == 0) {
+            RefSeg.colsStoreReduced(y0, rowS, rowsS, yStride0, accum, ncols, lane, t0, t1, t2, t3, t4, t5, t6, t7);
+        } else if (which == 1) {
+            RefSeg.colsStoreReduced(y1, rowS, rowsS, yStride1, accum, ncols, lane, t0, t1, t2, t3, t4, t5, t6, t7);
+        } else {
+            RefSeg.colsStoreReduced(y2, rowS, rowsS, yStride2, accum, ncols, lane, t0, t1, t2, t3, t4, t5, t6, t7);
+        }
+    }
+
+    /** Up to three Q4_K weights in one launch: waves [0, rows0) run `w0` into `y0`, the next
+     *  `rows1` run `w1` into `y1`, the next `rows2` run `w2` into `y2`, each with the prefetching row
+     *  body; the wave reduces follow once, so every output equals the separate launches bit
+     *  for bit (15.2.12.3.7). */
+    @Kernel
+    // maxRegisters: ptxas's 80-register occupancy target spilled 8 bytes on sm_89 (the three
+    // prefetch bodies); the bound lets it allocate what it wants, as q6kQ8WavePfMatVecColsKernel.
+    @Occupancy(maxThreads = 256, maxRegisters = 128)
+    public static void q4kQ8WaveMatVecColsSegPfKernel(KernelBuffer<float32> y0,
+            KernelBuffer<float32> y1, KernelBuffer<float32> y2,
+            KernelBuffer<int8> w0, KernelBuffer<int8> w1, KernelBuffer<int8> w2,
+            KernelBuffer<int8> xp, uint32 rows0, uint32 rows1, uint32 rows2,
+            int64 blocksPerRow, uint32 accum, uint32 ncols, uint32 yStride0,
+            uint32 yStride1, uint32 yStride2, uint32 xpStride) {
+        uint32 xps = (xpStride >> 4) << 4;
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 wave = KernelThread.globalIdX() / wv;
+        uint32 bpr = (uint32) blocksPerRow;
+        uint32 rowBytes = bpr * 144;
+        float32 c0 = 0.0f;
+        float32 c1 = 0.0f;
+        float32 c2 = 0.0f;
+        float32 c3 = 0.0f;
+        float32 c4 = 0.0f;
+        float32 c5 = 0.0f;
+        float32 c6 = 0.0f;
+        float32 c7 = 0.0f;
+        uint32 which = 0;
+        uint32 rowS = 0;
+        uint32 rowsS = 0;
+        if (wave < rows0) {
+            uint32 rw0 = wave;
+            uint32 rs0 = rows0;
+            if (rw0 < rs0) {
+                uint32 rb = rw0 * rowBytes;
+                int32 g = (int32) (lane % 4);
+                uint32 b = lane / 4;
+                int32 sh0 = 16 * (g & 1);
+                int32 sh1 = sh0 + 8;
+                int32 hiSel = 0 - (g >> 1);
+                int32 loSel = hiSel ^ (0 - 1);
+                uint32 stepB = wv / 4;
+                Vector<int8,16> nhv = w0.vload<16>((int64) (rb + b * 144));
+                Vector<uint8,32> nraw = w0.vload<32>((int64) (rb + b * 144 + (uint32) (32 * g)) + 16L).asUnsigned();
+                while (b < bpr) {
+                    Vector<int8,16> hv = nhv;
+                    Vector<uint8,32> raw = nraw;
+                    uint32 bn = b + stepB;
+                    int32 inr = (((int32) bn - (int32) bpr) >> 31) & 1;
+                    uint32 bl = b + (uint32) (inr * (int32) stepB);
+                    nhv = w0.vload<16>((int64) (rb + bl * 144));
+                    nraw = w0.vload<32>((int64) (rb + bl * 144 + (uint32) (32 * g)) + 16L).asUnsigned();
+                    float32 d = RefCols.halfBitsToF32Branchless(((int32) hv[0] & 255)
+                        | (((int32) hv[1] & 255) << 8));
+                    float32 dmin = RefCols.halfBitsToF32Branchless(((int32) hv[2] & 255)
+                        | (((int32) hv[3] & 255) << 8));
+                    Vector<int32,4> hw = hv.asWords();
+                    int32 scw = hw[1];
+                    int32 mnw = hw[2];
+                    int32 hiw = hw[3];
+                    int32 sA = (scw >> sh0) & 255;
+                    int32 sB = (scw >> sh1) & 255;
+                    int32 mC = (mnw >> sh0) & 255;
+                    int32 mD = (mnw >> sh1) & 255;
+                    int32 sc0 = sA & 63;
+                    int32 sc1 = sB & 63;
+                    int32 mn0 = mC & 63;
+                    int32 mn1 = mD & 63;
+                    int32 k0 = (hiw >> sh0) & 255;
+                    int32 k1 = (hiw >> sh1) & 255;
+                    sc0 = (((k0 & 15) | ((sA >> 2) & 48)) & hiSel) | (sc0 & loSel);
+                    sc1 = (((k1 & 15) | ((sB >> 2) & 48)) & hiSel) | (sc1 & loSel);
+                    mn0 = (((k0 >> 4) | ((mC >> 2) & 48)) & hiSel) | (mn0 & loSel);
+                    mn1 = (((k1 >> 4) | ((mD >> 2) & 48)) & hiSel) | (mn1 & loSel);
+                    Vector<int32,8> rv = raw.asWords();
+                    Vector<uint8,32> lo = (rv & 252645135).asBytes().asUnsigned();
+                    Vector<uint8,32> hi = ((rv >> 4) & 252645135).asBytes().asUnsigned();
+                    uint32 xo = b * 320 + (uint32) (64 * g);
+                    uint32 xr = b * 320 + 288;
+                    c0 = RefCols.q4kColAcc(c0, xp, xo, xr, lo, hi, sc0, sc1, mn0, mn1, d, dmin);
+                    if (ncols > 1) { c1 = RefCols.q4kColAcc(c1, xp, xo + xps, xr + xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 2) { c2 = RefCols.q4kColAcc(c2, xp, xo + 2 * xps, xr + 2 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 3) { c3 = RefCols.q4kColAcc(c3, xp, xo + 3 * xps, xr + 3 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 4) { c4 = RefCols.q4kColAcc(c4, xp, xo + 4 * xps, xr + 4 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 5) { c5 = RefCols.q4kColAcc(c5, xp, xo + 5 * xps, xr + 5 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 6) { c6 = RefCols.q4kColAcc(c6, xp, xo + 6 * xps, xr + 6 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 7) { c7 = RefCols.q4kColAcc(c7, xp, xo + 7 * xps, xr + 7 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    b = bn;
+                }
+            }
+            which = 0;
+            rowS = rw0;
+            rowsS = rs0;
+        } else if (wave < rows0 + rows1) {
+            uint32 rw1 = wave - rows0;
+            uint32 rs1 = rows1;
+            if (rw1 < rs1) {
+                uint32 rb = rw1 * rowBytes;
+                int32 g = (int32) (lane % 4);
+                uint32 b = lane / 4;
+                int32 sh0 = 16 * (g & 1);
+                int32 sh1 = sh0 + 8;
+                int32 hiSel = 0 - (g >> 1);
+                int32 loSel = hiSel ^ (0 - 1);
+                uint32 stepB = wv / 4;
+                Vector<int8,16> nhv = w1.vload<16>((int64) (rb + b * 144));
+                Vector<uint8,32> nraw = w1.vload<32>((int64) (rb + b * 144 + (uint32) (32 * g)) + 16L).asUnsigned();
+                while (b < bpr) {
+                    Vector<int8,16> hv = nhv;
+                    Vector<uint8,32> raw = nraw;
+                    uint32 bn = b + stepB;
+                    int32 inr = (((int32) bn - (int32) bpr) >> 31) & 1;
+                    uint32 bl = b + (uint32) (inr * (int32) stepB);
+                    nhv = w1.vload<16>((int64) (rb + bl * 144));
+                    nraw = w1.vload<32>((int64) (rb + bl * 144 + (uint32) (32 * g)) + 16L).asUnsigned();
+                    float32 d = RefCols.halfBitsToF32Branchless(((int32) hv[0] & 255)
+                        | (((int32) hv[1] & 255) << 8));
+                    float32 dmin = RefCols.halfBitsToF32Branchless(((int32) hv[2] & 255)
+                        | (((int32) hv[3] & 255) << 8));
+                    Vector<int32,4> hw = hv.asWords();
+                    int32 scw = hw[1];
+                    int32 mnw = hw[2];
+                    int32 hiw = hw[3];
+                    int32 sA = (scw >> sh0) & 255;
+                    int32 sB = (scw >> sh1) & 255;
+                    int32 mC = (mnw >> sh0) & 255;
+                    int32 mD = (mnw >> sh1) & 255;
+                    int32 sc0 = sA & 63;
+                    int32 sc1 = sB & 63;
+                    int32 mn0 = mC & 63;
+                    int32 mn1 = mD & 63;
+                    int32 k0 = (hiw >> sh0) & 255;
+                    int32 k1 = (hiw >> sh1) & 255;
+                    sc0 = (((k0 & 15) | ((sA >> 2) & 48)) & hiSel) | (sc0 & loSel);
+                    sc1 = (((k1 & 15) | ((sB >> 2) & 48)) & hiSel) | (sc1 & loSel);
+                    mn0 = (((k0 >> 4) | ((mC >> 2) & 48)) & hiSel) | (mn0 & loSel);
+                    mn1 = (((k1 >> 4) | ((mD >> 2) & 48)) & hiSel) | (mn1 & loSel);
+                    Vector<int32,8> rv = raw.asWords();
+                    Vector<uint8,32> lo = (rv & 252645135).asBytes().asUnsigned();
+                    Vector<uint8,32> hi = ((rv >> 4) & 252645135).asBytes().asUnsigned();
+                    uint32 xo = b * 320 + (uint32) (64 * g);
+                    uint32 xr = b * 320 + 288;
+                    c0 = RefCols.q4kColAcc(c0, xp, xo, xr, lo, hi, sc0, sc1, mn0, mn1, d, dmin);
+                    if (ncols > 1) { c1 = RefCols.q4kColAcc(c1, xp, xo + xps, xr + xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 2) { c2 = RefCols.q4kColAcc(c2, xp, xo + 2 * xps, xr + 2 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 3) { c3 = RefCols.q4kColAcc(c3, xp, xo + 3 * xps, xr + 3 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 4) { c4 = RefCols.q4kColAcc(c4, xp, xo + 4 * xps, xr + 4 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 5) { c5 = RefCols.q4kColAcc(c5, xp, xo + 5 * xps, xr + 5 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 6) { c6 = RefCols.q4kColAcc(c6, xp, xo + 6 * xps, xr + 6 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 7) { c7 = RefCols.q4kColAcc(c7, xp, xo + 7 * xps, xr + 7 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    b = bn;
+                }
+            }
+            which = 1;
+            rowS = rw1;
+            rowsS = rs1;
+        } else {
+            uint32 rw2 = wave - rows0 - rows1;
+            uint32 rs2 = rows2;
+            if (rw2 < rs2) {
+                uint32 rb = rw2 * rowBytes;
+                int32 g = (int32) (lane % 4);
+                uint32 b = lane / 4;
+                int32 sh0 = 16 * (g & 1);
+                int32 sh1 = sh0 + 8;
+                int32 hiSel = 0 - (g >> 1);
+                int32 loSel = hiSel ^ (0 - 1);
+                uint32 stepB = wv / 4;
+                Vector<int8,16> nhv = w2.vload<16>((int64) (rb + b * 144));
+                Vector<uint8,32> nraw = w2.vload<32>((int64) (rb + b * 144 + (uint32) (32 * g)) + 16L).asUnsigned();
+                while (b < bpr) {
+                    Vector<int8,16> hv = nhv;
+                    Vector<uint8,32> raw = nraw;
+                    uint32 bn = b + stepB;
+                    int32 inr = (((int32) bn - (int32) bpr) >> 31) & 1;
+                    uint32 bl = b + (uint32) (inr * (int32) stepB);
+                    nhv = w2.vload<16>((int64) (rb + bl * 144));
+                    nraw = w2.vload<32>((int64) (rb + bl * 144 + (uint32) (32 * g)) + 16L).asUnsigned();
+                    float32 d = RefCols.halfBitsToF32Branchless(((int32) hv[0] & 255)
+                        | (((int32) hv[1] & 255) << 8));
+                    float32 dmin = RefCols.halfBitsToF32Branchless(((int32) hv[2] & 255)
+                        | (((int32) hv[3] & 255) << 8));
+                    Vector<int32,4> hw = hv.asWords();
+                    int32 scw = hw[1];
+                    int32 mnw = hw[2];
+                    int32 hiw = hw[3];
+                    int32 sA = (scw >> sh0) & 255;
+                    int32 sB = (scw >> sh1) & 255;
+                    int32 mC = (mnw >> sh0) & 255;
+                    int32 mD = (mnw >> sh1) & 255;
+                    int32 sc0 = sA & 63;
+                    int32 sc1 = sB & 63;
+                    int32 mn0 = mC & 63;
+                    int32 mn1 = mD & 63;
+                    int32 k0 = (hiw >> sh0) & 255;
+                    int32 k1 = (hiw >> sh1) & 255;
+                    sc0 = (((k0 & 15) | ((sA >> 2) & 48)) & hiSel) | (sc0 & loSel);
+                    sc1 = (((k1 & 15) | ((sB >> 2) & 48)) & hiSel) | (sc1 & loSel);
+                    mn0 = (((k0 >> 4) | ((mC >> 2) & 48)) & hiSel) | (mn0 & loSel);
+                    mn1 = (((k1 >> 4) | ((mD >> 2) & 48)) & hiSel) | (mn1 & loSel);
+                    Vector<int32,8> rv = raw.asWords();
+                    Vector<uint8,32> lo = (rv & 252645135).asBytes().asUnsigned();
+                    Vector<uint8,32> hi = ((rv >> 4) & 252645135).asBytes().asUnsigned();
+                    uint32 xo = b * 320 + (uint32) (64 * g);
+                    uint32 xr = b * 320 + 288;
+                    c0 = RefCols.q4kColAcc(c0, xp, xo, xr, lo, hi, sc0, sc1, mn0, mn1, d, dmin);
+                    if (ncols > 1) { c1 = RefCols.q4kColAcc(c1, xp, xo + xps, xr + xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 2) { c2 = RefCols.q4kColAcc(c2, xp, xo + 2 * xps, xr + 2 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 3) { c3 = RefCols.q4kColAcc(c3, xp, xo + 3 * xps, xr + 3 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 4) { c4 = RefCols.q4kColAcc(c4, xp, xo + 4 * xps, xr + 4 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 5) { c5 = RefCols.q4kColAcc(c5, xp, xo + 5 * xps, xr + 5 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 6) { c6 = RefCols.q4kColAcc(c6, xp, xo + 6 * xps, xr + 6 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    if (ncols > 7) { c7 = RefCols.q4kColAcc(c7, xp, xo + 7 * xps, xr + 7 * xps, lo, hi, sc0, sc1, mn0, mn1, d, dmin); }
+                    b = bn;
+                }
+            }
+            which = 2;
+            rowS = rw2;
+            rowsS = rs2;
+        }
+        float32 t0 = Wave.reduceSumF32(c0);
+        float32 t1 = 0.0f;
+        float32 t2 = 0.0f;
+        float32 t3 = 0.0f;
+        float32 t4 = 0.0f;
+        float32 t5 = 0.0f;
+        float32 t6 = 0.0f;
+        float32 t7 = 0.0f;
+        if (ncols > 1) { t1 = Wave.reduceSumF32(c1); }
+        if (ncols > 2) { t2 = Wave.reduceSumF32(c2); }
+        if (ncols > 3) { t3 = Wave.reduceSumF32(c3); }
+        if (ncols > 4) { t4 = Wave.reduceSumF32(c4); }
+        if (ncols > 5) { t5 = Wave.reduceSumF32(c5); }
+        if (ncols > 6) { t6 = Wave.reduceSumF32(c6); }
+        if (ncols > 7) { t7 = Wave.reduceSumF32(c7); }
+        if (which == 0) {
+            RefSeg.colsStoreReduced(y0, rowS, rowsS, yStride0, accum, ncols, lane, t0, t1, t2, t3, t4, t5, t6, t7);
+        } else if (which == 1) {
+            RefSeg.colsStoreReduced(y1, rowS, rowsS, yStride1, accum, ncols, lane, t0, t1, t2, t3, t4, t5, t6, t7);
+        } else {
+            RefSeg.colsStoreReduced(y2, rowS, rowsS, yStride2, accum, ncols, lane, t0, t1, t2, t3, t4, t5, t6, t7);
+        }
+    }
+
+    /** llm's Seg kernel `v` (0 Plain, 1 Pf) on three weights, `wpb` waves a workgroup. */
+    public static void run(int32 v, KernelBuffer<float32> y0, KernelBuffer<float32> y1, KernelBuffer<float32> y2,
+            KernelBuffer<int8> w0, KernelBuffer<int8> w1, KernelBuffer<int8> w2, KernelBuffer<int8> xp,
+            int64 rows0, int64 rows1, int64 rows2, int64 bpr, int64 ncols, int64 xpStride, int64 wpb, int64 wv) {
+        KernelStream s #= KernelStream.current();
+        uint32 g = (uint32) ((rows0 + rows1 + rows2 + wpb - 1L) / wpb);
+        if (v == 1) {
+            q4kQ8WaveMatVecColsSegPfKernel.launch(s, grid: [g], block: [(uint32) (wpb * wv)])
+                (y0, y1, y2, w0, w1, w2, xp, (uint32) rows0, (uint32) rows1, (uint32) rows2, bpr, 0, (uint32) ncols,
+                 (uint32) rows0, (uint32) rows1, (uint32) rows2, (uint32) xpStride);
+        } else {
+            q4kQ8WaveMatVecColsSegPlainKernel.launch(s, grid: [g], block: [(uint32) (wpb * wv)])
+                (y0, y1, y2, w0, w1, w2, xp, (uint32) rows0, (uint32) rows1, (uint32) rows2, bpr, 0, (uint32) ncols,
+                 (uint32) rows0, (uint32) rows1, (uint32) rows2, (uint32) xpStride);
+        }
+    }
+}
