@@ -7,19 +7,22 @@ import cajeta.xpu.Device;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import dev.cajeta.ml.kernels.gemm.Block32GemvF32;
+import dev.cajeta.ml.kernels.gemm.BlockGemvF32;
 import dev.cajeta.ml.kernels.gemm.Block32GemvWave;
 import dev.cajeta.ml.kernels.quant.Q40Block;
 import dev.cajeta.ml.kernels.quant.Q50Block;
+import dev.cajeta.ml.kernels.quant.Q6kBlock;
 import dev.cajeta.ml.kernels.quant.Q80Block;
 
-/** kernel-drivers 9.1.7.1: the float-activation decode driver (`Block32GemvF32`) against cajeta-llm's float wave kernels (`ref/RefF32`), Q8_0, Q4_0 and Q5_0, bitwise, best launch against best; Q8_0 and Q4_0 on one weight buffer (the layouts are the same bytes). */
+/** kernel-drivers 9.1.7.1: the float-activation decode driver (`Block32GemvF32`) against cajeta-llm's float wave kernels (`ref/RefF32`), Q8_0, Q4_0, Q5_0 and Q6_K (`BlockGemvF32`), bitwise, best launch against best; Q8_0 and Q4_0 on one weight buffer (the layouts are the same bytes). */
 public class F32Bench {
-    /** Format `f`: 0 Q8_0, 1 Q4_0, 2 Q5_0. */
+    /** Format `f`: 0 Q8_0, 1 Q4_0, 2 Q5_0, 3 Q6_K (`nb` then its 256-value blocks). */
     static void drv(int32 f, KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<float32> x,
             int64 rows, int64 nb, int64 wpb, int64 wv) {
         if (f == 0) { heap Block32GemvF32<Q80Block>().runOn(s, y, w, x, rows, nb, 0L, 0L, false, wpb, wv); }
         if (f == 1) { heap Block32GemvF32<Q40Block>().runOn(s, y, w, x, rows, nb, 0L, 0L, false, wpb, wv); }
         if (f == 2) { heap Block32GemvF32<Q50Block>().runOn(s, y, w, x, rows, nb, 0L, 0L, false, wpb, wv); }
+        if (f == 3) { heap BlockGemvF32<Q6kBlock>().runOn(s, y, w, x, rows, nb * 256L, 0L, 0L, false, wpb, wv); }
     }
 
     static #int8[] packed(int32 f, int8[] file, int64 rows, int64 nb) {
@@ -31,20 +34,29 @@ public class F32Bench {
     }
 
     static int64 shape(int32 f, int64 rows, int64 cols, int64 reps) {
-        int64 nb = cols / 32L;
-        int64 bb = f == 0 ? 34L : (f == 1 ? 18L : 22L);
-        String nm = f == 0 ? "Q8_0" : (f == 1 ? "Q4_0" : "Q5_0");
-        int8[] file #= Bench32.weight(rows * nb, bb);
-        int8[] dw #= F32Bench.packed(f, file, rows, nb);
-        int64 prefix = ((nb * 2L + 3L) / 4L) * 4L;
-        int8[] rw #= heap int8[rows * (prefix + nb * (bb - 2L))];
-        RefWave32.split(file, rows, nb, bb, rw);
+        int64 nb = f == 3 ? cols / 256L : cols / 32L;
+        int64 bb = f == 0 ? 34L : (f == 1 ? 18L : (f == 2 ? 22L : 210L));
+        String nm = f == 0 ? "Q8_0" : (f == 1 ? "Q4_0" : (f == 2 ? "Q5_0" : "Q6_K"));
+        int8[] file #= heap int8[1];
+        int8[] dw #= heap int8[1];
+        int8[] rw #= heap int8[1];
+        if (f == 3) {
+            file #= Bench6.weight(rows * nb);
+            dw #= ColsBench.copy(file);
+            rw #= ColsBench.split(file, rows, nb, 210L, 208L);
+        } else {
+            file #= Bench32.weight(rows * nb, bb);
+            dw #= F32Bench.packed(f, file, rows, nb);
+            int64 prefix = ((nb * 2L + 3L) / 4L) * 4L;
+            rw #= heap int8[rows * (prefix + nb * (bb - 2L))];
+            RefWave32.split(file, rows, nb, bb, rw);
+        }
         KernelBuffer<int8> wd = heap KernelBuffer<int8>((uint64) dw.count());
         wd.upload(dw);
         KernelBuffer<int8> wr = heap KernelBuffer<int8>((uint64) rw.count());
         wr.upload(rw);
         KernelBuffer<int8> wl = wr;
-        if (f != 2) { wl = wd; }
+        if (f == 0 || f == 1) { wl = wd; }
         float32[] hx #= heap float32[cols];
         int64 seed = 271L;
         int64 i = 0L;
@@ -98,7 +110,7 @@ public class F32Bench {
     public static int32 main() {
         int64 bad = 0L;
         int32 f = 0;
-        while (f < 3) {
+        while (f < 4) {
             bad = bad + F32Bench.shape(f, 37L, 2304L, 2L);
             bad = bad + F32Bench.shape(f, 4096L, 4096L, 40L);
             bad = bad + F32Bench.shape(f, 14336L, 4096L, 10L);

@@ -1,5 +1,6 @@
 package ref;
 
+import cajeta.lang.Math;
 import cajeta.xpu.Group;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
@@ -7,7 +8,7 @@ import cajeta.xpu.KernelThread;
 import cajeta.xpu.Vector;
 import cajeta.xpu.Wave;
 
-/** cajeta-llm's float-activation wave decodes of Q8_0, Q4_0 and Q5_0 and their store, lifted unchanged (llm 0730a8b); the f16 scale read is {@link RefCols}'s. */
+/** cajeta-llm's float-activation wave decodes of Q8_0, Q4_0, Q5_0 and Q6_K and their store, lifted unchanged (llm 0730a8b); the f16 scale read is {@link RefCols}'s. */
 public final class RefF32 {
     public RefF32() { return; }
 
@@ -193,7 +194,387 @@ public final class RefF32 {
         if (accum != 0) { y[yi] = y[yi] + v; } else { y[yi] = v; }
     }
 
-    /** llm's float decode of format `f` (0 Q8_0, 1 Q4_0, 2 Q5_0) on its resident layout, `wpb` waves a workgroup. */
+    /**
+     * `y[yOff + row] = W[row] . x` for Q6_K with f32 activations, on {@link #q6kQ8WaveMatVecKernel}'s
+     * lane and slot geometry. `cols` is a multiple of 256, and `accum` adds into `y`.
+     */
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void q6kF32WaveMatVecKernel(KernelBuffer<float32> y,
+            KernelBuffer<int8> packed, KernelBuffer<float32> x,
+            uint32 rows, int64 blocksPerRow, int64 xOff, int64 yOff, uint32 accum) {
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 wave = KernelThread.globalIdX() / wv;
+        uint32 lpr = 4 * (uint32) blocksPerRow;
+        uint32 rpw = 1;
+        uint32 rl = lane;
+        uint32 sub = 0;
+        uint32 R = 4;
+        if (lpr < wv) { rpw = wv / lpr; sub = lane / lpr; rl = lane - sub * lpr; R = 1; }
+        uint32 row0 = wave * R * rpw + sub;
+        uint32 prefix = (uint32) (((blocksPerRow * 2L + 3L) / 4L) * 4L);
+        uint32 rowBytes = prefix + (uint32) blocksPerRow * 208;
+        uint32 bpr = (uint32) blocksPerRow;
+        float32 acc0 = 0.0f;
+        float32 acc1 = 0.0f;
+        float32 acc2 = 0.0f;
+        float32 acc3 = 0.0f;
+        if (sub < rpw && row0 < rows) {
+            uint32 last = rows - 1;
+            uint32 r1 = row0 + 1; if (r1 > last) { r1 = last; }
+            uint32 r2 = row0 + 2; if (r2 > last) { r2 = last; }
+            uint32 r3 = row0 + 3; if (r3 > last) { r3 = last; }
+            float32 w1 = 0.0f; if (R > 1 && row0 + 1 < rows) { w1 = 1.0f; }
+            float32 w2 = 0.0f; if (R > 1 && row0 + 2 < rows) { w2 = 1.0f; }
+            float32 w3 = 0.0f; if (R > 1 && row0 + 3 < rows) { w3 = 1.0f; }
+            uint32 rb0 = row0 * rowBytes;
+            uint32 rb1 = r1 * rowBytes;
+            uint32 rb2 = r2 * rowBytes;
+            uint32 rb3 = r3 * rowBytes;
+            int32 m = (int32) (rl % 4);
+            int32 g = m / 2;
+            int32 a = m - g * 2;
+            uint32 b = rl / 4;
+            while (b < bpr) {
+                int64 xa = xOff + (int64) (b * 256) + (int64) (16 * (8 * g + a));
+                Vector<float32,4> x0_0 = x.vload<4>(xa + 0L);
+                Vector<float32,4> x0_1 = x.vload<4>(xa + 4L);
+                Vector<float32,4> x0_2 = x.vload<4>(xa + 8L);
+                Vector<float32,4> x0_3 = x.vload<4>(xa + 12L);
+                Vector<float32,4> x1_0 = x.vload<4>(xa + 32L);
+                Vector<float32,4> x1_1 = x.vload<4>(xa + 36L);
+                Vector<float32,4> x1_2 = x.vload<4>(xa + 40L);
+                Vector<float32,4> x1_3 = x.vload<4>(xa + 44L);
+                Vector<float32,4> x2_0 = x.vload<4>(xa + 64L);
+                Vector<float32,4> x2_1 = x.vload<4>(xa + 68L);
+                Vector<float32,4> x2_2 = x.vload<4>(xa + 72L);
+                Vector<float32,4> x2_3 = x.vload<4>(xa + 76L);
+                Vector<float32,4> x3_0 = x.vload<4>(xa + 96L);
+                Vector<float32,4> x3_1 = x.vload<4>(xa + 100L);
+                Vector<float32,4> x3_2 = x.vload<4>(xa + 104L);
+                Vector<float32,4> x3_3 = x.vload<4>(xa + 108L);
+                uint32 ro0 = rb0 + prefix + b * 208;
+                uint32 rqa0 = ro0 + (uint32) (64 * g + 16 * a);
+                uint32 rqh0 = ro0 + (uint32) (32 * g + 16 * a);
+                uint32 rsc0 = ro0 + (uint32) (8 * g);
+                Vector<int8,16> qlA0 = packed.vload<16>((int64) rqa0);
+                Vector<int8,16> qlB0 = packed.vload<16>((int64) rqa0 + 32L);
+                Vector<int8,16> qh0 = packed.vload<16>((int64) rqh0 + 128L);
+                Vector<int8,8> scv0 = packed.vload<8>((int64) rsc0 + 192L);
+                float32 dsc0 = RefCols.scaleAtDev(packed,
+                    (int64) rb0 / 2L + (int64) b);
+                uint32 ro1 = rb1 + prefix + b * 208;
+                uint32 rqa1 = ro1 + (uint32) (64 * g + 16 * a);
+                uint32 rqh1 = ro1 + (uint32) (32 * g + 16 * a);
+                uint32 rsc1 = ro1 + (uint32) (8 * g);
+                Vector<int8,16> qlA1 = packed.vload<16>((int64) rqa1);
+                Vector<int8,16> qlB1 = packed.vload<16>((int64) rqa1 + 32L);
+                Vector<int8,16> qh1 = packed.vload<16>((int64) rqh1 + 128L);
+                Vector<int8,8> scv1 = packed.vload<8>((int64) rsc1 + 192L);
+                float32 dsc1 = RefCols.scaleAtDev(packed,
+                    (int64) rb1 / 2L + (int64) b);
+                uint32 ro2 = rb2 + prefix + b * 208;
+                uint32 rqa2 = ro2 + (uint32) (64 * g + 16 * a);
+                uint32 rqh2 = ro2 + (uint32) (32 * g + 16 * a);
+                uint32 rsc2 = ro2 + (uint32) (8 * g);
+                Vector<int8,16> qlA2 = packed.vload<16>((int64) rqa2);
+                Vector<int8,16> qlB2 = packed.vload<16>((int64) rqa2 + 32L);
+                Vector<int8,16> qh2 = packed.vload<16>((int64) rqh2 + 128L);
+                Vector<int8,8> scv2 = packed.vload<8>((int64) rsc2 + 192L);
+                float32 dsc2 = RefCols.scaleAtDev(packed,
+                    (int64) rb2 / 2L + (int64) b);
+                uint32 ro3 = rb3 + prefix + b * 208;
+                uint32 rqa3 = ro3 + (uint32) (64 * g + 16 * a);
+                uint32 rqh3 = ro3 + (uint32) (32 * g + 16 * a);
+                uint32 rsc3 = ro3 + (uint32) (8 * g);
+                Vector<int8,16> qlA3 = packed.vload<16>((int64) rqa3);
+                Vector<int8,16> qlB3 = packed.vload<16>((int64) rqa3 + 32L);
+                Vector<int8,16> qh3 = packed.vload<16>((int64) rqh3 + 128L);
+                Vector<int8,8> scv3 = packed.vload<8>((int64) rsc3 + 192L);
+                float32 dsc3 = RefCols.scaleAtDev(packed,
+                    (int64) rb3 / 2L + (int64) b);
+                Vector<float32,4> sv_0 = x0_0 + x0_1 + x0_2 + x0_3;
+                float32 xs_0 = 32.0f * (sv_0[0] + sv_0[1] + sv_0[2] + sv_0[3]);
+                Vector<float32,4> sv_1 = x1_0 + x1_1 + x1_2 + x1_3;
+                float32 xs_1 = 32.0f * (sv_1[0] + sv_1[1] + sv_1[2] + sv_1[3]);
+                Vector<float32,4> sv_2 = x2_0 + x2_1 + x2_2 + x2_3;
+                float32 xs_2 = 32.0f * (sv_2[0] + sv_2[1] + sv_2[2] + sv_2[3]);
+                Vector<float32,4> sv_3 = x3_0 + x3_1 + x3_2 + x3_3;
+                float32 xs_3 = 32.0f * (sv_3[0] + sv_3[1] + sv_3[2] + sv_3[3]);
+                int32 s0_0 = (int32) scv0[0];
+                int32 s1_0 = (int32) scv0[2];
+                int32 s2_0 = (int32) scv0[4];
+                int32 s3_0 = (int32) scv0[6];
+                if (a != 0) {
+                    s0_0 = (int32) scv0[1];
+                    s1_0 = (int32) scv0[3];
+                    s2_0 = (int32) scv0[5];
+                    s3_0 = (int32) scv0[7];
+                }
+                Vector<int32,4> wA0 = qlA0.asWords();
+                Vector<int32,4> wB0 = qlB0.asWords();
+                Vector<int32,4> wH0 = qh0.asWords();
+                Vector<int32,4> q0_0 = (wA0 & 252645135) | ((wH0 << 4) & 808464432);
+                Vector<int32,4> q1_0 = (wB0 & 252645135) | ((wH0 << 2) & 808464432);
+                Vector<int32,4> q2_0 = ((wA0 >> 4) & 252645135) | (wH0 & 808464432);
+                Vector<int32,4> q3_0 = ((wB0 >> 4) & 252645135) | ((wH0 >> 2) & 808464432);
+                float32 p0_0_0 = Math.fma((float32) (q0_0[3] & 255), x0_3[0], Math.fma((float32) (q0_0[2] & 255), x0_2[0],
+                    Math.fma((float32) (q0_0[1] & 255), x0_1[0], (float32) (q0_0[0] & 255) * x0_0[0])));
+                float32 p0_0_1 = Math.fma((float32) ((q0_0[3] >> 8) & 255), x0_3[1], Math.fma((float32) ((q0_0[2] >> 8) & 255), x0_2[1],
+                    Math.fma((float32) ((q0_0[1] >> 8) & 255), x0_1[1], (float32) ((q0_0[0] >> 8) & 255) * x0_0[1])));
+                float32 p0_0_2 = Math.fma((float32) ((q0_0[3] >> 16) & 255), x0_3[2], Math.fma((float32) ((q0_0[2] >> 16) & 255), x0_2[2],
+                    Math.fma((float32) ((q0_0[1] >> 16) & 255), x0_1[2], (float32) ((q0_0[0] >> 16) & 255) * x0_0[2])));
+                float32 p0_0_3 = Math.fma((float32) ((q0_0[3] >> 24) & 255), x0_3[3], Math.fma((float32) ((q0_0[2] >> 24) & 255), x0_2[3],
+                    Math.fma((float32) ((q0_0[1] >> 24) & 255), x0_1[3], (float32) ((q0_0[0] >> 24) & 255) * x0_0[3])));
+                float32 t0_0 = (p0_0_0 + p0_0_1) + (p0_0_2 + p0_0_3) - xs_0;
+                float32 p1_0_0 = Math.fma((float32) (q1_0[3] & 255), x1_3[0], Math.fma((float32) (q1_0[2] & 255), x1_2[0],
+                    Math.fma((float32) (q1_0[1] & 255), x1_1[0], (float32) (q1_0[0] & 255) * x1_0[0])));
+                float32 p1_0_1 = Math.fma((float32) ((q1_0[3] >> 8) & 255), x1_3[1], Math.fma((float32) ((q1_0[2] >> 8) & 255), x1_2[1],
+                    Math.fma((float32) ((q1_0[1] >> 8) & 255), x1_1[1], (float32) ((q1_0[0] >> 8) & 255) * x1_0[1])));
+                float32 p1_0_2 = Math.fma((float32) ((q1_0[3] >> 16) & 255), x1_3[2], Math.fma((float32) ((q1_0[2] >> 16) & 255), x1_2[2],
+                    Math.fma((float32) ((q1_0[1] >> 16) & 255), x1_1[2], (float32) ((q1_0[0] >> 16) & 255) * x1_0[2])));
+                float32 p1_0_3 = Math.fma((float32) ((q1_0[3] >> 24) & 255), x1_3[3], Math.fma((float32) ((q1_0[2] >> 24) & 255), x1_2[3],
+                    Math.fma((float32) ((q1_0[1] >> 24) & 255), x1_1[3], (float32) ((q1_0[0] >> 24) & 255) * x1_0[3])));
+                float32 t1_0 = (p1_0_0 + p1_0_1) + (p1_0_2 + p1_0_3) - xs_1;
+                float32 p2_0_0 = Math.fma((float32) (q2_0[3] & 255), x2_3[0], Math.fma((float32) (q2_0[2] & 255), x2_2[0],
+                    Math.fma((float32) (q2_0[1] & 255), x2_1[0], (float32) (q2_0[0] & 255) * x2_0[0])));
+                float32 p2_0_1 = Math.fma((float32) ((q2_0[3] >> 8) & 255), x2_3[1], Math.fma((float32) ((q2_0[2] >> 8) & 255), x2_2[1],
+                    Math.fma((float32) ((q2_0[1] >> 8) & 255), x2_1[1], (float32) ((q2_0[0] >> 8) & 255) * x2_0[1])));
+                float32 p2_0_2 = Math.fma((float32) ((q2_0[3] >> 16) & 255), x2_3[2], Math.fma((float32) ((q2_0[2] >> 16) & 255), x2_2[2],
+                    Math.fma((float32) ((q2_0[1] >> 16) & 255), x2_1[2], (float32) ((q2_0[0] >> 16) & 255) * x2_0[2])));
+                float32 p2_0_3 = Math.fma((float32) ((q2_0[3] >> 24) & 255), x2_3[3], Math.fma((float32) ((q2_0[2] >> 24) & 255), x2_2[3],
+                    Math.fma((float32) ((q2_0[1] >> 24) & 255), x2_1[3], (float32) ((q2_0[0] >> 24) & 255) * x2_0[3])));
+                float32 t2_0 = (p2_0_0 + p2_0_1) + (p2_0_2 + p2_0_3) - xs_2;
+                float32 p3_0_0 = Math.fma((float32) (q3_0[3] & 255), x3_3[0], Math.fma((float32) (q3_0[2] & 255), x3_2[0],
+                    Math.fma((float32) (q3_0[1] & 255), x3_1[0], (float32) (q3_0[0] & 255) * x3_0[0])));
+                float32 p3_0_1 = Math.fma((float32) ((q3_0[3] >> 8) & 255), x3_3[1], Math.fma((float32) ((q3_0[2] >> 8) & 255), x3_2[1],
+                    Math.fma((float32) ((q3_0[1] >> 8) & 255), x3_1[1], (float32) ((q3_0[0] >> 8) & 255) * x3_0[1])));
+                float32 p3_0_2 = Math.fma((float32) ((q3_0[3] >> 16) & 255), x3_3[2], Math.fma((float32) ((q3_0[2] >> 16) & 255), x3_2[2],
+                    Math.fma((float32) ((q3_0[1] >> 16) & 255), x3_1[2], (float32) ((q3_0[0] >> 16) & 255) * x3_0[2])));
+                float32 p3_0_3 = Math.fma((float32) ((q3_0[3] >> 24) & 255), x3_3[3], Math.fma((float32) ((q3_0[2] >> 24) & 255), x3_2[3],
+                    Math.fma((float32) ((q3_0[1] >> 24) & 255), x3_1[3], (float32) ((q3_0[0] >> 24) & 255) * x3_0[3])));
+                float32 t3_0 = (p3_0_0 + p3_0_1) + (p3_0_2 + p3_0_3) - xs_3;
+                acc0 = acc0 + dsc0 * (float32) s0_0 * t0_0;
+                acc0 = acc0 + dsc0 * (float32) s1_0 * t1_0;
+                acc0 = acc0 + dsc0 * (float32) s2_0 * t2_0;
+                acc0 = acc0 + dsc0 * (float32) s3_0 * t3_0;
+                int32 s0_1 = (int32) scv1[0];
+                int32 s1_1 = (int32) scv1[2];
+                int32 s2_1 = (int32) scv1[4];
+                int32 s3_1 = (int32) scv1[6];
+                if (a != 0) {
+                    s0_1 = (int32) scv1[1];
+                    s1_1 = (int32) scv1[3];
+                    s2_1 = (int32) scv1[5];
+                    s3_1 = (int32) scv1[7];
+                }
+                Vector<int32,4> wA1 = qlA1.asWords();
+                Vector<int32,4> wB1 = qlB1.asWords();
+                Vector<int32,4> wH1 = qh1.asWords();
+                Vector<int32,4> q0_1 = (wA1 & 252645135) | ((wH1 << 4) & 808464432);
+                Vector<int32,4> q1_1 = (wB1 & 252645135) | ((wH1 << 2) & 808464432);
+                Vector<int32,4> q2_1 = ((wA1 >> 4) & 252645135) | (wH1 & 808464432);
+                Vector<int32,4> q3_1 = ((wB1 >> 4) & 252645135) | ((wH1 >> 2) & 808464432);
+                float32 p0_1_0 = Math.fma((float32) (q0_1[3] & 255), x0_3[0], Math.fma((float32) (q0_1[2] & 255), x0_2[0],
+                    Math.fma((float32) (q0_1[1] & 255), x0_1[0], (float32) (q0_1[0] & 255) * x0_0[0])));
+                float32 p0_1_1 = Math.fma((float32) ((q0_1[3] >> 8) & 255), x0_3[1], Math.fma((float32) ((q0_1[2] >> 8) & 255), x0_2[1],
+                    Math.fma((float32) ((q0_1[1] >> 8) & 255), x0_1[1], (float32) ((q0_1[0] >> 8) & 255) * x0_0[1])));
+                float32 p0_1_2 = Math.fma((float32) ((q0_1[3] >> 16) & 255), x0_3[2], Math.fma((float32) ((q0_1[2] >> 16) & 255), x0_2[2],
+                    Math.fma((float32) ((q0_1[1] >> 16) & 255), x0_1[2], (float32) ((q0_1[0] >> 16) & 255) * x0_0[2])));
+                float32 p0_1_3 = Math.fma((float32) ((q0_1[3] >> 24) & 255), x0_3[3], Math.fma((float32) ((q0_1[2] >> 24) & 255), x0_2[3],
+                    Math.fma((float32) ((q0_1[1] >> 24) & 255), x0_1[3], (float32) ((q0_1[0] >> 24) & 255) * x0_0[3])));
+                float32 t0_1 = (p0_1_0 + p0_1_1) + (p0_1_2 + p0_1_3) - xs_0;
+                float32 p1_1_0 = Math.fma((float32) (q1_1[3] & 255), x1_3[0], Math.fma((float32) (q1_1[2] & 255), x1_2[0],
+                    Math.fma((float32) (q1_1[1] & 255), x1_1[0], (float32) (q1_1[0] & 255) * x1_0[0])));
+                float32 p1_1_1 = Math.fma((float32) ((q1_1[3] >> 8) & 255), x1_3[1], Math.fma((float32) ((q1_1[2] >> 8) & 255), x1_2[1],
+                    Math.fma((float32) ((q1_1[1] >> 8) & 255), x1_1[1], (float32) ((q1_1[0] >> 8) & 255) * x1_0[1])));
+                float32 p1_1_2 = Math.fma((float32) ((q1_1[3] >> 16) & 255), x1_3[2], Math.fma((float32) ((q1_1[2] >> 16) & 255), x1_2[2],
+                    Math.fma((float32) ((q1_1[1] >> 16) & 255), x1_1[2], (float32) ((q1_1[0] >> 16) & 255) * x1_0[2])));
+                float32 p1_1_3 = Math.fma((float32) ((q1_1[3] >> 24) & 255), x1_3[3], Math.fma((float32) ((q1_1[2] >> 24) & 255), x1_2[3],
+                    Math.fma((float32) ((q1_1[1] >> 24) & 255), x1_1[3], (float32) ((q1_1[0] >> 24) & 255) * x1_0[3])));
+                float32 t1_1 = (p1_1_0 + p1_1_1) + (p1_1_2 + p1_1_3) - xs_1;
+                float32 p2_1_0 = Math.fma((float32) (q2_1[3] & 255), x2_3[0], Math.fma((float32) (q2_1[2] & 255), x2_2[0],
+                    Math.fma((float32) (q2_1[1] & 255), x2_1[0], (float32) (q2_1[0] & 255) * x2_0[0])));
+                float32 p2_1_1 = Math.fma((float32) ((q2_1[3] >> 8) & 255), x2_3[1], Math.fma((float32) ((q2_1[2] >> 8) & 255), x2_2[1],
+                    Math.fma((float32) ((q2_1[1] >> 8) & 255), x2_1[1], (float32) ((q2_1[0] >> 8) & 255) * x2_0[1])));
+                float32 p2_1_2 = Math.fma((float32) ((q2_1[3] >> 16) & 255), x2_3[2], Math.fma((float32) ((q2_1[2] >> 16) & 255), x2_2[2],
+                    Math.fma((float32) ((q2_1[1] >> 16) & 255), x2_1[2], (float32) ((q2_1[0] >> 16) & 255) * x2_0[2])));
+                float32 p2_1_3 = Math.fma((float32) ((q2_1[3] >> 24) & 255), x2_3[3], Math.fma((float32) ((q2_1[2] >> 24) & 255), x2_2[3],
+                    Math.fma((float32) ((q2_1[1] >> 24) & 255), x2_1[3], (float32) ((q2_1[0] >> 24) & 255) * x2_0[3])));
+                float32 t2_1 = (p2_1_0 + p2_1_1) + (p2_1_2 + p2_1_3) - xs_2;
+                float32 p3_1_0 = Math.fma((float32) (q3_1[3] & 255), x3_3[0], Math.fma((float32) (q3_1[2] & 255), x3_2[0],
+                    Math.fma((float32) (q3_1[1] & 255), x3_1[0], (float32) (q3_1[0] & 255) * x3_0[0])));
+                float32 p3_1_1 = Math.fma((float32) ((q3_1[3] >> 8) & 255), x3_3[1], Math.fma((float32) ((q3_1[2] >> 8) & 255), x3_2[1],
+                    Math.fma((float32) ((q3_1[1] >> 8) & 255), x3_1[1], (float32) ((q3_1[0] >> 8) & 255) * x3_0[1])));
+                float32 p3_1_2 = Math.fma((float32) ((q3_1[3] >> 16) & 255), x3_3[2], Math.fma((float32) ((q3_1[2] >> 16) & 255), x3_2[2],
+                    Math.fma((float32) ((q3_1[1] >> 16) & 255), x3_1[2], (float32) ((q3_1[0] >> 16) & 255) * x3_0[2])));
+                float32 p3_1_3 = Math.fma((float32) ((q3_1[3] >> 24) & 255), x3_3[3], Math.fma((float32) ((q3_1[2] >> 24) & 255), x3_2[3],
+                    Math.fma((float32) ((q3_1[1] >> 24) & 255), x3_1[3], (float32) ((q3_1[0] >> 24) & 255) * x3_0[3])));
+                float32 t3_1 = (p3_1_0 + p3_1_1) + (p3_1_2 + p3_1_3) - xs_3;
+                acc1 = acc1 + dsc1 * (float32) s0_1 * t0_1;
+                acc1 = acc1 + dsc1 * (float32) s1_1 * t1_1;
+                acc1 = acc1 + dsc1 * (float32) s2_1 * t2_1;
+                acc1 = acc1 + dsc1 * (float32) s3_1 * t3_1;
+                int32 s0_2 = (int32) scv2[0];
+                int32 s1_2 = (int32) scv2[2];
+                int32 s2_2 = (int32) scv2[4];
+                int32 s3_2 = (int32) scv2[6];
+                if (a != 0) {
+                    s0_2 = (int32) scv2[1];
+                    s1_2 = (int32) scv2[3];
+                    s2_2 = (int32) scv2[5];
+                    s3_2 = (int32) scv2[7];
+                }
+                Vector<int32,4> wA2 = qlA2.asWords();
+                Vector<int32,4> wB2 = qlB2.asWords();
+                Vector<int32,4> wH2 = qh2.asWords();
+                Vector<int32,4> q0_2 = (wA2 & 252645135) | ((wH2 << 4) & 808464432);
+                Vector<int32,4> q1_2 = (wB2 & 252645135) | ((wH2 << 2) & 808464432);
+                Vector<int32,4> q2_2 = ((wA2 >> 4) & 252645135) | (wH2 & 808464432);
+                Vector<int32,4> q3_2 = ((wB2 >> 4) & 252645135) | ((wH2 >> 2) & 808464432);
+                float32 p0_2_0 = Math.fma((float32) (q0_2[3] & 255), x0_3[0], Math.fma((float32) (q0_2[2] & 255), x0_2[0],
+                    Math.fma((float32) (q0_2[1] & 255), x0_1[0], (float32) (q0_2[0] & 255) * x0_0[0])));
+                float32 p0_2_1 = Math.fma((float32) ((q0_2[3] >> 8) & 255), x0_3[1], Math.fma((float32) ((q0_2[2] >> 8) & 255), x0_2[1],
+                    Math.fma((float32) ((q0_2[1] >> 8) & 255), x0_1[1], (float32) ((q0_2[0] >> 8) & 255) * x0_0[1])));
+                float32 p0_2_2 = Math.fma((float32) ((q0_2[3] >> 16) & 255), x0_3[2], Math.fma((float32) ((q0_2[2] >> 16) & 255), x0_2[2],
+                    Math.fma((float32) ((q0_2[1] >> 16) & 255), x0_1[2], (float32) ((q0_2[0] >> 16) & 255) * x0_0[2])));
+                float32 p0_2_3 = Math.fma((float32) ((q0_2[3] >> 24) & 255), x0_3[3], Math.fma((float32) ((q0_2[2] >> 24) & 255), x0_2[3],
+                    Math.fma((float32) ((q0_2[1] >> 24) & 255), x0_1[3], (float32) ((q0_2[0] >> 24) & 255) * x0_0[3])));
+                float32 t0_2 = (p0_2_0 + p0_2_1) + (p0_2_2 + p0_2_3) - xs_0;
+                float32 p1_2_0 = Math.fma((float32) (q1_2[3] & 255), x1_3[0], Math.fma((float32) (q1_2[2] & 255), x1_2[0],
+                    Math.fma((float32) (q1_2[1] & 255), x1_1[0], (float32) (q1_2[0] & 255) * x1_0[0])));
+                float32 p1_2_1 = Math.fma((float32) ((q1_2[3] >> 8) & 255), x1_3[1], Math.fma((float32) ((q1_2[2] >> 8) & 255), x1_2[1],
+                    Math.fma((float32) ((q1_2[1] >> 8) & 255), x1_1[1], (float32) ((q1_2[0] >> 8) & 255) * x1_0[1])));
+                float32 p1_2_2 = Math.fma((float32) ((q1_2[3] >> 16) & 255), x1_3[2], Math.fma((float32) ((q1_2[2] >> 16) & 255), x1_2[2],
+                    Math.fma((float32) ((q1_2[1] >> 16) & 255), x1_1[2], (float32) ((q1_2[0] >> 16) & 255) * x1_0[2])));
+                float32 p1_2_3 = Math.fma((float32) ((q1_2[3] >> 24) & 255), x1_3[3], Math.fma((float32) ((q1_2[2] >> 24) & 255), x1_2[3],
+                    Math.fma((float32) ((q1_2[1] >> 24) & 255), x1_1[3], (float32) ((q1_2[0] >> 24) & 255) * x1_0[3])));
+                float32 t1_2 = (p1_2_0 + p1_2_1) + (p1_2_2 + p1_2_3) - xs_1;
+                float32 p2_2_0 = Math.fma((float32) (q2_2[3] & 255), x2_3[0], Math.fma((float32) (q2_2[2] & 255), x2_2[0],
+                    Math.fma((float32) (q2_2[1] & 255), x2_1[0], (float32) (q2_2[0] & 255) * x2_0[0])));
+                float32 p2_2_1 = Math.fma((float32) ((q2_2[3] >> 8) & 255), x2_3[1], Math.fma((float32) ((q2_2[2] >> 8) & 255), x2_2[1],
+                    Math.fma((float32) ((q2_2[1] >> 8) & 255), x2_1[1], (float32) ((q2_2[0] >> 8) & 255) * x2_0[1])));
+                float32 p2_2_2 = Math.fma((float32) ((q2_2[3] >> 16) & 255), x2_3[2], Math.fma((float32) ((q2_2[2] >> 16) & 255), x2_2[2],
+                    Math.fma((float32) ((q2_2[1] >> 16) & 255), x2_1[2], (float32) ((q2_2[0] >> 16) & 255) * x2_0[2])));
+                float32 p2_2_3 = Math.fma((float32) ((q2_2[3] >> 24) & 255), x2_3[3], Math.fma((float32) ((q2_2[2] >> 24) & 255), x2_2[3],
+                    Math.fma((float32) ((q2_2[1] >> 24) & 255), x2_1[3], (float32) ((q2_2[0] >> 24) & 255) * x2_0[3])));
+                float32 t2_2 = (p2_2_0 + p2_2_1) + (p2_2_2 + p2_2_3) - xs_2;
+                float32 p3_2_0 = Math.fma((float32) (q3_2[3] & 255), x3_3[0], Math.fma((float32) (q3_2[2] & 255), x3_2[0],
+                    Math.fma((float32) (q3_2[1] & 255), x3_1[0], (float32) (q3_2[0] & 255) * x3_0[0])));
+                float32 p3_2_1 = Math.fma((float32) ((q3_2[3] >> 8) & 255), x3_3[1], Math.fma((float32) ((q3_2[2] >> 8) & 255), x3_2[1],
+                    Math.fma((float32) ((q3_2[1] >> 8) & 255), x3_1[1], (float32) ((q3_2[0] >> 8) & 255) * x3_0[1])));
+                float32 p3_2_2 = Math.fma((float32) ((q3_2[3] >> 16) & 255), x3_3[2], Math.fma((float32) ((q3_2[2] >> 16) & 255), x3_2[2],
+                    Math.fma((float32) ((q3_2[1] >> 16) & 255), x3_1[2], (float32) ((q3_2[0] >> 16) & 255) * x3_0[2])));
+                float32 p3_2_3 = Math.fma((float32) ((q3_2[3] >> 24) & 255), x3_3[3], Math.fma((float32) ((q3_2[2] >> 24) & 255), x3_2[3],
+                    Math.fma((float32) ((q3_2[1] >> 24) & 255), x3_1[3], (float32) ((q3_2[0] >> 24) & 255) * x3_0[3])));
+                float32 t3_2 = (p3_2_0 + p3_2_1) + (p3_2_2 + p3_2_3) - xs_3;
+                acc2 = acc2 + dsc2 * (float32) s0_2 * t0_2;
+                acc2 = acc2 + dsc2 * (float32) s1_2 * t1_2;
+                acc2 = acc2 + dsc2 * (float32) s2_2 * t2_2;
+                acc2 = acc2 + dsc2 * (float32) s3_2 * t3_2;
+                int32 s0_3 = (int32) scv3[0];
+                int32 s1_3 = (int32) scv3[2];
+                int32 s2_3 = (int32) scv3[4];
+                int32 s3_3 = (int32) scv3[6];
+                if (a != 0) {
+                    s0_3 = (int32) scv3[1];
+                    s1_3 = (int32) scv3[3];
+                    s2_3 = (int32) scv3[5];
+                    s3_3 = (int32) scv3[7];
+                }
+                Vector<int32,4> wA3 = qlA3.asWords();
+                Vector<int32,4> wB3 = qlB3.asWords();
+                Vector<int32,4> wH3 = qh3.asWords();
+                Vector<int32,4> q0_3 = (wA3 & 252645135) | ((wH3 << 4) & 808464432);
+                Vector<int32,4> q1_3 = (wB3 & 252645135) | ((wH3 << 2) & 808464432);
+                Vector<int32,4> q2_3 = ((wA3 >> 4) & 252645135) | (wH3 & 808464432);
+                Vector<int32,4> q3_3 = ((wB3 >> 4) & 252645135) | ((wH3 >> 2) & 808464432);
+                float32 p0_3_0 = Math.fma((float32) (q0_3[3] & 255), x0_3[0], Math.fma((float32) (q0_3[2] & 255), x0_2[0],
+                    Math.fma((float32) (q0_3[1] & 255), x0_1[0], (float32) (q0_3[0] & 255) * x0_0[0])));
+                float32 p0_3_1 = Math.fma((float32) ((q0_3[3] >> 8) & 255), x0_3[1], Math.fma((float32) ((q0_3[2] >> 8) & 255), x0_2[1],
+                    Math.fma((float32) ((q0_3[1] >> 8) & 255), x0_1[1], (float32) ((q0_3[0] >> 8) & 255) * x0_0[1])));
+                float32 p0_3_2 = Math.fma((float32) ((q0_3[3] >> 16) & 255), x0_3[2], Math.fma((float32) ((q0_3[2] >> 16) & 255), x0_2[2],
+                    Math.fma((float32) ((q0_3[1] >> 16) & 255), x0_1[2], (float32) ((q0_3[0] >> 16) & 255) * x0_0[2])));
+                float32 p0_3_3 = Math.fma((float32) ((q0_3[3] >> 24) & 255), x0_3[3], Math.fma((float32) ((q0_3[2] >> 24) & 255), x0_2[3],
+                    Math.fma((float32) ((q0_3[1] >> 24) & 255), x0_1[3], (float32) ((q0_3[0] >> 24) & 255) * x0_0[3])));
+                float32 t0_3 = (p0_3_0 + p0_3_1) + (p0_3_2 + p0_3_3) - xs_0;
+                float32 p1_3_0 = Math.fma((float32) (q1_3[3] & 255), x1_3[0], Math.fma((float32) (q1_3[2] & 255), x1_2[0],
+                    Math.fma((float32) (q1_3[1] & 255), x1_1[0], (float32) (q1_3[0] & 255) * x1_0[0])));
+                float32 p1_3_1 = Math.fma((float32) ((q1_3[3] >> 8) & 255), x1_3[1], Math.fma((float32) ((q1_3[2] >> 8) & 255), x1_2[1],
+                    Math.fma((float32) ((q1_3[1] >> 8) & 255), x1_1[1], (float32) ((q1_3[0] >> 8) & 255) * x1_0[1])));
+                float32 p1_3_2 = Math.fma((float32) ((q1_3[3] >> 16) & 255), x1_3[2], Math.fma((float32) ((q1_3[2] >> 16) & 255), x1_2[2],
+                    Math.fma((float32) ((q1_3[1] >> 16) & 255), x1_1[2], (float32) ((q1_3[0] >> 16) & 255) * x1_0[2])));
+                float32 p1_3_3 = Math.fma((float32) ((q1_3[3] >> 24) & 255), x1_3[3], Math.fma((float32) ((q1_3[2] >> 24) & 255), x1_2[3],
+                    Math.fma((float32) ((q1_3[1] >> 24) & 255), x1_1[3], (float32) ((q1_3[0] >> 24) & 255) * x1_0[3])));
+                float32 t1_3 = (p1_3_0 + p1_3_1) + (p1_3_2 + p1_3_3) - xs_1;
+                float32 p2_3_0 = Math.fma((float32) (q2_3[3] & 255), x2_3[0], Math.fma((float32) (q2_3[2] & 255), x2_2[0],
+                    Math.fma((float32) (q2_3[1] & 255), x2_1[0], (float32) (q2_3[0] & 255) * x2_0[0])));
+                float32 p2_3_1 = Math.fma((float32) ((q2_3[3] >> 8) & 255), x2_3[1], Math.fma((float32) ((q2_3[2] >> 8) & 255), x2_2[1],
+                    Math.fma((float32) ((q2_3[1] >> 8) & 255), x2_1[1], (float32) ((q2_3[0] >> 8) & 255) * x2_0[1])));
+                float32 p2_3_2 = Math.fma((float32) ((q2_3[3] >> 16) & 255), x2_3[2], Math.fma((float32) ((q2_3[2] >> 16) & 255), x2_2[2],
+                    Math.fma((float32) ((q2_3[1] >> 16) & 255), x2_1[2], (float32) ((q2_3[0] >> 16) & 255) * x2_0[2])));
+                float32 p2_3_3 = Math.fma((float32) ((q2_3[3] >> 24) & 255), x2_3[3], Math.fma((float32) ((q2_3[2] >> 24) & 255), x2_2[3],
+                    Math.fma((float32) ((q2_3[1] >> 24) & 255), x2_1[3], (float32) ((q2_3[0] >> 24) & 255) * x2_0[3])));
+                float32 t2_3 = (p2_3_0 + p2_3_1) + (p2_3_2 + p2_3_3) - xs_2;
+                float32 p3_3_0 = Math.fma((float32) (q3_3[3] & 255), x3_3[0], Math.fma((float32) (q3_3[2] & 255), x3_2[0],
+                    Math.fma((float32) (q3_3[1] & 255), x3_1[0], (float32) (q3_3[0] & 255) * x3_0[0])));
+                float32 p3_3_1 = Math.fma((float32) ((q3_3[3] >> 8) & 255), x3_3[1], Math.fma((float32) ((q3_3[2] >> 8) & 255), x3_2[1],
+                    Math.fma((float32) ((q3_3[1] >> 8) & 255), x3_1[1], (float32) ((q3_3[0] >> 8) & 255) * x3_0[1])));
+                float32 p3_3_2 = Math.fma((float32) ((q3_3[3] >> 16) & 255), x3_3[2], Math.fma((float32) ((q3_3[2] >> 16) & 255), x3_2[2],
+                    Math.fma((float32) ((q3_3[1] >> 16) & 255), x3_1[2], (float32) ((q3_3[0] >> 16) & 255) * x3_0[2])));
+                float32 p3_3_3 = Math.fma((float32) ((q3_3[3] >> 24) & 255), x3_3[3], Math.fma((float32) ((q3_3[2] >> 24) & 255), x3_2[3],
+                    Math.fma((float32) ((q3_3[1] >> 24) & 255), x3_1[3], (float32) ((q3_3[0] >> 24) & 255) * x3_0[3])));
+                float32 t3_3 = (p3_3_0 + p3_3_1) + (p3_3_2 + p3_3_3) - xs_3;
+                acc3 = acc3 + dsc3 * (float32) s0_3 * t0_3;
+                acc3 = acc3 + dsc3 * (float32) s1_3 * t1_3;
+                acc3 = acc3 + dsc3 * (float32) s2_3 * t2_3;
+                acc3 = acc3 + dsc3 * (float32) s3_3 * t3_3;
+                b = b + wv / 4;
+            }
+            acc1 = acc1 * w1;
+            acc2 = acc2 * w2;
+            acc3 = acc3 * w3;
+        }
+        if (R > 1) {
+            float32 t0 = Wave.reduceSumF32(acc0);
+            float32 t1 = Wave.reduceSumF32(acc1);
+            float32 t2 = Wave.reduceSumF32(acc2);
+            float32 t3 = Wave.reduceSumF32(acc3);
+            if (lane == 0) {
+                int64 o = yOff + (int64) row0;
+                if (accum != 0) {
+                    if (row0 < rows) { y[o] = y[o] + t0; }
+                    if (row0 + 1 < rows) { y[o + 1L] = y[o + 1L] + t1; }
+                    if (row0 + 2 < rows) { y[o + 2L] = y[o + 2L] + t2; }
+                    if (row0 + 3 < rows) { y[o + 3L] = y[o + 3L] + t3; }
+                } else {
+                    if (row0 < rows) { y[o] = t0; }
+                    if (row0 + 1 < rows) { y[o + 1L] = t1; }
+                    if (row0 + 2 < rows) { y[o + 2L] = t2; }
+                    if (row0 + 3 < rows) { y[o + 3L] = t3; }
+                }
+            }
+        } else {
+            uint32 r = 0;
+            while (r < rpw) {
+                float32 part = 0.0f;
+                if (sub == r) { part = acc0; }
+                float32 tot = Wave.reduceSumF32(part);
+                if (lane == 0 && wave * rpw + r < rows) {
+                    int64 o1 = yOff + (int64) (wave * rpw + r);
+                    if (accum != 0) {
+                        y[o1] = y[o1] + tot;
+                    } else {
+                        y[o1] = tot;
+                    }
+                }
+                r = r + 1;
+            }
+        }
+    }
+
+    /** llm's float decode of format `f` (0 Q8_0, 1 Q4_0, 2 Q5_0, 3 Q6_K with `nb` its 256-value blocks) on its resident layout, `wpb` waves a workgroup. */
     public static void run(int32 f, KernelBuffer<float32> y, KernelBuffer<int8> p, KernelBuffer<float32> x, int64 rows, int64 nb,
             int64 wpb, int64 wv) {
         KernelStream s #= KernelStream.current();
@@ -202,8 +583,13 @@ public final class RefF32 {
             q80F32WaveMatVecKernel.launch(s, grid: [g], block: [(uint32) (wpb * wv)]) (y, p, x, (uint32) rows, nb, 0L, 0L, 0);
         } else if (f == 1) {
             q40F32WaveMatVecKernel.launch(s, grid: [g], block: [(uint32) (wpb * wv)]) (y, p, x, (uint32) rows, nb, 0L, 0L);
-        } else {
+        } else if (f == 2) {
             q50F32WaveMatVecKernel.launch(s, grid: [g], block: [(uint32) (wpb * wv)]) (y, p, x, (uint32) rows, nb, 0L, 0L);
+        } else {
+            int64 rpw = 4L;
+            if (4L * nb < wv) { rpw = wv / (4L * nb); }
+            uint32 g6 = (uint32) (((rows + rpw - 1L) / rpw + wpb - 1L) / wpb);
+            q6kF32WaveMatVecKernel.launch(s, grid: [g6], block: [(uint32) (wpb * wv)]) (y, p, x, (uint32) rows, nb, 0L, 0L, 0);
         }
     }
 }
