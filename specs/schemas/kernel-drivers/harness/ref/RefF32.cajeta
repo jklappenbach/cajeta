@@ -1,0 +1,209 @@
+package ref;
+
+import cajeta.xpu.Group;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Vector;
+import cajeta.xpu.Wave;
+
+/** cajeta-llm's float-activation wave decodes of Q8_0, Q4_0 and Q5_0 and their store, lifted unchanged (llm 0730a8b); the f16 scale read is {@link RefCols}'s. */
+public final class RefF32 {
+    public RefF32() { return; }
+
+    /**
+     * Q8_0 x F32 activations, WAVE decomposition — the kernel the 72B's
+     * ffn_down actually needed. The wave INTEGER route reads q8_K-packed
+     * activations whose superblock is 256 elements, so it cannot serve
+     * inDim % 256 != 0 (Qwen-72B's ffn_down is 29568, residue 128); the
+     * one-item-per-row f32 kernels can, but measured in the ~100-140
+     * GiB/s class where the wave kernels measure 130-190 — and ffn_down
+     * is ~16 GiB of the 72B's ~45 GiB per decoded token. llama.cpp has
+     * no such cliff anywhere: their mat-vec reads float activations, so
+     * one design serves every width — measured 204.8 GiB/s on the 72B
+     * and ~208 on the 8B, the SAME rate, which is what told us the gap
+     * was our router and not a big-model technique of theirs.
+     *
+     * Geometry is the integer twin's: one wave per output row, one LANE
+     * per 32-element block, 32 blocks in flight, subgroup reduce. Only
+     * the activation side differs — f32 loads and fma, no quantization,
+     * so no width constraint beyond cols % 32 == 0 and no q8_K
+     * approximation either.
+     */
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void q80F32WaveMatVecKernel(KernelBuffer<float32> y,
+            KernelBuffer<int8> packed, KernelBuffer<float32> x,
+            uint32 rows, int64 blocksPerRow, int64 xOff, int64 yOff, uint32 accum) {
+        // Wave-relative (xpu-kernel-adaptor Unit 9): the workgroup may carry
+        // several rows, one per wave, and the kernel is correct at any wave
+        // width; the literal 32 this assumed was one workgroup per row.
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 row = KernelThread.globalIdX() / wv;
+        int64 prefix = ((blocksPerRow * 2L + 3L) / 4L) * 4L;
+        int64 rowBytes = prefix + blocksPerRow * 32L;
+        float32 acc = 0.0f;
+        if (row < rows) {
+            int64 i = (int64) row;
+            int64 wb = (int64) lane;
+            while (wb < blocksPerRow) {
+                int64 ro = i * rowBytes + prefix + wb * 32L;
+                float32 d = RefCols.scaleAtDev(packed,
+                    i * rowBytes / 2L + wb);
+                int64 xo = xOff + wb * 32L;
+                Vector<int8,16> q0 = packed.vload<16>(ro);
+                Vector<int8,16> q1 = packed.vload<16>(ro + 16L);
+                Vector<int16,8> W0 = q0.widenLo();
+                Vector<int16,8> W1 = q0.widenHi();
+                Vector<int16,8> W2 = q1.widenLo();
+                Vector<int16,8> W3 = q1.widenHi();
+                Vector<float32,4> p = W0.widenLo().toF32() * x.vload<4>(xo);
+                p = p + W0.widenHi().toF32() * x.vload<4>(xo + 4L);
+                p = p + W1.widenLo().toF32() * x.vload<4>(xo + 8L);
+                p = p + W1.widenHi().toF32() * x.vload<4>(xo + 12L);
+                p = p + W2.widenLo().toF32() * x.vload<4>(xo + 16L);
+                p = p + W2.widenHi().toF32() * x.vload<4>(xo + 20L);
+                p = p + W3.widenLo().toF32() * x.vload<4>(xo + 24L);
+                p = p + W3.widenHi().toF32() * x.vload<4>(xo + 28L);
+                acc = acc + d * (p[0] + p[1] + p[2] + p[3]);
+                wb = wb + (int64) wv;
+            }
+        }
+        float32 tot = Wave.reduceSumF32(acc);
+        if (lane == 0 && row < rows) {
+            RefF32.rowsStore(y, yOff + (int64) row, tot, accum);
+        }
+    }
+
+    /** The Q4_0 member of the f32-wave family — see the Q8_0 twin. */
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void q40F32WaveMatVecKernel(KernelBuffer<float32> y,
+            KernelBuffer<int8> packed, KernelBuffer<float32> x,
+            uint32 rows, int64 blocksPerRow, int64 xOff, int64 yOff) {
+        // Wave-relative (xpu-kernel-adaptor Unit 9): the workgroup may carry
+        // several rows, one per wave, and the kernel is correct at any wave
+        // width; the literal 32 this assumed was one workgroup per row.
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 row = KernelThread.globalIdX() / wv;
+        int64 prefix = ((blocksPerRow * 2L + 3L) / 4L) * 4L;
+        int64 rowBytes = prefix + blocksPerRow * 16L;
+        float32 acc = 0.0f;
+        if (row < rows) {
+            int64 i = (int64) row;
+            int64 wb = (int64) lane;
+            while (wb < blocksPerRow) {
+                int64 ro = i * rowBytes + prefix + wb * 16L;
+                float32 d = RefCols.scaleAtDev(packed, i * rowBytes / 2L + wb);
+                int64 xo = xOff + wb * 32L;
+                Vector<int8,16> q = packed.vload<16>(ro);
+                Vector<int8,16> lo = (q & 15) - 8;
+                Vector<int8,16> hi = ((q >> 4) & 15) - 8;
+                Vector<int16,8> W0 = lo.widenLo();
+                Vector<int16,8> W1 = lo.widenHi();
+                Vector<int16,8> W2 = hi.widenLo();
+                Vector<int16,8> W3 = hi.widenHi();
+                Vector<float32,4> p = W0.widenLo().toF32() * x.vload<4>(xo);
+                p = p + W0.widenHi().toF32() * x.vload<4>(xo + 4L);
+                p = p + W1.widenLo().toF32() * x.vload<4>(xo + 8L);
+                p = p + W1.widenHi().toF32() * x.vload<4>(xo + 12L);
+                p = p + W2.widenLo().toF32() * x.vload<4>(xo + 16L);
+                p = p + W2.widenHi().toF32() * x.vload<4>(xo + 20L);
+                p = p + W3.widenLo().toF32() * x.vload<4>(xo + 24L);
+                p = p + W3.widenHi().toF32() * x.vload<4>(xo + 28L);
+                acc = acc + d * (p[0] + p[1] + p[2] + p[3]);
+                wb = wb + (int64) wv;
+            }
+        }
+        float32 tot = Wave.reduceSumF32(acc);
+        if (lane == 0 && row < rows) {
+            y[yOff + (int64) row] = tot;
+        }
+    }
+
+    /** The Q5_0 member of the f32-wave family — see the Q8_0 twin for
+     *  the geometry and the Q5_0 f32 one-item kernel for why the 5th
+     *  bit rides a scalar fold over the activations. */
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void q50F32WaveMatVecKernel(KernelBuffer<float32> y,
+            KernelBuffer<int8> packed, KernelBuffer<float32> x,
+            uint32 rows, int64 blocksPerRow, int64 xOff, int64 yOff) {
+        // Wave-relative (xpu-kernel-adaptor Unit 9): the workgroup may carry
+        // several rows, one per wave, and the kernel is correct at any wave
+        // width; the literal 32 this assumed was one workgroup per row.
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 row = KernelThread.globalIdX() / wv;
+        int64 prefix = ((blocksPerRow * 2L + 3L) / 4L) * 4L;
+        int64 rowBytes = prefix + blocksPerRow * 20L;
+        float32 acc = 0.0f;
+        if (row < rows) {
+            int64 i = (int64) row;
+            int64 wb = (int64) lane;
+            while (wb < blocksPerRow) {
+                int64 ro = i * rowBytes + prefix + wb * 20L;
+                float32 d = RefCols.scaleAtDev(packed, i * rowBytes / 2L + wb);
+                int64 xo = xOff + wb * 32L;
+                Vector<int8,4> qhb = packed.vload<4>(ro);
+                int32 qh = ((int32) qhb[0] & 255)
+                    | (((int32) qhb[1] & 255) << 8)
+                    | (((int32) qhb[2] & 255) << 16)
+                    | (((int32) qhb[3] & 255) << 24);
+                Vector<int8,16> q = packed.vload<16>(ro + 4L);
+                Vector<int8,16> lo = (q & 15) - 16;
+                Vector<int8,16> hi = ((q >> 4) & 15) - 16;
+                Vector<int16,8> W0 = lo.widenLo();
+                Vector<int16,8> W1 = lo.widenHi();
+                Vector<int16,8> W2 = hi.widenLo();
+                Vector<int16,8> W3 = hi.widenHi();
+                Vector<float32,4> p = W0.widenLo().toF32() * x.vload<4>(xo);
+                p = p + W0.widenHi().toF32() * x.vload<4>(xo + 4L);
+                p = p + W1.widenLo().toF32() * x.vload<4>(xo + 8L);
+                p = p + W1.widenHi().toF32() * x.vload<4>(xo + 12L);
+                p = p + W2.widenLo().toF32() * x.vload<4>(xo + 16L);
+                p = p + W2.widenHi().toF32() * x.vload<4>(xo + 20L);
+                p = p + W3.widenLo().toF32() * x.vload<4>(xo + 24L);
+                p = p + W3.widenHi().toF32() * x.vload<4>(xo + 28L);
+                float32 dot = p[0] + p[1] + p[2] + p[3];
+                float32 hs = 0.0f;
+                int32 j = 0;
+                while (j < 16) {
+                    hs = hs + (float32) ((qh >> j) & 1)
+                        * x[xo + (int64) j];
+                    hs = hs + (float32) ((qh >> (j + 16)) & 1)
+                        * x[xo + (int64) (j + 16)];
+                    j = j + 1;
+                }
+                acc = acc + d * (dot + 16.0f * hs);
+                wb = wb + (int64) wv;
+            }
+        }
+        float32 tot = Wave.reduceSumF32(acc);
+        if (lane == 0 && row < rows) {
+            y[yOff + (int64) row] = tot;
+        }
+    }
+
+    /** `y[yi] = v`, or `y[yi] += v` when `accum` is set. */
+    @Device
+    static void rowsStore(KernelBuffer<float32> y, int64 yi, float32 v, uint32 accum) {
+        if (accum != 0) { y[yi] = y[yi] + v; } else { y[yi] = v; }
+    }
+
+    /** llm's float decode of format `f` (0 Q8_0, 1 Q4_0, 2 Q5_0) on its resident layout, `wpb` waves a workgroup. */
+    public static void run(int32 f, KernelBuffer<float32> y, KernelBuffer<int8> p, KernelBuffer<float32> x, int64 rows, int64 nb,
+            int64 wpb, int64 wv) {
+        KernelStream s #= KernelStream.current();
+        uint32 g = (uint32) ((rows + wpb - 1L) / wpb);
+        if (f == 0) {
+            q80F32WaveMatVecKernel.launch(s, grid: [g], block: [(uint32) (wpb * wv)]) (y, p, x, (uint32) rows, nb, 0L, 0L, 0);
+        } else if (f == 1) {
+            q40F32WaveMatVecKernel.launch(s, grid: [g], block: [(uint32) (wpb * wv)]) (y, p, x, (uint32) rows, nb, 0L, 0L);
+        } else {
+            q50F32WaveMatVecKernel.launch(s, grid: [g], block: [(uint32) (wpb * wv)]) (y, p, x, (uint32) rows, nb, 0L, 0L);
+        }
+    }
+}
