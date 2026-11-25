@@ -1,0 +1,339 @@
+package ref;
+
+import cajeta.lang.Cajeta;
+import cajeta.lang.Math;
+import cajeta.xpu.Barrier;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Shared;
+import cajeta.xpu.Vector;
+
+/** cajeta-llm's cpu prefill attention kernels at head size 128 and 256 and `Prim.sum16`, lifted unchanged (llm 0730a8b); the page lookup is {@link RefAttn#row}. */
+public final class RefAttnP {
+    public RefAttnP() { return; }
+
+    /**
+     * The cpu backend's hd-128 prefill attend at any GQA group: one work item per (kv head, query row), its `nH/nKv`
+     * query heads in turn, the keys once each with an online softmax and one exp per key. Rows are taken light and heavy in turn so
+     * each worker's share of the causal triangle is even. A nonzero `window` cuts each row to its last `window` positions.
+     */
+    @Kernel(targets = {"cpu"}) @FastMath
+    @Occupancy(maxThreads = 256)
+    public static void attnPrefillCpuGqaKernel(KernelBuffer<float32> out,
+            KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+            KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, uint32 pgBase, uint32 rows, uint32 nH,
+            uint32 nKv, uint32 startPos, float32 scale, uint32 window) {
+        uint32 gi = KernelThread.globalIdX();
+        if (gi < rows * nKv) {
+            uint32 kvh = gi / rows;
+            uint32 j = gi % rows;
+            uint32 r = j % 2 == 0 ? j / 2 : rows - 1 - j / 2;
+            int64 kvDim = (int64) (nKv * 128);
+            int64 kb = (int64) (kvh * 128);
+            uint32 count = startPos + r + 1;
+            uint32 t0 = 0;
+            if (window > 0 && count > window) { t0 = count - window; }
+            uint32 g = nH / nKv;
+            uint32 h = 0;
+            while (h < g) {
+                int64 qo = (int64) r * (int64) (nH * 128) + (int64) ((kvh * g + h) * 128);
+                Vector<float32,16> q0 = q.vload<16>(qo) * scale;
+                Vector<float32,16> q1 = q.vload<16>(qo + 16L) * scale;
+                Vector<float32,16> q2 = q.vload<16>(qo + 32L) * scale;
+                Vector<float32,16> q3 = q.vload<16>(qo + 48L) * scale;
+                Vector<float32,16> q4 = q.vload<16>(qo + 64L) * scale;
+                Vector<float32,16> q5 = q.vload<16>(qo + 80L) * scale;
+                Vector<float32,16> q6 = q.vload<16>(qo + 96L) * scale;
+                Vector<float32,16> q7 = q.vload<16>(qo + 112L) * scale;
+                Vector<float32,16> a0 = q0 * 0.0f;
+                Vector<float32,16> a1 = a0;
+                Vector<float32,16> a2 = a0;
+                Vector<float32,16> a3 = a0;
+                Vector<float32,16> a4 = a0;
+                Vector<float32,16> a5 = a0;
+                Vector<float32,16> a6 = a0;
+                Vector<float32,16> a7 = a0;
+                float32 m = -1.0e30f;
+                float32 l = 0.0f;
+                uint32 t = t0;
+                while (t < count) {
+                    int64 ko = (int64) RefAttn.row(pgTab, pgBase, t) * kvDim + kb;
+                    Vector<float32,16> d = q0 * kPool.vload<16>(ko).toF32()
+                        + q1 * kPool.vload<16>(ko + 16L).toF32()
+                        + q2 * kPool.vload<16>(ko + 32L).toF32()
+                        + q3 * kPool.vload<16>(ko + 48L).toF32()
+                        + q4 * kPool.vload<16>(ko + 64L).toF32()
+                        + q5 * kPool.vload<16>(ko + 80L).toF32()
+                        + q6 * kPool.vload<16>(ko + 96L).toF32()
+                        + q7 * kPool.vload<16>(ko + 112L).toF32();
+                    float32 sc = ((d[0] + d[1]) + (d[2] + d[3])) + ((d[4] + d[5]) + (d[6] + d[7]))
+                        + (((d[8] + d[9]) + (d[10] + d[11])) + ((d[12] + d[13]) + (d[14] + d[15])));
+                    if (sc > m) {
+                        float32 c = Math.exp(m - sc);
+                        a0 = a0 * c;
+                        a1 = a1 * c;
+                        a2 = a2 * c;
+                        a3 = a3 * c;
+                        a4 = a4 * c;
+                        a5 = a5 * c;
+                        a6 = a6 * c;
+                        a7 = a7 * c;
+                        l = l * c;
+                        m = sc;
+                    }
+                    float32 p = Math.exp(sc - m);
+                    l = l + p;
+                    a0 = a0 + vPool.vload<16>(ko).toF32() * p;
+                    a1 = a1 + vPool.vload<16>(ko + 16L).toF32() * p;
+                    a2 = a2 + vPool.vload<16>(ko + 32L).toF32() * p;
+                    a3 = a3 + vPool.vload<16>(ko + 48L).toF32() * p;
+                    a4 = a4 + vPool.vload<16>(ko + 64L).toF32() * p;
+                    a5 = a5 + vPool.vload<16>(ko + 80L).toF32() * p;
+                    a6 = a6 + vPool.vload<16>(ko + 96L).toF32() * p;
+                    a7 = a7 + vPool.vload<16>(ko + 112L).toF32() * p;
+                    t = t + 1;
+                }
+                float32 inv = 1.0f / l;
+                out.vstore(qo, a0 * inv);
+                out.vstore(qo + 16L, a1 * inv);
+                out.vstore(qo + 32L, a2 * inv);
+                out.vstore(qo + 48L, a3 * inv);
+                out.vstore(qo + 64L, a4 * inv);
+                out.vstore(qo + 80L, a5 * inv);
+                out.vstore(qo + 96L, a6 * inv);
+                out.vstore(qo + 112L, a7 * inv);
+                h = h + 1;
+            }
+        }
+    }
+
+    /** {@link #attnPrefillCpuGqaKernel} at head size 256 (cajeta-llm 15.2.21.3, 15.2.21.4.2.3): two query heads a pass
+     *  over each key, in 256-key chunks of scores, exps and values, with the row's `out` as the accumulator. */
+    @Kernel(targets = {"cpu"})
+    @Occupancy(maxThreads = 256)
+    public static void attnPrefillCpuGqa256Kernel(KernelBuffer<float32> out,
+            KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+            KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, uint32 pgBase, uint32 rows, uint32 nH,
+            uint32 nKv, uint32 startPos, float32 scale, uint32 window) {
+        Shared<float32> pa = shared float32[256];
+        Shared<float32> pb = shared float32[256];
+        Shared<int32> ja = shared int32[256];
+        Shared<int32> jb = shared int32[256];
+        Barrier.workgroup();
+        uint32 gi = KernelThread.globalIdX();
+        if (gi < rows * nKv) {
+            uint32 kvh = gi / rows;
+            uint32 j = gi % rows;
+            uint32 r = j % 2 == 0 ? j / 2 : rows - 1 - j / 2;
+            int64 kvDim = (int64) (nKv * 256);
+            int64 kb = (int64) (kvh * 256);
+            uint32 count = startPos + r + 1;
+            uint32 t0 = 0;
+            if (window > 0 && count > window) { t0 = count - window; }
+            uint32 g = nH / nKv;
+            uint32 h = 0;
+            while (h < g) {
+                boolean two = h + 1 < g;
+                int64 qa = (int64) r * (int64) (nH * 256) + (int64) ((kvh * g + h) * 256);
+                int64 qb = two ? qa + 256L : qa;
+                Vector<float32,16> z = q.vload<16>(qa) * 0.0f;
+                int64 d = 0L;
+                while (d < 256L) {
+                    out.vstore(qa + d, z);
+                    out.vstore(qb + d, z);
+                    d = d + 16L;
+                }
+                float32 ma = -1.0e30f;
+                float32 mb = -1.0e30f;
+                float32 la = 0.0f;
+                float32 lb = 0.0f;
+                uint32 c0 = t0;
+                while (c0 < count) {
+                    uint32 cn = count - c0 < 256 ? count - c0 : 256;
+                    float32 ca = -1.0e30f;
+                    float32 cb = -1.0e30f;
+                    uint32 t = 0;
+                    while (t < cn) {
+                        int64 ko = (int64) RefAttn.row(pgTab, pgBase, c0 + t) * kvDim + kb;
+                        Vector<float32,16> a0 = z;
+                        Vector<float32,16> a1 = z;
+                        Vector<float32,16> a2 = z;
+                        Vector<float32,16> a3 = z;
+                        Vector<float32,16> b0 = z;
+                        Vector<float32,16> b1 = z;
+                        Vector<float32,16> b2 = z;
+                        Vector<float32,16> b3 = z;
+                        d = 0L;
+                        while (d < 256L) {
+                            Vector<float32,16> k0 = kPool.vload<16>(ko + d).toF32();
+                            Vector<float32,16> k1 = kPool.vload<16>(ko + d + 16L).toF32();
+                            Vector<float32,16> k2 = kPool.vload<16>(ko + d + 32L).toF32();
+                            Vector<float32,16> k3 = kPool.vload<16>(ko + d + 48L).toF32();
+                            a0 = Math.fma(q.vload<16>(qa + d), k0, a0);
+                            b0 = Math.fma(q.vload<16>(qb + d), k0, b0);
+                            a1 = Math.fma(q.vload<16>(qa + d + 16L), k1, a1);
+                            b1 = Math.fma(q.vload<16>(qb + d + 16L), k1, b1);
+                            a2 = Math.fma(q.vload<16>(qa + d + 32L), k2, a2);
+                            b2 = Math.fma(q.vload<16>(qb + d + 32L), k2, b2);
+                            a3 = Math.fma(q.vload<16>(qa + d + 48L), k3, a3);
+                            b3 = Math.fma(q.vload<16>(qb + d + 48L), k3, b3);
+                            d = d + 64L;
+                        }
+                        float32 sa = RefAttnP.sum16((a0 + a1) + (a2 + a3)) * scale;
+                        float32 sb = RefAttnP.sum16((b0 + b1) + (b2 + b3)) * scale;
+                        pa[t] = sa;
+                        pb[t] = sb;
+                        if (sa > ca) { ca = sa; }
+                        if (sb > cb) { cb = sb; }
+                        t = t + 1;
+                    }
+                    if (ca > ma) {
+                        float32 c = Math.exp(ma - ca);
+                        d = 0L;
+                        while (d < 256L) {
+                            out.vstore(qa + d, out.vload<16>(qa + d) * c);
+                            d = d + 16L;
+                        }
+                        la = la * c;
+                        ma = ca;
+                    }
+                    if (cb > mb) {
+                        float32 c = Math.exp(mb - cb);
+                        d = 0L;
+                        while (two && d < 256L) {
+                            out.vstore(qb + d, out.vload<16>(qb + d) * c);
+                            d = d + 16L;
+                        }
+                        lb = lb * c;
+                        mb = cb;
+                    }
+                    uint32 u = cn;
+                    while (u % 16 != 0) {
+                        pa[u] = -1.0e30f;
+                        pb[u] = -1.0e30f;
+                        u = u + 1;
+                    }
+                    Vector<float32,16> lo = z - 87.0f;
+                    t = 0;
+                    while (t < cn) {
+                        Vector<float32,16> xa = pa.vload<16>((int64) t) - ma;
+                        Vector<float32,16> xb = pb.vload<16>((int64) t) - mb;
+                        xa = xa.max(lo);
+                        xb = xb.max(lo);
+                        Vector<float32,16> ya = xa * 1.44269504f - 0.5f;
+                        Vector<float32,16> yb = xb * 1.44269504f - 0.5f;
+                        Vector<int32,16> na = ya.toI32();
+                        Vector<int32,16> nb = yb.toI32();
+                        Vector<float32,16> fa = na.toF32();
+                        Vector<float32,16> fb = nb.toF32();
+                        Vector<float32,16> ra = xa - fa * 0.693359375f + fa * 0.000212194440f;
+                        Vector<float32,16> rb = xb - fb * 0.693359375f + fb * 0.000212194440f;
+                        Vector<float32,16> ea = ra * 0.00019875691500f + 0.0013981999507f;
+                        Vector<float32,16> eb = rb * 0.00019875691500f + 0.0013981999507f;
+                        ea = ea * ra + 0.0083334519073f;
+                        eb = eb * rb + 0.0083334519073f;
+                        ea = ea * ra + 0.041665795894f;
+                        eb = eb * rb + 0.041665795894f;
+                        ea = ea * ra + 0.16666665459f;
+                        eb = eb * rb + 0.16666665459f;
+                        ea = ea * ra + 0.50000001201f;
+                        eb = eb * rb + 0.50000001201f;
+                        pa.vstore((int64) t, ea * ra * ra + ra + 1.0f);
+                        pb.vstore((int64) t, eb * rb * rb + rb + 1.0f);
+                        ja.vstore((int64) t, na);
+                        jb.vstore((int64) t, nb);
+                        t = t + 16;
+                    }
+                    t = 0;
+                    while (t < cn) {
+                        float32 wa = pa[t] * Cajeta.bitsToF32((ja[t] + 127) << 23);
+                        float32 wb = pb[t] * Cajeta.bitsToF32((jb[t] + 127) << 23);
+                        pa[t] = wa;
+                        pb[t] = wb;
+                        la = la + wa;
+                        lb = lb + wb;
+                        t = t + 1;
+                    }
+                    d = 0L;
+                    while (d < 256L) {
+                        Vector<float32,16> x0 = out.vload<16>(qa + d);
+                        Vector<float32,16> x1 = out.vload<16>(qa + d + 16L);
+                        Vector<float32,16> x2 = out.vload<16>(qa + d + 32L);
+                        Vector<float32,16> x3 = out.vload<16>(qa + d + 48L);
+                        Vector<float32,16> y0 = out.vload<16>(qb + d);
+                        Vector<float32,16> y1 = out.vload<16>(qb + d + 16L);
+                        Vector<float32,16> y2 = out.vload<16>(qb + d + 32L);
+                        Vector<float32,16> y3 = out.vload<16>(qb + d + 48L);
+                        t = 0;
+                        while (t < cn) {
+                            int64 vo = (int64) RefAttn.row(pgTab, pgBase, c0 + t) * kvDim + kb + d;
+                            Vector<float32,16> wa = z + pa[t];
+                            Vector<float32,16> wb = z + pb[t];
+                            Vector<float32,16> v0 = vPool.vload<16>(vo).toF32();
+                            Vector<float32,16> v1 = vPool.vload<16>(vo + 16L).toF32();
+                            Vector<float32,16> v2 = vPool.vload<16>(vo + 32L).toF32();
+                            Vector<float32,16> v3 = vPool.vload<16>(vo + 48L).toF32();
+                            x0 = Math.fma(v0, wa, x0);
+                            y0 = Math.fma(v0, wb, y0);
+                            x1 = Math.fma(v1, wa, x1);
+                            y1 = Math.fma(v1, wb, y1);
+                            x2 = Math.fma(v2, wa, x2);
+                            y2 = Math.fma(v2, wb, y2);
+                            x3 = Math.fma(v3, wa, x3);
+                            y3 = Math.fma(v3, wb, y3);
+                            t = t + 1;
+                        }
+                        if (two) {
+                            out.vstore(qb + d, y0);
+                            out.vstore(qb + d + 16L, y1);
+                            out.vstore(qb + d + 32L, y2);
+                            out.vstore(qb + d + 48L, y3);
+                        }
+                        out.vstore(qa + d, x0);
+                        out.vstore(qa + d + 16L, x1);
+                        out.vstore(qa + d + 32L, x2);
+                        out.vstore(qa + d + 48L, x3);
+                        d = d + 64L;
+                    }
+                    c0 = c0 + cn;
+                }
+                float32 ia = 1.0f / la;
+                float32 ib = 1.0f / lb;
+                d = 0L;
+                while (d < 256L) {
+                    out.vstore(qa + d, out.vload<16>(qa + d) * ia);
+                    d = d + 16L;
+                }
+                d = 0L;
+                while (two && d < 256L) {
+                    out.vstore(qb + d, out.vload<16>(qb + d) * ib);
+                    d = d + 16L;
+                }
+                h = h + 2;
+            }
+        }
+    }
+
+    /** The sixteen lanes of `s` summed in halves, the order a 16-lane workgroup reduction ends in. */
+    @Device
+    static float32 sum16(Vector<float32,16> s) {
+        return (((s[0] + s[8]) + (s[4] + s[12])) + ((s[2] + s[10]) + (s[6] + s[14])))
+            + (((s[1] + s[9]) + (s[5] + s[13])) + ((s[3] + s[11]) + (s[7] + s[15])));
+    }
+
+    /** llm's kernel at head size `hd` over `rows` query rows from `startPos`, `block` work items a workgroup. */
+    public static void run(int64 hd, KernelBuffer<float32> out, KernelBuffer<float32> q, KernelBuffer<float16> k, KernelBuffer<float16> v,
+            KernelBuffer<int32> pt, int32 rows, int32 nH, int32 nKv, int32 startPos, float32 scale, int32 window, int32 block) {
+        KernelStream s #= KernelStream.current();
+        uint32 n = (uint32) (rows * nKv);
+        uint32 blk = (uint32) block;
+        if (hd == 256L) {
+            attnPrefillCpuGqa256Kernel.launch(s, grid: [(n + blk - 1) / blk], block: [blk])
+                (out, q, k, v, pt, 0, (uint32) rows, (uint32) nH, (uint32) nKv, (uint32) startPos, scale, (uint32) window);
+            return;
+        }
+        attnPrefillCpuGqaKernel.launch(s, grid: [(n + blk - 1) / blk], block: [blk])
+            (out, q, k, v, pt, 0, (uint32) rows, (uint32) nH, (uint32) nKv, (uint32) startPos, scale, (uint32) window);
+    }
+}
