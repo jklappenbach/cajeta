@@ -1,0 +1,74 @@
+package ref;
+
+import cajeta.lang.System;
+import dev.cajeta.ml.kernels.gemm.BlockGemmRows8;
+import dev.cajeta.ml.kernels.quant.Q2kBlock;
+import dev.cajeta.ml.kernels.quant.Q3kBlock;
+import dev.cajeta.ml.kernels.quant.Q4kBlock;
+import dev.cajeta.ml.kernels.quant.Q5kBlock;
+import dev.cajeta.ml.kernels.quant.Q6kBlock;
+
+/** kernel-drivers 10.2.4: each K format's row-driver pack against cajeta-llm's 8-row interleave byte for byte, the first differing offsets within a group. */
+public class PackDiff {
+    static #int8[] file(int64 n) {
+        int8[] f #= heap int8[n];
+        int64 seed = 12345L;
+        int64 i = 0L;
+        while (i < n) { seed = (seed * 1103515245L + 12345L) % 2147483648L; f[i] = (int8) ((seed >> 16) % 256L); i = i + 1L; }
+        return #f;
+    }
+
+    static int64 cmp(String fmt, int8[] a, int8[] b, int64 n, int64 gb) {
+        int64 bad = 0L;
+        int64 shown = 0L;
+        int64 i = 0L;
+        while (i < n) {
+            if (a[i] != b[i]) {
+                if (shown < 6L) { System.stdout.println("  " + fmt + " at " + i + " (in group block " + (i % gb) + "): llm " + a[i] + " drv " + b[i]); shown = shown + 1L; }
+                bad = bad + 1L;
+            }
+            i = i + 1L;
+        }
+        System.stdout.println(fmt + " bytes " + n + " differ " + bad);
+        return bad;
+    }
+
+    public static int32 main() {
+        int64 rows = 16L;
+        int64 bpr = 2L;
+        int8[] f4 #= PackDiff.file(rows * bpr * 144L);
+        int8[] f5 #= PackDiff.file(rows * bpr * 176L);
+        int8[] f6 #= PackDiff.file(rows * bpr * 210L);
+        int8[] f3 #= PackDiff.file(rows * bpr * 110L);
+        int8[] f2 #= PackDiff.file(rows * bpr * 84L);
+        BlockGemmRows8<Q4kBlock> d4 = heap BlockGemmRows8<Q4kBlock>();
+        BlockGemmRows8<Q5kBlock> d5 = heap BlockGemmRows8<Q5kBlock>();
+        BlockGemmRows8<Q6kBlock> d6 = heap BlockGemmRows8<Q6kBlock>();
+        BlockGemmRows8<Q3kBlock> d3 = heap BlockGemmRows8<Q3kBlock>();
+        BlockGemmRows8<Q2kBlock> d2 = heap BlockGemmRows8<Q2kBlock>();
+        int64 bad = 0L;
+        int8[] a #= heap int8[d4.packedBytes(rows, bpr)];
+        int8[] b #= heap int8[d4.packedBytes(rows, bpr)];
+        RefPack.q4kInterleave8(f4, 0L, rows, bpr, a, 0L); d4.pack(f4, 0L, rows, bpr, b, 0L);
+        bad = bad + PackDiff.cmp("Q4_K", a, b, a.count(), d4.groupBytes());
+        a #= heap int8[d5.packedBytes(rows, bpr)];
+        b #= heap int8[d5.packedBytes(rows, bpr)];
+        RefPack.q5kInterleave8(f5, 0L, rows, bpr, a, 0L); d5.pack(f5, 0L, rows, bpr, b, 0L);
+        bad = bad + PackDiff.cmp("Q5_K", a, b, a.count(), d5.groupBytes());
+        a #= heap int8[RefPack.q6kInterleave8Bytes(rows, bpr)];
+        b #= heap int8[d6.packedBytes(rows, bpr)];
+        RefPack.q6kInterleave8(f6, 0L, rows, bpr, a, 0L); d6.pack(f6, 0L, rows, bpr, b, 0L);
+        System.stdout.println("Q6_K sizes llm " + a.count() + " drv " + b.count());
+        bad = bad + PackDiff.cmp("Q6_K", a, b, a.count() < b.count() ? a.count() : b.count(), d6.groupBytes());
+        a #= heap int8[RefPack.q3kInterleave8Bytes(rows, bpr)];
+        b #= heap int8[d3.packedBytes(rows, bpr)];
+        RefPack.q3kInterleave8(f3, 0L, rows, bpr, a, 0L); d3.pack(f3, 0L, rows, bpr, b, 0L);
+        bad = bad + PackDiff.cmp("Q3_K", a, b, a.count() < b.count() ? a.count() : b.count(), d3.groupBytes());
+        a #= heap int8[RefPack.q2kInterleave8Bytes(rows, bpr)];
+        b #= heap int8[d2.packedBytes(rows, bpr)];
+        RefPack.q2kInterleave8(f2, 0L, rows, bpr, a, 0L); d2.pack(f2, 0L, rows, bpr, b, 0L);
+        System.stdout.println("Q2_K sizes llm " + a.count() + " drv " + b.count());
+        bad = bad + PackDiff.cmp("Q2_K", a, b, a.count() < b.count() ? a.count() : b.count(), d2.groupBytes());
+        return bad == 0L ? 0 : 1;
+    }
+}

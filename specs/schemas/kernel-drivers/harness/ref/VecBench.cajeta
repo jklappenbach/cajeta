@@ -59,7 +59,7 @@ public class VecBench {
         int32 pass = 0;
         while (pass < 2) {
             RefVec4.launch(yr, w, xp, s16, rows, bpr, bpr * 320L, pass == 1, blk);
-            drv.run(yn, wd, xp, rows, bpr, 1L, bpr * 320L, rows, pass == 1, blk, 32L);
+            drv.run(yn, w, xp, rows, bpr, 1L, bpr * 320L, rows, pass == 1, blk, 32L);
             s.sync();
             yr.download(gr);
             yn.download(gn);
@@ -77,7 +77,7 @@ public class VecBench {
             s.sync();
             int64 t1 = Clock.nanoTime();
             k = 0L;
-            while (k < reps) { drv.run(yn, wd, xp, rows, bpr, 1L, bpr * 320L, rows, false, blk, 32L); k = k + 1L; }
+            while (k < reps) { drv.run(yn, w, xp, rows, bpr, 1L, bpr * 320L, rows, false, blk, 32L); k = k + 1L; }
             s.sync();
             int64 t2 = Clock.nanoTime();
             if ((t1 - t0) / reps < bestR) { bestR = (t1 - t0) / reps; }
@@ -117,7 +117,7 @@ public class VecBench {
         int32 pass = 0;
         while (pass < 2) {
             RefVec5.launch(yr, w, xp, s16, rows, bpr, bpr * 320L, pass == 1, blk);
-            drv.run(yn, wd, xp, rows, bpr, 1L, bpr * 320L, rows, pass == 1, blk, 32L);
+            drv.run(yn, w, xp, rows, bpr, 1L, bpr * 320L, rows, pass == 1, blk, 32L);
             s.sync();
             yr.download(gr);
             yn.download(gn);
@@ -135,7 +135,7 @@ public class VecBench {
             s.sync();
             int64 t1 = Clock.nanoTime();
             k = 0L;
-            while (k < reps) { drv.run(yn, wd, xp, rows, bpr, 1L, bpr * 320L, rows, false, blk, 32L); k = k + 1L; }
+            while (k < reps) { drv.run(yn, w, xp, rows, bpr, 1L, bpr * 320L, rows, false, blk, 32L); k = k + 1L; }
             s.sync();
             int64 t2 = Clock.nanoTime();
             if ((t1 - t0) / reps < bestR) { bestR = (t1 - t0) / reps; }
@@ -176,7 +176,7 @@ public class VecBench {
         while (pass < 2) {
             RefX8Q6.sums(s16, xp, bpr);
             RefVec6.launch(yr, w, xp, s16, rows, bpr, bpr * 320L, pass == 1, blk);
-            drv.run(yn, wd, xp, rows, bpr, 1L, bpr * 320L, rows, pass == 1, blk, 32L);
+            drv.run(yn, w, xp, rows, bpr, 1L, bpr * 320L, rows, pass == 1, blk, 32L);
             s.sync();
             yr.download(gr);
             yn.download(gn);
@@ -194,7 +194,7 @@ public class VecBench {
             s.sync();
             int64 t1 = Clock.nanoTime();
             k = 0L;
-            while (k < reps) { drv.run(yn, wd, xp, rows, bpr, 1L, bpr * 320L, rows, false, blk, 32L); k = k + 1L; }
+            while (k < reps) { drv.run(yn, w, xp, rows, bpr, 1L, bpr * 320L, rows, false, blk, 32L); k = k + 1L; }
             s.sync();
             int64 t2 = Clock.nanoTime();
             if ((t1 - t0) / reps < bestR) { bestR = (t1 - t0) / reps; }
@@ -235,7 +235,7 @@ public class VecBench {
         while (pass < 2) {
             RefX8Q6.sums(s16, xp, bpr);
             RefVec3.launch(yr, w, xp, s16, rows, bpr, bpr * 320L, pass == 1, blk);
-            drv.run(yn, wd, xp, rows, bpr, 1L, bpr * 320L, rows, pass == 1, blk, 32L);
+            drv.run(yn, w, xp, rows, bpr, 1L, bpr * 320L, rows, pass == 1, blk, 32L);
             s.sync();
             yr.download(gr);
             yn.download(gn);
@@ -253,7 +253,7 @@ public class VecBench {
             s.sync();
             int64 t1 = Clock.nanoTime();
             k = 0L;
-            while (k < reps) { drv.run(yn, wd, xp, rows, bpr, 1L, bpr * 320L, rows, false, blk, 32L); k = k + 1L; }
+            while (k < reps) { drv.run(yn, w, xp, rows, bpr, 1L, bpr * 320L, rows, false, blk, 32L); k = k + 1L; }
             s.sync();
             int64 t2 = Clock.nanoTime();
             if ((t1 - t0) / reps < bestR) { bestR = (t1 - t0) / reps; }
@@ -294,7 +294,7 @@ public class VecBench {
         while (pass < 2) {
             RefX8Q6.sums(s16, xp, bpr);
             RefVec2.launch(yr, w, xp, s16, rows, bpr, bpr * 320L, pass == 1, blk);
-            drv.run(yn, wd, xp, rows, bpr, 1L, bpr * 320L, rows, pass == 1, blk, 32L);
+            drv.run(yn, w, xp, rows, bpr, 1L, bpr * 320L, rows, pass == 1, blk, 32L);
             s.sync();
             yr.download(gr);
             yn.download(gn);
@@ -312,7 +312,7 @@ public class VecBench {
             s.sync();
             int64 t1 = Clock.nanoTime();
             k = 0L;
-            while (k < reps) { drv.run(yn, wd, xp, rows, bpr, 1L, bpr * 320L, rows, false, blk, 32L); k = k + 1L; }
+            while (k < reps) { drv.run(yn, w, xp, rows, bpr, 1L, bpr * 320L, rows, false, blk, 32L); k = k + 1L; }
             s.sync();
             int64 t2 = Clock.nanoTime();
             if ((t1 - t0) / reps < bestR) { bestR = (t1 - t0) / reps; }

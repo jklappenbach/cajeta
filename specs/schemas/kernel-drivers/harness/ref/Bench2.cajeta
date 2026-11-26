@@ -72,6 +72,10 @@ public class Bench2 {
         RefPack.q2kInterleave8(file, 0L, rows, bpr, wr, 0L);
         drv.pack(file, 0L, rows, bpr, wn, 0L);
         int64 packBad = pb == pr ? 0L : 1L;
+        if (pb == pr) {
+            int64 k = 0L;
+            while (k < pr) { if (wr[k] != wn[k]) { packBad = packBad + 1L; } k = k + 1L; }
+        }
         int64 i = 0L;
         int8[] hx #= Bench2.acts(nc * bpr);
         KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) pr);
@@ -92,7 +96,7 @@ public class Bench2 {
         while (pass < 2) {
             RefX8Q2.sums(s16, xp, nc * bpr);
             RefX8Q2.launch(yr, w, xp, s16, rows, bpr, nc, bpr * 320L, rows, pass == 1, 64L, 32L);
-            drv.run(yn, wd, xp, rows, bpr, nc, bpr * 320L, rows, pass == 1, 64L, 32L);
+            drv.run(yn, w, xp, rows, bpr, nc, bpr * 320L, rows, pass == 1, 64L, 32L);
             s.sync();
             yr.download(gr);
             yn.download(gn);
@@ -113,16 +117,16 @@ public class Bench2 {
             RefX8Q2.launch(yr, w, xp, s16, rows, bpr, nc, bpr * 320L, rows, false, 64L, 32L);
             s.sync();
             int64 t1 = Clock.nanoTime();
-            drv.run(yn, wd, xp, rows, bpr, nc, bpr * 320L, rows, false, 64L, 32L);
+            drv.run(yn, w, xp, rows, bpr, nc, bpr * 320L, rows, false, 64L, 32L);
             s.sync();
             int64 t2 = Clock.nanoTime();
             if (t1 - t0 < bestR) { bestR = t1 - t0; }
             if (t2 - t1 < bestN) { bestN = t2 - t1; }
             k = k + 1L;
         }
-        System.stdout.println("" + rows + "x" + cols + "x" + nc + " packSizeDiff " + packBad + " valueDiff " + bad + " nonzero " + nz + "/" + (2L * nc * rows) + " y0 " + gr[0] + " yLast " + gr[nc * rows - 1L]
+        System.stdout.println("" + rows + "x" + cols + "x" + nc + " packDiff " + packBad + " valueDiff " + bad + " nonzero " + nz + "/" + (2L * nc * rows) + " y0 " + gr[0] + " yLast " + gr[nc * rows - 1L]
             + " ref_us " + (bestR / 1000L) + " drv_us " + (bestN / 1000L) + " ratio_pct " + (bestN * 100L / bestR));
-        return bad;
+        return packBad + bad;
     }
 
     public static int32 main() {
