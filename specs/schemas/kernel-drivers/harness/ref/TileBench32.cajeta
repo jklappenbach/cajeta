@@ -31,6 +31,10 @@ public class TileBench32 {
         int64 packBad = 0L;
         int64 i = 0L;
         while (i < b8) { if (p8[i] != pr[i]) { packBad = packBad + 1L; } i = i + 1L; }
+        int8[] pr5 #= heap int8[b5];
+        RefWave32.split(f5, outDim, nb, 22L, pr5);
+        i = 0L;
+        while (i < b5 - 32L) { if (p5[i] != pr5[i]) { packBad = packBad + 1L; } i = i + 1L; }
         KernelBuffer<int8> w8 = heap KernelBuffer<int8>((uint64) b8);
         KernelBuffer<int8> w5 = heap KernelBuffer<int8>((uint64) b5);
         KernelBuffer<int8> wr = heap KernelBuffer<int8>((uint64) b8);

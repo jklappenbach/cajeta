@@ -134,8 +134,8 @@ public class IdBench {
             yr.upload(seed);
             yn.upload(seed);
             if (six) {
-                if (big == 0) { r6a.launchMaps(yr, wres, xp, e64, t64, x64, meta, n64, outDim, cols, outDim); d6a.runIdOn(s, yn, w, xp, e64, t64, x64, meta, n64, outDim, cols, outDim); }
-                else { r6b.launchMaps(yr, wres, xp, e128, t128, x128, meta, n128, outDim, cols, outDim); d6b.runIdOn(s, yn, w, xp, e128, t128, x128, meta, n128, outDim, cols, outDim); }
+                if (big == 0) { r6a.launchMaps(yr, wres, xp, e64, t64, x64, meta, n64, outDim, cols, outDim); d6a.runIdLayoutOn(s, yn, wres, xp, e64, t64, x64, meta, n64, outDim, cols, outDim, 1); }
+                else { r6b.launchMaps(yr, wres, xp, e128, t128, x128, meta, n128, outDim, cols, outDim); d6b.runIdLayoutOn(s, yn, wres, xp, e128, t128, x128, meta, n128, outDim, cols, outDim, 1); }
             } else {
                 if (big == 0) { r5a.launchMaps(yr, w, xp, e64, t64, x64, meta, n64, outDim, cols, outDim); d5a.runIdOn(s, yn, w, xp, e64, t64, x64, meta, n64, outDim, cols, outDim); }
                 else { r5b.launchMaps(yr, w, xp, e128, t128, x128, meta, n128, outDim, cols, outDim); d5b.runIdOn(s, yn, w, xp, e128, t128, x128, meta, n128, outDim, cols, outDim); }
@@ -163,7 +163,7 @@ public class IdBench {
                 int64 t1 = Clock.nanoTime();
                 k = 0L;
                 while (k < reps) {
-                    if (six) { if (big == 0) { d6a.runIdOn(s, yn, w, xp, e64, t64, x64, meta, n64, outDim, cols, outDim); } else { d6b.runIdOn(s, yn, w, xp, e128, t128, x128, meta, n128, outDim, cols, outDim); } }
+                    if (six) { if (big == 0) { d6a.runIdLayoutOn(s, yn, wres, xp, e64, t64, x64, meta, n64, outDim, cols, outDim, 1); } else { d6b.runIdLayoutOn(s, yn, wres, xp, e128, t128, x128, meta, n128, outDim, cols, outDim, 1); } }
                     else { if (big == 0) { d5a.runIdOn(s, yn, w, xp, e64, t64, x64, meta, n64, outDim, cols, outDim); } else { d5b.runIdOn(s, yn, w, xp, e128, t128, x128, meta, n128, outDim, cols, outDim); } }
                     k = k + 1L;
                 }
