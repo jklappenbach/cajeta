@@ -6,6 +6,7 @@ import cajeta.time.Clock;
 import cajeta.xpu.Device;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
+import dev.cajeta.ml.kernels.gemm.BlockGemm;
 import dev.cajeta.ml.kernels.gemm.BlockGemmTile;
 import dev.cajeta.ml.kernels.quant.Q6kBlock;
 
@@ -40,6 +41,12 @@ public class TileBench6 {
             rr = rr + 1L;
         }
         KernelBuffer<int8> wres = heap KernelBuffer<int8>((uint64) (outDim * resRow));
+        int8[] mine #= heap int8[outDim * resRow];
+        heap BlockGemm<Q6kBlock>().splitPack(file, 0L, outDim, bpr, mine);
+        int64 packBad = 0L;
+        int64 pk = 0L;
+        while (pk < outDim * resRow) { if (mine[pk] != res[pk]) { packBad = packBad + 1L; } pk = pk + 1L; }
+        System.stdout.println("split pack bytes " + (outDim * resRow) + " differ " + packBad);
         wres.upload(res);
         KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (tokens * bpr * 320L));
         KernelBuffer<float32> yr = heap KernelBuffer<float32>((uint64) (tokens * outDim));
@@ -67,10 +74,10 @@ public class TileBench6 {
                 yn.upload(seed);
                 if (big == 0) {
                     r64.launchAs(yr, wres, xp, tokens, outDim, cols, part, 1L, ac);
-                    d64.runOn(s, yn, w, xp, tokens, outDim, cols, part, 1L, ac);
+                    d64.runLayoutOn(s, yn, wres, xp, tokens, outDim, cols, part, 1L, ac, 1);
                 } else {
                     r128.launchAs(yr, wres, xp, tokens, outDim, cols, part, 1L, ac);
-                    d128.runOn(s, yn, w, xp, tokens, outDim, cols, part, 1L, ac);
+                    d128.runLayoutOn(s, yn, wres, xp, tokens, outDim, cols, part, 1L, ac, 1);
                 }
                 s.sync();
                 yr.download(gr);
@@ -93,7 +100,7 @@ public class TileBench6 {
                 int64 t1 = Clock.nanoTime();
                 k = 0L;
                 while (k < reps) {
-                    if (big == 0) { d64.runOn(s, yn, w, xp, tokens, outDim, cols, part, 1L, 0); } else { d128.runOn(s, yn, w, xp, tokens, outDim, cols, part, 1L, 0); }
+                    if (big == 0) { d64.runLayoutOn(s, yn, wres, xp, tokens, outDim, cols, part, 1L, 0, 1); } else { d128.runLayoutOn(s, yn, wres, xp, tokens, outDim, cols, part, 1L, 0, 1); }
                     k = k + 1L;
                 }
                 s.sync();
@@ -107,7 +114,7 @@ public class TileBench6 {
                 + " y0 " + gr[0] + " ref_us " + (bestR / 1000L) + " drv_us " + (bestN / 1000L) + " ratio_pct " + (bestN * 100L / bestR));
             big = big + 1;
         }
-        return bad;
+        return bad + packBad;
     }
 
     public static int32 main() {
