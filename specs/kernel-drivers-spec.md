@@ -140,3 +140,8 @@ epilogue, which the source asks for and the cpu never needs.
   `q50F32WaveMatVecKernel`, `q6kF32WaveMatVecKernel`, and the f16 column forms): each reproduces
   that kernel's summation order, so 7.1 holds and no KL run is needed before cajeta-llm routes
   them.
+- **7.10** (2026-11-26) A GPU entry's member choice is stable across runs: a timed choice is
+  remembered in the consumer's tune store (cajeta-llm's tune directory) and reused, so a model's
+  output does not change between runs of the same build. Where the entry's remembered choice
+  differs from the engine's, the entry is held to the engine by logits KL (spec 7.6's measure),
+  no further than the engine's own alternative member.
