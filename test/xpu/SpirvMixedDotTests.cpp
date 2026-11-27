@@ -5,6 +5,8 @@
 //
 #include "gtest/gtest.h"
 
+#include "../PortableEnv.h"   // setenv/unsetenv on MinGW
+
 #include "../jit/JitTestHelper.h"
 #include "KernelLoweringProbe.h"
 #include "XpuDeviceTestUtil.h"
